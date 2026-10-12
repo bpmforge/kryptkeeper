@@ -104,7 +104,7 @@ jobs:
   integration-full:
     runs-on: ubuntu-latest
     needs: [build-binaries]
-    timeout-minutes: 25
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:16
@@ -151,7 +151,9 @@ jobs:
           # no Go packages, so `go test ./tests/integration/...` matched nothing.
           pkgs=$(grep -rl --include='*_test.go' KRYPTKEEPER_TEST_POSTGRES_DSN ./internal | xargs -n1 dirname | sort -u)
           # -p 1: these packages DROP SCHEMA on the one shared database.
-          go test -race -count=1 -p 1 $pkgs
+          # -timeout 30m: internal/bootstrap under -race exceeds the 10m default
+          # on 2-vCPU hosted runners.
+          go test -race -count=1 -p 1 -timeout 30m $pkgs
 
   protocol-conformance:
     runs-on: ubuntu-latest
