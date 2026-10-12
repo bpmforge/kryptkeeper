@@ -112,6 +112,8 @@ jobs:
           POSTGRES_DB: kryptkeeper_test
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd "pg_isready -U postgres -d kryptkeeper_test"
           --health-interval 10s
@@ -119,6 +121,8 @@ jobs:
           --health-retries 10
       redis:
         image: redis:7
+        ports:
+          - 6379:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -132,14 +136,15 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Run integration suite
-        env:
-          # Service hostnames, not localhost: on a container runner (e.g.
-          # act_runner) the job is itself a container on the services' network.
-          KRYPTKEEPER_TEST_POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/kryptkeeper_test?sslmode=disable
-          DATABASE_URL: postgres://postgres:postgres@postgres:5432/kryptkeeper_test?sslmode=disable
-          REDIS_URL: redis://redis:6379/0
         run: |
           set -euo pipefail
+          # On a container runner (act_runner) the job is itself a container on
+          # the services' network, so the service hostname resolves; a
+          # GitHub-hosted job runs on the VM and reaches the published ports.
+          if getent hosts postgres >/dev/null 2>&1; then pg=postgres redis=redis; else pg=127.0.0.1 redis=127.0.0.1; fi
+          export KRYPTKEEPER_TEST_POSTGRES_DSN="postgres://postgres:postgres@${pg}:5432/kryptkeeper_test?sslmode=disable"
+          export DATABASE_URL="$KRYPTKEEPER_TEST_POSTGRES_DSN"
+          export REDIS_URL="redis://${redis}:6379/0"
           bash tests/integration/run.sh
           # The live-Postgres tests live beside the code they cover and skip
           # unless KRYPTKEEPER_TEST_POSTGRES_DSN is set; tests/integration has
