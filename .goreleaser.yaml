@@ -153,7 +153,7 @@ nfpms:
 # images. `extra_files` gives each build the module tree the Dockerfile's own
 # `go build`/`COPY . /src` needs; goreleaser stages docker builds in an
 # isolated context dir, so without this the Dockerfiles would see an empty
-# tree.
+# tree. `sdk` is required: go.mod replaces sdk/delivery-go with ./sdk/delivery-go.
 dockers:
   - id: kryptkeeper-linux-amd64
     ids: [kryptkeeper]
@@ -161,7 +161,7 @@ dockers:
     goarch: amd64
     dockerfile: Dockerfile
     use: buildx
-    extra_files: [go.mod, go.sum, cmd, internal]
+    extra_files: [go.mod, go.sum, cmd, internal, sdk]
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--build-arg=BUILD_MODE=real"
@@ -181,7 +181,7 @@ dockers:
     goarch: arm64
     dockerfile: Dockerfile
     use: buildx
-    extra_files: [go.mod, go.sum, cmd, internal]
+    extra_files: [go.mod, go.sum, cmd, internal, sdk]
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--build-arg=BUILD_MODE=real"
@@ -202,7 +202,7 @@ dockers:
     goarch: amd64
     dockerfile: Dockerfile.agent
     use: buildx
-    extra_files: [go.mod, go.sum, cmd, internal]
+    extra_files: [go.mod, go.sum, cmd, internal, sdk]
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--build-arg=TARGETOS=linux"
@@ -220,7 +220,7 @@ dockers:
     goarch: arm64
     dockerfile: Dockerfile.agent
     use: buildx
-    extra_files: [go.mod, go.sum, cmd, internal]
+    extra_files: [go.mod, go.sum, cmd, internal, sdk]
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--build-arg=TARGETOS=linux"
@@ -239,7 +239,7 @@ dockers:
     goarch: amd64
     dockerfile: Dockerfile.certmanager
     use: buildx
-    extra_files: [go.mod, go.sum, cmd, internal]
+    extra_files: [go.mod, go.sum, cmd, internal, sdk]
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--build-arg=TARGETOS=linux"
@@ -257,7 +257,7 @@ dockers:
     goarch: arm64
     dockerfile: Dockerfile.certmanager
     use: buildx
-    extra_files: [go.mod, go.sum, cmd, internal]
+    extra_files: [go.mod, go.sum, cmd, internal, sdk]
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--build-arg=TARGETOS=linux"
@@ -276,7 +276,7 @@ dockers:
     goarch: amd64
     dockerfile: Dockerfile.mcp
     use: buildx
-    extra_files: [go.mod, go.sum, cmd, internal]
+    extra_files: [go.mod, go.sum, cmd, internal, sdk]
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--build-arg=TARGETOS=linux"
@@ -294,7 +294,7 @@ dockers:
     goarch: arm64
     dockerfile: Dockerfile.mcp
     use: buildx
-    extra_files: [go.mod, go.sum, cmd, internal]
+    extra_files: [go.mod, go.sum, cmd, internal, sdk]
     build_flag_templates:
       - "--platform=linux/arm64"
       - "--build-arg=TARGETOS=linux"
