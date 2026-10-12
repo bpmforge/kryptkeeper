@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- W18-07: Windows agent installer. Built on Linux with wixl (msitools);
+     see `make agent-windows-msi`. Version comes from -D Version=x.y.z. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="Kryptkeeper Agent" Language="1033" Version="$(var.Version)"
+           Manufacturer="Kryptkeeper Authors" UpgradeCode="6F1B7E52-3B7B-4D0A-9D52-7B1C2A0E4C11">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine"/>
+    <MajorUpgrade DowngradeErrorMessage="A newer Kryptkeeper Agent is already installed."/>
+    <Media Id="1" Cabinet="agent.cab" EmbedCab="yes"/>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="Kryptkeeper Agent"/>
+      </Directory>
+    </Directory>
+
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="AgentExe" Guid="0C6E8F0B-5A1D-4E6B-8A57-2F4D9B1C7E01" Win64="yes">
+        <File Id="AgentExeFile" Name="kryptkeeper-agent.exe" Source="$(var.AgentExe)" KeyPath="yes"/>
+        <!-- Start=auto: the service comes back after a reboot. -->
+        <ServiceInstall Id="AgentSvc" Name="KryptkeeperAgent" DisplayName="Kryptkeeper Agent"
+                        Description="Discovers certificates on this host and reports to the Kryptkeeper hub."
+                        Type="ownProcess" Start="auto" ErrorControl="normal"/>
+        <ServiceControl Id="AgentSvcCtl" Name="KryptkeeperAgent" Stop="both" Remove="uninstall"/>
+        <!-- Event source for the service's log output (same registration as
+             golang.org/x/sys eventlog.InstallAsEventCreate), so a failed start
+             says why in Event Viewer instead of only "timed out". -->
+        <RegistryValue Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\EventLog\Application\KryptkeeperAgent"
+                       Name="EventMessageFile" Type="expandable" Value="%SystemRoot%\System32\EventCreate.exe"/>
+        <RegistryValue Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\EventLog\Application\KryptkeeperAgent"
+                       Name="TypesSupported" Type="integer" Value="7"/>
+      </Component>
+      <Component Id="AgentEnvExample" Guid="0C6E8F0B-5A1D-4E6B-8A57-2F4D9B1C7E02" Win64="yes">
+        <File Id="AgentEnvExampleFile" Name="agent.env.example" Source="$(var.EnvExample)" KeyPath="yes"/>
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Title="Kryptkeeper Agent" Level="1">
+      <ComponentRef Id="AgentExe"/>
+      <ComponentRef Id="AgentEnvExample"/>
+    </Feature>
+  </Product>
+</Wix>

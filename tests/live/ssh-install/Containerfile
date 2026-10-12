@@ -1,0 +1,56 @@
+# W19-02: minimal Ubuntu target for the SSH agentless-install UAT.
+# Ships sshd + nginx + apache2 in one image; run.sh starts two containers
+# from it (one nginx-role, one apache-role) since both servers default to
+# binding :443 and can't share a single container's TLS port.
+FROM docker.io/library/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openssh-server nginx apache2 openssl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/run/sshd /etc/ssl/kk \
+    && a2enmod ssl \
+    && rm -f /etc/nginx/sites-enabled/default
+
+# Placeholder "before" cert/key: what nginx/apache serve until the hub
+# installs a renewed one. Self-signed, generated at image-build time (not
+# committed anywhere) purely to give the fixture a known starting identity.
+RUN openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+        -nodes -days 3650 \
+        -keyout /etc/ssl/kk/server.key -out /etc/ssl/kk/server.crt \
+        -subj "/CN=placeholder.kk-uat.local" \
+    && chmod 644 /etc/ssl/kk/server.crt \
+    && chmod 600 /etc/ssl/kk/server.key
+
+COPY nginx-kk.conf /etc/nginx/sites-enabled/kk.conf
+COPY apache-kk.conf /etc/apache2/sites-enabled/000-default.conf
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+# Host keys are generated at container START (entrypoint.sh), not here:
+# baking them into the image would give every container spun up from it
+# (nginx-role and apache-role alike) the SAME host key, defeating the
+# per-target host-key pinning this UAT exercises.
+
+# SSH executor (internal/agentinstall/executor_ssh.go) issues Run()/WriteFile()
+# commands directly -- "install", "nginx -t", "systemctl reload nginx" -- with
+# no sudo prefix (see run.sh / README for the finding this produced). Proving
+# today's code therefore requires the SSH principal to already hold the
+# privilege those commands need on the target; PermitRootLogin
+# prohibit-password (pubkey only, no password auth at all) is how this
+# disposable fixture supplies that without inventing a sudo layer the code
+# doesn't have. This is a throwaway container, not a deployment pattern.
+RUN sed -i \
+        -e 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' \
+        -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' \
+        /etc/ssh/sshd_config \
+    && mkdir -p /root/.ssh && chmod 700 /root/.ssh
+
+# authorized_keys is generated fresh by run.sh into this build context right
+# before `podman build` and is .gitignore'd -- never a real/committed key,
+# regenerated every run, deleted after (see run.sh).
+COPY authorized_keys /root/.ssh/authorized_keys
+RUN chmod 600 /root/.ssh/authorized_keys
+
+EXPOSE 22 443
+ENTRYPOINT ["/entrypoint.sh"]

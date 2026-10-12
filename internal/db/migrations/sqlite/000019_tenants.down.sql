@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS ca_tenants;
+DROP TABLE IF EXISTS tenants;

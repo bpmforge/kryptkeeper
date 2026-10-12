@@ -1,0 +1,13 @@
+PRAGMA foreign_keys=OFF;
+CREATE TEMP TABLE t AS SELECT * FROM certificates;
+CREATE TEMP TABLE seq(k INTEGER);
+INSERT INTO seq VALUES (1),(2),(3),(4);
+-- 4 clones of the 10.5k rows -> ~52.6k; unique fp + serial per clone
+INSERT INTO certificates
+SELECT lower(hex(randomblob(32))), serial_number || '9' || seq.k, subject_dn, common_name, subject_alt_names, issuer_dn, issuer_cn, ca_id,
+       template_id, team_id, valid_from, valid_until, public_key_algorithm, key_size_bits, signature_algorithm, extended_key_usage, key_usage,
+       chain_complete, chain_trusted, pqc_vulnerable, risk_score, risk_flags, grade, renewal_method, renewal_status, NULL, NULL, NULL, NULL,
+       source, raw_cert_b64, strftime('%Y-%m-%dT%H:%M:%SZ', datetime(created_at, '-' || (seq.k * 100000) || ' seconds')), updated_at,
+       owner_email, owner_team, service_name, labels, origin, management_state, renewal_connector_id, pqc_readiness
+FROM t, seq;
+SELECT count(*) FROM certificates;

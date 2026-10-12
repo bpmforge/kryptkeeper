@@ -1,0 +1,243 @@
+# W20-02: superseded as the tag-time release builder by .goreleaser.yaml
+# (run from .github/workflows/release.yml on every `v*` tag push), which now
+# does everything this workflow hand-rolled per-branch -- single-shot image
+# build, SBOM, and signing -- plus binaries/checksums/nfpm packages this
+# workflow never produced. The `push: branches: [release/*]` trigger is
+# retired (removed below) so an ordinary release-branch push no longer
+# duplicates that work; `workflow_dispatch` is kept for an operator who
+# needs a one-off candidate image built off an arbitrary branch/commit
+# before it is tagged. Still uses keyed cosign signing (COSIGN_KEY/
+# COSIGN_PASSWORD, see packaging/SIGNING.md's D-101) -- unlike release.yml,
+# which is keyless -- because promote-by-digest.yml/rollback-by-digest.yml
+# verify with `cosign verify --key`, which only a keyed signature satisfies.
+name: release-candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Release version (e.g. v1.0.0)
+        required: true
+      build_mode:
+        description: Build mode (real by default; placeholder for emergency fallback)
+        required: false
+        default: real
+        type: choice
+        options:
+          - real
+          - placeholder
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify-from-main:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - name: Verify branch ancestry from main
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          merge_base=$(git merge-base HEAD origin/main || true)
+          if [ -z "$merge_base" ]; then
+            echo "Cannot determine merge-base with origin/main"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor origin/main HEAD; then
+            echo "Release branch must include latest origin/main commit before publishing"
+            echo "merge-base=$merge_base origin/main=$(git rev-parse origin/main)"
+            exit 1
+          fi
+          echo "Verified ancestry: origin/main is an ancestor of HEAD"
+
+  test-release-gates:
+    runs-on: ubuntu-latest
+    needs: [verify-from-main]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        if: ${{ hashFiles('go.mod') != '' }}
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Setup Node
+        if: ${{ hashFiles('web/package.json') != '' }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Run release gate suites
+        run: |
+          set -euo pipefail
+          if [ -f go.mod ]; then
+            go test ./... -race -count=1
+          fi
+          if [ -f web/package.json ]; then
+            corepack enable
+            pnpm --dir web install --frozen-lockfile
+            pnpm --dir web test
+          fi
+
+  build-image-once:
+    runs-on: ubuntu-latest
+    needs: [test-release-gates]
+    timeout-minutes: 45
+    outputs:
+      image_digest: ${{ steps.capture.outputs.image_digest }}
+      image_ref: ${{ steps.capture.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Ensure Dockerfile exists
+        run: |
+          set -euo pipefail
+          if [ ! -f Dockerfile ]; then
+            echo "Dockerfile is required for release-candidate build"
+            exit 1
+          fi
+      - name: Set build metadata
+        id: meta
+        env:
+          RELEASE_VERSION: ${{ github.event.inputs.release_version || github.ref_name }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}/kryptkeeper"
+          version="$RELEASE_VERSION"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push release image
+        id: capture
+        env:
+          META_IMAGE: ${{ steps.meta.outputs.image }}
+          META_VERSION: ${{ steps.meta.outputs.version }}
+          BUILD_MODE_INPUT: ${{ github.event.inputs.build_mode || 'real' }}
+        run: |
+          set -euo pipefail
+          image="$META_IMAGE"
+          version="$META_VERSION"
+          mode="$BUILD_MODE_INPUT"
+
+          case "$mode" in
+            real|placeholder) ;;
+            *)
+              echo "Invalid build_mode: $mode (expected real or placeholder)"
+              exit 1
+              ;;
+          esac
+
+          docker buildx build \
+            --platform linux/amd64,linux/arm64 \
+            --build-arg "BUILD_MODE=$mode" \
+            --build-arg "VERSION=$version" \
+            --build-arg "COMMIT=${GITHUB_SHA}" \
+            --build-arg "DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --tag "$image:$version" \
+            --tag "$image:sha-${GITHUB_SHA}" \
+            --push \
+            --iidfile out.iid \
+            .
+
+          digest=$(cat out.iid)
+          if [[ ! "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Build output did not produce a valid image digest: $digest"
+            exit 1
+          fi
+          image_digest="$image@$digest"
+
+          echo "$image_digest" > image-digest.txt
+          echo "image_ref=$image:$version" >> "$GITHUB_OUTPUT"
+          echo "image_digest=$image_digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-image-digest
+          path: image-digest.txt
+
+  generate-sbom:
+    runs-on: ubuntu-latest
+    needs: [build-image-once]
+    timeout-minutes: 15
+    steps:
+      - name: Generate SBOM (Syft JSON)
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: ${{ needs.build-image-once.outputs.image_digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-sbom
+          path: sbom.spdx.json
+
+  # Keyed signing (COSIGN_KEY/COSIGN_PASSWORD) -- release.yml signs the same
+  # way now, for the same key pair. See packaging/SIGNING.md for why (D-101):
+  # promote-by-digest.yml/rollback-by-digest.yml verify with `cosign verify
+  # --key`, which only a keyed signature satisfies.
+  sign-and-attest:
+    runs-on: ubuntu-latest
+    needs: [build-image-once]
+    timeout-minutes: 15
+    steps:
+      - name: Ensure cosign secrets exist
+        env:
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COSIGN_KEY}" ] || [ -z "${COSIGN_PASSWORD}" ]; then
+            echo "COSIGN_KEY/COSIGN_PASSWORD not configured"
+            exit 1
+          fi
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+      - name: Sign image digest
+        env:
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          IMAGE_DIGEST: ${{ needs.build-image-once.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          # The key is read straight from the environment (env://), so it is
+          # never spliced into the script source or written to runner disk.
+          cosign sign --yes --key env://COSIGN_KEY "$IMAGE_DIGEST"
+
+  publish-digest:
+    runs-on: ubuntu-latest
+    needs: [generate-sbom, sign-and-attest, build-image-once]
+    timeout-minutes: 10
+    steps:
+      - name: Publish release metadata artifact
+        env:
+          RELEASE_VERSION: ${{ github.event.inputs.release_version || github.ref_name }}
+          IMAGE_REF: ${{ needs.build-image-once.outputs.image_ref }}
+          IMAGE_DIGEST: ${{ needs.build-image-once.outputs.image_digest }}
+        run: |
+          set -euo pipefail
+          cat > release-metadata.txt <<EOF
+          version=${RELEASE_VERSION}
+          commit=${GITHUB_SHA}
+          image_ref=${IMAGE_REF}
+          image_digest=${IMAGE_DIGEST}
+          generated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-metadata
+          path: release-metadata.txt

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kryptkeeper.fullname" . }}
+  labels:
+    {{- include "kryptkeeper.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: {{ include "kryptkeeper.portName" . }}
+      protocol: TCP
+      name: {{ include "kryptkeeper.portName" . }}
+  selector:
+    {{- include "kryptkeeper.selectorLabels" . | nindent 4 }}

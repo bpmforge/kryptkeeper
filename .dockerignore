@@ -1,0 +1,38 @@
+# VCS and local tooling
+.git
+.github
+.claude
+
+# Documentation and planning artifacts
+docs
+
+# Common local/build artifacts
+bin
+dist
+tmp
+out
+coverage
+
+# Frontend artifacts
+node_modules
+web/node_modules
+web/dist
+web/.next
+
+# Editor/OS noise
+.DS_Store
+.idea
+.vscode
+
+# Secrets and env files
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Keep container build inputs
+!Dockerfile
+!.dockerignore

@@ -1,0 +1,308 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/geist";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ─── Design tokens ────────────────────────────────────────────── */
+:root {
+  /* LIGHT is the default surface. Dark is a peer below, not an
+     afterthought — both are Direction A's system: neutral chrome, and
+     colour reserved for state. */
+  color-scheme: light;
+
+  /* State colours. These are the ONLY chromatic tokens in the chrome:
+     if something is coloured here, it means something. */
+  --state-auto: #1f6f4f;   /* renews without a human */
+  --state-attn: #a26611;   /* needs attention — 4.60:1, AA */
+  --state-over: #a8342a;   /* overdue / expired */
+  --state-idle: #8a8d93;   /* manual, no automation configured */
+
+  /* Surfaces */
+  --surface-0: #fcfcfb;
+  --surface-1: #ffffff;
+  --surface-2: #f7f7f5;
+  --surface-3: #f0f0ec;
+  --rule: #e6e6e3;
+  --grid-line: rgba(0, 0, 0, 0.03);
+
+  --radius: 0.625rem;
+
+  /* shadcn tokens — light */
+  --background: #fcfcfb;
+  --foreground: #17191c;
+  --card: #ffffff;
+  --card-foreground: #17191c;
+  --popover: #ffffff;
+  --popover-foreground: #17191c;
+  --primary: #1f6f4f;
+  --primary-foreground: #fcfcfb;
+  --secondary: #f0f0ec;
+  --secondary-foreground: #17191c;
+  --muted: #f0f0ec;
+  --muted-foreground: #707378;  /* 4.64:1 on paper — AA */
+  --accent: #f0f0ec;
+  --accent-foreground: #17191c;
+  --destructive: #a8342a;
+  --border: #e6e6e3;
+  --input: #d8d8d4;
+  --ring: #1f6f4f;
+  --chart-1: #1f6f4f;
+  --chart-2: #a86a12;
+  --chart-3: #a8342a;
+  --chart-4: #55585d;
+  --chart-5: #8a8d93;
+  --sidebar: #fcfcfb;
+  --sidebar-foreground: #17191c;
+  --sidebar-primary: #1f6f4f;
+  --sidebar-primary-foreground: #fcfcfb;
+  --sidebar-accent: #f0f0ec;
+  --sidebar-accent-foreground: #17191c;
+  --sidebar-border: #e6e6e3;
+  --sidebar-ring: #1f6f4f;
+}
+
+.dark {
+  /* Warm graphite, deliberately not navy — the same system as light,
+     inverted. State colours lift for legibility on a dark ground. */
+  color-scheme: dark;
+
+  --state-auto: #5c8f6b;
+  --state-attn: #d8a657;
+  --state-over: #cc6553;  /* 4.65:1 on graphite — AA */
+  --state-idle: #8d8880;
+
+  --surface-0: #1a1917;
+  --surface-1: #201e1b;
+  --surface-2: #242220;
+  --surface-3: #2c2a27;
+  --rule: #2c2a27;
+  --grid-line: rgba(255, 255, 255, 0.025);
+
+  --background: #1a1917;
+  --foreground: #ece9e4;
+  --card: #201e1b;
+  --card-foreground: #ece9e4;
+  --popover: #201e1b;
+  --popover-foreground: #ece9e4;
+  --primary: #7fae8c;
+  --primary-foreground: #16150f;
+  --secondary: #2c2a27;
+  --secondary-foreground: #ece9e4;
+  --muted: #2c2a27;
+  --muted-foreground: #a5a099;
+  --accent: #2c2a27;
+  --accent-foreground: #ece9e4;
+  --destructive: #c05f4e;
+  --border: #2c2a27;
+  --input: #3a3733;
+  --ring: #7fae8c;
+  --chart-1: #7fae8c;
+  --chart-2: #d8a657;
+  --chart-3: #c05f4e;
+  --chart-4: #a5a099;
+  --chart-5: #6b665f;
+  --sidebar: #1a1917;
+  --sidebar-foreground: #ece9e4;
+  --sidebar-primary: #7fae8c;
+  --sidebar-primary-foreground: #16150f;
+  --sidebar-accent: #2c2a27;
+  --sidebar-accent-foreground: #ece9e4;
+  --sidebar-border: #2c2a27;
+  --sidebar-ring: #7fae8c;
+}
+
+/* ─── Base ────────────────────────────────────────────────────── */
+html, body, #root { min-height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  /* Geist Variable is the face we actually ship (@fontsource-variable/geist
+     above). This previously named "Inter", which is NOT a dependency, so the
+     downloaded Geist never rendered and the app fell back to the system sans. */
+  font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ─── Subtle dot-grid background ────────────────────────────────── */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(var(--grid-line) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* ─── Glass panel ────────────────────────────────────────────── */
+.glass {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* ─── Gradient text ─────────────────────────────────────────── */
+.gradient-text {
+  background: linear-gradient(135deg, #22d3ee 0%, #a78bfa 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ─── Glow ring for accent elements ─────────────────────────── */
+.glow-cyan {
+  box-shadow: var(--brand-cyan-glow);
+}
+.glow-violet {
+  box-shadow: var(--brand-violet-glow);
+}
+
+/* ─── Gradient border card ──────────────────────────────────── */
+.gradient-border {
+  position: relative;
+}
+.gradient-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, rgba(34,211,238,0.3), rgba(167,139,250,0.2), transparent);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* ─── Stat tile gradient backgrounds ────────────────────────── */
+.stat-cyan   { background: linear-gradient(135deg, rgba(34,211,238,0.12) 0%, rgba(8,145,178,0.06) 100%); }
+.stat-violet { background: linear-gradient(135deg, rgba(167,139,250,0.12) 0%, rgba(124,58,237,0.06) 100%); }
+.stat-rose   { background: linear-gradient(135deg, rgba(251,113,133,0.12) 0%, rgba(225,29,72,0.06) 100%); }
+.stat-amber  { background: linear-gradient(135deg, rgba(251,191,36,0.12) 0%, rgba(217,119,6,0.06) 100%); }
+.stat-emerald{ background: linear-gradient(135deg, rgba(52,211,153,0.12) 0%, rgba(5,150,105,0.06) 100%); }
+
+/* ─── Scrollbar ─────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(34,211,238,0.3); }
+
+/* ─── Focus ring consistent with brand cyan ─────────────────── */
+:focus-visible { outline: 2px solid var(--brand-cyan); outline-offset: 2px; }
+
+/* ─── Sidebar nav active indicator ─────────────────────────── */
+.nav-item-active {
+  background: linear-gradient(90deg, rgba(34,211,238,0.15), rgba(34,211,238,0.05));
+  color: #22d3ee;
+  border-left: 2px solid #22d3ee;
+}
+.nav-item-active svg { color: #22d3ee; }
+
+/* ─── Risk gauge ─────────────────────────────────────────────── */
+.risk-gauge-track {
+  background: conic-gradient(
+    #22c55e 0% 33%,
+    #eab308 33% 66%,
+    #ef4444 66% 100%
+  );
+  border-radius: 50%;
+}
+
+/* ─── Micro-animations ─────────────────────────────────────── */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 8px rgba(34,211,238,0.2); }
+  50%       { box-shadow: 0 0 20px rgba(34,211,238,0.5); }
+}
+.pulse-glow { animation: pulse-glow 2.5s ease-in-out infinite; }
+
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.fade-in-up { animation: fade-in-up 0.4s ease forwards; }
+
+@keyframes count-up {
+  from { opacity: 0; transform: scale(0.8); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.count-up { animation: count-up 0.5s cubic-bezier(0.34,1.56,0.64,1) forwards; }
+
+@theme inline {
+  /* State colours as utilities: text-state-auto, bg-state-over, … .
+     These follow the theme, so status stays legible in both modes. */
+  --color-state-auto: var(--state-auto);
+  --color-state-attn: var(--state-attn);
+  --color-state-over: var(--state-over);
+  --color-state-idle: var(--state-idle);
+  --font-heading: var(--font-sans);
+  --font-sans: 'Geist Variable', sans-serif;
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
+}
+/* ─── Reduced motion ──────────────────────────────────────────────
+   A person who has asked their OS to stop animating things has asked
+   this product too. Applies to everything, including anything added
+   later, so it cannot be forgotten per-component. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

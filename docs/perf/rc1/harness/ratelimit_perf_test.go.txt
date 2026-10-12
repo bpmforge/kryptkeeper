@@ -1,0 +1,26 @@
+package ratelimit
+
+import (
+	"fmt"
+	"runtime"
+	"testing"
+	"time"
+)
+
+func TestPerfBucketGrowth(t *testing.T) {
+	l := New(30, time.Minute)
+	var m0, m1 runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&m0)
+	base := time.Now()
+	const n = 200000
+	for i := 0; i < n; i++ {
+		l.AllowAt(fmt.Sprintf("2001:db8::%x", i), base)
+	}
+	// every window has long expired; nothing evicts the keys.
+	l.AllowAt("trigger", base.Add(2*time.Hour))
+	runtime.GC()
+	runtime.ReadMemStats(&m1)
+	t.Logf("keys retained after window expiry: %d, heap growth %.1f MB (%.0f B/key)",
+		len(l.buckets), float64(m1.HeapAlloc-m0.HeapAlloc)/1e6, float64(m1.HeapAlloc-m0.HeapAlloc)/n)
+}

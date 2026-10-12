@@ -1,0 +1,42 @@
+# syntax=docker/dockerfile:1.7
+
+# Container image for kryptkeeper-agent (cmd/kryptkeeper-agent): the satellite
+# agent that discovers certificates on a host and reports them to the Hub.
+#
+# This image is discovery+report only: the Renewal Autopilot install path
+# (agentinstall.NewSudoExecutor) shells out to sudo/systemctl/nginx/apache on
+# the HOST, none of which exist in a distroless, shell-less, non-root image.
+# Run this image for polling/reporting; use the native binary + systemd unit
+# (kryptkeeper-agent --generate-systemd) on hosts that need autopilot install.
+#
+# Build:
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -f Dockerfile.agent -t kryptkeeper-agent:local .
+
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+# W20-02: stamps this binary's version/commit/date vars.
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG DATE=unknown
+
+WORKDIR /src
+COPY . /src
+
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+    -o /out/kryptkeeper-agent ./cmd/kryptkeeper-agent
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+LABEL org.opencontainers.image.title="kryptkeeper-agent"
+LABEL org.opencontainers.image.description="Kryptkeeper satellite agent: discovers host certificates and reports them to the Hub"
+LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY:-unknown}"
+
+COPY --from=builder /out/kryptkeeper-agent /kryptkeeper-agent
+
+USER nonroot:nonroot
+ENTRYPOINT ["/kryptkeeper-agent"]

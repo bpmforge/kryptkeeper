@@ -1,0 +1,304 @@
+=== Symbol Results ===
+
+Vulnerability #1: GO-2026-6617
+    HTTP/2 server crash due to HPACK encoder race in net/http
+  More info: https://pkg.go.dev/vuln/GO-2026-6617
+  Standard library
+    Found in: net/http/internal/http2@go1.27.1
+    Fixed in: net/http/internal/http2@go1.27.2
+    Example traces found:
+      #1: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.NetHTTPClientConn.Close
+      #2: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.NetHTTPClientConn.Close
+      #3: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.NetHTTPClientConn.RoundTrip
+      #4: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.NetHTTPClientConn.RoundTrip
+      #5: internal/mcpserver/transport_http.go:79:37: mcpserver.ServeHTTP calls http.Server.Shutdown, which calls http2.Server.GracefulShutdown
+      #6: internal/mcpserver/transport_http.go:79:37: mcpserver.ServeHTTP calls http.Server.Shutdown, which calls http2.Server.GracefulShutdown
+      #7: internal/mcpserver/transport_http.go:66:35: mcpserver.ServeHTTP calls http.Server.ListenAndServe, which eventually calls http2.Server.ServeConn
+      #8: internal/mcpserver/transport_http.go:66:35: mcpserver.ServeHTTP calls http.Server.ListenAndServe, which eventually calls http2.Server.ServeConn
+      #9: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.AddConn
+      #10: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.AddConn
+      #11: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls http2.Transport.CloseIdleConnections
+      #12: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls http2.Transport.CloseIdleConnections
+      #13: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.NewClientConn
+      #14: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.NewClientConn
+      #15: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.RoundTrip
+      #16: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.RoundTrip
+      #17: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.bufferedWriterTimeoutWriter.Write
+      #18: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.bufferedWriterTimeoutWriter.Write
+      #19: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.chunkWriter.Write
+      #20: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.chunkWriter.Write
+      #21: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.gzipReader.Close
+      #22: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.gzipReader.Close
+      #23: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.gzipReader.Read
+      #24: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.gzipReader.Read
+      #25: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.requestBody.Close
+      #26: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.requestBody.Close
+      #27: internal/bootstrap/handlers_sse.go:115:16: bootstrap.registerSSEHandlers calls http.http2ResponseWriter.Flush, which calls http2.responseWriter.FlushError
+      #28: internal/bootstrap/handlers_sse.go:115:16: bootstrap.registerSSEHandlers calls http.http2ResponseWriter.Flush, which calls http2.responseWriter.FlushError
+      #29: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http2.responseWriter.Write
+      #30: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http2.responseWriter.Write
+      #31: internal/wstep/server.go:598:30: wstep.statusRecorder.WriteHeader calls http2.responseWriter.WriteHeader
+      #32: internal/wstep/server.go:598:30: wstep.statusRecorder.WriteHeader calls http2.responseWriter.WriteHeader
+      #33: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http.response.Write, which eventually calls http2.responseWriter.WriteString
+      #34: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http.response.Write, which eventually calls http2.responseWriter.WriteString
+      #35: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.stickyErrWriter.Write
+      #36: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.stickyErrWriter.Write
+      #37: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.transportResponseBody.Close
+      #38: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.transportResponseBody.Close
+      #39: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.transportResponseBody.Read
+      #40: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.transportResponseBody.Read
+
+Vulnerability #2: GO-2026-6613
+    HTTP/1 server connection desynchronization after 2xx CONNECT response in
+    net/http
+  More info: https://pkg.go.dev/vuln/GO-2026-6613
+  Standard library
+    Found in: net/http@go1.27.1
+    Fixed in: net/http@go1.27.2
+    Example traces found:
+      #1: internal/bootstrap/spiffe_workload_grpc.go:23:2: bootstrap.init calls credentials.init, which eventually calls http.CanonicalHeaderKey
+      #2: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do
+      #3: cmd/healthcheck/main.go:40:25: healthcheck.run calls http.Client.Get
+      #4: internal/bootstrap/spiffe_workload_grpc.go:21:2: bootstrap.init calls grpc.init, which eventually calls http.HandleFunc
+      #5: internal/bootstrap/renewal_scheduler.go:233:11: bootstrap.RenewalScheduler.Stop calls sync.Once.Do, which eventually calls http.Header.Add
+      #6: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls http.Header.Del
+      #7: internal/bootstrap/connector_acme.go:318:40: bootstrap.acmeIssuerConnector.Issue calls acme.Client.WaitAuthorization, which calls http.Header.Get
+      #8: internal/agentclient/client.go:228:16: agentclient.Client.PostRenewalResult calls http.Header.Set
+      #9: internal/agentdiscovery/winrm_sealed.go:231:38: agentdiscovery.ntlmChallengeFrom calls http.Header.Values
+      #10: internal/agentclient/client.go:224:40: agentclient.Client.PostRenewalResult calls http.NewRequestWithContext
+      #11: internal/bootstrap/connector_acme.go:318:40: bootstrap.acmeIssuerConnector.Issue calls acme.Client.WaitAuthorization, which eventually calls http.ParseTime
+      #12: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls http.ReadRequest
+      #13: internal/bootstrap/renewal_scheduler.go:233:11: bootstrap.RenewalScheduler.Stop calls sync.Once.Do, which eventually calls http.ReadResponse
+      #14: internal/bootstrap/auth.go:285:35: bootstrap.authenticatePrincipal calls http.Request.Cookie
+      #15: internal/connectors/wstep_client.go:137:22: connectors.WSTEPClient.Issue calls http.Request.SetBasicAuth
+      #16: internal/bootstrap/renewal_scheduler.go:233:11: bootstrap.RenewalScheduler.Stop calls sync.Once.Do, which eventually calls http.Request.Write
+      #17: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls http.Response.Write
+      #18: cmd/kryptkeeper/main.go:550:21: kryptkeeper.main calls http.ServeMux.Handle
+      #19: internal/bootstrap/cbom_export.go:250:16: bootstrap.RegisterCBOMHandlers calls http.ServeMux.HandleFunc
+      #20: internal/mcpserver/transport_http.go:82:35: mcpserver.ServeHTTP calls http.Server.Close
+      #21: internal/mcpserver/transport_http.go:66:35: mcpserver.ServeHTTP calls http.Server.ListenAndServe
+      #22: tests/live/plugins/mockdevice/main.go:89:34: mockdevice.main calls http.Server.ListenAndServeTLS
+      #23: internal/bootstrap/connector_acme.go:203:34: bootstrap.newHTTP01Solver calls http.Server.Serve
+      #24: internal/mcpserver/transport_http.go:79:37: mcpserver.ServeHTTP calls http.Server.Shutdown
+      #25: internal/bootstrap/renewal_scheduler.go:233:11: bootstrap.RenewalScheduler.Stop calls sync.Once.Do, which eventually calls http.Transport.Clone
+      #26: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls http.Transport.CloseIdleConnections
+      #27: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls http.Transport.RoundTrip
+      #28: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http.body.Close
+      #29: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http.body.Read
+      #30: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http.bodyEOFSignal.Close
+      #31: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http.bodyEOFSignal.Read
+      #32: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which eventually calls http.bodyLocked.Read
+      #33: internal/bootstrap/db_core.go:33:16: bootstrap.OpenCoreDB calls sql.DB.Close, which eventually calls http.bufioFlushWriter.Write
+      #34: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http.cancelTimerBody.Close
+      #35: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http.cancelTimerBody.Read
+      #36: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http.checkConnErrorWriter.Write
+      #37: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http.chunkWriter.Write
+      #38: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which eventually calls http.connReader.Read
+      #39: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http.expectContinueReader.Close
+      #40: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http.expectContinueReader.Read
+      #41: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http.gzipReader.Close
+      #42: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http.gzipReader.Read
+      #43: internal/keystore/escrow.go:127:26: keystore.EscrowKey calls io.ReadFull, which eventually calls http.loggingConn.Read
+      #44: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which calls http.loggingConn.Write
+      #45: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http.maxBytesReader.Read
+      #46: internal/bootstrap/renewal_scheduler.go:233:11: bootstrap.RenewalScheduler.Stop calls sync.Once.Do, which eventually calls http.onceCloseListener.Close
+      #47: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which eventually calls http.persistConn.Read
+      #48: internal/bootstrap/db_core.go:33:16: bootstrap.OpenCoreDB calls sql.DB.Close, which eventually calls http.persistConnWriter.ReadFrom
+      #49: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http.persistConnWriter.Write
+      #50: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http.readTrackingBody.Close
+      #51: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http.readTrackingBody.Read
+      #52: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http.readWriteCloserBody.Read
+      #53: internal/bootstrap/db_core.go:33:16: bootstrap.OpenCoreDB calls sql.DB.Close, which eventually calls http.response.ReadFrom
+      #54: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http.response.Write
+      #55: internal/wstep/server.go:598:30: wstep.statusRecorder.WriteHeader calls http.response.WriteHeader
+      #56: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http2.responseWriter.Write, which eventually calls http.response.WriteString
+      #57: internal/agentdiscovery/agentless_winrm.go:438:56: agentdiscovery.AgentlessWinRMScanner.Scan calls http.transportReadFromServerError.Error
+
+Vulnerability #3: GO-2026-6612
+    Double flow control refund on HTTP/2 server streams in net/http
+  More info: https://pkg.go.dev/vuln/GO-2026-6612
+  Standard library
+    Found in: net/http/internal/http2@go1.27.1
+    Fixed in: net/http/internal/http2@go1.27.2
+    Example traces found:
+      #1: internal/mcpserver/transport_http.go:66:35: mcpserver.ServeHTTP calls http.Server.ListenAndServe, which eventually calls http2.Server.ServeConn
+      #2: internal/mcpserver/transport_http.go:66:35: mcpserver.ServeHTTP calls http.Server.ListenAndServe, which eventually calls http2.Server.ServeConn
+      #3: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.requestBody.Close
+      #4: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.requestBody.Close
+      #5: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.requestBody.Read
+      #6: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.requestBody.Read
+
+Vulnerability #4: GO-2026-6611
+    Excessive CPU consumption from repeated initial window changes in net/http
+  More info: https://pkg.go.dev/vuln/GO-2026-6611
+  Standard library
+    Found in: net/http/internal/http2@go1.27.1
+    Fixed in: net/http/internal/http2@go1.27.2
+    Example traces found:
+      #1: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.NetHTTPClientConn.Close
+      #2: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.NetHTTPClientConn.Close
+      #3: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.NetHTTPClientConn.RoundTrip
+      #4: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.NetHTTPClientConn.RoundTrip
+      #5: internal/mcpserver/transport_http.go:79:37: mcpserver.ServeHTTP calls http.Server.Shutdown, which calls http2.Server.GracefulShutdown
+      #6: internal/mcpserver/transport_http.go:79:37: mcpserver.ServeHTTP calls http.Server.Shutdown, which calls http2.Server.GracefulShutdown
+      #7: internal/mcpserver/transport_http.go:66:35: mcpserver.ServeHTTP calls http.Server.ListenAndServe, which eventually calls http2.Server.ServeConn
+      #8: internal/mcpserver/transport_http.go:66:35: mcpserver.ServeHTTP calls http.Server.ListenAndServe, which eventually calls http2.Server.ServeConn
+      #9: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.AddConn
+      #10: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.AddConn
+      #11: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls http2.Transport.CloseIdleConnections
+      #12: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls http2.Transport.CloseIdleConnections
+      #13: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.NewClientConn
+      #14: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.NewClientConn
+      #15: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.RoundTrip
+      #16: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.RoundTrip
+      #17: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.bufferedWriterTimeoutWriter.Write
+      #18: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.bufferedWriterTimeoutWriter.Write
+      #19: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.chunkWriter.Write
+      #20: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.chunkWriter.Write
+      #21: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.gzipReader.Close
+      #22: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.gzipReader.Close
+      #23: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.gzipReader.Read
+      #24: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.gzipReader.Read
+      #25: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.requestBody.Close
+      #26: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.requestBody.Close
+      #27: internal/bootstrap/handlers_sse.go:115:16: bootstrap.registerSSEHandlers calls http.http2ResponseWriter.Flush, which calls http2.responseWriter.FlushError
+      #28: internal/bootstrap/handlers_sse.go:115:16: bootstrap.registerSSEHandlers calls http.http2ResponseWriter.Flush, which calls http2.responseWriter.FlushError
+      #29: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http2.responseWriter.Write
+      #30: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http2.responseWriter.Write
+      #31: internal/wstep/server.go:598:30: wstep.statusRecorder.WriteHeader calls http2.responseWriter.WriteHeader
+      #32: internal/wstep/server.go:598:30: wstep.statusRecorder.WriteHeader calls http2.responseWriter.WriteHeader
+      #33: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http.response.Write, which eventually calls http2.responseWriter.WriteString
+      #34: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http.response.Write, which eventually calls http2.responseWriter.WriteString
+      #35: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.stickyErrWriter.Write
+      #36: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.stickyErrWriter.Write
+      #37: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.transportResponseBody.Close
+      #38: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.transportResponseBody.Close
+      #39: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.transportResponseBody.Read
+      #40: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.transportResponseBody.Read
+
+Vulnerability #5: GO-2026-6610
+    HTTP/2 transport accepts malformed framing-related headers in net/http
+  More info: https://pkg.go.dev/vuln/GO-2026-6610
+  Standard library
+    Found in: net/http/internal/http2@go1.27.1
+    Fixed in: net/http/internal/http2@go1.27.2
+    Example traces found:
+      #1: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.AddConn
+      #2: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.AddConn
+      #3: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.NewClientConn
+      #4: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.NewClientConn
+      #5: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.RoundTrip
+      #6: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.RoundTrip
+
+Vulnerability #6: GO-2026-6608
+    Memory limit bypass when parsing MIME headers in net/textproto,
+    mime/multipart
+  More info: https://pkg.go.dev/vuln/GO-2026-6608
+  Standard library
+    Found in: net/textproto@go1.27.1
+    Fixed in: net/textproto@go1.27.2
+    Example traces found:
+      #1: internal/bootstrap/auth_saml.go:188:55: bootstrap.registerSAMLLoginHandlers calls http.Request.PostFormValue, which eventually calls multipart.Reader.ReadForm
+      #2: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls textproto.Reader.ReadMIMEHeader
+
+Vulnerability #7: GO-2026-6607
+    Reject malformed ECH outer extension references in crypto/tls
+  More info: https://pkg.go.dev/vuln/GO-2026-6607
+  Standard library
+    Found in: crypto/tls@go1.27.1
+    Fixed in: crypto/tls@go1.27.2
+    Example traces found:
+      #1: tests/live/plugins/mockdevice/main.go:109:34: mockdevice.main calls tls.Conn.Handshake
+      #2: internal/discovery/scanner/posture.go:177:34: scanner.PostureProber.handshake calls tls.Conn.HandshakeContext
+      #3: internal/keystore/escrow.go:127:26: keystore.EscrowKey calls io.ReadFull, which eventually calls tls.Conn.Read
+      #4: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which calls tls.Conn.Write
+      #5: internal/cipheraudit/auditor.go:61:33: cipheraudit.Auditor.AuditEndpoint calls tls.DialWithDialer
+      #6: internal/agentinstall/verify.go:38:28: agentinstall.defaultVerifier calls tls.Dialer.DialContext
+
+Vulnerability #8: GO-2026-6605
+    HTTP/1 client connection desynchronization after CONNECT rejection in
+    net/http
+  More info: https://pkg.go.dev/vuln/GO-2026-6605
+  Standard library
+    Found in: net/http@go1.27.1
+    Fixed in: net/http@go1.27.2
+    Example traces found:
+      #1: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do
+      #2: cmd/healthcheck/main.go:40:25: healthcheck.run calls http.Client.Get
+      #3: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls http.Transport.CloseIdleConnections
+      #4: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls http.Transport.RoundTrip
+      #5: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls httputil.DumpRequestOut
+
+Vulnerability #9: GO-2026-6603
+    HTTP/2 server memory exhaustion due to Trailer headers in net/http
+  More info: https://pkg.go.dev/vuln/GO-2026-6603
+  Standard library
+    Found in: net/http/internal/http2@go1.27.1
+    Fixed in: net/http/internal/http2@go1.27.2
+    Example traces found:
+      #1: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.NetHTTPClientConn.Close
+      #2: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.NetHTTPClientConn.Close
+      #3: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.NetHTTPClientConn.RoundTrip
+      #4: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.NetHTTPClientConn.RoundTrip
+      #5: internal/mcpserver/transport_http.go:79:37: mcpserver.ServeHTTP calls http.Server.Shutdown, which calls http2.Server.GracefulShutdown
+      #6: internal/mcpserver/transport_http.go:79:37: mcpserver.ServeHTTP calls http.Server.Shutdown, which calls http2.Server.GracefulShutdown
+      #7: internal/mcpserver/transport_http.go:66:35: mcpserver.ServeHTTP calls http.Server.ListenAndServe, which eventually calls http2.Server.ServeConn
+      #8: internal/mcpserver/transport_http.go:66:35: mcpserver.ServeHTTP calls http.Server.ListenAndServe, which eventually calls http2.Server.ServeConn
+      #9: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.AddConn
+      #10: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.AddConn
+      #11: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls http2.Transport.CloseIdleConnections
+      #12: internal/cloudinventory/aws_acm.go:59:40: cloudinventory.ACMConnector.ListCertificates calls acm.Client.ListCertificates, which eventually calls http2.Transport.CloseIdleConnections
+      #13: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.NewClientConn
+      #14: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.NewClientConn
+      #15: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.RoundTrip
+      #16: internal/agentclient/client.go:231:30: agentclient.Client.PostRenewalResult calls http.Client.Do, which eventually calls http2.Transport.RoundTrip
+      #17: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.bufferedWriterTimeoutWriter.Write
+      #18: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.bufferedWriterTimeoutWriter.Write
+      #19: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.chunkWriter.Write
+      #20: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.chunkWriter.Write
+      #21: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.gzipReader.Close
+      #22: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.gzipReader.Close
+      #23: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.gzipReader.Read
+      #24: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.gzipReader.Read
+      #25: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.requestBody.Close
+      #26: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.requestBody.Close
+      #27: internal/bootstrap/handlers_sse.go:115:16: bootstrap.registerSSEHandlers calls http.http2ResponseWriter.Flush, which calls http2.responseWriter.FlushError
+      #28: internal/bootstrap/handlers_sse.go:115:16: bootstrap.registerSSEHandlers calls http.http2ResponseWriter.Flush, which calls http2.responseWriter.FlushError
+      #29: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http2.responseWriter.Write
+      #30: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http2.responseWriter.Write
+      #31: internal/wstep/server.go:598:30: wstep.statusRecorder.WriteHeader calls http2.responseWriter.WriteHeader
+      #32: internal/wstep/server.go:598:30: wstep.statusRecorder.WriteHeader calls http2.responseWriter.WriteHeader
+      #33: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http.response.Write, which eventually calls http2.responseWriter.WriteString
+      #34: internal/wstep/server.go:605:31: wstep.statusRecorder.Write calls http.response.Write, which eventually calls http2.responseWriter.WriteString
+      #35: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.stickyErrWriter.Write
+      #36: internal/agentdiscovery/agentless_winrm.go:349:14: agentdiscovery.WSManShell.RunExit calls fmt.Fprintf, which eventually calls http2.stickyErrWriter.Write
+      #37: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.transportResponseBody.Close
+      #38: internal/keystore/vault.go:329:2: keystore.vaultSigner.Sign calls http2.transportResponseBody.Close
+      #39: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.transportResponseBody.Read
+      #40: internal/agentclient/client.go:237:21: agentclient.Client.PostRenewalResult calls io.ReadAll, which calls http2.transportResponseBody.Read
+
+Vulnerability #10: GO-2026-6600
+    Recognize yield as regexp preceder keyword in html/template
+  More info: https://pkg.go.dev/vuln/GO-2026-6600
+  Standard library
+    Found in: html/template@go1.27.1
+    Fixed in: html/template@go1.27.2
+    Example traces found:
+      #1: internal/mcpserver/transport_http.go:66:35: mcpserver.ServeHTTP calls http.Server.ListenAndServe, which eventually calls template.Template.Execute
+      #2: internal/mcpserver/transport_http.go:66:35: mcpserver.ServeHTTP calls http.Server.ListenAndServe, which eventually calls template.Template.ExecuteTemplate
+
+Vulnerability #11: GO-2026-6599
+    Reset context tracking on consecutive template expressions in html/template
+  More info: https://pkg.go.dev/vuln/GO-2026-6599
+  Standard library
+    Found in: html/template@go1.27.1
+    Fixed in: html/template@go1.27.2
+    Example traces found:
+      #1: internal/mcpserver/transport_http.go:66:35: mcpserver.ServeHTTP calls http.Server.ListenAndServe, which eventually calls template.Template.Execute
+      #2: internal/mcpserver/transport_http.go:66:35: mcpserver.ServeHTTP calls http.Server.ListenAndServe, which eventually calls template.Template.ExecuteTemplate
+
+Your code is affected by 11 vulnerabilities from the Go standard library.
+This scan also found 2 vulnerabilities in packages you import and 1
+vulnerability in modules you require, but your code doesn't appear to call these
+vulnerabilities.
+Use '-show verbose' for more details.

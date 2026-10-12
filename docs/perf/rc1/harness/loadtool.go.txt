@@ -1,0 +1,227 @@
+package main
+
+import (
+	mrand "math/rand"
+
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/json"
+	"encoding/pem"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"sort"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+var rnd = mrand.New(mrand.NewSource(time.Now().UnixNano()))
+var rndMu sync.Mutex
+var shown int32
+var xff bool
+var ctype string
+var noauth bool
+var tokMu sync.Mutex
+var curTok string
+var base = "http://127.0.0.1:8080"
+var client = &http.Client{Timeout: 300 * time.Second}
+
+func login(pw string) string {
+	b, _ := json.Marshal(map[string]string{"email": "perf@example.com", "password": pw})
+	r, err := client.Post(base+"/api/v1/auth/login", "application/json", bytes.NewReader(b))
+	if err != nil {
+		panic(err)
+	}
+	defer r.Body.Close()
+	var o struct {
+		Data struct {
+			AccessToken string `json:"access_token"`
+		} `json:"data"`
+	}
+	json.NewDecoder(r.Body).Decode(&o)
+	return o.Data.AccessToken
+}
+
+func csr(i int) string {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	der, _ := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject:  pkix.Name{CommonName: fmt.Sprintf("host-%d.perf.example.com", i)},
+		DNSNames: []string{fmt.Sprintf("host-%d.perf.example.com", i)},
+	}, k)
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
+}
+
+func do(method, path, tok string, body []byte) (int, int, time.Duration) {
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, _ := http.NewRequest(method, base+path, rd)
+	tokMu.Lock()
+	tok = curTok
+	tokMu.Unlock()
+	if !noauth {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", ctype)
+	}
+	if xff {
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("10.%d.%d.%d", rndn(), rndn(), rndn()))
+	}
+	t := time.Now()
+	r, err := client.Do(req)
+	if err != nil {
+		return 0, 0, time.Since(t)
+	}
+	bb, _ := io.ReadAll(r.Body)
+	n := int64(len(bb))
+	if r.StatusCode/100 != 2 && atomic.AddInt32(&shown, 1) < 3 {
+		fmt.Println("ERRBODY", string(bb))
+	}
+	r.Body.Close()
+	return r.StatusCode, int(n), time.Since(t)
+}
+
+func pct(d []time.Duration, p float64) time.Duration {
+	if len(d) == 0 {
+		return 0
+	}
+	sort.Slice(d, func(i, j int) bool { return d[i] < d[j] })
+	return d[int(float64(len(d)-1)*p)]
+}
+
+func main() {
+	mode := flag.String("mode", "bench", "seed|bench")
+	pw := flag.String("pw", os.Getenv("KKPW"), "")
+	ca := flag.String("ca", "", "")
+	n := flag.Int("n", 100, "")
+	c := flag.Int("c", 1, "")
+	path := flag.String("path", "/api/v1/certificates?limit=25", "")
+	method := flag.String("method", "GET", "")
+	tpl := flag.String("tpl", "", "")
+	bodyfile := flag.String("bodyfile", "", "")
+	flag.BoolVar(&xff, "xff", false, "")
+	flag.BoolVar(&noauth, "noauth", false, "")
+	flag.StringVar(&ctype, "ct", "application/json", "")
+	issue := flag.Bool("issue", false, "bench POST issue")
+	flag.Parse()
+	tok := login(*pw)
+	go func() {
+		for range time.Tick(8 * time.Minute) {
+			t := login(*pw)
+			tokMu.Lock()
+			curTok = t
+			tokMu.Unlock()
+		}
+	}()
+	curTok = tok
+	switch *mode {
+	case "seed":
+		var done, fail int64
+		var mu sync.Mutex
+		sem := make(chan struct{}, *c)
+		var wg sync.WaitGroup
+		start := time.Now()
+		var lat []time.Duration
+		for i := 0; i < *n; i++ {
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				b, _ := json.Marshal(map[string]string{"ca_id": *ca, "template_id": *tpl, "csr_pem": csr(i)})
+				code, _, d := do("POST", "/api/v1/certificates", tok, b)
+				mu.Lock()
+				lat = append(lat, d)
+				mu.Unlock()
+				if code/100 != 2 {
+					if atomic.AddInt64(&fail, 1) < 3 {
+						fmt.Println("fail code", code)
+					}
+				}
+				if x := atomic.AddInt64(&done, 1); x%1000 == 0 {
+					fmt.Println("seeded", x, time.Since(start).Round(time.Second))
+				}
+			}(i)
+		}
+		wg.Wait()
+		fmt.Printf("seed n=%d c=%d fail=%d total=%s p50=%s p95=%s\n", *n, *c, fail, time.Since(start).Round(time.Millisecond), pct(lat, .5), pct(lat, .95))
+	case "revoke":
+		var fps []string
+		for off := 0; len(fps) < *n; off += 100 {
+			req, _ := http.NewRequest("GET", fmt.Sprintf("%s/api/v1/certificates?limit=100&offset=%d", base, off), nil)
+			req.Header.Set("Authorization", "Bearer "+tok)
+			r, err := client.Do(req)
+			if err != nil {
+				panic(err)
+			}
+			var o struct {
+				Data []struct {
+					FP string `json:"fingerprint_sha256"`
+				} `json:"data"`
+			}
+			json.NewDecoder(r.Body).Decode(&o)
+			r.Body.Close()
+			for _, d := range o.Data {
+				fps = append(fps, d.FP)
+			}
+		}
+		fps = fps[:*n]
+		var lat []time.Duration
+		codes := map[int]int{}
+		for _, fp := range fps {
+			b, _ := json.Marshal(map[string]any{"reason_code": 1, "reason_text": "perf"})
+			code, _, d := do("POST", "/api/v1/certificates/"+fp+"/revoke", tok, b)
+			lat = append(lat, d)
+			codes[code]++
+		}
+		fmt.Printf("revoke n=%d codes=%v p50=%s p95=%s max=%s\n", *n, codes, pct(lat, .5), pct(lat, .95), pct(lat, 1))
+	case "bench":
+		var lat []time.Duration
+		var mu sync.Mutex
+		codes := map[int]int{}
+		size := 0
+		sem := make(chan struct{}, *c)
+		var wg sync.WaitGroup
+		start := time.Now()
+		for i := 0; i < *n; i++ {
+			sem <- struct{}{}
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				var body []byte
+				if *bodyfile != "" {
+					body, _ = os.ReadFile(*bodyfile)
+				}
+				if *issue {
+					body, _ = json.Marshal(map[string]string{"ca_id": *ca, "template_id": *tpl, "csr_pem": csr(i)})
+				}
+				code, sz, d := do(*method, *path, tok, body)
+				mu.Lock()
+				lat = append(lat, d)
+				codes[code]++
+				size = sz
+				mu.Unlock()
+			}(i)
+		}
+		wg.Wait()
+		tot := time.Since(start)
+		fmt.Printf("%s %s n=%d c=%d codes=%v bytes=%d p50=%s p95=%s max=%s rps=%.1f\n", *method, *path, *n, *c, codes, size,
+			pct(lat, .5).Round(time.Microsecond), pct(lat, .95).Round(time.Microsecond), pct(lat, 1).Round(time.Microsecond), float64(*n)/tot.Seconds())
+	}
+}
+
+func rndn() int {
+	rndMu.Lock()
+	defer rndMu.Unlock()
+	return rnd.Intn(256)
+}

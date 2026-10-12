@@ -1,0 +1,21 @@
+-- Wave W18 (SQLite)
+-- Purpose: persist certificates.pqc_readiness (found in end-user review).
+--
+-- computePQCReadiness ran at issuance and the result lived only in memory.
+-- pqc_vulnerable HAD a column and was persisted; pqc_readiness never did.
+-- So on any DB-backed read the field came back "" and the crypto-posture
+-- report bucketed the certificate as not_applicable -- reporting
+-- "0 vulnerable" and a 0% PQC score for an estate whose certificates were
+-- flagged pqc_vulnerable = 1. A false all-clear on the product's headline
+-- metric, and the same "looked fine until you read it back" family as S-50.
+--
+-- Safe to persist: the classification is a pure function of the
+-- certificate and its chain, and its only time input is
+-- NotAfter - NotBefore (the TOTAL validity period), which never changes
+-- for a given certificate. It cannot go stale.
+--
+-- A plain ADD COLUMN, so no table rebuild and none of the W17-11 hazard.
+-- Depends on: 000002
+-- Rollback pair: 000051_certificates_pqc_readiness.down.sql
+
+ALTER TABLE certificates ADD COLUMN pqc_readiness TEXT;

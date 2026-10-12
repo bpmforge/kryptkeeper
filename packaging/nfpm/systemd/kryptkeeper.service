@@ -1,0 +1,21 @@
+[Unit]
+Description=Kryptkeeper PKI Hub
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kryptkeeper
+Group=kryptkeeper
+ExecStart=/usr/bin/kryptkeeper
+EnvironmentFile=/etc/kryptkeeper/env
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kryptkeeper
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

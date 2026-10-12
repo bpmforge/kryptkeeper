@@ -1,0 +1,23 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "id": "kryptkeeper.citrix-adc",
+  "name": "Citrix ADC / NetScaler (not yet verified on a real device)",
+  "version": "1.0.0",
+  "publisher": "Kryptkeeper Authors",
+  "license": "Apache-2.0",
+  "source": "https://github.com/bpmforge/kryptkeeper/tree/main/plugins/citrix",
+  "artifact": {"file": "plugin.wasm", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "capabilities": {
+    "receive_private_key": true,
+    "network": {"hosts_from_credential": "base_url", "ports": [443]},
+    "tls_verify": true
+  },
+  "credential_schema": {
+    "base_url": {"type": "url", "required": true},
+    "username": {"type": "string", "required": true},
+    "password": {"type": "string", "required": true, "secret": true}
+  },
+  "target_schema": {
+    "certkey_name": {"type": "string", "required": true}
+  }
+}

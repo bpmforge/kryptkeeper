@@ -1,0 +1,213 @@
+# W20-02: already workflow_dispatch-only (no change needed to its trigger) --
+# kept, not deleted, because it does a different job than release.yml: this
+# promotes an already-built, already-signed digest between environments, it
+# does not build one. Known gap this ticket surfaces rather than fixes here
+# (out of write_scope for a build ticket): `verify-signature` below still
+# calls `cosign verify --key` against COSIGN_PUBLIC_KEY, but release.yml's
+# images are now signed keyless (Sigstore) by .goreleaser.yaml's
+# `docker_signs` -- a keyed verify will not validate a keyless signature.
+# Promoting a release.yml-built image through this workflow needs that
+# verify step changed to `cosign verify --certificate-identity
+# https://github.com/bpmforge/kryptkeeper/.github/workflows/release.yml@refs/tags/v* --certificate-oidc-issuer
+# https://token.actions.githubusercontent.com` first; release-candidate.yml
+# (still keyed, see its own header) remains this workflow's compatible
+# source until that follow-up lands.
+name: promote-by-digest
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_env:
+        description: Source environment
+        required: true
+        default: staging
+      target_env:
+        description: Target environment
+        required: true
+        default: production
+      image_digest:
+        description: Full image digest (image@sha256:...)
+        required: true
+      change_ticket:
+        description: Change ticket reference
+        required: true
+
+permissions:
+  contents: read
+  packages: read
+
+# workflow_dispatch inputs reach shell only through env (IAC-006): never
+# interpolate inputs.* expressions into a run: script.
+env:
+  IN_SOURCE_ENV: ${{ inputs.source_env }}
+  IN_TARGET_ENV: ${{ inputs.target_env }}
+  IN_IMAGE_DIGEST: ${{ inputs.image_digest }}
+  IN_CHANGE_TICKET: ${{ inputs.change_ticket }}
+
+concurrency:
+  group: promote-${{ inputs.target_env }}
+  cancel-in-progress: false
+
+jobs:
+  validate-digest-exists:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Validate input format
+        run: |
+          set -euo pipefail
+          digest="$IN_IMAGE_DIGEST"
+          if [[ ! "$digest" =~ ^[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{40,64}$ ]]; then
+            echo "Invalid digest format: $digest"
+            exit 1
+          fi
+          if [[ "$IN_SOURCE_ENV" != "staging" && "$IN_SOURCE_ENV" != "production" ]]; then
+            echo "source_env must be one of: staging, production"
+            exit 1
+          fi
+          if [[ "$IN_TARGET_ENV" != "staging" && "$IN_TARGET_ENV" != "production" ]]; then
+            echo "target_env must be one of: staging, production"
+            exit 1
+          fi
+          if [ "$IN_SOURCE_ENV" = "$IN_TARGET_ENV" ]; then
+            echo "source_env and target_env must be different for promotion"
+            exit 1
+          fi
+          if [ -z "$IN_CHANGE_TICKET" ]; then
+            echo "change_ticket is required"
+            exit 1
+          fi
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify digest exists in registry
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if docker buildx imagetools inspect "$IN_IMAGE_DIGEST" > /dev/null; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Digest not found after 3 attempts"
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+
+  verify-signature:
+    runs-on: ubuntu-latest
+    needs: [validate-digest-exists]
+    timeout-minutes: 10
+    steps:
+      - name: Verify signature prerequisites
+        env:
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COSIGN_PUBLIC_KEY}" ]; then
+            echo "COSIGN_PUBLIC_KEY is required for promotion verification"
+            exit 1
+          fi
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+      - name: Verify image signature
+        env:
+          COSIGN_PUBLIC_KEY: ${{ secrets.COSIGN_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$COSIGN_PUBLIC_KEY" > cosign.pub
+          for attempt in 1 2 3; do
+            if cosign verify --key cosign.pub "$IN_IMAGE_DIGEST" > /dev/null; then
+              rm -f cosign.pub
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              rm -f cosign.pub
+              echo "Cosign verify failed after 3 attempts"
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+
+  deploy-target:
+    runs-on: ubuntu-latest
+    needs: [verify-signature]
+    environment: ${{ inputs.target_env }}
+    timeout-minutes: 20
+    env:
+      DEPLOY_CMD_STAGING: ${{ secrets.DEPLOY_CMD_STAGING }}
+      DEPLOY_CMD_PRODUCTION: ${{ secrets.DEPLOY_CMD_PRODUCTION }}
+      CHANGE_TICKET: ${{ inputs.change_ticket }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Deploy target by digest
+        run: |
+          set -euo pipefail
+          if [ "$IN_TARGET_ENV" = 'staging' ] && [ -z "${DEPLOY_CMD_STAGING}" ]; then
+            echo "DEPLOY_CMD_STAGING secret must be configured"
+            exit 1
+          fi
+          if [ "$IN_TARGET_ENV" = 'production' ] && [ -z "${DEPLOY_CMD_PRODUCTION}" ]; then
+            echo "DEPLOY_CMD_PRODUCTION secret must be configured"
+            exit 1
+          fi
+          if [ -x scripts/deploy/by-digest.sh ]; then
+            scripts/deploy/by-digest.sh "$IN_TARGET_ENV" "$IN_IMAGE_DIGEST" "$IN_CHANGE_TICKET"
+          else
+            echo "Missing executable deploy script: scripts/deploy/by-digest.sh"
+            exit 1
+          fi
+
+  post-deploy-smoke:
+    runs-on: ubuntu-latest
+    needs: [deploy-target]
+    timeout-minutes: 15
+    env:
+      KRYPTKEEPER_SMOKE_BASE_URL_STAGING: ${{ secrets.KRYPTKEEPER_SMOKE_BASE_URL_STAGING }}
+      KRYPTKEEPER_SMOKE_BASE_URL_PRODUCTION: ${{ secrets.KRYPTKEEPER_SMOKE_BASE_URL_PRODUCTION }}
+      KRYPTKEEPER_OCSP_SMOKE_URL: ${{ secrets.KRYPTKEEPER_OCSP_SMOKE_URL }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Post-deploy smoke
+        run: |
+          set -euo pipefail
+          if [ "$IN_TARGET_ENV" = 'staging' ] && [ -z "${KRYPTKEEPER_SMOKE_BASE_URL_STAGING}" ]; then
+            echo "KRYPTKEEPER_SMOKE_BASE_URL_STAGING secret must be configured"
+            exit 1
+          fi
+          if [ "$IN_TARGET_ENV" = 'production' ] && [ -z "${KRYPTKEEPER_SMOKE_BASE_URL_PRODUCTION}" ]; then
+            echo "KRYPTKEEPER_SMOKE_BASE_URL_PRODUCTION secret must be configured"
+            exit 1
+          fi
+          if [ -x scripts/deploy/smoke.sh ]; then
+            scripts/deploy/smoke.sh "$IN_TARGET_ENV"
+          else
+            echo "Missing executable smoke script: scripts/deploy/smoke.sh"
+            exit 1
+          fi
+
+  record-promotion:
+    runs-on: ubuntu-latest
+    needs: [post-deploy-smoke]
+    timeout-minutes: 5
+    steps:
+      - name: Record promotion metadata
+        run: |
+          set -euo pipefail
+          cat > promotion-record.txt <<EOF
+          source_env=${IN_SOURCE_ENV}
+          target_env=${IN_TARGET_ENV}
+          image_digest=${IN_IMAGE_DIGEST}
+          change_ticket=${IN_CHANGE_TICKET}
+          actor=${{ github.actor }}
+          sha=${{ github.sha }}
+          promoted_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          EOF
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: promotion-record
+          path: promotion-record.txt

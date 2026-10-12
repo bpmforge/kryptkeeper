@@ -1,0 +1,97 @@
+{
+  "__comment": "W7-03 (D-057): Kryptkeeper PKI golden-signal SLO dashboard. Import into Grafana against a Prometheus datasource scraping the hub's /metrics endpoint. Objectives mirror internal/metrics/slo.go DefaultPKISLOs: issuance-latency-p95 <= 5s, renewal-success-rate >= 0.99, issuance-success-rate >= 0.995.",
+  "title": "Kryptkeeper PKI SLOs",
+  "uid": "kryptkeeper-pki-slo",
+  "tags": ["kryptkeeper", "pki", "slo"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Issuance latency p50 / p95 (SLO: p95 ≤ 5s)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "p50",
+          "expr": "histogram_quantile(0.50, sum(rate(kryptkeeper_cert_issue_duration_seconds_bucket[5m])) by (le))"
+        },
+        {
+          "refId": "B",
+          "legendFormat": "p95",
+          "expr": "histogram_quantile(0.95, sum(rate(kryptkeeper_cert_issue_duration_seconds_bucket[5m])) by (le))"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Renewal success rate (SLO: ≥ 99%)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "renewal success rate",
+          "expr": "sum(rate(kryptkeeper_cert_renewal_success_total[30m])) / (sum(rate(kryptkeeper_cert_renewal_success_total[30m])) + sum(rate(kryptkeeper_cert_renewal_failure_total[30m])))"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "heatmap",
+      "title": "Time-to-expiry distribution (days)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "format": "heatmap",
+          "legendFormat": "{{le}}",
+          "expr": "sum(increase(kryptkeeper_cert_expiry_days_bucket[1h])) by (le)"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Issuance success rate (SLO: ≥ 99.5%)",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "issuance success rate",
+          "expr": "sum(rate(kryptkeeper_cert_issue_total[30m])) / (sum(rate(kryptkeeper_cert_issue_total[30m])) + sum(rate(kryptkeeper_cert_issue_errors_total[30m])))"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "SLO breach transitions (24h)",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "breaches",
+          "expr": "sum(increase(kryptkeeper_slo_breaches_total[24h]))"
+        }
+      ]
+    }
+  ]
+}

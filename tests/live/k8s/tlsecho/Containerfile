@@ -1,0 +1,10 @@
+# Copyright 2026 Kryptkeeper Authors
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+# Fixture-only image for W19-03: tlsecho re-reads its cert/key from disk on
+# every TLS handshake, so mounting a Kubernetes Secret into it proves a real
+# workload observes a pushed renewal without a config-reload sidecar.
+FROM alpine:3.20
+COPY tlsecho /usr/local/bin/tlsecho
+ENTRYPOINT ["/usr/local/bin/tlsecho"]

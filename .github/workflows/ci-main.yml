@@ -1,0 +1,221 @@
+name: ci-main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-main-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # W20-01: ci-main runs the same gate as ci-pr (make lint, UI lint+test,
+  # openapi drift check) so main's post-merge status reflects the real gate,
+  # not just build+smoke+integration+protocol.
+  gate-lint-ui-openapi:
+    name: Lint, UI gate, OpenAPI drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: ui/.nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install golangci-lint (v2, pinned per .golangci.yml)
+        run: |
+          set -euo pipefail
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: make lint
+        run: make lint
+      - name: UI lint
+        run: |
+          set -euo pipefail
+          npm --prefix ui ci
+          npm --prefix ui run lint
+      - name: UI test
+        run: npm --prefix ui test -- --run
+      - name: Ensure PyYAML (validate-openapi.sh fails closed without a YAML parser)
+        # GitHub's hosted image ships PyYAML; the self-hosted act image does not.
+        run: python3 -c 'import yaml' 2>/dev/null || { SUDO=$(command -v sudo || true); $SUDO apt-get update -qq && $SUDO apt-get install -y -qq python3-yaml; }
+      - name: OpenAPI drift check (W1-03/G-5)
+        run: bash scripts/validate-openapi.sh
+
+  runtime-smoke-harness:
+    name: Runtime smoke (test harness)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run smoke suite via harness (auth matrix)
+        env:
+          KRYPTKEEPER_SMOKE_MODE: local
+        run: bash scripts/test/run.sh --suite smoke
+
+  build-binaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        if: ${{ hashFiles('go.mod') != '' }}
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build backend binaries
+        if: ${{ hashFiles('go.mod') != '' }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # -o into a directory: ./... has several main packages, and -o with a
+          # file path fails with "cannot write multiple packages to non-directory".
+          go build -trimpath -ldflags="-s -w" -o dist/ ./cmd/...
+          bytes=$(wc -c < dist/kryptkeeper-agent)
+          limit=$((15 * 1024 * 1024))
+          if [ "$bytes" -gt "$limit" ]; then
+            echo "kryptkeeper-agent exceeds 15MB limit: $bytes bytes"
+            exit 1
+          fi
+      - name: Upload binaries
+        if: ${{ hashFiles('go.mod') != '' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: backend-binaries
+          path: dist/
+
+  integration-full:
+    runs-on: ubuntu-latest
+    needs: [build-binaries]
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: kryptkeeper_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kryptkeeper_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run integration suite
+        env:
+          # Service hostnames, not localhost: on a container runner (e.g.
+          # act_runner) the job is itself a container on the services' network.
+          KRYPTKEEPER_TEST_POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/kryptkeeper_test?sslmode=disable
+          DATABASE_URL: postgres://postgres:postgres@postgres:5432/kryptkeeper_test?sslmode=disable
+          REDIS_URL: redis://redis:6379/0
+        run: |
+          set -euo pipefail
+          bash tests/integration/run.sh
+          # The live-Postgres tests live beside the code they cover and skip
+          # unless KRYPTKEEPER_TEST_POSTGRES_DSN is set; tests/integration has
+          # no Go packages, so `go test ./tests/integration/...` matched nothing.
+          pkgs=$(grep -rl --include='*_test.go' KRYPTKEEPER_TEST_POSTGRES_DSN ./internal | xargs -n1 dirname | sort -u)
+          # -p 1: these packages DROP SCHEMA on the one shared database.
+          go test -race -count=1 -p 1 $pkgs
+
+  protocol-conformance:
+    runs-on: ubuntu-latest
+    needs: [integration-full]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run protocol conformance suites
+        run: |
+          set -euo pipefail
+          # The protocol suites live beside each implementation in
+          # internal/<protocol>; tests/<protocol> was never created, so the old
+          # path check failed before running anything. Each package must still
+          # carry tests, so an empty suite cannot pass silently.
+          required_suites=(acme ocsp crl est scep)
+          suites=()
+          for suite in "${required_suites[@]}"; do
+            dir="internal/${suite}"
+            if ! ls "$dir"/*_test.go >/dev/null 2>&1; then
+              echo "Missing required protocol test files under $dir" >&2
+              exit 1
+            fi
+            suites+=("./$dir/...")
+          done
+          bash tests/protocol/run.sh
+          go test "${suites[@]}" -count=1
+
+  security-policy:
+    runs-on: ubuntu-latest
+    needs: [build-binaries]
+    timeout-minutes: 20
+    env:
+      GOVULNCHECK_VERSION: v1.1.4
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        if: ${{ hashFiles('go.mod') != '' }}
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Govulncheck
+        if: ${{ hashFiles('go.mod') != '' }}
+        run: |
+          set -euo pipefail
+          go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
+          govulncheck ./...
+      - name: License policy check (placeholder)
+        if: ${{ hashFiles('go.mod') != '' }}
+        run: |
+          echo "TODO: wire go-licenses denylist policy"
+
+  publish-ci-artifacts:
+    runs-on: ubuntu-latest
+    needs: [protocol-conformance, security-policy]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Upload CI metadata artifact
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          printf "commit=%s\nworkflow=%s\n" "${GITHUB_SHA}" "ci-main" > out/ci-main.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ci-main-metadata
+          path: out/

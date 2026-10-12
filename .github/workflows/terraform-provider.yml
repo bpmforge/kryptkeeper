@@ -1,0 +1,119 @@
+name: Terraform Provider
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - main
+      - improve/**
+  pull_request:
+    paths:
+      - 'terraform-provider-kryptkeeper/**'
+
+# Least privilege (IAC-007): read-only by default; jobs that need more elevate
+# it themselves.
+permissions:
+  contents: read
+
+jobs:
+  # W20-01: tag pushes always test/build (release); ordinary branch pushes
+  # only run when the provider module actually changed, so main churn
+  # unrelated to it doesn't spend Actions minutes on this workflow.
+  changes:
+    name: Detect relevant changes
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref_type != 'tag'
+    outputs:
+      provider: ${{ steps.filter.outputs.provider }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        id: filter
+        with:
+          filters: |
+            provider:
+              - 'terraform-provider-kryptkeeper/**'
+
+  test:
+    name: Test provider
+    runs-on: ubuntu-latest
+    needs: [changes]
+    if: |
+      always() &&
+      (github.event_name != 'push' || github.ref_type == 'tag' || needs.changes.outputs.provider == 'true')
+    defaults:
+      run:
+        working-directory: terraform-provider-kryptkeeper
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: terraform-provider-kryptkeeper/go.mod
+          cache-dependency-path: terraform-provider-kryptkeeper/go.sum
+      - run: go test ./...
+
+  build:
+    name: Build provider binaries
+    runs-on: ubuntu-latest
+    needs: test
+    defaults:
+      run:
+        working-directory: terraform-provider-kryptkeeper
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            suffix: linux_amd64
+          - goos: linux
+            goarch: arm64
+            suffix: linux_arm64
+          - goos: darwin
+            goarch: amd64
+            suffix: darwin_amd64
+          - goos: darwin
+            goarch: arm64
+            suffix: darwin_arm64
+          - goos: windows
+            goarch: amd64
+            suffix: windows_amd64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: terraform-provider-kryptkeeper/go.mod
+          cache-dependency-path: terraform-provider-kryptkeeper/go.sum
+      - name: Build (${{ matrix.suffix }})
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p ../dist
+          EXT=""
+          [ "${{ matrix.goos }}" = "windows" ] && EXT=".exe"
+          go build -ldflags="-X main.version=${{ github.ref_name }}" \
+            -o ../dist/terraform-provider-kryptkeeper_${{ matrix.suffix }}${EXT} \
+            .
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: terraform-provider-kryptkeeper_${{ matrix.suffix }}
+          path: dist/terraform-provider-kryptkeeper_*
+
+  release:
+    name: Publish to Terraform Registry
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: dist/
+          merge-multiple: true
+      - name: Create release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          files: dist/terraform-provider-kryptkeeper_*

@@ -1,0 +1,59 @@
+Kryptkeeper
+Copyright the Kryptkeeper Authors
+
+This product includes software developed by third parties under the
+Apache License, Version 2.0. Generated via `go-licenses report ./cmd/...`
+(github.com/google/go-licenses); see docs/THIRD_PARTY_LICENSES.md for the
+full list of bundled Go dependencies across all licenses. npm/frontend
+dependencies are out of scope for this file (W20-03).
+
+Apache License, Version 2.0 dependencies:
+
+  * github.com/aws/aws-sdk-go-v2
+    https://github.com/aws/aws-sdk-go-v2/blob/v1.41.6/LICENSE.txt
+  * github.com/aws/aws-sdk-go-v2/config
+    https://github.com/aws/aws-sdk-go-v2/blob/config/v1.32.15/config/LICENSE.txt
+  * github.com/aws/aws-sdk-go-v2/credentials
+    https://github.com/aws/aws-sdk-go-v2/blob/credentials/v1.19.14/credentials/LICENSE.txt
+  * github.com/aws/aws-sdk-go-v2/feature/ec2/imds
+    https://github.com/aws/aws-sdk-go-v2/blob/feature/ec2/imds/v1.18.21/feature/ec2/imds/LICENSE.txt
+  * github.com/aws/aws-sdk-go-v2/internal/configsources
+    https://github.com/aws/aws-sdk-go-v2/blob/internal/configsources/v1.4.22/internal/configsources/LICENSE.txt
+  * github.com/aws/aws-sdk-go-v2/internal/endpoints/v2
+    https://github.com/aws/aws-sdk-go-v2/blob/internal/endpoints/v2.7.22/internal/endpoints/v2/LICENSE.txt
+  * github.com/aws/aws-sdk-go-v2/service/acm
+    https://github.com/aws/aws-sdk-go-v2/blob/service/acm/v1.38.2/service/acm/LICENSE.txt
+  * github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding
+    https://github.com/aws/aws-sdk-go-v2/blob/service/internal/accept-encoding/v1.13.7/service/internal/accept-encoding/LICENSE.txt
+  * github.com/aws/aws-sdk-go-v2/service/internal/presigned-url
+    https://github.com/aws/aws-sdk-go-v2/blob/service/internal/presigned-url/v1.13.21/service/internal/presigned-url/LICENSE.txt
+  * github.com/aws/aws-sdk-go-v2/service/kms
+    https://github.com/aws/aws-sdk-go-v2/blob/service/kms/v1.50.4/service/kms/LICENSE.txt
+  * github.com/aws/aws-sdk-go-v2/service/signin
+    https://github.com/aws/aws-sdk-go-v2/blob/service/signin/v1.0.9/service/signin/LICENSE.txt
+  * github.com/aws/aws-sdk-go-v2/service/sso
+    https://github.com/aws/aws-sdk-go-v2/blob/service/sso/v1.30.15/service/sso/LICENSE.txt
+  * github.com/aws/aws-sdk-go-v2/service/ssooidc
+    https://github.com/aws/aws-sdk-go-v2/blob/service/ssooidc/v1.35.19/service/ssooidc/LICENSE.txt
+  * github.com/aws/aws-sdk-go-v2/service/sts
+    https://github.com/aws/aws-sdk-go-v2/blob/service/sts/v1.41.10/service/sts/LICENSE.txt
+  * github.com/aws/smithy-go
+    https://github.com/aws/smithy-go/blob/v1.25.0/LICENSE
+  * github.com/jonboulle/clockwork
+    https://github.com/jonboulle/clockwork/blob/v0.5.0/LICENSE
+  * github.com/mattermost/xml-roundtrip-validator
+    https://github.com/mattermost/xml-roundtrip-validator/blob/v0.1.0/LICENSE.txt
+  * github.com/russellhaering/gosaml2
+    https://github.com/russellhaering/gosaml2/blob/v0.11.0/LICENSE
+  * github.com/russellhaering/goxmldsig
+    https://github.com/russellhaering/goxmldsig/blob/v1.6.0/LICENSE
+  * github.com/santhosh-tekuri/jsonschema/v6
+    https://github.com/santhosh-tekuri/jsonschema/blob/v6.0.2/LICENSE
+  * github.com/spiffe/go-spiffe/v2/proto/spiffe/workload
+    https://github.com/spiffe/go-spiffe/blob/v2.8.1/LICENSE
+  * github.com/tink-crypto/tink-go/v2/kwp/subtle
+    https://github.com/tink-crypto/tink-go/blob/v2.8.0/LICENSE
+  * google.golang.org/genproto/googleapis/rpc/status
+    https://github.com/googleapis/go-genproto/blob/3dc84a4a5aaa/googleapis/rpc/LICENSE
+  * google.golang.org/grpc
+    https://github.com/grpc/grpc-go/blob/v1.83.1/LICENSE

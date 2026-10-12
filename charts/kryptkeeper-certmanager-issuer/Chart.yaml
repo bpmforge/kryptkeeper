@@ -1,0 +1,26 @@
+apiVersion: v2
+name: kryptkeeper-certmanager-issuer
+description: cert-manager external issuer that delegates to the Kryptkeeper Hub
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - cert-manager
+  - pki
+  - certificates
+  - kryptkeeper
+sources:
+  - https://github.com/bpmforge/kryptkeeper
+maintainers:
+  - name: Kryptkeeper Authors
+    url: https://github.com/bpmforge/kryptkeeper
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://github.com/bpmforge/kryptkeeper/tree/main/docs
+    - name: GitHub
+      url: https://github.com/bpmforge/kryptkeeper
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial release — cert-manager external issuer for Kryptkeeper Hub

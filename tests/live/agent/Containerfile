@@ -1,0 +1,68 @@
+# W19-04: kryptkeeper-agent UAT fixture.
+#
+# Ubuntu 24.04 + nginx serving a self-signed TLS vhost on 443, with a
+# handful of extra placeholder certs so inventory discovery has something
+# to find. The kryptkeeper-agent binary is built for the target platform's
+# arch by run.sh and COPYd in here — never built inside this image, so the
+# fixture never needs the Go toolchain in the container.
+FROM docker.io/library/ubuntu:24.04
+
+# sudo: agentinstall.SudoExecutor (internal/agentinstall/executor_sudo.go:32)
+# shells install operations through `sudo -n`, on the theory the agent runs
+# unprivileged with a narrow sudoers allowlist. This fixture's agent runs as
+# root instead (no user-creation step), and root's `sudo -n <cmd>` is
+# authorized by Ubuntu's default sudoers with no password/allowlist config
+# needed -- verified empirically. Without the package the binary is simply
+# missing and every install call fails at exec, independent of any ACME fix.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends nginx openssl ca-certificates sudo && \
+    rm -rf /var/lib/apt/lists/*
+
+# Self-signed leaf for the nginx vhost. Subject CN=localhost so the hub
+# (running on the macOS host) can reach it over the loop back interface
+# when the container's 443 is published to host 8445 and its 80 published
+# to host 80 for ACME HTTP-01 (see README.md "Why CN=localhost").
+# Deliberately short-lived (2 days) so agentdiscovery's
+# autoRenewable = NotAfter < 90d rule (internal/agentdiscovery/linux.go)
+# is true without needing to fiddle with the hub's RENEWAL_THRESHOLD_DAYS.
+RUN mkdir -p /etc/nginx/ssl /etc/ssl/certs-extra && \
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+      -keyout /etc/nginx/ssl/server.key -out /etc/nginx/ssl/server.crt \
+      -days 2 -nodes -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost" && \
+    for i in 1 2 3; do \
+      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+        -keyout /tmp/extra$i.key -out /etc/ssl/certs-extra/extra$i.pem \
+        -days $((300 + i)) -nodes -subj "/CN=extra$i.kryptkeeper.uat.local" && \
+      rm -f /tmp/extra$i.key; \
+    done
+
+# Minimal nginx site: TLS vhost on 443 (renewal target) + plain vhost on 80
+# for ACME HTTP-01. agentdiscovery's config parser (internal/agentdiscovery/
+# configparser.go) needs `ssl_certificate` on its own line inside a
+# `server { }` block to emit a WalkEndpoints() Endpoint whose CertPath
+# matches WalkConfigCerts()'s discovered cert Source byte-for-byte.
+RUN rm -f /etc/nginx/sites-enabled/default && mkdir -p /var/www/html/.well-known/acme-challenge
+COPY nginx-agent-uat.conf /etc/nginx/sites-enabled/agent-uat.conf
+
+# agentinstall's default reload path (internal/agentinstall/installer.go:239,
+# reloadCommand with an empty ReloadMethod -- the hub never populates
+# AgentRenewalTask.ReloadMethod, handlers_agents.go:360-370) always shells
+# out to "systemctl reload <service>". This base image has no systemd (no
+# PID 1 unit manager, package never installed) and ships no systemctl
+# binary at all -- confirmed empirically (`which systemctl` exits 1) -- so
+# a container fixture with no shim would fail cert installation regardless
+# of the ACME fixes in W19-13. This shim is fixture-only plumbing (a real
+# systemd host needs none of it) that maps the one reload call the fixture's
+# nginx target will ever receive onto `nginx -s reload`; it does not touch
+# or weaken any verification path.
+RUN printf '#!/bin/sh\nif [ "$1" = "reload" ] && [ "$2" = "nginx" ]; then exec nginx -s reload; fi\necho "systemctl shim: unsupported: $*" >&2; exit 1\n' \
+      > /usr/local/sbin/systemctl && chmod +x /usr/local/sbin/systemctl
+
+COPY kryptkeeper-agent /usr/local/bin/kryptkeeper-agent
+RUN chmod +x /usr/local/bin/kryptkeeper-agent
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 80 443
+ENTRYPOINT ["/entrypoint.sh"]

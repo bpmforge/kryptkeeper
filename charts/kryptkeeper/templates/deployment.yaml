@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kryptkeeper.fullname" . }}
+  labels:
+    {{- include "kryptkeeper.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "kryptkeeper.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "kryptkeeper.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "kryptkeeper.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.k8sDiscovery.enabled }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- if .Values.image.digest }}
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
+          {{- else }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: {{ include "kryptkeeper.portName" . }}
+              containerPort: {{ .Values.config.port | int }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "kryptkeeper.fullname" . }}
+            - secretRef:
+                name: {{ include "kryptkeeper.secretName" . }}
+          {{- with .Values.extraEnv }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- $probeHTTP := dict "port" (include "kryptkeeper.portName" .) "scheme" (ternary "HTTPS" "HTTP" .Values.tls.enabled) }}
+          livenessProbe:
+            {{- $live := deepCopy .Values.livenessProbe }}
+            {{- $_ := set $live "httpGet" (merge (dict) $probeHTTP (default (dict) $live.httpGet)) }}
+            {{- toYaml $live | nindent 12 }}
+          readinessProbe:
+            {{- $ready := deepCopy .Values.readinessProbe }}
+            {{- $_ := set $ready "httpGet" (merge (dict) $probeHTTP (default (dict) $ready.httpGet)) }}
+            {{- toYaml $ready | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: keys
+              mountPath: {{ .Values.persistence.mountPath }}
+            - name: tmp
+              mountPath: /tmp
+            {{- if and .Values.tls.enabled .Values.tls.existingSecret }}
+            - name: tls
+              mountPath: /etc/kryptkeeper/tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if and .Values.tls.enabled .Values.tls.existingSecret }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret }}
+            defaultMode: 0440
+        {{- end }}
+        - name: keys
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "kryptkeeper.fullname" . }}-keys
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir: {}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

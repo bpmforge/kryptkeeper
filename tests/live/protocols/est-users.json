@@ -1,0 +1,8 @@
+[
+  {
+    "_comment": "TEST FIXTURE ONLY: the password is uat-est-password. Used by the gated live suites against throwaway hubs; never deploy.",
+    "username": "uat-est",
+    "bcrypt_hash": "$2a$10$In0.i/oEwonbkOS3/ZAZ.e887r/5jq1oHtMbKac95akp04X/mGoSa",
+    "allowed_dns_suffixes": [".est.uat.example"]
+  }
+]

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Pre-push gate. Optional local hook: "green" is decided here (make gate),
+# before main leaves this machine.
+# Install: make hooks
+set -euo pipefail
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main) exec make gate ;;
+  esac
+done
+exit 0

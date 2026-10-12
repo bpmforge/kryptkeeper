@@ -1,0 +1,92 @@
+# golangci-lint v2 configuration. Migrated from the v1 schema when the Go
+# toolchain moved to 1.27, which the v1 line (1.64.x) cannot typecheck: its
+# vendored x/tools rejects the newer stdlib export data. The rule set and
+# every exclusion below are the same ones the v1 file carried.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # Start from an empty set rather than golangci-lint's defaults: this
+  # ticket wires the import-boundary gate (NFR-R5/G-19), not a general
+  # style sweep over pre-existing code. Widening the enabled set is a
+  # separate, deliberate ticket.
+  default: none
+  enable:
+    - depguard
+    # S-63: blank error discards (`_ = errReturningCall()`) on
+    # decision-making paths have burned this codebase repeatedly (S-50,
+    # S-63's own three findings). errcheck+check-blank flags them; the
+    # exclusions below narrow enforcement to exactly "a blank discard
+    # with no explanatory comment" — see auth_oidc_login.go's
+    # LinkOIDCIdentity call for the worked example of an acceptable,
+    # explained discard.
+    - errcheck
+
+  settings:
+    errcheck:
+      check-blank: true
+    depguard:
+      rules:
+        # internal/bootstrap is the composition root, wired only from
+        # cmd/kryptkeeper. Feature/protocol packages must not import back into
+        # it — that would turn the feature-sliced layout into a layered one
+        # and reintroduce the service/repository strata CLAUDE.md forbids.
+        no-bootstrap-reimport:
+          list-mode: lax
+          files:
+            - "**/internal/**/*.go"
+            - "!**/internal/bootstrap/**/*.go"
+          deny:
+            - pkg: "kryptkeeper/internal/bootstrap"
+              desc: "internal/bootstrap is the composition root (wired only from cmd/kryptkeeper); other internal packages must not import back into it"
+
+        # internal/mcpserver is the proposal-only MCP surface, wired only from
+        # cmd/kryptkeeper-mcp. It talks to the hub over its own HTTP client
+        # (hubclient.go), never by importing bootstrap directly, and nothing
+        # else may import mcpserver back in — that boundary is what keeps the
+        # proposer separate from the approver (CLAUDE.md: "Proposer != approver").
+        no-mcpserver-reimport:
+          list-mode: lax
+          files:
+            - "**/internal/**/*.go"
+            - "!**/internal/mcpserver/**/*.go"
+          deny:
+            - pkg: "kryptkeeper/internal/mcpserver"
+              desc: "internal/mcpserver is the proposal-only MCP surface (wired only from cmd/kryptkeeper-mcp); other internal packages must not depend on it"
+
+  exclusions:
+    # v1 applied its built-in exclusion set by default; v2 makes that
+    # opt-in. These presets reproduce it so the gate neither loosens nor
+    # tightens across the migration.
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      # S-63 scoping: only BLANK discards are policed. A plain unchecked
+      # call (no `_ =`) is out of this rule's scope — adopting full errcheck
+      # is a separate, deliberate ticket (936 pre-existing sites).
+      - linters: [errcheck]
+        source: "^\\s*[^_\\s]"
+      # The explanatory-comment escape hatch: a discard whose line carries a
+      # trailing comment has stated its reason and passes. This is the rule's
+      # entire point — naked discards fail, explained ones don't.
+      - linters: [errcheck]
+        source: "//"
+      # HTTP response writes are conventionally best-effort: by the time an
+      # Encode/Write to the client fails, the connection is gone and there is
+      # no one left to tell. Blanket-excluded rather than commented 200 times.
+      - linters: [errcheck]
+        source: "\\.Write\\(|\\.Encode\\(|fmt\\.Fprint"
+      # Tests exercise error paths deliberately; discards there are fixture
+      # plumbing, not decisions.
+      - linters: [errcheck]
+        path: "_test\\.go"
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

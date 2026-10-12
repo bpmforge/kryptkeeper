@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kryptkeeper.fullname" . }}
+  labels:
+    {{- include "kryptkeeper.labels" . | nindent 4 }}
+data:
+  AUTH_MODE: {{ .Values.config.authMode | quote }}
+  KRYPTKEEPER_DB_MODE: {{ .Values.config.dbMode | quote }}
+  APP_CERTIFICATE_PROVIDER: {{ .Values.config.certificateProvider | quote }}
+  APP_DISCOVERY_PROVIDER: {{ .Values.config.discoveryProvider | quote }}
+  APP_NOTIFICATION_PROVIDER: {{ .Values.config.notificationProvider | quote }}
+  APP_BIND_ADDR: {{ .Values.config.bindAddr | quote }}
+  PORT: {{ .Values.config.port | quote }}
+  {{- if .Values.config.goMemLimit }}
+  GOMEMLIMIT: {{ .Values.config.goMemLimit | quote }}
+  {{- end }}
+  {{- if .Values.config.trustedProxyCIDRs }}
+  APP_TRUSTED_PROXY_CIDRS: {{ .Values.config.trustedProxyCIDRs | quote }}
+  {{- end }}
+  KRYPTKEEPER_KEYSTORE_DIR: {{ .Values.persistence.mountPath | quote }}
+  # The root filesystem is read-only; the default ./data would be unwritable
+  # (self-issued TLS cert, CA bundle).
+  KRYPTKEEPER_DATA_DIR: {{ printf "%s/data" (.Values.persistence.mountPath | trimSuffix "/") | quote }}
+  {{- if not .Values.tls.enabled }}
+  KRYPTKEEPER_TLS_DISABLE: "true"
+  {{- else if .Values.tls.existingSecret }}
+  KRYPTKEEPER_TLS_CERT_FILE: /etc/kryptkeeper/tls/tls.crt
+  KRYPTKEEPER_TLS_KEY_FILE: /etc/kryptkeeper/tls/tls.key
+  {{- else }}
+  {{- $fn := include "kryptkeeper.fullname" . }}
+  {{- $sans := concat (list $fn (printf "%s.%s" $fn .Release.Namespace) (printf "%s.%s.svc" $fn .Release.Namespace) "localhost" "127.0.0.1") .Values.tls.extraSANs }}
+  KRYPTKEEPER_TLS_SANS: {{ join "," $sans | quote }}
+  {{- end }}
+  {{- if .Values.notifications.smtp.host }}
+  SMTP_HOST: {{ .Values.notifications.smtp.host | quote }}
+  SMTP_FROM: {{ .Values.notifications.smtp.from | quote }}
+  {{- end }}
+  {{- if .Values.cloudKMS.provider }}
+  KRYPTKEEPER_KMS_PROVIDER: {{ .Values.cloudKMS.provider | quote }}
+  {{- end }}
+  {{- if .Values.k8sDiscovery.enabled }}
+  KRYPTKEEPER_K8S_NAMESPACE: {{ .Values.k8sDiscovery.namespace | quote }}
+  {{- end }}

@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1.7
+
+# Container image for kryptkeeper-mcp (cmd/kryptkeeper-mcp): the Model
+# Context Protocol server that exposes the Hub's read (and propose-only
+# write) APIs to AI assistants. Serves over stdio (server.ServeStdio) -- no
+# HTTP port is opened, so there is no HEALTHCHECK here; an MCP client
+# launches this image and speaks the protocol over the container's stdio.
+#
+# Build:
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -f Dockerfile.mcp -t kryptkeeper-mcp:local .
+
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+# W20-02: stamps this binary's version/commit/date vars.
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG DATE=unknown
+
+WORKDIR /src
+COPY . /src
+
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+    -o /out/kryptkeeper-mcp ./cmd/kryptkeeper-mcp
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+LABEL org.opencontainers.image.title="kryptkeeper-mcp"
+LABEL org.opencontainers.image.description="Kryptkeeper MCP server: exposes Hub APIs to AI assistants over stdio"
+LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY:-unknown}"
+
+COPY --from=builder /out/kryptkeeper-mcp /kryptkeeper-mcp
+
+USER nonroot:nonroot
+ENTRYPOINT ["/kryptkeeper-mcp"]

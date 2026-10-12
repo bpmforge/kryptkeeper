@@ -1,0 +1,43 @@
+name: nightly-scale-and-protocol
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-scale-and-protocol
+  cancel-in-progress: true
+
+jobs:
+  p0-test-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # The smoke suite builds and runs the server locally; without Go it has
+      # no mode to run in and exits 10. Hosted runners happened to ship Go.
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Ensure PyYAML (integration suite parses workflow YAML)
+        # GitHub's hosted image ships PyYAML; the self-hosted act image does not.
+        run: python3 -c 'import yaml' 2>/dev/null || { SUDO=$(command -v sudo || true); $SUDO apt-get update -qq && $SUDO apt-get install -y -qq python3-yaml; }
+      - name: Run P0 harness (nightly baseline)
+        run: bash scripts/test/run.sh --suite protocol --suite integration --suite smoke
+
+  go-test-full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run full Go test suite
+        run: go test ./... -count=1

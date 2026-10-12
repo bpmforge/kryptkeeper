@@ -1,0 +1,84 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+/vendor/
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Node/Frontend
+node_modules/
+web/dist/
+web/.next/
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keys and secrets - NEVER commit these
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+!testdata/**/*.pem
+!testdata/**/*.key
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Build artifacts
+tmp/
+/kryptkeeper
+
+# Runtime data directories (SQLite, audit logs, encrypted keys)
+var/
+*.db-shm
+*.db-wal
+
+# Conductor runtime artifacts (harness imported from Shipwright — same ignores)
+docs/work/conductor-log.jsonl
+docs/work/conductor.out
+docs/work/conductor.pid
+STOP
+.conductor/
+
+# Agent worktrees and local agent state — never intended for the tracked tree
+.design/
+.claude/
+
+# goreleaser output (W20-02)
+dist/
+
+# Per-run public key the SSH live fixtures generate and delete (tests/live/ssh-install).
+tests/live/ssh-install/authorized_keys
+
+# Terraform state and working dirs — state can contain secrets (SEC-04)
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Credentials and local env (env.example stays tracked)
+kubeconfig*
+cosign.key
+.env.*
+!env.example

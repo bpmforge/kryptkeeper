@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1.7
+
+# Container image for kryptkeeper-certmanager (cmd/kryptkeeper-certmanager):
+# a cert-manager external issuer controller that delegates certificate
+# signing to the Kryptkeeper Hub. Runs in-cluster only (NewInClusterClient);
+# it opens no listening port, so there is no HEALTHCHECK here -- liveness is
+# a Kubernetes-level concern (process exit), not an HTTP probe.
+#
+# Build:
+#   docker buildx build --platform linux/amd64,linux/arm64 \
+#     -f Dockerfile.certmanager -t kryptkeeper-certmanager:local .
+
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+# W20-02: stamps this binary's version/commit/date vars.
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG DATE=unknown
+
+WORKDIR /src
+COPY . /src
+
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+    -o /out/kryptkeeper-certmanager ./cmd/kryptkeeper-certmanager
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+LABEL org.opencontainers.image.title="kryptkeeper-certmanager"
+LABEL org.opencontainers.image.description="Kryptkeeper cert-manager external issuer: delegates CertificateRequest signing to the Hub"
+LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY:-unknown}"
+
+COPY --from=builder /out/kryptkeeper-certmanager /kryptkeeper-certmanager
+
+USER nonroot:nonroot
+ENTRYPOINT ["/kryptkeeper-certmanager"]

@@ -1,0 +1,23 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is git-ignored.
+# This file holds no secrets: the bootstrap token and keystore passphrase are
+# NOT Terraform variables (they would land in state). After `terraform apply`
+# write them to Secrets Manager; see README.md "Secrets".
+
+region      = "us-east-1"
+name_prefix = "kryptkeeper"
+
+# Required: no open-by-default ingress. Scope this to your office/VPN CIDR,
+# not 0.0.0.0/0.
+allowed_app_ingress_cidr_blocks = ["203.0.113.0/24"]
+
+# Required: image pinned by digest. Resolve and verify it first, e.g.
+#   cosign verify --key cosign.pub ghcr.io/bpmforge/kryptkeeper:<release>
+# (see packaging/SIGNING.md), then paste the verified digest.
+image_digest = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+# Optional: DNS names clients dial, added as SANs of the Hub TLS certificate.
+# tls_extra_sans = ["kryptkeeper.example.com"]
+
+# Optional: bring your own listener certificate (JSON secret with keys
+# certificate_pem and private_key_pem, created outside Terraform).
+# tls_cert_secret_arn = "arn:aws:secretsmanager:us-east-1:111122223333:secret:kryptkeeper-tls-AbCdEf"

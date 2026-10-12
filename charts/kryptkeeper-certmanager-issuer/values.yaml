@@ -1,0 +1,60 @@
+# Default values for kryptkeeper-certmanager-issuer.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/bpmforge/kryptkeeper-certmanager
+  pullPolicy: IfNotPresent
+  tag: ""  # Defaults to .Chart.AppVersion
+
+# Kryptkeeper Hub connection
+hub:
+  # url is the base URL of the Kryptkeeper Hub (required).
+  url: ""
+  # helm lint/template fail fast without hub.url and tokenSecretRef.name;
+  # lint with: helm lint charts/kryptkeeper-certmanager-issuer -f charts/kryptkeeper-certmanager-issuer/ci/lint-values.yaml
+  # tokenSecretRef references an existing Secret containing the Hub API token.
+  # The Secret must have a key named "token".
+  tokenSecretRef:
+    name: ""
+    key: token
+
+# Default CA and template for issued certificates.
+# Can be overridden per-issuer via the KryptKeeperIssuer CRD.
+defaults:
+  caID: ""
+  templateID: ""
+
+# Namespaces to watch (empty = all namespaces).
+watchNamespaces: []
+
+# Poll interval in seconds.
+pollIntervalSeconds: 15
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

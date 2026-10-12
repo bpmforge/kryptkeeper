@@ -1,0 +1,17 @@
+package clientip
+
+import (
+	"net/http/httptest"
+	"testing"
+)
+
+func BenchmarkFromEnvClientIPPerEvent(b *testing.B) {
+	b.Setenv(EnvTrustedProxyCIDRs, "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8")
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.1.2.3:4444"
+	r.Header.Set("X-Forwarded-For", "203.0.113.9, 10.1.2.3")
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = FromEnv().ClientIP(r)
+	}
+}

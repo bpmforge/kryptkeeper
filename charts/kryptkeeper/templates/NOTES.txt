@@ -1,0 +1,6 @@
+{{- if and .Values.ingress.enabled (not .Values.config.trustedProxyCIDRs) }}
+WARNING: ingress is enabled but config.trustedProxyCIDRs is empty.
+Every client then arrives from the ingress controller's address and shares ONE
+rate-limit bucket (about 9 failed logins per minute locks out all users).
+Set config.trustedProxyCIDRs to the CIDR of your ingress controller pods only.
+{{- end }}

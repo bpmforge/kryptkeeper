@@ -1,0 +1,241 @@
+name: ci-pr
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  protocol-integration-harness:
+    name: Protocol+Integration harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run protocol + integration suites via harness
+        run: bash scripts/test/run.sh --suite protocol --suite integration
+
+  runtime-smoke-harness:
+    name: Runtime smoke (test harness)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run smoke suite via harness (auth matrix)
+        env:
+          KRYPTKEEPER_SMOKE_MODE: local
+        run: bash scripts/test/run.sh --suite smoke
+
+  lint-static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        if: ${{ hashFiles('go.mod') != '' }}
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Setup Node
+        if: ${{ hashFiles('ui/package.json') != '' }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: ui/.nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Go lint (make lint, golangci-lint v2 pinned per .golangci.yml)
+        if: ${{ hashFiles('go.mod') != '' }}
+        run: |
+          set -euo pipefail
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+        # PATH updated for subsequent steps in this job via $GITHUB_PATH.
+      - name: make lint
+        if: ${{ hashFiles('go.mod') != '' }}
+        run: make lint
+      - name: Frontend lint
+        if: ${{ hashFiles('ui/package.json') != '' }}
+        run: |
+          set -euo pipefail
+          npm --prefix ui ci
+          npm --prefix ui run lint
+      - name: Ensure PyYAML (validate-openapi.sh fails closed without a YAML parser)
+        # GitHub's hosted image ships PyYAML; the self-hosted act image does not.
+        run: python3 -c 'import yaml' 2>/dev/null || { SUDO=$(command -v sudo || true); $SUDO apt-get update -qq && $SUDO apt-get install -y -qq python3-yaml; }
+      - name: OpenAPI drift check (W1-03/G-5)
+        if: ${{ hashFiles('docs/openapi.yaml') != '' }}
+        run: bash scripts/validate-openapi.sh
+
+  unit-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        if: ${{ hashFiles('go.mod') != '' }}
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Backend unit tests
+        if: ${{ hashFiles('go.mod') != '' }}
+        run: |
+          set -euo pipefail
+          go test ./... -race
+      - name: Skip marker
+        if: ${{ hashFiles('go.mod') == '' }}
+        run: echo "No Go module detected; skipping backend unit tests"
+
+  unit-frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Node
+        if: ${{ hashFiles('ui/package.json') != '' }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: ui/.nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Frontend unit tests
+        if: ${{ hashFiles('ui/package.json') != '' }}
+        run: |
+          set -euo pipefail
+          npm --prefix ui ci
+          npm --prefix ui run test
+      - name: Skip marker
+        if: ${{ hashFiles('ui/package.json') == '' }}
+        run: echo "No frontend package detected; skipping frontend unit tests"
+
+  integration-core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: kryptkeeper_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kryptkeeper_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        if: ${{ hashFiles('go.mod') != '' }}
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Integration tests
+        if: ${{ hashFiles('go.mod') != '' }}
+        env:
+          # Service hostnames, not localhost: on a container runner (e.g.
+          # act_runner) the job is itself a container on the services' network.
+          KRYPTKEEPER_TEST_POSTGRES_DSN: postgres://postgres:postgres@postgres:5432/kryptkeeper_test?sslmode=disable
+          DATABASE_URL: postgres://postgres:postgres@postgres:5432/kryptkeeper_test?sslmode=disable
+          REDIS_URL: redis://redis:6379/0
+        run: |
+          set -euo pipefail
+          bash tests/integration/run.sh
+          # The live-Postgres tests live beside the code they cover and skip
+          # unless KRYPTKEEPER_TEST_POSTGRES_DSN is set; tests/integration has
+          # no Go packages, so `go test ./tests/integration/...` matched nothing.
+          pkgs=$(grep -rl --include='*_test.go' KRYPTKEEPER_TEST_POSTGRES_DSN ./internal | xargs -n1 dirname | sort -u)
+          # -p 1: these packages DROP SCHEMA on the one shared database.
+          go test -race -count=1 -p 1 $pkgs
+      - name: Skip marker
+        if: ${{ hashFiles('go.mod') == '' }}
+        run: echo "No Go module detected; skipping integration tests"
+
+  security-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GOVULNCHECK_VERSION: v1.1.4
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        if: ${{ hashFiles('go.mod') != '' }}
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Go vulnerability check
+        if: ${{ hashFiles('go.mod') != '' }}
+        run: |
+          set -euo pipefail
+          go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
+          govulncheck ./...
+      - name: Secret scan baseline
+        run: |
+          set -euo pipefail
+          # A line may opt out with a `secret-scan:allow <reason>` marker, so every
+          # exemption is a reviewed, greppable decision rather than a looser pattern.
+          if grep -R --line-number --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.claude -E "(AKIA[0-9A-Z]{16}|BEGIN (RSA|EC|OPENSSH) PRIVATE KEY|xox[baprs]-)" . | grep -v "secret-scan:allow"; then
+            echo "Potential secret pattern detected"
+            exit 1
+          fi
+          echo "No high-signal secret patterns detected"
+
+  e2e-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Node
+        if: ${{ hashFiles('ui/package.json') != '' }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: ui/.nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: E2E smoke
+        if: ${{ hashFiles('ui/package.json') != '' }}
+        run: |
+          set -euo pipefail
+          npm --prefix ui ci
+          # Probe the declared dependency, not `npm exec playwright`: npm exec
+          # downloads the package on demand, so that probe always passed and
+          # then ran Playwright over the vitest files.
+          if node -e 'const p=require("./ui/package.json");process.exit(({...p.dependencies,...p.devDependencies})["@playwright/test"]?0:1)'; then
+            npm --prefix ui exec playwright test
+          else
+            echo "No Playwright dependency found; skipping e2e smoke"
+          fi
+      - name: Skip marker
+        if: ${{ hashFiles('ui/package.json') == '' }}
+        run: echo "No frontend package detected; skipping e2e smoke"

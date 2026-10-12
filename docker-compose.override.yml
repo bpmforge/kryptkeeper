@@ -1,0 +1,36 @@
+# Optional PostgreSQL service for docker-compose.yml's "kryptkeeper" service.
+#
+# Auto-loaded by `docker compose up`, but inert by default: "postgres" only
+# starts when its profile is enabled (`docker compose --profile postgres up`,
+# or COMPOSE_PROFILES=postgres in .env). A clean `docker compose up` with no
+# profile enabled ignores this file entirely and stays on the sqlite default.
+#
+# To switch kryptkeeper itself to postgres, also set in .env:
+#   KRYPTKEEPER_DB_MODE=postgres
+#   DATABASE_URL=postgres://kryptkeeper:${POSTGRES_PASSWORD}@postgres:5432/kryptkeeper?sslmode=disable
+#
+# Deliberately no depends_on added to "kryptkeeper" here: a depends_on on a
+# service gated by an inactive profile leaves that service stopped rather
+# than activating it, which would hang kryptkeeper's startup on every default
+# run. Without it, kryptkeeper may crash-loop briefly on first postgres boot;
+# `restart: unless-stopped` (docker-compose.yml) recovers it once postgres
+# becomes healthy.
+services:
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_DB: kryptkeeper
+      POSTGRES_USER: kryptkeeper
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kryptkeeper"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:

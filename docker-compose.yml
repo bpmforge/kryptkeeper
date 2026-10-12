@@ -1,0 +1,193 @@
+services:
+  # SQLite by default — no external database required. To switch to
+  # PostgreSQL: enable docker-compose.override.yml's "postgres" profile and
+  # point KRYPTKEEPER_DB_MODE/DATABASE_URL at it (see docker-compose.override.yml
+  # and docs/deployment.md).
+  kryptkeeper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_MODE: real
+        APP_BUILD_PATH: ./cmd/kryptkeeper
+        # Stamp `kryptkeeper --version` and /meta. The build context has no
+        # .git, so export these first, e.g.:
+        #   export COMMIT=$$(git rev-parse HEAD) VERSION=$$(git describe --tags --always) DATE=$$(date -u +%FT%TZ)
+        VERSION: ${VERSION:-dev}
+        COMMIT: ${COMMIT:-unknown}
+        DATE: ${DATE:-unknown}
+    image: kryptkeeper:local
+    ports:
+      - "8080:8080"
+    environment:
+      AUTH_MODE: ${AUTH_MODE:-bootstrap}
+      APP_BOOTSTRAP_TOKEN: ${APP_BOOTSTRAP_TOKEN:?set APP_BOOTSTRAP_TOKEN}
+      APP_BIND_ADDR: "0.0.0.0"
+      PORT: "8080"
+      # Real crypto mode
+      APP_CERTIFICATE_PROVIDER: ${APP_CERTIFICATE_PROVIDER:-ca}
+      APP_DISCOVERY_PROVIDER: ${APP_DISCOVERY_PROVIDER:-scanner}
+      APP_NOTIFICATION_PROVIDER: ${APP_NOTIFICATION_PROVIDER:-delivery}
+      # Required and independent of APP_BOOTSTRAP_TOKEN (IAC-003): the token is
+      # a network credential, this passphrase encrypts CA private keys at rest.
+      KRYPTKEEPER_KEYSTORE_PASSPHRASE: ${KRYPTKEEPER_KEYSTORE_PASSPHRASE:?set KRYPTKEEPER_KEYSTORE_PASSPHRASE to a value different from APP_BOOTSTRAP_TOKEN (see env.example)}
+      KRYPTKEEPER_KEYSTORE_DIR: /var/kryptkeeper/keys
+      KRYPTKEEPER_DATA_DIR: /var/kryptkeeper/data
+      # Database — sqlite unless overridden (e.g. in .env) to switch to postgres
+      KRYPTKEEPER_DB_MODE: ${KRYPTKEEPER_DB_MODE:-sqlite}
+      KRYPTKEEPER_DB_DSN: ${KRYPTKEEPER_DB_DSN:-}
+      DATABASE_URL: ${DATABASE_URL:-}
+      # Optional notification channels
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      PAGERDUTY_ROUTING_KEY: ${PAGERDUTY_ROUTING_KEY:-}
+      # Day-one pilot bootstrap (optional)
+      KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT: ${KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT:-}
+      KRYPTKEEPER_DEFAULT_CA_ID: ${KRYPTKEEPER_DEFAULT_CA_ID:-}
+      # W19-23: TLS is on by default. resolveTLSMode (cmd/kryptkeeper/tls.go)
+      # self-issues a listener cert from the hub's own CA automatically
+      # whenever a CA engine is available (APP_CERTIFICATE_PROVIDER=ca
+      # above) and neither KRYPTKEEPER_TLS_DISABLE nor an explicit
+      # cert/key pair is configured -- so KRYPTKEEPER_TLS_SELF_ISSUE is left
+      # unset here deliberately: setting it to "true" alongside
+      # KRYPTKEEPER_TLS_DISABLE=true would make resolveTLSMode refuse to
+      # start (the two are mutually exclusive), which is exactly what an
+      # operator toggling only TLS_DISABLE in .env would hit if this also
+      # forced SELF_ISSUE=true.
+      #
+      # The cert must cover "kryptkeeper" (the name dashboard's nginx and
+      # any other compose peer dial) in addition to loopback names/IPs, or
+      # TLS verification fails even though the cert chains to a CA everyone
+      # trusts. Set KRYPTKEEPER_TLS_DISABLE=true in .env to opt back out to
+      # plain HTTP (see docs/deployment.md's TLS section) -- W19-14 pinned
+      # this stack to that opt-out because the healthcheck binary and
+      # dashboard's nginx had no way to trust a self-issued cert; both are
+      # now wired (cmd/healthcheck, nginx.conf), so cleartext is no longer
+      # the default for a PKI product's own compose stack.
+      KRYPTKEEPER_TLS_SELF_ISSUE: ${KRYPTKEEPER_TLS_SELF_ISSUE:-}
+      KRYPTKEEPER_TLS_SANS: ${KRYPTKEEPER_TLS_SANS:-kryptkeeper,localhost,127.0.0.1}
+      KRYPTKEEPER_TLS_DISABLE: ${KRYPTKEEPER_TLS_DISABLE:-false}
+      # The hub's own HEALTHCHECK binary (cmd/healthcheck) must verify the
+      # self-issued cert against the same CA bundle it just wrote, not skip
+      # verification -- see docker/healthcheck section of docs/deployment.md.
+      HEALTHCHECK_URL: ${HEALTHCHECK_URL:-https://127.0.0.1:8080/healthz}
+      HEALTHCHECK_CA_FILE: ${HEALTHCHECK_CA_FILE:-/var/kryptkeeper/data/tls/ca.pem}
+      # KRYPTKEEPER_BASE_URL: what ACME/EST/SCEP/CMP clients on the HOST
+      # dial (not the in-container bind address) -- https and the published
+      # port, since the hub now serves TLS by default. Override in .env if
+      # you publish 8080 under a different host port.
+      KRYPTKEEPER_BASE_URL: ${KRYPTKEEPER_BASE_URL:-https://localhost:8080}
+      # W19-23: a second copy of KRYPTKEEPER_DATA_DIR/tls/ca.pem (no key
+      # material -- see cmd/kryptkeeper/tls.go's writeCAChainBundle) lands
+      # here, which is the "tls-trust" volume below, not "appdata". tls.key
+      # lives only under KRYPTKEEPER_DATA_DIR/tls/ inside "appdata", which
+      # no other service in this stack mounts (CLAUDE.md: private key
+      # material never leaves its boundary).
+      KRYPTKEEPER_TLS_TRUST_EXPORT_DIR: /var/kryptkeeper/tls-trust
+      # Writable templates path (container is read_only; default ./var/... is not)
+      APP_TEMPLATE_FILE: ${APP_TEMPLATE_FILE:-/var/kryptkeeper/data/templates.json}
+      # RC1 M-1: behind the dashboard's nginx every request arrives from the
+      # nginx container. Without this the hub buckets all UI users by that one
+      # peer (about 9 bad logins/min locks everyone out). Trust ONLY the
+      # dashboard's pinned address (see "networks" below), never the whole
+      # subnet: the bridge gateway (.1) is where host connections to the
+      # published :8080 appear to come from, and it must not get to choose its
+      # own rate-limit bucket via X-Forwarded-For.
+      APP_TRUSTED_PROXY_CIDRS: ${APP_TRUSTED_PROXY_CIDRS:-172.29.231.10/32}
+      # Memory: the Go heap is soft-capped at 80% of the memory limit below so
+      # the GC works harder before the kernel OOM-kills the hub. Keep the two
+      # in step (see docs/deployment.md "Memory sizing").
+      GOMEMLIMIT: ${GOMEMLIMIT:-1600MiB}
+    mem_limit: ${KRYPTKEEPER_MEM_LIMIT:-2g}
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - appdata:/var/kryptkeeper
+      # Nested inside appdata's mountpoint but a distinct volume: only ever
+      # holds ca.pem (see KRYPTKEEPER_TLS_TRUST_EXPORT_DIR above), so it is
+      # the one thing dashboard/healthcheck-adjacent containers below are
+      # allowed to see -- appdata itself (keys/, tls.key) never leaves this
+      # service.
+      - tls-trust:/var/kryptkeeper/tls-trust
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # Builds ui/dist in-stack (tsc -b && vite build, including the
+  # openapi-typescript prebuild step) so a clean checkout never needs a
+  # manual `npm run build` before `docker compose up`.
+  ui-build:
+    image: node:24-alpine
+    working_dir: /app
+    volumes:
+      - ./ui:/app
+      - ./docs:/docs:ro
+      - ui-node-modules:/app/node_modules
+      - ui-dist:/app/dist
+    command: sh -c "npm ci && npm run build"
+
+  dashboard:
+    image: nginx:alpine
+    ports:
+      - "3000:80"
+    volumes:
+      - ui-dist:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      # Read-only, and only ever contains ca.pem -- see the "tls-trust"
+      # volume comment on the kryptkeeper service above.
+      - tls-trust:/etc/kryptkeeper/tls:ro
+    # service_started (not service_healthy): Podman 5.x often leaves the
+    # API OCI healthcheck as failing/starting even when /healthz returns 200
+    # (manual `podman exec … /healthcheck` succeeds). Healthy-condition
+    # blocks dashboard forever under podman-compose. W19-23: since that
+    # rules out condition: service_healthy as the "wait for the CA" signal,
+    # the command below retries on the CA file itself instead -- nginx must
+    # never start (and so must never fall back to proxying over plain HTTP)
+    # before kryptkeeper has written tls-trust/ca.pem.
+    networks:
+      default:
+        # Deterministic address so the hub can trust exactly this proxy
+        # (APP_TRUSTED_PROXY_CIDRS above).
+        ipv4_address: 172.29.231.10
+    depends_on:
+      kryptkeeper:
+        condition: service_started
+      ui-build:
+        condition: service_completed_successfully
+    entrypoint: >
+      sh -c '
+      echo "waiting for kryptkeeper CA bundle at /etc/kryptkeeper/tls/ca.pem...";
+      i=0;
+      while [ ! -s /etc/kryptkeeper/tls/ca.pem ]; do
+        i=$$((i+1));
+        if [ "$$i" -ge 60 ]; then echo "timed out waiting for CA bundle" >&2; exit 1; fi;
+        sleep 1;
+      done;
+      echo "CA bundle present, starting nginx";
+      exec nginx -g "daemon off;"
+      '
+    restart: unless-stopped
+
+networks:
+  default:
+    ipam:
+      config:
+        # Pinned so APP_TRUSTED_PROXY_CIDRS is deterministic. Change both
+        # together if this range collides with your LAN or VPN.
+        - subnet: 172.29.231.0/24
+
+volumes:
+  appdata:
+  tls-trust:
+  ui-dist:
+  ui-node-modules:

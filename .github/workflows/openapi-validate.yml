@@ -1,0 +1,27 @@
+name: openapi-validate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "internal/bootstrap/**"
+      - "docs/openapi.yaml"
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openapi-validate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  openapi-drift-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Ensure PyYAML (validate-openapi.sh fails closed without a YAML parser)
+        # GitHub's hosted image ships PyYAML; the self-hosted act image does not.
+        run: python3 -c 'import yaml' 2>/dev/null || { SUDO=$(command -v sudo || true); $SUDO apt-get update -qq && $SUDO apt-get install -y -qq python3-yaml; }
+      - name: Validate docs/openapi.yaml matches registered routes (W1-03/G-5)
+        run: bash scripts/validate-openapi.sh

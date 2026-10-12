@@ -1,0 +1,100 @@
+# W20-02: single goreleaser-driven release pipeline, triggered by a `v*` tag.
+# Produces binaries (linux/amd64, linux/arm64, darwin/arm64) for all four
+# commands, checksums, CycloneDX SBOMs, nfpm deb/rpm, and multi-arch images
+# for all four Dockerfiles pushed to ghcr.io/bpmforge/*, plus a GitHub
+# Release with notes from docs/release/RELEASE_NOTES_<tag>.md (fails if
+# absent). Everything is signed keyless (Sigstore) via
+# cosign's GitHub Actions OIDC identity -- there is no long-lived signing key
+# to rotate or leak.
+#
+# Secrets this workflow needs: NONE beyond the automatic GITHUB_TOKEN.
+# `permissions: id-token: write` is what lets cosign mint a short-lived
+# Sigstore certificate from the job's own OIDC token; `packages: write` logs
+# in to ghcr.io with the same GITHUB_TOKEN (no PAT, no COSIGN_KEY/PASSWORD --
+# see packaging/SIGNING.md's D-101 history of the keyed approach this
+# replaces for the release path).
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Read-only by default (IAC-016); only the goreleaser job elevates.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./...
+
+  goreleaser:
+    name: goreleaser release
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      # goreleaser-action does not run args through a shell, so $RELEASE_TAG
+      # would not expand there. Validate the tag, then hand the path over via
+      # GITHUB_ENV (read below as the env context).
+      - name: Require release notes for this tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if ! [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::tag '$RELEASE_TAG' is not a vMAJOR.MINOR.PATCH[-prerelease] version"
+            exit 1
+          fi
+          notes="docs/release/RELEASE_NOTES_${RELEASE_TAG}.md"
+          if [ ! -s "$notes" ]; then
+            echo "::error::missing release notes: create $notes before tagging $RELEASE_TAG"
+            exit 1
+          fi
+          echo "RELEASE_NOTES_FILE=$notes" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up QEMU (cross-arch docker builds)
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Syft (SBOM)
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+
+      - name: Install Cosign (keyless)
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean --release-notes=${{ env.RELEASE_NOTES_FILE }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

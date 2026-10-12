@@ -1,0 +1,29 @@
+{{- if .Values.networkPolicy.enabled -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "kryptkeeper.fullname" . }}
+  labels:
+    {{- include "kryptkeeper.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "kryptkeeper.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  # No Egress policyType is set, so outbound traffic (Postgres, SMTP, cloud
+  # KMS/notification APIs, agent connections) is left unrestricted — this
+  # policy only scopes who may reach the app's own port.
+  ingress:
+    - from:
+        {{- if .Values.networkPolicy.allowedIngressNamespaceSelector }}
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.allowedIngressNamespaceSelector | nindent 14 }}
+        {{- else }}
+        - podSelector: {}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.config.port | int }}
+{{- end }}

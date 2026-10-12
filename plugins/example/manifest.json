@@ -1,0 +1,22 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "id": "kryptkeeper.example-device",
+  "name": "Example HTTPS device",
+  "version": "1.0.0",
+  "publisher": "Kryptkeeper Authors",
+  "license": "Apache-2.0",
+  "source": "https://github.com/bpmforge/kryptkeeper/tree/main/plugins/example",
+  "artifact": {"file": "plugin.wasm", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "capabilities": {
+    "receive_private_key": true,
+    "network": {"hosts_from_credential": "base_url"},
+    "tls_verify": true
+  },
+  "credential_schema": {
+    "base_url": {"type": "url", "required": true},
+    "token": {"type": "string", "required": true, "secret": true}
+  },
+  "target_schema": {
+    "listener": {"type": "string", "required": true}
+  }
+}

@@ -1,0 +1,12 @@
+# Kryptkeeper first-party plugin-signing PUBLIC key(s), PEM (W20-24, D-117).
+#
+# Only a key in this file can make a delivery plugin first-party. It is a
+# separate key from the release (image) key. The private half never enters
+# this repository or CI; see packaging/SIGNING.md for custody and rotation.
+#
+# kk-plugin (generated 2026-10-08 by the release owner with cosign
+# generate-key-pair):
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEbqxNosIxOjatq+HqRj0sNZLPezGC
+VKwwhQ4eHsAa2U67zDCVZTurCQSISSZz1TdyAmaJfbHYN7ypXU+AxQN7mg==
+-----END PUBLIC KEY-----

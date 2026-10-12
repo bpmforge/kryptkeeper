@@ -1,0 +1,617 @@
+// Copyright 2026 Kryptkeeper Authors
+//
+// SPDX-License-Identifier: Apache-2.0
+
+package bootstrap
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"kryptkeeper/internal/discovery/scanner"
+)
+
+func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discoveryProvider DiscoveryProvider, bus *EventBus, auditProvider AuditProvider) {
+	mux.HandleFunc("/api/v1/discovery/summary", func(w http.ResponseWriter, r *http.Request) {
+		principal, err := auth.AuthenticatePrincipalDetails(r, time.Now())
+		if err != nil {
+			emitAuditEvent(r, auditProvider, "", "discovery.summary", "discovery", "summary", AuditOutcomeDenied)
+			writeUnauthorized(w)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		if !canReadOperationalSummaries(principal) {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.summary", "discovery", "summary", AuditOutcomeDenied)
+			writeForbidden(w, "forbidden")
+			return
+		}
+
+		summary, err := discoveryProvider.GetSummary(r.Context())
+		if err != nil {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.summary", "discovery", "summary", AuditOutcomeFailure)
+			log.Printf("discovery summary unavailable: %v", err)
+			writeServiceUnavailable(w, "discovery summary unavailable")
+			return
+		}
+
+		emitAuditEvent(r, auditProvider, principal.ID, "discovery.summary", "discovery", "summary", AuditOutcomeSuccess)
+		resp := struct {
+			Data struct {
+				Resource            string               `json:"resource"`
+				Principal           string               `json:"principal"`
+				DiscoveredEndpoints int                  `json:"discovered_endpoints"`
+				MappedCertificates  int                  `json:"mapped_certificates"`
+				RiskyEndpoints      int                  `json:"risky_endpoints"`
+				ActiveScanJobs      int                  `json:"active_scan_jobs"`
+				Findings            FindingFunnelSummary `json:"findings"`
+			} `json:"data"`
+		}{}
+
+		resp.Data.Resource = "discovery-summary"
+		resp.Data.Principal = principal.ID
+		resp.Data.DiscoveredEndpoints = summary.DiscoveredEndpoints
+		resp.Data.MappedCertificates = summary.MappedCertificates
+		resp.Data.RiskyEndpoints = summary.RiskyEndpoints
+		resp.Data.ActiveScanJobs = summary.ActiveScanJobs
+		resp.Data.Findings = summary.Findings
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Printf("failed to encode /api/v1/discovery/summary response: %v", err)
+		}
+	})
+
+	mux.HandleFunc("/api/v1/discovery/endpoints", func(w http.ResponseWriter, r *http.Request) {
+		principal, err := auth.AuthenticatePrincipalDetails(r, time.Now())
+		if err != nil {
+			emitAuditEvent(r, auditProvider, "", "discovery.endpoints.list", "discovery", "endpoints", AuditOutcomeDenied)
+			writeUnauthorized(w)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		if !canReadOperationalSummaries(principal) {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.endpoints.list", "discovery", "endpoints", AuditOutcomeDenied)
+			writeForbidden(w, "forbidden")
+			return
+		}
+
+		query := DiscoveryEndpointQuery{
+			Protocol:  strings.TrimSpace(r.URL.Query().Get("protocol")),
+			RiskyOnly: strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("risky_only")), "true") || strings.TrimSpace(r.URL.Query().Get("risky_only")) == "1",
+			Limit:     parseLimit(r.URL.Query().Get("limit"), 25, 100),
+			Cursor:    parseCursor(r.URL.Query().Get("cursor"), 0),
+		}
+
+		result, err := discoveryProvider.ListEndpoints(r.Context(), query)
+		if err != nil {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.endpoints.list", "discovery", "endpoints", AuditOutcomeFailure)
+			log.Printf("discovery endpoints unavailable: %v", err)
+			writeServiceUnavailable(w, "discovery endpoints unavailable")
+			return
+		}
+
+		emitAuditEvent(r, auditProvider, principal.ID, "discovery.endpoints.list", "discovery", "endpoints", AuditOutcomeSuccess)
+		resp := struct {
+			Data struct {
+				Resource  string              `json:"resource"`
+				Principal string              `json:"principal"`
+				Endpoints []DiscoveryEndpoint `json:"endpoints"`
+			} `json:"data"`
+			Meta struct {
+				Total      int  `json:"total"`
+				Limit      int  `json:"limit"`
+				NextCursor *int `json:"next_cursor"`
+				PrevCursor *int `json:"prev_cursor"`
+			} `json:"meta"`
+		}{}
+
+		resp.Data.Resource = "discovery-endpoints"
+		resp.Data.Principal = principal.ID
+		resp.Data.Endpoints = result.Endpoints
+		resp.Meta.Total = result.Total
+		resp.Meta.Limit = result.Limit
+		resp.Meta.NextCursor = result.NextCursor
+		resp.Meta.PrevCursor = result.PrevCursor
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Printf("failed to encode /api/v1/discovery/endpoints response: %v", err)
+		}
+	})
+
+	mux.HandleFunc("/api/v1/discovery/scan-jobs", func(w http.ResponseWriter, r *http.Request) {
+		principal, err := auth.AuthenticatePrincipalDetails(r, time.Now())
+		if err != nil {
+			emitAuditEvent(r, auditProvider, "", "discovery.scan_jobs.list", "discovery", "scan-jobs", AuditOutcomeDenied)
+			writeUnauthorized(w)
+			return
+		}
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		if !canReadOperationalSummaries(principal) {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_jobs.list", "discovery", "scan-jobs", AuditOutcomeDenied)
+			writeForbidden(w, "forbidden")
+			return
+		}
+
+		statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
+		if statusFilter != "" {
+			// Canonical DiscoveryScanJob.Status set (G-87/S-23): all three
+			// providers (db/file/scanner) now emit exactly these five values.
+			switch statusFilter {
+			case "queued", "running", "completed", "failed", "cancelled":
+			default:
+				writeBadRequest(w, "invalid status value")
+				return
+			}
+		}
+		qFilter := strings.TrimSpace(r.URL.Query().Get("q"))
+		if len(qFilter) > 200 {
+			writeBadRequest(w, "q parameter too long")
+			return
+		}
+		query := DiscoveryScanJobQuery{
+			Status: statusFilter,
+			Q:      qFilter,
+			Limit:  parseLimit(r.URL.Query().Get("limit"), 25, 100),
+			Cursor: parseCursor(r.URL.Query().Get("cursor"), 0),
+		}
+
+		result, err := discoveryProvider.ListScanJobs(r.Context(), query)
+		if err != nil {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_jobs.list", "discovery", "scan-jobs", AuditOutcomeFailure)
+			log.Printf("discovery scan jobs unavailable: %v", err)
+			writeServiceUnavailable(w, "discovery scan jobs unavailable")
+			return
+		}
+
+		emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_jobs.list", "discovery", "scan-jobs", AuditOutcomeSuccess)
+		resp := struct {
+			Data struct {
+				Resource  string             `json:"resource"`
+				Principal string             `json:"principal"`
+				ScanJobs  []DiscoveryScanJob `json:"scan_jobs"`
+			} `json:"data"`
+			Meta struct {
+				Total      int  `json:"total"`
+				Limit      int  `json:"limit"`
+				NextCursor *int `json:"next_cursor"`
+				PrevCursor *int `json:"prev_cursor"`
+			} `json:"meta"`
+		}{}
+
+		resp.Data.Resource = "discovery-scan-jobs"
+		resp.Data.Principal = principal.ID
+		resp.Data.ScanJobs = result.ScanJobs
+		resp.Meta.Total = result.Total
+		resp.Meta.Limit = result.Limit
+		resp.Meta.NextCursor = result.NextCursor
+		resp.Meta.PrevCursor = result.PrevCursor
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Printf("failed to encode /api/v1/discovery/scan-jobs response: %v", err)
+		}
+	})
+
+	mux.HandleFunc("/api/v1/discovery/scans", func(w http.ResponseWriter, r *http.Request) {
+		principal, err := auth.AuthenticatePrincipalDetails(r, time.Now())
+		if err != nil {
+			emitAuditEvent(r, auditProvider, "", "discovery.scan.create", "discovery", "scan", AuditOutcomeDenied)
+			writeUnauthorized(w)
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if !canManageDiscovery(principal) {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeDenied)
+			writeForbidden(w, "forbidden")
+			return
+		}
+
+		var req struct {
+			ScanType string `json:"scan_type"`
+			Target   string `json:"target"`
+			// Ports: optional per-scan custom ports for an org that runs a
+			// cert-bearing service on a non-standard port. Merged with the
+			// scan type's catalogue; ignored for a host:port target.
+			Ports []int `json:"ports,omitempty"`
+		}
+		reader := http.MaxBytesReader(w, r.Body, 8*1024)
+		defer reader.Close()
+		if err := json.NewDecoder(reader).Decode(&req); err != nil {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+			writeBadRequest(w, "invalid request body")
+			return
+		}
+		req.ScanType = strings.ToLower(strings.TrimSpace(req.ScanType))
+		req.Target = strings.TrimSpace(req.Target)
+		if len(req.Ports) > 128 {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+			writeBadRequest(w, "too many custom ports (max 128)")
+			return
+		}
+		for _, p := range req.Ports {
+			if p < 1 || p > 65535 {
+				emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+				writeBadRequest(w, "custom port out of range (1-65535)")
+				return
+			}
+		}
+		switch req.ScanType {
+		case "full", "targeted", "fast", "deep":
+		// W18-12: agentless Windows store enumeration; target is a
+		// managed target id whose discovery_mode is winrm.
+		case scanTypeWinRM:
+		// W19-17: cert-manager discovery scope is the env-configured
+		// connector's credentials (KRYPTKEEPER_K8S_*) — same "no target"
+		// shape as the cloud scan types below.
+		case scanTypeK8sCertManager:
+		// W5-12: reserved cloud scan types — scope is whatever account
+		// the connector's credentials see, so no target.
+		case "cloud_acm", "cloud_azure_kv", "cloud_gcp_cm":
+		default:
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+			writeBadRequest(w, "invalid request body")
+			return
+		}
+		if isCloudScanType(req.ScanType) || req.ScanType == scanTypeK8sCertManager {
+			if req.Target != "" {
+				emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+				writeBadRequest(w, "this scan type takes no target — scope is the connector's credentials")
+				return
+			}
+		} else if req.Target == "" || len(req.Target) > 253 {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+			writeBadRequest(w, "invalid request body")
+			return
+		}
+
+		if err := checkScanTarget(req.ScanType, req.Target, req.Ports); err != nil {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+			if errors.Is(err, scanner.ErrTooManyTargets) {
+				writeBadRequest(w, fmt.Sprintf("scan target expands to more than %d probes; narrow the range", scanner.MaxTargetsFromEnv()))
+			} else {
+				writeBadRequest(w, "scan target is in a denied network range")
+			}
+			return
+		}
+
+		result, err := discoveryProvider.CreateScan(r.Context(), req.ScanType, req.Target, req.Ports)
+		if err != nil {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+			log.Printf("discovery scan create failed: %v", err)
+			if errors.Is(err, errDiscoveryScanUnsupported) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				body, _ := json.Marshal(map[string]string{"error": "unprocessable_entity", "message": err.Error()})
+				_, _ = w.Write(body)
+				return
+			}
+			writeServiceUnavailable(w, "discovery scan create unavailable")
+			return
+		}
+
+		emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", result.ID, AuditOutcomeSuccess)
+		publishDiscoveryScanEvent(bus, principal.Tenant, result.ID, result.Status, fmt.Sprintf("scan queued for %s", result.Target))
+		resp := struct {
+			Data struct {
+				Resource  string `json:"resource"`
+				Principal string `json:"principal"`
+				ScanJob   struct {
+					ID       string `json:"id"`
+					Status   string `json:"status"`
+					ScanType string `json:"scan_type"`
+					Target   string `json:"target"`
+					QueuedAt string `json:"queued_at"`
+				} `json:"scan_job"`
+			} `json:"data"`
+		}{}
+
+		resp.Data.Resource = "discovery-scan"
+		resp.Data.Principal = principal.ID
+		resp.Data.ScanJob.ID = result.ID
+		resp.Data.ScanJob.Status = result.Status
+		resp.Data.ScanJob.ScanType = result.ScanType
+		resp.Data.ScanJob.Target = result.Target
+		resp.Data.ScanJob.QueuedAt = result.QueuedAt
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Printf("failed to encode /api/v1/discovery/scans response: %v", err)
+		}
+	})
+
+	mux.HandleFunc("/api/v1/discovery/scan-jobs/cancel", func(w http.ResponseWriter, r *http.Request) {
+		principal, err := auth.AuthenticatePrincipalDetails(r, time.Now())
+		if err != nil {
+			emitAuditEvent(r, auditProvider, "", "discovery.scan_job.cancel", "discovery", "scan-job-cancel", AuditOutcomeDenied)
+			writeUnauthorized(w)
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if !canManageDiscovery(principal) {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.cancel", "discovery", "scan-job-cancel", AuditOutcomeDenied)
+			writeForbidden(w, "forbidden")
+			return
+		}
+
+		var req struct {
+			ScanJobID string `json:"scan_job_id"`
+			Reason    string `json:"reason"`
+		}
+		reader := http.MaxBytesReader(w, r.Body, 8*1024)
+		defer reader.Close()
+		if err := json.NewDecoder(reader).Decode(&req); err != nil {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.cancel", "discovery", "scan-job-cancel", AuditOutcomeFailure)
+			writeBadRequest(w, "invalid request body")
+			return
+		}
+		req.ScanJobID = strings.TrimSpace(req.ScanJobID)
+		req.Reason = strings.TrimSpace(req.Reason)
+		if req.ScanJobID == "" || tooLong(req.Reason) {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.cancel", "discovery", "scan-job-cancel", AuditOutcomeFailure)
+			writeBadRequest(w, "invalid request body")
+			return
+		}
+
+		result, err := discoveryProvider.CancelScanJob(r.Context(), req.ScanJobID, req.Reason)
+		if err != nil {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.cancel", "discovery", "scan-job-cancel", AuditOutcomeFailure)
+			log.Printf("discovery scan job cancel failed: %v", err)
+			if errors.Is(err, errDiscoveryScanUnsupported) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				body, _ := json.Marshal(map[string]string{"error": "unprocessable_entity", "message": err.Error()})
+				_, _ = w.Write(body)
+				return
+			}
+			writeServiceUnavailable(w, "discovery scan job cancel unavailable")
+			return
+		}
+
+		emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.cancel", "discovery", req.ScanJobID, AuditOutcomeSuccess)
+		if status, ok := normalizeScanJobEventStatus(result.Status); ok {
+			publishDiscoveryScanEvent(bus, principal.Tenant, result.ScanJobID, status, cancelOrRequeueMessage("cancelled", result.Reason))
+		}
+		resp := struct {
+			Data struct {
+				Resource  string `json:"resource"`
+				Principal string `json:"principal"`
+				ScanJobID string `json:"scan_job_id"`
+				Status    string `json:"status"`
+				Reason    string `json:"reason"`
+				UpdatedAt string `json:"updated_at"`
+			} `json:"data"`
+		}{}
+		resp.Data.Resource = "discovery-scan-job-cancel"
+		resp.Data.Principal = principal.ID
+		resp.Data.ScanJobID = result.ScanJobID
+		resp.Data.Status = result.Status
+		resp.Data.Reason = result.Reason
+		resp.Data.UpdatedAt = result.UpdatedAt
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Printf("failed to encode /api/v1/discovery/scan-jobs/cancel response: %v", err)
+		}
+	})
+
+	mux.HandleFunc("/api/v1/discovery/scan-jobs/requeue", func(w http.ResponseWriter, r *http.Request) {
+		principal, err := auth.AuthenticatePrincipalDetails(r, time.Now())
+		if err != nil {
+			emitAuditEvent(r, auditProvider, "", "discovery.scan_job.requeue", "discovery", "scan-job-requeue", AuditOutcomeDenied)
+			writeUnauthorized(w)
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		if !canManageDiscovery(principal) {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.requeue", "discovery", "scan-job-requeue", AuditOutcomeDenied)
+			writeForbidden(w, "forbidden")
+			return
+		}
+
+		var req struct {
+			ScanJobID string `json:"scan_job_id"`
+			Reason    string `json:"reason"`
+		}
+		reader := http.MaxBytesReader(w, r.Body, 8*1024)
+		defer reader.Close()
+		if err := json.NewDecoder(reader).Decode(&req); err != nil {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.requeue", "discovery", "scan-job-requeue", AuditOutcomeFailure)
+			writeBadRequest(w, "invalid request body")
+			return
+		}
+		req.ScanJobID = strings.TrimSpace(req.ScanJobID)
+		req.Reason = strings.TrimSpace(req.Reason)
+		if req.ScanJobID == "" || tooLong(req.Reason) {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.requeue", "discovery", "scan-job-requeue", AuditOutcomeFailure)
+			writeBadRequest(w, "invalid request body")
+			return
+		}
+
+		result, err := discoveryProvider.RequeueScanJob(r.Context(), req.ScanJobID, req.Reason)
+		if err != nil {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.requeue", "discovery", "scan-job-requeue", AuditOutcomeFailure)
+			log.Printf("discovery scan job requeue failed: %v", err)
+			if errors.Is(err, errDiscoveryScanUnsupported) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				body, _ := json.Marshal(map[string]string{"error": "unprocessable_entity", "message": err.Error()})
+				_, _ = w.Write(body)
+				return
+			}
+			writeServiceUnavailable(w, "discovery scan job requeue unavailable")
+			return
+		}
+
+		emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.requeue", "discovery", req.ScanJobID, AuditOutcomeSuccess)
+		if status, ok := normalizeScanJobEventStatus(result.Status); ok {
+			publishDiscoveryScanEvent(bus, principal.Tenant, result.ScanJobID, status, cancelOrRequeueMessage("requeued", result.Reason))
+		}
+		resp := struct {
+			Data struct {
+				Resource   string `json:"resource"`
+				Principal  string `json:"principal"`
+				PreviousID string `json:"previous_scan_job_id"`
+				ScanJobID  string `json:"scan_job_id"`
+				Status     string `json:"status"`
+				Reason     string `json:"reason"`
+				QueuedAt   string `json:"queued_at"`
+			} `json:"data"`
+		}{}
+		resp.Data.Resource = "discovery-scan-job-requeue"
+		resp.Data.Principal = principal.ID
+		resp.Data.PreviousID = result.PreviousID
+		resp.Data.ScanJobID = result.ScanJobID
+		resp.Data.Status = result.Status
+		resp.Data.Reason = result.Reason
+		resp.Data.QueuedAt = result.QueuedAt
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Printf("failed to encode /api/v1/discovery/scan-jobs/requeue response: %v", err)
+		}
+	})
+}
+
+func parseLimit(raw string, fallback int, max int) int {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(trimmed)
+	if err != nil || v <= 0 {
+		return fallback
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
+func parseCursor(raw string, fallback int) int {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(trimmed)
+	if err != nil || v < 0 {
+		return fallback
+	}
+	return v
+}
+
+// publishDiscoveryScanEvent is the discovery-scan producer wired as proof
+// for GET /api/v1/events (W8-14): it turns the three synchronous status
+// transitions this file's write endpoints already observe (create ->
+// queued, cancel -> cancelled, requeue -> queued under a new job id) into
+// Event envelopes. status must already be one of OperationEvent's canonical
+// values by the time it reaches here -- callers run it through
+// normalizeScanJobEventStatus first, since CreateScan's own results are
+// already canonical but CancelScanJob's are not (see that function's doc).
+// progress is nil: none of the three write endpoints have a percentage to
+// report. bus is nil-safe so callers (and tests) that don't care about SSE
+// don't need a bus. Publish itself never blocks (event_bus.go), so this
+// never risks the scan/cancel/requeue response on a slow or absent
+// subscriber (acceptance #8).
+func publishDiscoveryScanEvent(bus *EventBus, tenant, opID, status, message string) {
+	if bus == nil || opID == "" {
+		return
+	}
+	bus.Publish(tenant, Event{
+		OpID:    opID,
+		Kind:    EventKindScan,
+		Status:  status,
+		Message: message,
+		Ts:      time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// canonicalScanJobEventStatuses is the OperationEvent/DiscoveryScanJob status
+// enum (docs/openapi.yaml, event_bus.go's Event doc comment): queued,
+// running, completed, failed, cancelled. Nothing else may reach a GET
+// /api/v1/events subscriber in the status field.
+var canonicalScanJobEventStatuses = map[string]bool{
+	"queued":    true,
+	"running":   true,
+	"completed": true,
+	"failed":    true,
+	"cancelled": true,
+}
+
+// normalizeScanJobEventStatus maps a DiscoveryProvider write result's Status
+// onto the canonical enum, reporting ok=false when the value must not be
+// published. Two problems exist in the provider layer that this guards
+// against: (1) every CancelScanJob implementation (discovery_db_provider.go,
+// discovery_scanner_provider.go, discovery_file_provider.go) spells a
+// successful cancel "canceled" (single L), not the "cancelled" (double L)
+// docs/openapi.yaml's own DiscoveryScanJob and OperationEvent schemas
+// declare -- normalized here rather than at each call site. (2) when the
+// target job is already terminal or missing, CancelScanJob returns a nil
+// error with a non-terminal sentinel status ("not_found_or_already_terminal"
+// for the db providers, "not_found" for the scanner provider) instead of an
+// error -- publishing that string verbatim would put a value outside the
+// documented enum on the wire, so it is rejected outright rather than
+// mapped: no real state transition happened, so no event should be
+// delivered at all.
+func normalizeScanJobEventStatus(status string) (string, bool) {
+	if status == "canceled" {
+		status = "cancelled"
+	}
+	if !canonicalScanJobEventStatuses[status] {
+		return "", false
+	}
+	return status, true
+}
+
+func cancelOrRequeueMessage(verb, reason string) string {
+	if reason == "" {
+		return "scan " + verb
+	}
+	return fmt.Sprintf("scan %s: %s", verb, reason)
+}
+
+// checkScanTarget applies the discovery deny list and the per-scan expansion
+// cap (OWASP-A10-003, A04-005) to network scan types; agentless and cloud
+// scan types carry an id or no target, so there is nothing to expand.
+func checkScanTarget(scanType, target string, extraPorts []int) error {
+	switch scanType {
+	case "full", "targeted", "fast", "deep":
+	default:
+		return nil
+	}
+	perHost := 1
+	if scanType != "deep" {
+		perHost = len(mergePorts(scanner.PortsForScanType(scanType), extraPorts, standingCustomPorts()))
+	}
+	return scanner.CheckTarget(target, perHost, scanner.DenyCIDRsFromEnv(), scanner.MaxTargetsFromEnv())
+}

@@ -1,0 +1,5 @@
+# Values for helm lint / helm template in CI: the chart requires these.
+hub:
+  url: https://kryptkeeper.example.com
+  tokenSecretRef:
+    name: kryptkeeper-hub-token

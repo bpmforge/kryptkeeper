@@ -1,0 +1,108 @@
+package bootstrap
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"fmt"
+	"math/big"
+	"testing"
+	"time"
+)
+
+func perfProvider(n int) *caCertificateProvider {
+	p := &caCertificateProvider{certs: make(map[string]*storedCert, n)}
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < n; i++ {
+		fp := fmt.Sprintf("%064x", i)
+		p.certs[fp] = &storedCert{item: CertificateItem{
+			FingerprintSHA256: fp, SerialNumber: fmt.Sprint(i), CommonName: fmt.Sprintf("host-%d.perf.example.com", i),
+			SubjectDN: "CN=host", SubjectAltNames: []string{fmt.Sprintf("host-%d.perf.example.com", i)},
+			IssuerCN: "Perf Root CA", IssuerDN: "CN=Perf Root CA,O=Kryptkeeper", CAID: "ca-1", TemplateID: "tpl-1",
+			ValidFrom: "2026-10-10T00:00:00Z", ValidUntil: "2027-01-08T00:00:00Z",
+			PublicKeyAlgorithm: "ECDSA", SignatureAlgorithm: "ECDSA-SHA256",
+			ExtendedKeyUsage: []string{"server_auth"}, KeyUsage: []string{"digital_signature"},
+			RiskFlags: []string{}, CreatedAt: base.Add(time.Duration(i) * time.Second).Format(time.RFC3339),
+			UpdatedAt: "2026-10-10T00:00:00Z", Source: "internal", Origin: "internal", ManagementState: "managed",
+		}}
+	}
+	return p
+}
+
+func benchList(b *testing.B, n int, q CertificateListQuery) {
+	p := perfProvider(n)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := p.ListCertificates(context.Background(), q); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkListPage25_10k(b *testing.B) { benchList(b, 10000, CertificateListQuery{Limit: 25}) }
+func BenchmarkListPage25_50k(b *testing.B) { benchList(b, 50000, CertificateListQuery{Limit: 25}) }
+func BenchmarkListPage25Q_50k(b *testing.B) {
+	benchList(b, 50000, CertificateListQuery{Limit: 25, Q: "host-4"})
+}
+
+// One full paging pass of 100/page, as AnomalyScheduler.issuanceEvents /
+// SLO scheduler do per tick: n/100 calls, each copy+sort of all n.
+func benchFullPaging(b *testing.B, n int) {
+	p := perfProvider(n)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		for off := 0; ; off += 100 {
+			r, _ := p.ListCertificates(context.Background(), CertificateListQuery{Limit: 100, Offset: off})
+			if len(r.Items) < 100 {
+				break
+			}
+		}
+	}
+}
+
+func BenchmarkFullPaging10k(b *testing.B) { benchFullPaging(b, 10000) }
+func BenchmarkFullPaging50k(b *testing.B) { benchFullPaging(b, 50000) }
+
+func benchSweep(b *testing.B, n int) {
+	p := perfProvider(n)
+	s := &RenewalScheduler{certProvider: p, thresholdDays: 400, pollInterval: time.Minute, cooldown: time.Hour, stop: make(chan struct{})}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		s.runScan()
+	}
+}
+
+func BenchmarkRenewalSweep10k(b *testing.B) { benchSweep(b, 10000) }
+func BenchmarkRenewalSweep50k(b *testing.B) { benchSweep(b, 50000) }
+
+func benchKeyReuse(b *testing.B, n int) {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "x"}, NotBefore: time.Now(), NotAfter: time.Now().Add(time.Hour)}
+	der, _ := x509.CreateCertificate(rand.Reader, tpl, tpl, &k.PublicKey, k)
+	c, _ := x509.ParseCertificate(der)
+	p := perfProvider(n)
+	i := 0
+	for _, s := range p.certs {
+		// distinct SPKI per cert is the realistic case; reuse one parsed cert
+		// but vary nothing: the hash cost (the thing measured) is identical.
+		s.x509 = c
+		i++
+	}
+	b.ResetTimer()
+	for j := 0; j < b.N; j++ {
+		p.scanKeyReuse()
+	}
+}
+
+func BenchmarkScanKeyReuse10k(b *testing.B) { benchKeyReuse(b, 10000) }
+func BenchmarkScanKeyReuse50k(b *testing.B) { benchKeyReuse(b, 50000) }
+
+func TestPerfLimitClamp(t *testing.T) {
+	p := perfProvider(10000)
+	r, _ := p.ListCertificates(context.Background(), CertificateListQuery{Limit: 50000})
+	t.Logf("Limit:50000 over 10000 certs -> items=%d total=%d", len(r.Items), r.Total)
+}

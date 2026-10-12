@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=https://nfpm.goreleaser.com/schema.json
+#
+# Packages the Kryptkeeper Hub binary as a .deb/.rpm. Built by
+# .github/workflows/release.yml's package-linux job, one run per
+# linux/{amd64,arm64}. NFPM_ARCH and NFPM_VERSION are set by that job's
+# env — see packaging/README.md for the exact invocation. NFPM_VERSION must
+# already have any leading "v" stripped (nfpm's version field is not a Go
+# module tag).
+name: kryptkeeper
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${NFPM_VERSION}
+section: net
+priority: optional
+maintainer: Kryptkeeper Authors <security@bpmforge.com>
+vendor: Kryptkeeper Authors
+homepage: https://github.com/bpmforge/kryptkeeper
+license: Apache-2.0
+description: |
+  Self-hosted machine-identity / certificate-lifecycle platform (PKI hub).
+  CA engine, PQC/hybrid certificate issuance, SCEP/EST/ACME/CMPv2 endpoints,
+  and fleet certificate-lifecycle automation.
+
+contents:
+  - src: ${NFPM_HUB_BINARY}
+    dst: /usr/bin/kryptkeeper
+    expand: true
+    file_info:
+      mode: 0755
+
+  - src: packaging/nfpm/systemd/kryptkeeper.service
+    dst: /usr/lib/systemd/system/kryptkeeper.service
+    file_info:
+      mode: 0644
+
+  - src: packaging/nfpm/env.example
+    dst: /etc/kryptkeeper/env.example
+    file_info:
+      mode: 0640
+
+scripts:
+  postinstall: packaging/nfpm/scripts/postinstall.sh
+  preremove: packaging/nfpm/scripts/preremove.sh
+
+deb:
+  compression: xz
+
+rpm:
+  compression: xz
+  group: System Environment/Daemons

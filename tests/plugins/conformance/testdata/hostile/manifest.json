@@ -1,0 +1,11 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "id": "test.hostile",
+  "name": "Hostile test plugin",
+  "version": "0.0.1",
+  "publisher": "Kryptkeeper tests",
+  "artifact": {"file": "plugin.wasm", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "capabilities": {"network": {"hosts_from_credential": "base_url"}},
+  "credential_schema": {"base_url": {"type": "url", "required": true}, "token": {"type": "string", "secret": true}},
+  "target_schema": {"mode": {"type": "string"}}
+}

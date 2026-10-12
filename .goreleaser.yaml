@@ -1,0 +1,402 @@
+# W20-02: goreleaser drives every release artifact from one `v*` tag push --
+# binaries, checksums, CycloneDX SBOMs, nfpm deb/rpm, and the four Dockerfiles
+# built multi-arch and pushed to ghcr.io/bpmforge/*, all signed keyless with
+# cosign. Local proof: `goreleaser release --snapshot --clean --skip=publish,sign`
+# (signing and publishing require CI's OIDC token / GITHUB_TOKEN and are
+# skipped on purpose outside .github/workflows/release.yml).
+version: 2
+
+project_name: kryptkeeper
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kryptkeeper
+    main: ./cmd/kryptkeeper
+    binary: kryptkeeper
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: darwin
+        goarch: amd64
+
+  - id: kryptkeeper-agent
+    main: ./cmd/kryptkeeper-agent
+    binary: kryptkeeper-agent
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: darwin
+        goarch: amd64
+
+  - id: kryptkeeper-certmanager
+    main: ./cmd/kryptkeeper-certmanager
+    binary: kryptkeeper-certmanager
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: darwin
+        goarch: amd64
+
+  - id: kryptkeeper-mcp
+    main: ./cmd/kryptkeeper-mcp
+    binary: kryptkeeper-mcp
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: darwin
+        goarch: amd64
+
+archives:
+  - id: kryptkeeper
+    ids: [kryptkeeper]
+    name_template: "kryptkeeper_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+  - id: kryptkeeper-agent
+    ids: [kryptkeeper-agent]
+    name_template: "kryptkeeper-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+  - id: kryptkeeper-certmanager
+    ids: [kryptkeeper-certmanager]
+    name_template: "kryptkeeper-certmanager_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+  - id: kryptkeeper-mcp
+    ids: [kryptkeeper-mcp]
+    name_template: "kryptkeeper-mcp_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+
+checksum:
+  name_template: "checksums.txt"
+
+# CycloneDX SBOMs, one per archive -- syft's goreleaser cataloger defaults to
+# SPDX; the ticket wants CycloneDX, so the format is forced via `args`.
+sboms:
+  - id: archive-sboms
+    artifacts: archive
+    documents:
+      - "{{ .ArtifactName }}.cyclonedx.json"
+    args:
+      - "$artifact"
+      - "--output"
+      - "cyclonedx-json=$document"
+
+# nfpm deb/rpm reuse packaging/nfpm/'s systemd unit, env template and
+# postinstall/preremove scripts verbatim (packaging/README.md and
+# packaging/nfpm/nfpm.yaml document the pre-goreleaser nfpm-CLI invocation
+# this replaces for the release pipeline; packaging/nfpm/nfpm.yaml is kept
+# for ad hoc local packaging outside a tagged release).
+nfpms:
+  - id: kryptkeeper
+    ids: [kryptkeeper]
+    package_name: kryptkeeper
+    file_name_template: "kryptkeeper_{{ .Version }}_{{ .Arch }}"
+    vendor: Kryptkeeper Authors
+    homepage: https://github.com/bpmforge/kryptkeeper
+    maintainer: Kryptkeeper Authors <security@bpmforge.com>
+    description: |
+      Self-hosted machine-identity / certificate-lifecycle platform (PKI hub).
+      CA engine, PQC/hybrid certificate issuance, SCEP/EST/ACME/CMPv2 endpoints,
+      and fleet certificate-lifecycle automation.
+    license: Apache-2.0
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    section: net
+    priority: optional
+    contents:
+      - src: packaging/nfpm/systemd/kryptkeeper.service
+        dst: /usr/lib/systemd/system/kryptkeeper.service
+        file_info:
+          mode: 0644
+      - src: packaging/nfpm/env.example
+        dst: /etc/kryptkeeper/env.example
+        file_info:
+          mode: 0640
+    scripts:
+      postinstall: packaging/nfpm/scripts/postinstall.sh
+      preremove: packaging/nfpm/scripts/preremove.sh
+    deb:
+      compression: xz
+    rpm:
+      compression: xz
+      group: System Environment/Daemons
+
+# Multi-arch images for all four Dockerfiles. Each Dockerfile still compiles
+# from source inside its own multi-stage build (BUILD_MODE=real/placeholder
+# for the hub, plain `go build` for the others) -- goreleaser's per-arch
+# binaries above are for the archives/deb/rpm only, not copied into these
+# images. `extra_files` gives each build the module tree the Dockerfile's own
+# `go build`/`COPY . /src` needs; goreleaser stages docker builds in an
+# isolated context dir, so without this the Dockerfiles would see an empty
+# tree.
+dockers:
+  - id: kryptkeeper-linux-amd64
+    ids: [kryptkeeper]
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile
+    use: buildx
+    extra_files: [go.mod, go.sum, cmd, internal]
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--build-arg=BUILD_MODE=real"
+      - "--build-arg=APP_BUILD_PATH=./cmd/kryptkeeper"
+      - "--build-arg=TARGETOS=linux"
+      - "--build-arg=VERSION={{ .Version }}"
+      - "--build-arg=COMMIT={{ .FullCommit }}"
+      - "--build-arg=DATE={{ .Date }}"
+      - "--build-arg=TARGETARCH=amd64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper:{{ .Version }}-amd64"
+  - id: kryptkeeper-linux-arm64
+    ids: [kryptkeeper]
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile
+    use: buildx
+    extra_files: [go.mod, go.sum, cmd, internal]
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--build-arg=BUILD_MODE=real"
+      - "--build-arg=APP_BUILD_PATH=./cmd/kryptkeeper"
+      - "--build-arg=TARGETOS=linux"
+      - "--build-arg=VERSION={{ .Version }}"
+      - "--build-arg=COMMIT={{ .FullCommit }}"
+      - "--build-arg=DATE={{ .Date }}"
+      - "--build-arg=TARGETARCH=arm64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper:{{ .Version }}-arm64"
+
+  - id: kryptkeeper-agent-linux-amd64
+    ids: [kryptkeeper-agent]
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile.agent
+    use: buildx
+    extra_files: [go.mod, go.sum, cmd, internal]
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--build-arg=TARGETOS=linux"
+      - "--build-arg=VERSION={{ .Version }}"
+      - "--build-arg=COMMIT={{ .FullCommit }}"
+      - "--build-arg=DATE={{ .Date }}"
+      - "--build-arg=TARGETARCH=amd64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-amd64"
+  - id: kryptkeeper-agent-linux-arm64
+    ids: [kryptkeeper-agent]
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile.agent
+    use: buildx
+    extra_files: [go.mod, go.sum, cmd, internal]
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--build-arg=TARGETOS=linux"
+      - "--build-arg=VERSION={{ .Version }}"
+      - "--build-arg=COMMIT={{ .FullCommit }}"
+      - "--build-arg=DATE={{ .Date }}"
+      - "--build-arg=TARGETARCH=arm64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-arm64"
+
+  - id: kryptkeeper-certmanager-linux-amd64
+    ids: [kryptkeeper-certmanager]
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile.certmanager
+    use: buildx
+    extra_files: [go.mod, go.sum, cmd, internal]
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--build-arg=TARGETOS=linux"
+      - "--build-arg=VERSION={{ .Version }}"
+      - "--build-arg=COMMIT={{ .FullCommit }}"
+      - "--build-arg=DATE={{ .Date }}"
+      - "--build-arg=TARGETARCH=amd64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Version }}-amd64"
+  - id: kryptkeeper-certmanager-linux-arm64
+    ids: [kryptkeeper-certmanager]
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile.certmanager
+    use: buildx
+    extra_files: [go.mod, go.sum, cmd, internal]
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--build-arg=TARGETOS=linux"
+      - "--build-arg=VERSION={{ .Version }}"
+      - "--build-arg=COMMIT={{ .FullCommit }}"
+      - "--build-arg=DATE={{ .Date }}"
+      - "--build-arg=TARGETARCH=arm64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Version }}-arm64"
+
+  - id: kryptkeeper-mcp-linux-amd64
+    ids: [kryptkeeper-mcp]
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile.mcp
+    use: buildx
+    extra_files: [go.mod, go.sum, cmd, internal]
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--build-arg=TARGETOS=linux"
+      - "--build-arg=VERSION={{ .Version }}"
+      - "--build-arg=COMMIT={{ .FullCommit }}"
+      - "--build-arg=DATE={{ .Date }}"
+      - "--build-arg=TARGETARCH=amd64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-amd64"
+  - id: kryptkeeper-mcp-linux-arm64
+    ids: [kryptkeeper-mcp]
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile.mcp
+    use: buildx
+    extra_files: [go.mod, go.sum, cmd, internal]
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--build-arg=TARGETOS=linux"
+      - "--build-arg=VERSION={{ .Version }}"
+      - "--build-arg=COMMIT={{ .FullCommit }}"
+      - "--build-arg=DATE={{ .Date }}"
+      - "--build-arg=TARGETARCH=arm64"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-arm64"
+
+docker_manifests:
+  - name_template: "ghcr.io/bpmforge/kryptkeeper:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper:{{ .Version }}-amd64"
+      - "ghcr.io/bpmforge/kryptkeeper:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/bpmforge/kryptkeeper:{{ .Major }}.{{ .Minor }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper:{{ .Version }}-amd64"
+      - "ghcr.io/bpmforge/kryptkeeper:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/bpmforge/kryptkeeper:latest"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper:{{ .Version }}-amd64"
+      - "ghcr.io/bpmforge/kryptkeeper:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-amd64"
+      - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Major }}.{{ .Minor }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-amd64"
+      - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/bpmforge/kryptkeeper-agent:latest"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-amd64"
+      - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Version }}-amd64"
+      - "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Major }}.{{ .Minor }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Version }}-amd64"
+      - "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/bpmforge/kryptkeeper-certmanager:latest"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Version }}-amd64"
+      - "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Version }}-arm64"
+
+  - name_template: "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-amd64"
+      - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Major }}.{{ .Minor }}"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-amd64"
+      - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/bpmforge/kryptkeeper-mcp:latest"
+    image_templates:
+      - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-amd64"
+      - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-arm64"
+
+# Keyless (Sigstore) cosign signing of archives + checksums. CI-only: it
+# needs the GitHub Actions OIDC token (id-token: write in release.yml), which
+# does not exist in a local run -- `--skip=sign` is required outside CI.
+signs:
+  - id: keyless
+    cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+
+# Keyless signing of the pushed images, by digest. Same CI-only constraint as
+# `signs` above.
+docker_signs:
+  - id: keyless
+    cmd: cosign
+    args:
+      - sign
+      - "--yes"
+      - "${artifact}"
+    artifacts: manifests
+
+release:
+  github:
+    owner: bpmforge
+    name: kryptkeeper
+  prerelease: auto
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"

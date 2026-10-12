@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kryptkeeper-certmanager-issuer.fullname" . }}
+  labels:
+    {{- include "kryptkeeper-certmanager-issuer.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kryptkeeper-certmanager-issuer.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- toYaml .Values.podAnnotations | nindent 8 }}
+      labels:
+        {{- include "kryptkeeper-certmanager-issuer.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "kryptkeeper-certmanager-issuer.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: issuer
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: KRYPTKEEPER_HUB_URL
+              value: {{ required "hub.url is required" .Values.hub.url | quote }}
+            - name: KRYPTKEEPER_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "hub.tokenSecretRef.name is required" .Values.hub.tokenSecretRef.name | quote }}
+                  key: {{ .Values.hub.tokenSecretRef.key | quote }}
+            - name: KRYPTKEEPER_CA_ID
+              value: {{ .Values.defaults.caID | quote }}
+            - name: KRYPTKEEPER_TEMPLATE_ID
+              value: {{ .Values.defaults.templateID | quote }}
+            {{- if .Values.watchNamespaces }}
+            - name: KRYPTKEEPER_NAMESPACES
+              value: {{ join "," .Values.watchNamespaces | quote }}
+            {{- end }}
+            - name: KRYPTKEEPER_POLL_INTERVAL
+              value: {{ .Values.pollIntervalSeconds | quote }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      nodeSelector:
+        {{- toYaml .Values.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.tolerations | nindent 8 }}
+      affinity:
+        {{- toYaml .Values.affinity | nindent 8 }}

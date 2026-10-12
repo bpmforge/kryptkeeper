@@ -1,0 +1,28 @@
+{{- if .Values.metrics.serviceMonitor.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "kryptkeeper.fullname" . }}
+  labels:
+    {{- include "kryptkeeper.labels" . | nindent 4 }}
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "kryptkeeper.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: {{ include "kryptkeeper.portName" . }}
+      path: {{ .Values.metrics.serviceMonitor.path }}
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      {{- if .Values.tls.enabled }}
+      scheme: https
+      tlsConfig:
+        {{- if .Values.metrics.serviceMonitor.tlsConfig }}
+        {{- toYaml .Values.metrics.serviceMonitor.tlsConfig | nindent 8 }}
+        {{- else }}
+        insecureSkipVerify: true
+        {{- end }}
+      {{- end }}
+{{- end }}

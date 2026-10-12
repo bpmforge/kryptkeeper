@@ -1,0 +1,221 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/bpmforge/kryptkeeper
+  pullPolicy: IfNotPresent
+  tag: ""      # defaults to .Chart.AppVersion
+  digest: ""   # when set (sha256:...), pins by digest and overrides tag — used by scripts/deploy/by-digest.sh
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: kryptkeeper.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Sized from the RC1 measurements (docs/perf/rc1/03-measurements.md): about
+# 160 MB fresh, 484 MB idle at 52.6k certificates, 1-1.5 GB RSS under list /
+# issue / dashboard load at that size. The old 256Mi limit OOM-kills a hub
+# with a real inventory. Raise the limit (and config.goMemLimit with it) for
+# larger inventories.
+resources:
+  limits:
+    cpu: "1"
+    memory: 2Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  mountPath: /var/kryptkeeper
+
+# TLS for the Hub's own listener (IAC-005). With config.certificateProvider=ca
+# the Hub self-issues a listener certificate from its own CA and serves HTTPS
+# on config.port; the probes, Service port name and ServiceMonitor below
+# follow this switch. Set enabled=false only if TLS is terminated elsewhere
+# and the pod network is trusted: it sets KRYPTKEEPER_TLS_DISABLE=true and
+# every credential then crosses the cluster network in cleartext.
+tls:
+  enabled: true
+  # Extra SANs for the self-issued certificate. The Service DNS names
+  # (<fullname>, <fullname>.<ns>, <fullname>.<ns>.svc), localhost and
+  # 127.0.0.1 are always included; add the names clients dial.
+  extraSANs: []
+  # Bring your own certificate: name of a kubernetes.io/tls Secret (keys
+  # tls.crt, tls.key), mounted read-only at /etc/kryptkeeper/tls. When set the
+  # Hub serves it instead of self-issuing.
+  existingSecret: ""
+
+# Extra environment variables (list of EnvVar objects) for the Hub container.
+extraEnv: []
+
+config:
+  authMode: bootstrap
+  dbMode: postgres  # sqlite or postgres — this chart does not bundle a PostgreSQL sub-chart; bring your own and set secrets.databaseURL / secrets.existingSecret
+  certificateProvider: ca
+  discoveryProvider: scanner
+  notificationProvider: delivery
+  bindAddr: "0.0.0.0"
+  port: "8080"
+  # GOMEMLIMIT for the Go runtime: a soft heap cap so the GC works harder
+  # before the kernel OOM-kills the pod. Keep it at about 80% of
+  # resources.limits.memory (1600MiB for the 2Gi default). Empty leaves the
+  # runtime uncapped.
+  goMemLimit: "1600MiB"
+  # APP_TRUSTED_PROXY_CIDRS: comma-separated CIDRs of the reverse proxies /
+  # ingress controller pods in front of the Hub, whose X-Forwarded-For is
+  # believed. IMPORTANT: leave it empty behind an ingress and every client
+  # shares ONE login/ACME/OCSP rate-limit bucket (the ingress pod's address),
+  # so a handful of failed logins locks everyone out. The chart cannot know
+  # your ingress controller's pod CIDR, so the default is empty (trust
+  # nobody, safe against header spoofing); set it to the narrowest range that
+  # contains only your ingress controller pods, e.g. "10.42.0.0/16". Never a
+  # range that untrusted clients can connect from.
+  trustedProxyCIDRs: ""
+
+secrets:
+  # Dev default: set these inline and the chart renders a Secret for you — no
+  # insecure defaults are baked in, the operator must set them.
+  # Production: leave these blank and set secrets.existingSecret to the name
+  # of a Secret you manage yourself (created out-of-band, or via
+  # externalSecrets below) containing the same keys (APP_BOOTSTRAP_TOKEN,
+  # KRYPTKEEPER_KEYSTORE_PASSPHRASE, DATABASE_URL) — the chart's own Secret
+  # template is skipped entirely when existingSecret is set.
+  # The token and the passphrase must be different values: the token is a
+  # network credential, the passphrase is the at-rest key for CA private keys.
+  # Inline values also persist in the Helm release Secret; prefer existingSecret.
+  bootstrapToken: ""       # APP_BOOTSTRAP_TOKEN
+  keystorePassphrase: ""   # KRYPTKEEPER_KEYSTORE_PASSPHRASE
+  databaseURL: ""          # DATABASE_URL (postgres connection string) — required only when config.dbMode is postgres
+  existingSecret: ""       # name of a pre-existing Secret; when set, the inline values above are ignored and no Secret is rendered
+
+# External Secrets Operator (https://external-secrets.io) integration: when
+# enabled, renders an ExternalSecret that syncs from your secret backend
+# (Vault, AWS/GCP/Azure secret managers, ...) into a Kubernetes Secret named
+# secrets.existingSecret (set both together). Requires the ESO CRDs and a
+# SecretStore/ClusterSecretStore already configured in-cluster — out of this
+# chart's scope to create.
+externalSecrets:
+  enabled: false
+  secretStoreRef:
+    name: ""
+    kind: SecretStore   # or ClusterSecretStore
+  refreshInterval: 1h
+  # One entry per key the app needs; secretKey must match what deployment.yaml's
+  # envFrom expects (APP_BOOTSTRAP_TOKEN, KRYPTKEEPER_KEYSTORE_PASSPHRASE, DATABASE_URL, ...).
+  data: []
+  # - secretKey: APP_BOOTSTRAP_TOKEN
+  #   remoteRef:
+  #     key: kryptkeeper/bootstrap-token
+  #     property: token
+
+# Optional notification channel credentials.
+notifications:
+  smtp:
+    host: ""
+    from: ""
+    password: ""
+  slack:
+    webhookURL: ""
+  pagerduty:
+    routingKey: ""
+
+# Optional cloud KMS settings.
+cloudKMS:
+  provider: ""  # aws-kms, gcp-kms, azure-kv, pkcs11
+  keyURI: ""
+
+# Optional Kubernetes cert-manager discovery settings.
+k8sDiscovery:
+  enabled: false
+  namespace: ""  # empty = all namespaces
+
+# httpGet.port and httpGet.scheme are set by the deployment template from
+# config.port and tls.enabled (HTTPS when TLS is on); do not set them here.
+livenessProbe:
+  httpGet:
+    path: /healthz
+  initialDelaySeconds: 5
+  periodSeconds: 30
+
+readinessProbe:
+  httpGet:
+    path: /readyz   # real dependency check (W10-02) — liveness stays /healthz, which never checks dependencies
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+# Prometheus Operator ServiceMonitor for /metrics (real after W1-05/FR-P60).
+# Requires the Prometheus Operator CRDs installed in-cluster.
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    path: /metrics
+    labels: {}   # extra labels to match your Prometheus Operator's serviceMonitorSelector
+    # Used when tls.enabled. Empty means scrape over HTTPS without verifying
+    # the (self-issued) server certificate, since its CA is private to the
+    # Hub. To verify, set e.g. {ca: {secret: {name: kryptkeeper-ca, key: ca.pem}}, serverName: <fullname>}.
+    tlsConfig: {}
+
+# PodDisruptionBudget. NOTE: safe replicaCount>1 needs W6-01 (process-local
+# schedulers still assume a single replica) — leave replicaCount at 1 until
+# that lands even if this is enabled.
+pdb:
+  enabled: false
+  minAvailable: 1
+
+# NetworkPolicy: ingress to the app port is limited to pods in this namespace
+# (or to allowedIngressNamespaceSelector when set, e.g. your ingress
+# controller's or Prometheus's namespace). Egress is not restricted, so this
+# doesn't silently break Postgres/SMTP/cloud API access. Off by default so an
+# ingress controller in another namespace keeps working; turn it on and set
+# the selector for production.
+networkPolicy:
+  enabled: false
+  allowedIngressNamespaceSelector: {}   # e.g. {kubernetes.io/metadata.name: ingress-nginx}
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

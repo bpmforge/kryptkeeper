@@ -1,0 +1,52 @@
+name: Feature Request
+description: Propose a new feature or enhancement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For large features, consider opening a GitHub Discussion first
+        so we can align on design before you write code.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the use case or gap this feature addresses.
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like it to work?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds you tried or other approaches you evaluated.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Feature area
+      multiple: true
+      options:
+        - CA / certificate issuance
+        - Enrollment protocol (ACME / SCEP / EST / CMP / WSTEP)
+        - Post-quantum cryptography
+        - Satellite agent
+        - cert-manager issuer
+        - Terraform provider
+        - Discovery / scanning
+        - Crypto Posture reporting
+        - HSM / PKCS#11
+        - Microsoft Intune / ADCS integration
+        - UI / dashboard
+        - API
+        - Helm chart / Kubernetes
+        - Other
