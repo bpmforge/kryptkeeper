@@ -98,3 +98,6 @@ jobs:
           args: release --clean --release-notes=${{ env.RELEASE_NOTES_FILE }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pin the version to the pushed tag: with an rc and a final tag on the
+          # same commit, goreleaser would otherwise pick either one.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
