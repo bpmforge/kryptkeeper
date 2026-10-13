@@ -18,7 +18,7 @@ Report security vulnerabilities via one of these channels:
    (Security → Report a vulnerability). GitHub keeps the report confidential
    until a fix is released. This channel opens when the repository is public.
 
-2. **Email:** [security@bpmforge.com](mailto:security@bpmforge.com).
+2. **Email:** [security@kryptkeeper.io](mailto:security@kryptkeeper.io).
    We do not publish a PGP key. If your report needs encryption, ask for a
    private advisory or another secure channel in a first, detail-free email.
 

@@ -12,7 +12,7 @@ platform: linux
 version: ${NFPM_VERSION}
 section: net
 priority: optional
-maintainer: Kryptkeeper Authors <security@bpmforge.com>
+maintainer: Kryptkeeper Authors <contact@kryptkeeper.io>
 vendor: Kryptkeeper Authors
 homepage: https://github.com/bpmforge/kryptkeeper
 license: Apache-2.0

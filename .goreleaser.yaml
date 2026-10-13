@@ -118,7 +118,7 @@ nfpms:
     file_name_template: "kryptkeeper_{{ .Version }}_{{ .Arch }}"
     vendor: Kryptkeeper Authors
     homepage: https://github.com/bpmforge/kryptkeeper
-    maintainer: Kryptkeeper Authors <security@bpmforge.com>
+    maintainer: Kryptkeeper Authors <contact@kryptkeeper.io>
     description: |
       Self-hosted machine-identity / certificate-lifecycle platform (PKI hub).
       CA engine, PQC/hybrid certificate issuance, SCEP/EST/ACME/CMPv2 endpoints,

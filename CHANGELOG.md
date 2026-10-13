@@ -167,7 +167,7 @@ starting a v0.9.0 hub.** Several secure-by-default changes need configuration.
 ### Changed
 
 - **Project identity settled** (W20-06): GitHub `bpmforge/kryptkeeper`,
-  images `ghcr.io/bpmforge/*`, security contact `security@bpmforge.com`;
+  images `ghcr.io/bpmforge/*`, security contact `security@kryptkeeper.io`;
   all references swept.
 - **CI fix and open-source hygiene** (W20-01, W20-03): `ci-main` gains lint,
   UI-gate and OpenAPI-drift coverage; README quickstart matches the

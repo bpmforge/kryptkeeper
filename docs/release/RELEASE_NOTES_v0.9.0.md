@@ -152,7 +152,7 @@ smoke, ACME and SSH CA suites were re-run (results above).
 
 **Reporting a vulnerability:** do not open a public issue. Use GitHub's
 private "Report a vulnerability" advisory on this repository, or email
-security@bpmforge.com. Targets: acknowledgement in 48 hours, initial
+security@kryptkeeper.io. Targets: acknowledgement in 48 hours, initial
 assessment in 5 business days, coordinated disclosure within 90 days. Full
 policy: [`SECURITY.md`](https://github.com/bpmforge/kryptkeeper/blob/v0.9.0/SECURITY.md).
 
