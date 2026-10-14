@@ -746,6 +746,9 @@ export default function CAs() {
               <option value="ECDSA-P384">ECDSA P-384</option>
               <option value="RSA-2048">RSA 2048</option>
               <option value="RSA-4096">RSA 4096</option>
+              <option value="ML-DSA-44">ML-DSA-44 (post-quantum)</option>
+              <option value="ML-DSA-65">ML-DSA-65 (post-quantum)</option>
+              <option value="ML-DSA-87">ML-DSA-87 (post-quantum)</option>
             </Select>
           </label>
           <label className="block space-y-1 text-sm text-foreground">

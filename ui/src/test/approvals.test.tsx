@@ -7,6 +7,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../lib/api", () => ({
   api: {
     approvals: vi.fn(),
+    cas: vi.fn(),
+    templates: vi.fn(),
     approveRequest: vi.fn(),
     rejectRequest: vi.fn(),
   },
@@ -40,6 +42,12 @@ function renderApprovals() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(api.cas).mockResolvedValue({
+    data: { items: [] },
+  } as unknown as never);
+  vi.mocked(api.templates).mockResolvedValue({
+    data: { items: [] },
+  } as unknown as never);
 });
 
 describe("Approvals page", () => {
@@ -51,12 +59,42 @@ describe("Approvals page", () => {
 
     renderApprovals();
 
-    await screen.findByText(/template tpl-wildcard/i);
+    await screen.findByText("tpl-wildcard");
     expect(screen.getByText(/requested by user-7/i)).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /^approve$/i }),
     ).toBeInTheDocument();
     expect(api.approvals).toHaveBeenCalledWith({ status: "pending" });
+  });
+
+  it("shows template and CA names instead of raw IDs when known", async () => {
+    vi.mocked(api.approvals).mockResolvedValue({
+      data: [pendingRequest],
+      meta: { total: 1, limit: 50, offset: 0 },
+    } as unknown as never);
+    vi.mocked(api.cas).mockResolvedValue({
+      data: { items: [{ id: "ca-1", name: "payments-ca" }] },
+    } as unknown as never);
+    vi.mocked(api.templates).mockResolvedValue({
+      data: {
+        items: [
+          {
+            id: "tpl-wildcard",
+            name: "wildcard",
+            display_name: "Wildcard TLS",
+          },
+        ],
+      },
+    } as unknown as never);
+
+    renderApprovals();
+
+    await screen.findByText("Wildcard TLS");
+    expect(screen.getByText("payments-ca")).toBeInTheDocument();
+    expect(screen.queryByText(/template tpl-wildcard/i)).toBeNull();
+    // IDs survive only as tooltips, never as visible text.
+    expect(screen.queryByText("ca-1")).toBeNull();
+    expect(screen.getByTitle("ca-1")).toBeInTheDocument();
   });
 
   it("approves a request and reports success", async () => {

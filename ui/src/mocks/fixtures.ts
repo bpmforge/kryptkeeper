@@ -256,11 +256,12 @@ const cryptoPostureReport: components["schemas"]["CryptoPostureReport"] = {
   total_certs: 247,
   pqc_readiness: {
     quantum_safe: 6,
-    hybrid_quantum_safe: 0,
+    quantum_safe_leaf_only: 0,
     migration_ready: 190,
     vulnerable: 51,
     not_applicable: 0,
-    pqc_score_percent: 2,
+    pqc_score_percent: 79,
+    quantum_safe_percent: 2,
   },
   expiry_buckets: {
     expired: 3,
@@ -477,6 +478,10 @@ export const pqcMigration: { data: PQCMigrationRoadmap } = {
     vulnerable: 198,
     migration_ready: 43,
     quantum_safe: 6,
+    quantum_safe_leaf_only: 0,
+    not_applicable: 0,
+    pqc_score_percent: 20,
+    quantum_safe_percent: 2,
     items: pqcItems,
   },
 };
@@ -526,6 +531,7 @@ export const pqcCountdown: { data: PQCCountdownReport } = {
     vulnerable: 198,
     migration_ready: 43,
     quantum_safe: 6,
+    quantum_safe_leaf_only: 0,
     pqc_score_percent: 20,
     quantum_safe_percent: 2,
     status: "at_risk",

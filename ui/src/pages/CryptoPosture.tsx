@@ -322,6 +322,7 @@ export default function CryptoPosture() {
 
   const pqcTotal =
     report.pqc_readiness.quantum_safe +
+    (report.pqc_readiness.quantum_safe_leaf_only ?? 0) +
     report.pqc_readiness.migration_ready +
     report.pqc_readiness.vulnerable +
     report.pqc_readiness.not_applicable;
@@ -425,11 +426,11 @@ export default function CryptoPosture() {
         <MetricCard label="Total certificates" value={report.total_certs} />
         <MetricCard
           label="Quantum-safe today"
-          // Both numbers or "ready to migrate" reads as "done": an
-          // all-ECDSA estate scores 100% on the ready figure while
-          // holding zero post-quantum keys. Tone follows the honest one.
-          value={`${report.pqc_readiness.quantum_safe_percent ?? 0}%`}
-          hint={`${report.pqc_readiness.pqc_score_percent}% incl. migration-ready`}
+          // Full-chain PQC only; the broader readiness figure is the same
+          // pqc_score_percent the PQC Readiness panel shows. Both numbers
+          // or "ready to migrate" reads as "done". Tone follows the honest one.
+          value={`${(report.pqc_readiness.quantum_safe_percent ?? 0)}%`}
+          hint={`${report.pqc_readiness.pqc_score_percent}% PQC readiness (incl. leaf-only and migration-ready)`}
           tone={
             (report.pqc_readiness.quantum_safe_percent ?? 0) >= 80
               ? "success"
@@ -535,7 +536,7 @@ export default function CryptoPosture() {
                 {report.pqc_readiness.pqc_score_percent}%
               </span>
               <span className="text-sm text-muted-foreground">
-                of certs quantum-ready
+                PQC readiness (leaf-only + migration-ready + quantum-safe)
               </span>
             </div>
             <ProgressBar
@@ -549,6 +550,11 @@ export default function CryptoPosture() {
                   label: "Quantum-safe",
                   n: report.pqc_readiness.quantum_safe,
                   tone: "success" as const,
+                },
+                {
+                  label: "Leaf-only PQC",
+                  n: report.pqc_readiness.quantum_safe_leaf_only ?? 0,
+                  tone: "info" as const,
                 },
                 {
                   label: "Migration-ready",

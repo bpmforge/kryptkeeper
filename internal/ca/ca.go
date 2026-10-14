@@ -20,6 +20,10 @@ var (
 	ErrCANotFound      = errors.New("ca not found")
 	ErrInvalidCSR      = errors.New("invalid certificate signing request")
 	ErrPolicyViolation = errors.New("template policy violation")
+	// ErrCANotActive and ErrCANoSigningKey let API layers report a
+	// CA-state problem as a conflict instead of a backend outage.
+	ErrCANotActive    = errors.New("ca is not active")
+	ErrCANoSigningKey = errors.New("ca has no signing key")
 )
 
 // CA represents a Certificate Authority with its certificate and key reference.

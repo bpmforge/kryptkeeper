@@ -280,6 +280,9 @@ func main() {
 	} else {
 		certificateProvider = bootstrap.NewCertificateProviderFromEnv()
 	}
+	// Handlers and protocol bridges read templates through the decorator so
+	// issued_count reflects the certificate inventory.
+	templateProvider = bootstrap.WithIssuedCounts(templateProvider, certificateProvider)
 
 	var caProvider bootstrap.CAProvider
 	if needsCrypto {

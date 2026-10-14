@@ -317,7 +317,7 @@ function ChannelTestPanel({ canTest }: { canTest: boolean }) {
           channel itself, not necessarily the saved config below — the running
           server still binds SMTP/Slack/PagerDuty credentials from startup
           environment variables until those consumers are rewired to read the
-          config store (W8-13). Webhook has no saved config at all: the
+          config store. Webhook has no saved config at all: the
           runtime-config store has no generic webhook key, so a webhook target
           can only be tested here, never persisted.
         </p>
@@ -372,7 +372,7 @@ function SsoServerStatusPanel() {
             Saving an SSO override above stores it immediately, but the running
             server only reads OIDC settings from environment variables at
             startup — this status will not change until the server restarts with
-            SSO consumers rewired to the config store (W8-13).
+            SSO consumers rewired to the config store.
           </p>
         </div>
       )}

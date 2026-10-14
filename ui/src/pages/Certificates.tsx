@@ -15,6 +15,7 @@ import { EmptyState } from "../components/EmptyState";
 import { PageHeader } from "../components/PageHeader";
 import { canManageCertificates, useAuthz } from "../lib/auth";
 import { extractList } from "../lib/models";
+import { useCaNames } from "../lib/useResourceNames";
 import { savePemFile } from "../lib/utils";
 import type { CaRecord, CertificateRecord } from "../lib/models";
 
@@ -161,7 +162,9 @@ export function OwnershipEditor({
             />
           </div>
           <div>
-            <label className="text-xs text-muted-foreground">Service name</label>
+            <label className="text-xs text-muted-foreground">
+              Service name
+            </label>
             <Input
               value={serviceName}
               onChange={(e) => setServiceName(e.target.value)}
@@ -290,9 +293,9 @@ function TakeoverForm({
             Now managed. Its renewal path is recorded as{" "}
             {mode === "internal"
               ? "an internal CA"
-              : "the selected upstream connector"}
-            {" "}— to renew automatically, also declare the serving host as a
-            managed target with auto-renew in Target Setup.
+              : "the selected upstream connector"}{" "}
+            — to renew automatically, also declare the serving host as a managed
+            target with auto-renew in Target Setup.
           </p>
           <Button tone="primary" onClick={onClose}>
             Done
@@ -603,9 +606,10 @@ export default function Certificates() {
     queryFn: () => api.certificates(queryParams),
   });
 
+  const { names: caNames } = useCaNames();
   const casQuery = useQuery({
-    queryKey: ["cas", { limit: 50 }],
-    queryFn: () => api.cas({ limit: 50 }),
+    queryKey: ["cas", { limit: 200 }],
+    queryFn: () => api.cas({ limit: 200 }),
   });
 
   const certs: CertificateRecord[] = extractList<CertificateRecord>(
@@ -921,12 +925,12 @@ export default function Certificates() {
               <Button tone="secondary" onClick={() => setBulkImportOpen(true)}>
                 Bulk import
               </Button>
-            <Button
-              tone="primary"
-              onClick={() => navigate("/certificates/issue")}
-            >
-              Issue certificate
-            </Button>
+              <Button
+                tone="primary"
+                onClick={() => navigate("/certificates/issue")}
+              >
+                Issue certificate
+              </Button>
             </div>
           ) : undefined
         }
@@ -1129,7 +1133,9 @@ export default function Certificates() {
                 </Button>
               </>
             ) : null}
-            <span className="text-muted-foreground">{selectedCount} selected</span>
+            <span className="text-muted-foreground">
+              {selectedCount} selected
+            </span>
           </div>
           <div className="overflow-hidden rounded-xl border border-border">
             <table className="min-w-full divide-y divide-border">
@@ -1420,7 +1426,8 @@ export default function Certificates() {
                   <div>
                     <div className="text-muted-foreground">Key algorithm</div>
                     <div className="text-foreground">
-                      {selectedCert.public_key_algorithm}
+                      {selectedCert.key_algorithm_display ||
+                        selectedCert.public_key_algorithm}
                       {selectedCert.key_size_bits
                         ? ` ${selectedCert.key_size_bits}-bit`
                         : ""}
@@ -1442,7 +1449,13 @@ export default function Certificates() {
                 <div>
                   <div className="text-muted-foreground">CA</div>
                   <div className="text-foreground">
-                    {selectedCert.ca_id || "—"}
+                    {selectedCert.ca_id ? (
+                      <span title={selectedCert.ca_id}>
+                        {caNames.get(selectedCert.ca_id) ?? selectedCert.ca_id}
+                      </span>
+                    ) : (
+                      "—"
+                    )}
                   </div>
                 </div>
                 <div>
@@ -1478,7 +1491,9 @@ export default function Certificates() {
                   </div>
                 </div>
                 <div className="col-span-full">
-                  <div className="text-muted-foreground">Fingerprint (SHA-256)</div>
+                  <div className="text-muted-foreground">
+                    Fingerprint (SHA-256)
+                  </div>
                   <div className="font-mono text-xs text-foreground break-all">
                     {selectedCert.fingerprint_sha256}
                   </div>
@@ -1567,7 +1582,9 @@ export default function Certificates() {
                 : null}
               {(selectedCert.extended_key_usage ?? []).length > 0 ? (
                 <div className="text-sm">
-                  <div className="text-muted-foreground">Extended key usage</div>
+                  <div className="text-muted-foreground">
+                    Extended key usage
+                  </div>
                   <div className="mt-1 text-foreground">
                     {(selectedCert.extended_key_usage ?? []).join(", ")}
                   </div>
@@ -1579,7 +1596,10 @@ export default function Certificates() {
                     <div className="text-state-attn">
                       Nobody manages this certificate yet.
                     </div>
-                    <Button tone="primary" onClick={() => setTakeoverOpen(true)}>
+                    <Button
+                      tone="primary"
+                      onClick={() => setTakeoverOpen(true)}
+                    >
                       Take over
                     </Button>
                   </div>
@@ -1898,7 +1918,8 @@ export default function Certificates() {
           </label>
           <label className="block space-y-2 text-sm text-foreground">
             <span>
-              Reason text <span className="text-muted-foreground">(optional)</span>
+              Reason text{" "}
+              <span className="text-muted-foreground">(optional)</span>
             </span>
             <Input
               value={form.reasonText}

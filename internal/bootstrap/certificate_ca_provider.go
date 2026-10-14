@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -307,27 +308,8 @@ func (p *caCertificateProvider) IssueCertificate(ctx context.Context, req Certif
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
-	switch block.Type {
-	case "CERTIFICATE REQUEST":
-		csr, err := x509.ParseCertificateRequest(block.Bytes)
-		if err != nil {
-			return CertificateIssueResult{}, fmt.Errorf("%w: %v", errCertificateInvalid, err)
-		}
-		issuanceReq.CSR = csr
-	case "ML-DSA CERTIFICATE REQUEST":
-		pqcCSR, err := ca.ParseCertificateRequestMLDSA(block.Bytes)
-		if err != nil {
-			return CertificateIssueResult{}, fmt.Errorf("%w: %v", errCertificateInvalid, err)
-		}
-		issuanceReq.PQCCSR = pqcCSR
-	case "HYBRID CERTIFICATE REQUEST":
-		hybridCSR, err := ca.ParseCertificateRequestHybrid(block.Bytes)
-		if err != nil {
-			return CertificateIssueResult{}, fmt.Errorf("%w: %v", errCertificateInvalid, err)
-		}
-		issuanceReq.HybridCSR = hybridCSR
-	default:
-		return CertificateIssueResult{}, errCertificateInvalid
+	if err := parseCSRBlock(block, &issuanceReq); err != nil {
+		return CertificateIssueResult{}, err
 	}
 
 	if req.TemplateID != "" && p.templates != nil {
@@ -358,7 +340,7 @@ func (p *caCertificateProvider) IssueCertificate(ctx context.Context, req Certif
 	metrics.CertIssueDuration.Observe(time.Since(t0).Seconds())
 	if err != nil {
 		metrics.CertIssueErrors.Inc()
-		return CertificateIssueResult{}, fmt.Errorf("ca issuance failed: %w", err)
+		return CertificateIssueResult{}, wrapEngineIssueError("ca issuance failed", err)
 	}
 	metrics.CertIssueTotal.Inc()
 
@@ -378,7 +360,7 @@ func (p *caCertificateProvider) IssueCertificate(ctx context.Context, req Certif
 		TeamID:             req.TeamID,
 		ValidFrom:          issued.Certificate.NotBefore.UTC().Format(time.RFC3339),
 		ValidUntil:         issued.Certificate.NotAfter.UTC().Format(time.RFC3339),
-		PublicKeyAlgorithm: issued.Certificate.PublicKeyAlgorithm.String(),
+		PublicKeyAlgorithm: ca.StoredPublicKeyAlgorithm(issued.Certificate),
 		KeySizeBits:        publicKeyBits(issued.Certificate),
 		SignatureAlgorithm: issued.Certificate.SignatureAlgorithm.String(),
 		ExtendedKeyUsage:   ekuStrings(issued.Certificate.ExtKeyUsage),
@@ -517,27 +499,8 @@ func (p *caCertificateProvider) RenewCertificate(ctx context.Context, fingerprin
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
-	switch block.Type {
-	case "CERTIFICATE REQUEST":
-		csr, err := x509.ParseCertificateRequest(block.Bytes)
-		if err != nil {
-			return CertificateIssueResult{}, fmt.Errorf("%w: %v", errCertificateInvalid, err)
-		}
-		renewReq.CSR = csr
-	case "ML-DSA CERTIFICATE REQUEST":
-		pqcCSR, err := ca.ParseCertificateRequestMLDSA(block.Bytes)
-		if err != nil {
-			return CertificateIssueResult{}, fmt.Errorf("%w: %v", errCertificateInvalid, err)
-		}
-		renewReq.PQCCSR = pqcCSR
-	case "HYBRID CERTIFICATE REQUEST":
-		hybridCSR, err := ca.ParseCertificateRequestHybrid(block.Bytes)
-		if err != nil {
-			return CertificateIssueResult{}, fmt.Errorf("%w: %v", errCertificateInvalid, err)
-		}
-		renewReq.HybridCSR = hybridCSR
-	default:
-		return CertificateIssueResult{}, errCertificateInvalid
+	if err := parseCSRBlock(block, &renewReq); err != nil {
+		return CertificateIssueResult{}, err
 	}
 
 	// SUP-A04-3: a renewal takes its names from the new CSR, so the
@@ -568,7 +531,7 @@ func (p *caCertificateProvider) RenewCertificate(ctx context.Context, fingerprin
 
 	issued, err := p.engine.IssueCertificate(predecessor.item.CAID, renewReq)
 	if err != nil {
-		return CertificateIssueResult{}, fmt.Errorf("ca renewal failed: %w", err)
+		return CertificateIssueResult{}, wrapEngineIssueError("ca renewal failed", err)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -587,7 +550,7 @@ func (p *caCertificateProvider) RenewCertificate(ctx context.Context, fingerprin
 		TeamID:             predecessor.item.TeamID,
 		ValidFrom:          issued.Certificate.NotBefore.UTC().Format(time.RFC3339),
 		ValidUntil:         issued.Certificate.NotAfter.UTC().Format(time.RFC3339),
-		PublicKeyAlgorithm: issued.Certificate.PublicKeyAlgorithm.String(),
+		PublicKeyAlgorithm: ca.StoredPublicKeyAlgorithm(issued.Certificate),
 		KeySizeBits:        publicKeyBits(issued.Certificate),
 		SignatureAlgorithm: issued.Certificate.SignatureAlgorithm.String(),
 		ExtendedKeyUsage:   ekuStrings(issued.Certificate.ExtKeyUsage),
@@ -753,7 +716,7 @@ func (p *caCertificateProvider) RecordIssuedCertificateWithTemplate(_ context.Co
 		TemplateID:         templateID,
 		ValidFrom:          cert.NotBefore.UTC().Format(time.RFC3339),
 		ValidUntil:         cert.NotAfter.UTC().Format(time.RFC3339),
-		PublicKeyAlgorithm: cert.PublicKeyAlgorithm.String(),
+		PublicKeyAlgorithm: ca.StoredPublicKeyAlgorithm(cert),
 		KeySizeBits:        publicKeyBits(cert),
 		SignatureAlgorithm: cert.SignatureAlgorithm.String(),
 		ExtendedKeyUsage:   ekuStrings(cert.ExtKeyUsage),
@@ -933,7 +896,7 @@ func (p *caCertificateProvider) ImportCertificate(_ context.Context, req Certifi
 		TeamID:             req.TeamID,
 		ValidFrom:          cert.NotBefore.UTC().Format(time.RFC3339),
 		ValidUntil:         cert.NotAfter.UTC().Format(time.RFC3339),
-		PublicKeyAlgorithm: cert.PublicKeyAlgorithm.String(),
+		PublicKeyAlgorithm: ca.StoredPublicKeyAlgorithm(cert),
 		KeySizeBits:        publicKeyBits(cert),
 		SignatureAlgorithm: cert.SignatureAlgorithm.String(),
 		ExtendedKeyUsage:   ekuStrings(cert.ExtKeyUsage),
@@ -1694,4 +1657,60 @@ func (p *caCertificateProvider) IssuerChainPEM(_ context.Context, caID string) (
 		return nil, fmt.Errorf("CA %s has no certificates in its chain", caID)
 	}
 	return out, nil
+}
+
+// parseCSRBlock fills the CSR field of req that matches the PEM block. The
+// parser is chosen deterministically: by label for the custom ML-DSA and
+// hybrid labels, and for the standard "CERTIFICATE REQUEST" label by the
+// subjectPKInfo algorithm OID the DER declares. openssl >= 3.5 emits ML-DSA
+// CSRs under the standard label; crypto/x509 cannot verify their signature,
+// so they must reach ca.ParseCertificateRequestMLDSA, which verifies it.
+// There is deliberately no try-one-parser-then-the-other fallback.
+func parseCSRBlock(block *pem.Block, req *ca.IssuanceRequest) error {
+	switch block.Type {
+	case "CERTIFICATE REQUEST":
+		if ca.IsMLDSACSR(block.Bytes) {
+			return parseMLDSACSR(block.Bytes, req)
+		}
+		csr, err := x509.ParseCertificateRequest(block.Bytes)
+		if err != nil {
+			return csrParseError(err)
+		}
+		req.CSR = csr
+	case "ML-DSA CERTIFICATE REQUEST":
+		return parseMLDSACSR(block.Bytes, req)
+	case "HYBRID CERTIFICATE REQUEST":
+		hybridCSR, err := ca.ParseCertificateRequestHybrid(block.Bytes)
+		if err != nil {
+			return csrParseError(err)
+		}
+		req.HybridCSR = hybridCSR
+	default:
+		return errCertificateInvalid
+	}
+	return nil
+}
+
+func parseMLDSACSR(der []byte, req *ca.IssuanceRequest) error {
+	pqcCSR, err := ca.ParseCertificateRequestMLDSA(der)
+	if err != nil {
+		return csrParseError(err)
+	}
+	req.PQCCSR = pqcCSR
+	return nil
+}
+
+// csrParseError marks a CSR failure as both an invalid certificate request
+// (-> HTTP 400) and a ca.ErrInvalidCSR so handlers can say why.
+func csrParseError(err error) error {
+	return fmt.Errorf("%w: %w: %v", errCertificateInvalid, ca.ErrInvalidCSR, err)
+}
+
+// wrapEngineIssueError keeps a bad-CSR engine failure classified as a client
+// error (errCertificateInvalid) instead of an opaque backend failure.
+func wrapEngineIssueError(prefix string, err error) error {
+	if errors.Is(err, ca.ErrInvalidCSR) {
+		return fmt.Errorf("%s: %w: %w", prefix, errCertificateInvalid, err)
+	}
+	return fmt.Errorf("%s: %w", prefix, err)
 }

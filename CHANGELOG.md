@@ -6,7 +6,70 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
-## [0.9.0] - Unreleased
+## [0.9.1] - 2026-10-14
+
+### Fixed
+
+- **A hub started in a directory without `./var` no longer 503s on file-backed
+  templates, CAs and certificates.** The file providers wrote with `os.WriteFile`
+  and never created their data directory (audit and SQLite already did). They now
+  create it (0700) at startup and before each write.
+- **`KRYPTKEEPER_ORG_NAME` now sets the bootstrapped root CA's organization.**
+  It was documented next to the root-CA settings but only read for evidence-pack
+  PDFs, so the auto-created root always carried `O=Kryptkeeper`. Unset or blank
+  keeps `O=Kryptkeeper`; it has no effect on a root that already exists.
+- **Templates page no longer shows "Issued 0" for templates that issued
+  certificates.** The file-backed template store hardcoded `issued_count` to 0 and
+  nothing ever updated it. The count is now derived from the certificate
+  inventory on list and get, and deleting a template that has issued
+  certificates is refused with `409` as the field always implied. Also fixes
+  `GET /certificates?template_id=` being silently ignored by the in-memory
+  index.
+- **ML-DSA issuance and renewal are now recorded.** `crypto/x509` reports an
+  ML-DSA subject key as `unknown`, which the `certificates.public_key_algorithm`
+  CHECK rejects, so the hub signed the certificate and then answered `503
+  certificate was signed but could not be recorded`. A single helper
+  (`ca.StoredPublicKeyAlgorithm`) now derives the stored name from the SPKI OID
+  (`ML-DSA`; hybrid certs keep their classical subject algorithm) at every site
+  that persists it: issue, renew, import, ACME revoke, discovery and service-mesh
+  scans. `key_size_bits` stays NULL-equivalent (0) for ML-DSA.
+- **PQC readiness and quantum-safe numbers now agree on every page.**
+  Crypto Posture, the PQC countdown and the PQC migration roadmap each
+  computed them separately: the posture panel omitted leaf-only certificates
+  (0 beside a 12% tile), and the roadmap excluded them (63% vs the countdown's
+  75%). One definition (`pqc.ReadinessTally`) now feeds all three: quantum-safe
+  is full-chain PQC only, `quantum_safe_leaf_only` (PQC key under a classical
+  chain) is counted separately, hybrid counts as migration-ready, and
+  `pqc_score_percent` = (quantum-safe + leaf-only + migration-ready) / total.
+  `quantum_safe_percent` is now full-chain only (it previously included
+  leaf-only); the roadmap response gains `quantum_safe_leaf_only`,
+  `not_applicable`, `pqc_score_percent` and `quantum_safe_percent`, and the UI
+  renders them instead of recomputing.
+- **ML-DSA certificate authorities can be created.** `POST /api/v1/cas` now
+  accepts `ML-DSA-44`, `ML-DSA-65` and `ML-DSA-87` (case and separators
+  ignored, so `mldsa65` works), the OpenAPI schema lists the enum, the New CA
+  form offers them, and unsupported values return a message naming the
+  supported set. ML-DSA CAs still require the software key backend.
+- **Certificate detail shows the ML-DSA parameter set.** The API adds a
+  derived `key_algorithm_display` (e.g. `ML-DSA-65`, read from the key's OID);
+  the stored `public_key_algorithm` value is unchanged.
+- **ML-DSA CSRs under the standard PEM label no longer fail with 503.**
+  OpenSSL 3.5+ emits ML-DSA PKCS#10 requests as `CERTIFICATE REQUEST`; the hub
+  routed by label only, so they reached `crypto/x509`, which cannot verify the
+  signature, and the failure surfaced as `503 certificate unavailable`.
+  Issue and renew now route by the request's public-key algorithm OID (ML-DSA
+  self-signature still verified, no parser fallback). Invalid or unsupported
+  CSRs now return `400 invalid CSR: signature invalid or unsupported key
+  type`, and an inactive or keyless issuing CA returns `409`, on both
+  `POST /certificates` and `POST /certificates/{fingerprint}/renew`; 503 is
+  kept for genuine backend failures. See README "Issuing post-quantum
+  (ML-DSA) certificates".
+- **UI shows names instead of IDs:** Approvals shows template and CA names,
+  and Revocation Activity groups by CA name. Internal ticket references were
+  removed from on-screen text. The Audit page has a "Hide read-only events"
+  toggle (off by default; CSV export stays complete).
+
+## [0.9.0] - 2026-10-12
 
 This is the first public release of Kryptkeeper. Earlier entries (under
 "Internal milestones" below) were internal milestones and were never

@@ -168,6 +168,10 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 					_, _ = w.Write([]byte(`{"error":"conflict","message":"certificate with this fingerprint already exists"}`))
 					return
 				}
+				if writeCSRorCAStateError(w, err) {
+					emitAuditEvent(r, auditProvider, pd.ID, "certificate.issue", "certificate", "certificates", AuditOutcomeFailure)
+					return
+				}
 				if errors.Is(err, errCertificateInvalid) {
 					emitAuditEvent(r, auditProvider, pd.ID, "certificate.issue", "certificate", "certificates", AuditOutcomeFailure)
 					w.Header().Set("Content-Type", "application/json")
@@ -613,6 +617,10 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 					_, _ = w.Write([]byte(`{"error":"conflict","message":"certificate already has an active successor"}`))
 					return
 				}
+				if writeCSRorCAStateError(w, err) {
+					emitAuditEvent(r, auditProvider, pd.ID, "certificate.renew", "certificate", fp, AuditOutcomeFailure)
+					return
+				}
 				if errors.Is(err, errCertificateInvalid) {
 					emitAuditEvent(r, auditProvider, pd.ID, "certificate.renew", "certificate", fp, AuditOutcomeFailure)
 					w.Header().Set("Content-Type", "application/json")
@@ -937,4 +945,27 @@ func authorizeCertificateResourceAccess(ctx context.Context, provider Certificat
 		return item, errCertificateTenantForbidden
 	}
 	return item, nil
+}
+
+// writeCSRorCAStateError reports the client-correctable issuance failures a
+// 503 would mislead on: an unverifiable or unsupported CSR (400) and an
+// issuing CA that cannot sign right now (409, the status handlers_cas.go
+// uses for CA state conflicts). It returns false for anything else.
+func writeCSRorCAStateError(w http.ResponseWriter, err error) bool {
+	var status int
+	var code, msg string
+	switch {
+	case errors.Is(err, ca.ErrInvalidCSR):
+		status, code, msg = http.StatusBadRequest, "bad_request", "invalid CSR: signature invalid or unsupported key type"
+	case errors.Is(err, ca.ErrCANotActive):
+		status, code, msg = http.StatusConflict, "conflict", "issuing CA is not active"
+	case errors.Is(err, ca.ErrCANoSigningKey):
+		status, code, msg = http.StatusConflict, "conflict", "issuing CA has no signing key (imported without private key)"
+	default:
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(fmt.Sprintf(`{"error":%q,"message":%q}`, code, msg)))
+	return true
 }

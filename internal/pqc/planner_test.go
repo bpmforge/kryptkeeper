@@ -130,7 +130,7 @@ func TestGenerateRoadmapCountsMigrationReady(t *testing.T) {
 	certs := []CertRecord{
 		{Fingerprint: "mr-1", PQCReadiness: "migration_ready"},
 		{Fingerprint: "mr-2", PQCReadiness: "migration_ready"},
-		{Fingerprint: "vuln", PQCReadiness: ""},
+		{Fingerprint: "vuln", PQCReadiness: "vulnerable"},
 	}
 	rm := p.GenerateRoadmap(certs)
 	if rm.MigrationReady != 2 {

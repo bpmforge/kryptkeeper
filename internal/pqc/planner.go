@@ -54,6 +54,9 @@ type MigrationRoadmap struct {
 	MigrationReady      int             `json:"migration_ready"`
 	QuantumSafe         int             `json:"quantum_safe"`
 	QuantumSafeLeafOnly int             `json:"quantum_safe_leaf_only"` // G-70/D-104: leaf key is PQC, issuing chain is still classical (mirrors bootstrap.pqcReadinessLeafOnly)
+	NotApplicable       int             `json:"not_applicable"`
+	PQCScorePercent     int             `json:"pqc_score_percent"`    // see ReadinessTally
+	QuantumSafePercent  int             `json:"quantum_safe_percent"` // see ReadinessTally
 	Items               []MigrationItem `json:"items"`
 }
 
@@ -77,31 +80,31 @@ func (p *Planner) GenerateRoadmap(certs []CertRecord) MigrationRoadmap {
 		TotalCerts:  len(certs),
 	}
 
+	var tally ReadinessTally
 	for _, cert := range certs {
+		tally.Add(cert.PQCReadiness)
 		switch cert.PQCReadiness {
-		case "quantum_safe":
-			roadmap.QuantumSafe++
+		case ReadinessQuantumSafe, ReadinessHybrid:
 			continue
-		case "quantum_safe_leaf_only":
+		case ReadinessLeafOnly:
 			// Leaf key is already PQC (G-70/D-104) -- no roadmap action for
-			// THIS cert re-issuing its own key would add; chain-level PQC
-			// needs CA rotation, out of this planner's per-cert scope.
-			roadmap.QuantumSafeLeafOnly++
+			// THIS cert; chain-level PQC needs CA rotation, out of this
+			// planner's per-cert scope.
 			continue
-		case "hybrid_quantum_safe":
-			// Hybrid certs count as both migration_ready and partially quantum_safe.
-			roadmap.MigrationReady++
-			roadmap.QuantumSafe++
-			continue
-		case "migration_ready":
-			roadmap.MigrationReady++
-		default:
-			roadmap.Vulnerable++
 		}
 
 		item := p.classifyCert(cert)
 		roadmap.Items = append(roadmap.Items, item)
 	}
+
+	tally.Finalize(len(certs))
+	roadmap.QuantumSafe = tally.QuantumSafe
+	roadmap.QuantumSafeLeafOnly = tally.QuantumSafeLeafOnly
+	roadmap.MigrationReady = tally.MigrationReady
+	roadmap.Vulnerable = tally.Vulnerable
+	roadmap.NotApplicable = tally.NotApplicable
+	roadmap.PQCScorePercent = tally.PQCScorePercent
+	roadmap.QuantumSafePercent = tally.QuantumSafePercent
 
 	sort.Slice(roadmap.Items, func(i, j int) bool {
 		return priorityOrder(roadmap.Items[i].Priority) < priorityOrder(roadmap.Items[j].Priority)

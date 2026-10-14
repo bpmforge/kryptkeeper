@@ -473,13 +473,13 @@ components:
         pqc_readiness:
           type: object
           properties:
-            quantum_safe: { type: integer }
-            hybrid_quantum_safe: { type: integer }
-            migration_ready: { type: integer }
+            quantum_safe: { type: integer, description: Full chain PQC (leaf key and every signature to the root). }
+            quantum_safe_leaf_only: { type: integer, description: PQC subject key under a classical issuing chain; never counted as quantum_safe. }
+            migration_ready: { type: integer, description: Short-lived classical certificates plus hybrid certificates. }
             vulnerable: { type: integer }
             not_applicable: { type: integer }
-            pqc_score_percent: { type: integer, description: Includes migration-ready classical certs. }
-            quantum_safe_percent: { type: integer, description: Only certificates that are post-quantum today. }
+            pqc_score_percent: { type: integer, description: "PQC readiness: (quantum_safe + quantum_safe_leaf_only + migration_ready) / total_certs, integer percent." }
+            quantum_safe_percent: { type: integer, description: "Full-chain quantum_safe / total_certs, integer percent." }
         expiry_buckets:
           type: object
           properties:
@@ -633,8 +633,8 @@ components:
         generated_at: { type: string, format: date-time }
         org: { type: string }
         total_certs: { type: integer }
-        pqc_score_percent: { type: integer, description: Includes migration-ready classical certs. }
-        quantum_safe_percent: { type: integer, description: Only certificates that are post-quantum today. }
+        pqc_score_percent: { type: integer, description: "PQC readiness: (quantum_safe + quantum_safe_leaf_only + migration_ready) / total_certs, integer percent." }
+        quantum_safe_percent: { type: integer, description: "Full-chain quantum_safe / total_certs, integer percent." }
         automation_percent: { type: integer }
         compliance_pass_percent: { type: integer }
         compliance:
@@ -669,8 +669,8 @@ components:
         migration_ready: { type: integer }
         quantum_safe: { type: integer }
         quantum_safe_leaf_only: { type: integer }
-        pqc_score_percent: { type: integer, description: Includes migration-ready classical certs. }
-        quantum_safe_percent: { type: integer, description: Only certificates that are post-quantum today. }
+        pqc_score_percent: { type: integer, description: "PQC readiness: (quantum_safe + quantum_safe_leaf_only + migration_ready) / total_certs, integer percent." }
+        quantum_safe_percent: { type: integer, description: "Full-chain quantum_safe / total_certs, integer percent." }
         status: { type: string, enum: [complete, on_track, at_risk, behind] }
         deadlines:
           type: array
@@ -991,7 +991,14 @@ paths:
               properties:
                 ca_id: { type: string }
                 template_id: { type: string }
-                csr_pem: { type: string }
+                csr_pem:
+                  type: string
+                  description: |
+                    PEM-encoded PKCS#10 request. Accepted labels: `CERTIFICATE REQUEST`
+                    (RSA, ECDSA, Ed25519, and ML-DSA-44/65/87 as emitted by OpenSSL 3.5+;
+                    ML-DSA is detected from the public-key algorithm OID, not the label),
+                    `ML-DSA CERTIFICATE REQUEST`, and `HYBRID CERTIFICATE REQUEST`.
+                    The request's self-signature is always verified.
                 team_id: { type: string }
       responses:
         "201":
@@ -999,9 +1006,11 @@ paths:
         "202":
           description: Pending approval (template requires an approval gate)
         "400":
-          description: Invalid CSR
+          description: Invalid request body, or a CSR whose signature does not verify or whose key type is unsupported
         "401":
           description: Unauthorized
+        "409":
+          description: The issuing CA is not active or has no signing key (imported without a private key)
 
   /certificates/import:
     post:
@@ -1401,12 +1410,18 @@ paths:
               type: object
               required: [csr_pem]
               properties:
-                csr_pem: { type: string }
+                csr_pem:
+                  type: string
+                  description: |
+                    PEM-encoded PKCS#10 request for the renewed key. Same accepted labels and
+                    key types as `POST /certificates` (including ML-DSA under `CERTIFICATE REQUEST`).
       responses:
         "201":
           description: Renewed
+        "400":
+          description: Invalid request body, or a CSR whose signature does not verify or whose key type is unsupported
         "409":
-          description: Already renewed
+          description: Already renewed, or the issuing CA is not active or has no signing key
 
   /certificates/{fingerprint}/ownership:
     patch:
@@ -1602,11 +1617,20 @@ paths:
               properties:
                 name: { type: string }
                 type: { type: string, enum: [root, intermediate] }
-                algorithm: { type: string }
+                algorithm:
+                  type: string
+                  description: >-
+                    CA key algorithm; case and separators are ignored
+                    (ML-DSA-65, mldsa65 and ml-dsa-65 are equivalent). ML-DSA
+                    CAs require the software key backend (HSM-held ML-DSA keys
+                    are refused, see ADR_PQC_KEYS_SOFTWARE_ONLY).
+                  enum: [ECDSA-P256, ECDSA-P384, RSA-2048, RSA-4096, ML-DSA-44, ML-DSA-65, ML-DSA-87]
                 subject_cn: { type: string }
       responses:
         "201":
           description: CA created
+        "422":
+          description: Unsupported algorithm or the engine refused the request
 
   /cas/{id}:
     get:

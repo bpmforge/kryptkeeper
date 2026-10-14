@@ -27,13 +27,13 @@ const forEachChunk = 1024
 // ForEachCertificate, so a page and a full pass can never disagree on what
 // a query matches.
 type certFilter struct {
-	caID, teamID, status, origin, managementState string
-	qLower                                        string
+	caID, templateID, teamID, status, origin, managementState string
+	qLower                                                    string
 }
 
 func newCertFilter(q CertificateListQuery) certFilter {
 	return certFilter{
-		caID: q.CAID, teamID: q.TeamID, status: q.Status,
+		caID: q.CAID, templateID: q.TemplateID, teamID: q.TeamID, status: q.Status,
 		origin: q.Origin, managementState: q.ManagementState,
 		qLower: strings.ToLower(q.Q),
 	}
@@ -42,12 +42,15 @@ func newCertFilter(q CertificateListQuery) certFilter {
 // matchesAll reports a filter that selects the whole inventory, which lets
 // a page be served from the order index without scanning.
 func (f certFilter) matchesAll() bool {
-	return f.caID == "" && f.teamID == "" && f.origin == "" && f.managementState == "" &&
+	return f.caID == "" && f.templateID == "" && f.teamID == "" && f.origin == "" && f.managementState == "" &&
 		f.qLower == "" && f.status != "active" && f.status != "revoked"
 }
 
 func (f certFilter) matches(item *CertificateItem) bool {
 	if f.caID != "" && item.CAID != f.caID {
+		return false
+	}
+	if f.templateID != "" && item.TemplateID != f.templateID {
 		return false
 	}
 	if f.teamID != "" && item.TeamID != f.teamID {
@@ -105,6 +108,7 @@ func (p *caCertificateProvider) adjustActiveLocked(item *CertificateItem, delta 
 // caller must follow with rebuildIndexLocked. Used by the startup load,
 // where per-row index maintenance would be quadratic.
 func (p *caCertificateProvider) putUnindexedLocked(fp string, sc *storedCert) {
+	sc.item.KeyAlgorithmDisplay = keyAlgorithmDisplay(sc.x509)
 	p.certs[fp] = sc
 }
 
@@ -164,6 +168,7 @@ func (p *caCertificateProvider) addLocked(fp string, sc *storedCert) {
 	if sc.x509 != nil {
 		sc.spki = spkiHash(sc.x509)
 	}
+	sc.item.KeyAlgorithmDisplay = keyAlgorithmDisplay(sc.x509)
 	p.certs[fp] = sc
 	pos := p.orderPosLocked(sc)
 	p.order = slices.Insert(p.order, pos, sc)
@@ -257,6 +262,25 @@ func (p *caCertificateProvider) ActiveCertCountsByCA(_ context.Context) (map[str
 	out := make(map[string]int, len(p.activeByCA))
 	for k, v := range p.activeByCA {
 		out[k] = v
+	}
+	return out, nil
+}
+
+// CertCountsByTemplate reports how many certificates (any status) were issued
+// from each template id, for the templates list. Certificates with no template
+// are not counted.
+func (p *caCertificateProvider) CertCountsByTemplate(_ context.Context) (map[string]int, error) {
+	if p.hydrateErr != nil {
+		return nil, p.hydrateErr
+	}
+	p.ensureIndex()
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make(map[string]int)
+	for _, sc := range p.order {
+		if sc.item.TemplateID != "" {
+			out[sc.item.TemplateID]++
+		}
 	}
 	return out, nil
 }

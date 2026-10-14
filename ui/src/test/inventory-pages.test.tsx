@@ -126,6 +126,61 @@ describe("Certificates page", () => {
     );
   });
 
+  it("shows the CA name in the detail pane, ID as tooltip", async () => {
+    vi.mocked(api.certificates).mockResolvedValue({
+      data: { items: [certMock] },
+      meta: { total: 1, limit: 50 },
+    } as unknown as never);
+    vi.mocked(api.cas).mockResolvedValue({
+      data: {
+        items: [{ id: "ca-root", name: "root-ca", display_name: "Root CA" }],
+      },
+      meta: { total: 1 },
+    } as unknown as never);
+
+    renderWithQuery(<Certificates />);
+
+    const label = await screen.findByTitle("ca-root");
+    await waitFor(() => expect(label).toHaveTextContent("Root CA"));
+  });
+
+  it("falls back to the CA ID when no name resolves", async () => {
+    vi.mocked(api.certificates).mockResolvedValue({
+      data: { items: [certMock] },
+      meta: { total: 1, limit: 50 },
+    } as unknown as never);
+
+    renderWithQuery(<Certificates />);
+
+    expect(await screen.findByTitle("ca-root")).toHaveTextContent("ca-root");
+  });
+
+  it("detail shows the ML-DSA parameter set, falling back to the stored algorithm", async () => {
+    vi.mocked(api.certificates).mockResolvedValue({
+      data: {
+        items: [
+          {
+            ...certMock,
+            public_key_algorithm: "ML-DSA",
+            key_algorithm_display: "ML-DSA-65",
+          },
+        ],
+      },
+      meta: { total: 1, limit: 50 },
+    } as unknown as never);
+    renderWithQuery(<Certificates />);
+    expect(await screen.findByText("ML-DSA-65")).toBeInTheDocument();
+  });
+
+  it("detail falls back to the stored algorithm without a display field", async () => {
+    vi.mocked(api.certificates).mockResolvedValue({
+      data: { items: [{ ...certMock, public_key_algorithm: "ML-DSA" }] },
+      meta: { total: 1, limit: 50 },
+    } as unknown as never);
+    renderWithQuery(<Certificates />);
+    expect(await screen.findByText("ML-DSA")).toBeInTheDocument();
+  });
+
   it("takes over an unmanaged cert with a connector renewal path (W11-06)", async () => {
     vi.mocked(api.certificates).mockResolvedValue({
       data: { items: [certMock] },
@@ -830,6 +885,26 @@ describe("W8-10 empty-state CTAs", () => {
     expect(
       screen.getByRole("dialog", { name: /new certificate authority/i }),
     ).toBeInTheDocument();
+  });
+
+  it("New CA form offers the ML-DSA parameter sets", async () => {
+    vi.mocked(api.cas).mockResolvedValue({
+      data: { items: [] },
+      meta: { total: 0 },
+    } as unknown as never);
+
+    const user = userEvent.setup();
+    renderWithQuery(<CAs />);
+    await user.click(
+      await screen.findByRole("button", { name: /create your first ca/i }),
+    );
+
+    const dialog = screen.getByRole("dialog", {
+      name: /new certificate authority/i,
+    });
+    for (const v of ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]) {
+      expect(dialog.querySelector(`option[value="${v}"]`)).not.toBeNull();
+    }
   });
 
   it("CAs list empty state offers 'Reset filters' instead of create when filters narrow to zero results", async () => {

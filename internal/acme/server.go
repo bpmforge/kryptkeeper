@@ -911,7 +911,7 @@ func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 				IssuerCN:           cert.Issuer.CommonName,
 				NotBefore:          cert.NotBefore,
 				NotAfter:           cert.NotAfter,
-				PublicKeyAlgorithm: cert.PublicKeyAlgorithm.String(),
+				PublicKeyAlgorithm: ca.StoredPublicKeyAlgorithm(cert),
 				KeySizeBits:        ca.PublicKeyBits(cert.PublicKey),
 				SignatureAlgorithm: cert.SignatureAlgorithm.String(),
 				ExtendedKeyUsage:   extKeyUsageNames(cert.ExtKeyUsage),

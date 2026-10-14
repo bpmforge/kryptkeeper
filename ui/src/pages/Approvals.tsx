@@ -5,6 +5,7 @@ import { CheckCircle2, RefreshCw, Stamp, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import { extractList } from "../lib/models";
+import { useCaNames, useTemplateNames } from "../lib/useResourceNames";
 import type { ApprovalRequest, ApprovalStatus } from "../lib/models";
 import { Badge, Button, Panel, StateMessage } from "../components/ui";
 import { useAuthz } from "../lib/auth";
@@ -27,12 +28,16 @@ const statusFilters: { value: string; label: string }[] = [
 
 function ApprovalRow({
   request,
+  templateName,
+  caName,
   onApprove,
   onReject,
   busy,
   currentPrincipal,
 }: {
   request: ApprovalRequest;
+  templateName?: string;
+  caName?: string;
   onApprove: (id: string) => void;
   onReject: (id: string, reason: string) => void;
   busy: boolean;
@@ -49,8 +54,14 @@ function ApprovalRow({
         <div className="flex items-center gap-3">
           <Stamp className="h-5 w-5 text-muted-foreground shrink-0" />
           <div>
-            <div className="font-semibold text-foreground">
-              Template {request.template_id}
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              Template
+            </div>
+            <div
+              className="font-semibold text-foreground"
+              title={request.template_id}
+            >
+              {templateName ?? request.template_id}
             </div>
             <div className="mt-0.5 text-xs text-muted-foreground">
               Requested by {request.requester} &middot;{" "}
@@ -94,7 +105,9 @@ function ApprovalRow({
       <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-muted-foreground sm:grid-cols-4">
         <span>
           <span className="text-muted-foreground">CA</span>{" "}
-          <span className="font-mono text-foreground">{request.ca_id}</span>
+          <span className="text-foreground" title={request.ca_id}>
+            {caName ?? request.ca_id}
+          </span>
         </span>
         {request.team_id && (
           <span>
@@ -163,6 +176,9 @@ export default function Approvals() {
     queryFn: () => api.approvals(status ? { status } : undefined),
     refetchInterval: 30_000,
   });
+
+  const { names: caNames } = useCaNames();
+  const { names: templateNames } = useTemplateNames();
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["approvals"] });
@@ -255,6 +271,10 @@ export default function Approvals() {
               <ApprovalRow
                 key={request.id}
                 request={request}
+                templateName={
+                  templateNames.get(request.template_id) || undefined
+                }
+                caName={caNames.get(request.ca_id) || undefined}
                 busy={busy}
                 onApprove={(id) => approveMutation.mutate(id)}
                 onReject={(id, reason) => rejectMutation.mutate({ id, reason })}

@@ -39,19 +39,23 @@ type CertificateItem struct {
 	ValidUntil         string   `json:"valid_until"`
 	PublicKeyAlgorithm string   `json:"public_key_algorithm"`
 	KeySizeBits        int      `json:"key_size_bits"`
-	SignatureAlgorithm string   `json:"signature_algorithm"`
-	ExtendedKeyUsage   []string `json:"extended_key_usage"`
-	KeyUsage           []string `json:"key_usage"`
-	ChainComplete      bool     `json:"chain_complete"`
-	ChainTrusted       bool     `json:"chain_trusted"`
-	PQCVulnerable      bool     `json:"pqc_vulnerable"`
-	PQCReadiness       string   `json:"pqc_readiness"` // not_applicable, vulnerable, migration_ready, quantum_safe
-	RiskScore          int      `json:"risk_score"`
-	RiskFlags          []string `json:"risk_flags"`
-	Grade              string   `json:"grade"`
-	RenewalMethod      string   `json:"renewal_method"`
-	RenewalStatus      string   `json:"renewal_status"`
-	Source             string   `json:"source"`
+	// KeyAlgorithmDisplay is the ML-DSA parameter set (e.g. "ML-DSA-65")
+	// derived from the certificate; empty for other keys. Display only --
+	// public_key_algorithm keeps the stored "ML-DSA" family value.
+	KeyAlgorithmDisplay string   `json:"key_algorithm_display,omitempty"`
+	SignatureAlgorithm  string   `json:"signature_algorithm"`
+	ExtendedKeyUsage    []string `json:"extended_key_usage"`
+	KeyUsage            []string `json:"key_usage"`
+	ChainComplete       bool     `json:"chain_complete"`
+	ChainTrusted        bool     `json:"chain_trusted"`
+	PQCVulnerable       bool     `json:"pqc_vulnerable"`
+	PQCReadiness        string   `json:"pqc_readiness"` // not_applicable, vulnerable, migration_ready, quantum_safe
+	RiskScore           int      `json:"risk_score"`
+	RiskFlags           []string `json:"risk_flags"`
+	Grade               string   `json:"grade"`
+	RenewalMethod       string   `json:"renewal_method"`
+	RenewalStatus       string   `json:"renewal_status"`
+	Source              string   `json:"source"`
 	// Estate model (W11-01, V5/D-106): where the certificate came from and
 	// who manages it. Values enforced by migration 000043's CHECKs.
 	Origin          string `json:"origin"`           // internal|imported|discovered|synced

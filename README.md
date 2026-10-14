@@ -306,6 +306,31 @@ All signing goes through Go's `crypto.Signer` interface — swapping providers n
 
 ---
 
+## Issuing post-quantum (ML-DSA) certificates
+
+Any CA (classical or ML-DSA) can issue a certificate for an ML-DSA-44/65/87
+(FIPS 204) key. Send a PKCS#10 request as `csr_pem` to
+`POST /api/v1/certificates` (or `.../{fingerprint}/renew`). With OpenSSL 3.5+:
+
+```bash
+openssl genpkey -algorithm ML-DSA-65 -out leaf.key
+openssl req -new -key leaf.key -subj "/CN=svc.example.com" \
+  -addext "subjectAltName=DNS:svc.example.com" -out leaf.csr
+```
+
+The standard `CERTIFICATE REQUEST` PEM label is accepted: the hub reads the
+public-key algorithm OID in the request and, for ML-DSA, verifies the
+request's self-signature itself (the Go standard library cannot). The
+legacy `ML-DSA CERTIFICATE REQUEST` label still works, as does
+`HYBRID CERTIFICATE REQUEST`. A request whose signature does not verify, or
+whose key type is unsupported, returns `400`; an inactive or keyless issuing
+CA returns `409`.
+
+ML-DSA requests are accepted on the REST API (`/api/v1/certificates`).
+The EST, SCEP and ACME endpoints enroll classical (RSA/ECDSA) keys only.
+
+---
+
 ## Development
 
 ```bash

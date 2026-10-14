@@ -3,6 +3,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Wand2 } from "lucide-react";
 import { api } from "../lib/api";
 import { extractList } from "../lib/models";
+import { useCaNames } from "../lib/useResourceNames";
 import type {
   CertificateRecord,
   SpiffeStatus,
@@ -19,6 +20,7 @@ import {
 import { PageHeader } from "../components/PageHeader";
 
 function StatusPanel({ status }: { status?: SpiffeStatus }) {
+  const { names: caNames } = useCaNames();
   return (
     <Panel
       title="Trust domain"
@@ -41,7 +43,11 @@ function StatusPanel({ status }: { status?: SpiffeStatus }) {
           />
           <MetricCard
             label="Signing CA"
-            value={status.signing_ca_id.slice(0, 12) || "—"}
+            value={
+              caNames.get(status.signing_ca_id) ||
+              status.signing_ca_id.slice(0, 12) ||
+              "—"
+            }
           />
         </div>
       )}

@@ -25,6 +25,7 @@ func NewFileTemplateProviderFromEnv() TemplateProvider {
 	if path == "" {
 		path = defaultTemplateFilePath
 	}
+	initStateDir(path)
 	return &fileTemplateProvider{filePath: path}
 }
 
@@ -306,7 +307,7 @@ func (p *fileTemplateProvider) saveItems(items []TemplateItem) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p.filePath, body, 0o600)
+	return writeStateFile(p.filePath, body)
 }
 
 func nextTemplateID(name string) string {

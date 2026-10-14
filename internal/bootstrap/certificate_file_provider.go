@@ -28,6 +28,7 @@ func NewFileCertificateProviderFromEnv() CertificateProvider {
 	if path == "" {
 		path = defaultCertificateFilePath
 	}
+	initStateDir(path)
 	return &fileCertificateProvider{filePath: path}
 }
 
@@ -450,7 +451,7 @@ func (p *fileCertificateProvider) saveItems(items []CertificateItem) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p.filePath, body, 0o600)
+	return writeStateFile(p.filePath, body)
 }
 
 func findCertificateIndex(items []CertificateItem, fingerprint string) int {

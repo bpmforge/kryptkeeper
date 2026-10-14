@@ -103,7 +103,7 @@ function CountdownPanel() {
               {STATUS_LABEL[rep.status]}
             </Badge>
           </div>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
             <MetricCard
               label="PQC readiness"
               value={`${rep.pqc_score_percent}%`}
@@ -116,6 +116,10 @@ function CountdownPanel() {
               hint={nearest ? nearest.date : "all passed"}
             />
             <MetricCard label="Quantum-safe" value={rep.quantum_safe} />
+            <MetricCard
+              label="Leaf-only PQC"
+              value={rep.quantum_safe_leaf_only}
+            />
           </div>
           <div className="space-y-1.5">
             {rep.deadlines.map((d) => (
@@ -508,7 +512,7 @@ function MigrationJourneyPanel({
   return (
     <Panel
       title="Start a migration wave"
-      subtitle="Plan → select certificates → schedule → propose execution (W4-03)"
+      subtitle="Plan → select certificates → schedule → propose execution"
     >
       {result ? (
         <div className="space-y-2" data-testid="journey-result">
@@ -589,15 +593,9 @@ export default function PQCMigration() {
   });
 
   const roadmap: PQCMigrationRoadmap | undefined = data?.data;
-  const pqcReady = roadmap
-    ? roadmap.total_certs > 0
-      ? Math.round(
-          ((roadmap.migration_ready + roadmap.quantum_safe) /
-            roadmap.total_certs) *
-            100,
-        )
-      : 0
-    : 0;
+  // Rendered as computed by the backend (pqc.ReadinessTally) so this tile,
+  // the countdown card and Crypto Posture can never disagree.
+  const pqcReady = roadmap?.pqc_score_percent ?? 0;
 
   return (
     <div className="space-y-6 p-6">
@@ -627,11 +625,11 @@ export default function PQCMigration() {
         />
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
             <MetricCard
               label="PQC readiness"
               value={`${pqcReady}%`}
-              hint="migration-ready + quantum-safe"
+              hint="quantum-safe + leaf-only + migration-ready"
               tone={
                 pqcReady >= 80
                   ? "success"
@@ -643,7 +641,14 @@ export default function PQCMigration() {
             <MetricCard
               label="Quantum-safe"
               value={roadmap.quantum_safe}
+              hint="full chain PQC"
               tone="success"
+            />
+            <MetricCard
+              label="Leaf-only PQC"
+              value={roadmap.quantum_safe_leaf_only}
+              hint="classical issuing chain"
+              tone="info"
             />
             <MetricCard
               label="Migration-ready"

@@ -28,7 +28,9 @@ const emptyCountdown = {
     vulnerable: 0,
     migration_ready: 0,
     quantum_safe: 0,
+    quantum_safe_leaf_only: 0,
     pqc_score_percent: 0,
+    quantum_safe_percent: 0,
     status: "behind",
     deadlines: [],
     trend: [],
@@ -69,6 +71,9 @@ describe("PQC Migration page", () => {
         vulnerable: 2,
         migration_ready: 1,
         quantum_safe: 1,
+        quantum_safe_leaf_only: 0,
+        pqc_score_percent: 50,
+        quantum_safe_percent: 25,
         items: [
           {
             fingerprint: "ca",
@@ -93,7 +98,7 @@ describe("PQC Migration page", () => {
     renderPage();
 
     await screen.findByText("Root CA");
-    // PQC readiness = (1 migration_ready + 1 quantum_safe) / 4 = 50%
+    // Rendered from the backend's pqc_score_percent, not recomputed here.
     expect(screen.getByText("50%")).toBeInTheDocument();
     expect(screen.getByText("critical")).toBeInTheDocument();
     expect(screen.getByText("long.example.com")).toBeInTheDocument();
@@ -107,6 +112,9 @@ describe("PQC Migration page", () => {
         vulnerable: 0,
         migration_ready: 1,
         quantum_safe: 2,
+        quantum_safe_leaf_only: 0,
+        pqc_score_percent: 100,
+        quantum_safe_percent: 66,
         items: [],
       },
     } as unknown as never);

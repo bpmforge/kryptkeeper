@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"kryptkeeper/internal/ca"
 	"kryptkeeper/internal/discovery/scanner"
 )
 
@@ -190,7 +191,7 @@ func parsePEMCerts(pemBytes []byte) []scanner.DiscoveredCert {
 			DNSNames:           cert.DNSNames,
 			ValidFrom:          cert.NotBefore,
 			ValidUntil:         cert.NotAfter,
-			PublicKeyAlgorithm: cert.PublicKeyAlgorithm.String(),
+			PublicKeyAlgorithm: ca.StoredPublicKeyAlgorithm(cert),
 			SignatureAlgorithm: cert.SignatureAlgorithm.String(),
 			IsCA:               cert.IsCA,
 			Raw:                cert.Raw,

@@ -329,7 +329,7 @@ func caToListItem(c *ca.CA) CAListItem {
 			SubjectDN:         c.Certificate.Subject.String(),
 			ValidFrom:         c.Certificate.NotBefore.UTC().Format(time.RFC3339),
 			ValidUntil:        c.Certificate.NotAfter.UTC().Format(time.RFC3339),
-			PublicKeyAlg:      c.Certificate.PublicKeyAlgorithm.String(),
+			PublicKeyAlg:      ca.StoredPublicKeyAlgorithm(c.Certificate),
 		}
 	} else if len(c.CertPEM) > 0 {
 		if block, _ := pem.Decode(c.CertPEM); block != nil {
@@ -348,7 +348,7 @@ func caToListItem(c *ca.CA) CAListItem {
 					SubjectDN:         cert.Subject.String(),
 					ValidFrom:         cert.NotBefore.UTC().Format(time.RFC3339),
 					ValidUntil:        cert.NotAfter.UTC().Format(time.RFC3339),
-					PublicKeyAlg:      cert.PublicKeyAlgorithm.String(),
+					PublicKeyAlg:      ca.StoredPublicKeyAlgorithm(cert),
 				}
 			}
 		}
@@ -370,17 +370,25 @@ func buildSubject(cn, org string) pkix.Name {
 }
 
 func parseAlgorithm(s string) (keystore.Algorithm, error) {
-	switch strings.ToLower(strings.ReplaceAll(s, "-", "")) {
+	// Separators and case are ignored so "ML-DSA-65", "mldsa65" and
+	// "ml-dsa-65" all resolve to the one canonical keystore spelling.
+	switch strings.ToLower(strings.NewReplacer("-", "", "_", "", " ", "").Replace(s)) {
 	case "ecdsap256", "p256":
 		return keystore.ECDSAP256, nil
 	case "ecdsap384", "p384":
 		return keystore.ECDSAP384, nil
-	case "rsa2048", "rsa-2048":
+	case "rsa2048":
 		return keystore.RSA2048, nil
-	case "rsa4096", "rsa-4096":
+	case "rsa4096":
 		return keystore.RSA4096, nil
+	case "mldsa44":
+		return keystore.MLDSA44, nil
+	case "mldsa65":
+		return keystore.MLDSA65, nil
+	case "mldsa87":
+		return keystore.MLDSA87, nil
 	default:
-		return keystore.ECDSAP256, fmt.Errorf("unknown algorithm")
+		return keystore.ECDSAP256, fmt.Errorf("unknown algorithm; supported: ECDSA-P256, ECDSA-P384, RSA-2048, RSA-4096, ML-DSA-44, ML-DSA-65, ML-DSA-87")
 	}
 }
 

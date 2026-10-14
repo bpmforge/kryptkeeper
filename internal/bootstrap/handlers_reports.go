@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"kryptkeeper/internal/keystore"
+	"kryptkeeper/internal/pqc"
 )
 
 // CryptoPostureReport is the response body for GET /api/v1/reports/crypto-posture.
@@ -63,12 +64,13 @@ type PQCReadinessSummary struct {
 	MigrationReady      int `json:"migration_ready"`
 	Vulnerable          int `json:"vulnerable"`
 	NotApplicable       int `json:"not_applicable"`
-	PQCScorePercent     int `json:"pqc_score_percent"` // (quantum_safe + quantum_safe_leaf_only + migration_ready) / total * 100
-	// QuantumSafePercent counts ONLY certificates that are actually
-	// post-quantum today (quantum_safe + leaf_only). PQCScorePercent folds
-	// in migration_ready — certs that are still classical but short-lived —
-	// so an all-ECDSA estate can read "100%" there. Leadership reports must
-	// show this number beside it, or "ready to migrate" reads as "done".
+	// Definitions live on pqc.ReadinessTally: PQCScorePercent ("PQC
+	// readiness") = (quantum_safe + leaf_only + migration_ready) / total;
+	// QuantumSafePercent = full-chain quantum_safe / total. A leaf-only cert
+	// is progress but not quantum-safe (its chain is still classically
+	// forgeable), and an all-ECDSA estate can read 100% readiness, so both
+	// numbers are always shown together.
+	PQCScorePercent    int `json:"pqc_score_percent"`
 	QuantumSafePercent int `json:"quantum_safe_percent"`
 }
 
@@ -487,6 +489,7 @@ func computeCryptoPostureReport(certs []CertificateItem, activeExceptions []Find
 
 	exceptionIdx := findingExceptionIndex(activeExceptions)
 
+	var pqcTally pqc.ReadinessTally
 	for _, cert := range certs {
 		// Algorithm breakdown.
 		algo := cert.PublicKeyAlgorithm
@@ -495,19 +498,7 @@ func computeCryptoPostureReport(certs []CertificateItem, activeExceptions []Find
 		}
 		report.AlgorithmBreakdown[algo]++
 
-		// PQC readiness.
-		switch cert.PQCReadiness {
-		case "quantum_safe":
-			report.PQCReadiness.QuantumSafe++
-		case pqcReadinessLeafOnly:
-			report.PQCReadiness.QuantumSafeLeafOnly++
-		case "migration_ready", "hybrid_quantum_safe":
-			report.PQCReadiness.MigrationReady++
-		case "vulnerable":
-			report.PQCReadiness.Vulnerable++
-		default:
-			report.PQCReadiness.NotApplicable++
-		}
+		pqcTally.Add(cert.PQCReadiness)
 
 		// Expiry buckets.
 		if t, err := time.Parse(time.RFC3339, cert.ValidUntil); err != nil {
@@ -566,17 +557,16 @@ func computeCryptoPostureReport(certs []CertificateItem, activeExceptions []Find
 	}
 	report.Findings.Effective = report.Findings.Raw - report.Findings.Suppressed
 
-	// Derived percentages.
+	pqcTally.Finalize(report.TotalCerts)
+	report.PQCReadiness.QuantumSafe = pqcTally.QuantumSafe
+	report.PQCReadiness.QuantumSafeLeafOnly = pqcTally.QuantumSafeLeafOnly
+	report.PQCReadiness.MigrationReady = pqcTally.MigrationReady
+	report.PQCReadiness.Vulnerable = pqcTally.Vulnerable
+	report.PQCReadiness.NotApplicable = pqcTally.NotApplicable
+	report.PQCReadiness.PQCScorePercent = pqcTally.PQCScorePercent
+	report.PQCReadiness.QuantumSafePercent = pqcTally.QuantumSafePercent
+
 	if report.TotalCerts > 0 {
-		// quantum_safe_leaf_only counts as covered, same weight as
-		// migration_ready: it represents real, already-shipped subject-key
-		// PQC protection (more progress than migration_ready's "not yet
-		// migrated but easy to"), and migrate-wave's whole purpose (D-104)
-		// is moving this number -- excluding it would make an accepted,
-		// shipped deliverable invisible in its own progress metric.
-		pqcCovered := report.PQCReadiness.QuantumSafe + report.PQCReadiness.QuantumSafeLeafOnly + report.PQCReadiness.MigrationReady
-		report.PQCReadiness.PQCScorePercent = pqcCovered * 100 / report.TotalCerts
-		report.PQCReadiness.QuantumSafePercent = (report.PQCReadiness.QuantumSafe + report.PQCReadiness.QuantumSafeLeafOnly) * 100 / report.TotalCerts
 		automated := report.AutomationCoverage.Automated
 		report.AutomationCoverage.AutomationPercent = automated * 100 / report.TotalCerts
 	}

@@ -24,11 +24,14 @@ type fakeCASvc struct {
 	cas       []*ca.CA
 	listErr   error
 	rootCalls int
+
+	rootSubject pkix.Name
 }
 
 func (f *fakeCASvc) ListCAs() ([]*ca.CA, error) { return f.cas, f.listErr }
-func (f *fakeCASvc) CreateRootCA(string, pkix.Name, keystore.Algorithm, time.Duration) (*ca.CA, error) {
+func (f *fakeCASvc) CreateRootCA(_ string, subject pkix.Name, _ keystore.Algorithm, _ time.Duration) (*ca.CA, error) {
 	f.rootCalls++
+	f.rootSubject = subject
 	return &ca.CA{ID: "new-root"}, nil
 }
 
@@ -95,5 +98,25 @@ func TestResolveDefaultCA(t *testing.T) {
 				t.Fatalf("got %q, %v, roots=%d", id, err, svc.rootCalls)
 			}
 		})
+	}
+}
+
+func TestResolveDefaultCABootstrapRootOrganization(t *testing.T) {
+	for _, tc := range []struct{ org, want string }{
+		{"", "Kryptkeeper"},
+		{"  ", "Kryptkeeper"},
+		{"Acme Corp", "Acme Corp"},
+	} {
+		svc := &fakeCASvc{}
+		_, err := resolveDefaultCA(svc, envMap(map[string]string{
+			"KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT": "true",
+			"KRYPTKEEPER_ORG_NAME":              tc.org,
+		}))
+		if err != nil {
+			t.Fatalf("org %q: %v", tc.org, err)
+		}
+		if got := svc.rootSubject.Organization; len(got) != 1 || got[0] != tc.want {
+			t.Errorf("org %q: root O = %v, want [%s]", tc.org, got, tc.want)
+		}
 	}
 }

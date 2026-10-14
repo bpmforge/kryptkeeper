@@ -70,9 +70,13 @@ func resolveDefaultCA(svc ca.Service, getenv func(string) string) (string, error
 	if caName == "" {
 		caName = "Kryptkeeper Root CA"
 	}
+	org := strings.TrimSpace(getenv("KRYPTKEEPER_ORG_NAME"))
+	if org == "" {
+		org = "Kryptkeeper"
+	}
 	rootCA, err := svc.CreateRootCA(caName, pkix.Name{
 		CommonName:   caName,
-		Organization: []string{"Kryptkeeper"},
+		Organization: []string{org},
 	}, keystore.ECDSAP256, 10*365*24*time.Hour)
 	if err != nil {
 		return "", fmt.Errorf("bootstrap root CA: %w", err)

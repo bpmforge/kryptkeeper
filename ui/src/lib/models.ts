@@ -42,6 +42,8 @@ export type CertificateRecord = {
   ca_id?: string;
   serial_number?: string;
   public_key_algorithm?: string;
+  // ML-DSA parameter set (e.g. "ML-DSA-65"); absent for other key types.
+  key_algorithm_display?: string;
   key_size_bits?: number;
   subject_alt_names?: string[];
   uri_sans?: string[];
@@ -258,11 +260,12 @@ export type CryptoPostureReport = {
   algorithm_breakdown: Record<string, number>;
   pqc_readiness: {
     quantum_safe: number;
+    quantum_safe_leaf_only: number;
     migration_ready: number;
     vulnerable: number;
     not_applicable: number;
     pqc_score_percent: number;
-    quantum_safe_percent?: number;
+    quantum_safe_percent: number;
   };
   expiry_buckets: {
     expired: number;
@@ -471,8 +474,9 @@ export type PQCCountdownReport = {
   vulnerable: number;
   migration_ready: number;
   quantum_safe: number;
+  quantum_safe_leaf_only: number;
   pqc_score_percent: number;
-  quantum_safe_percent?: number;
+  quantum_safe_percent: number;
   status: "complete" | "on_track" | "at_risk" | "behind";
   deadlines: PQCDeadline[];
   trend: { captured_at: string; pqc_score_percent: number }[];
@@ -485,6 +489,10 @@ export type PQCMigrationRoadmap = {
   vulnerable: number;
   migration_ready: number;
   quantum_safe: number;
+  quantum_safe_leaf_only: number;
+  not_applicable: number;
+  pqc_score_percent: number;
+  quantum_safe_percent: number;
   items: PQCMigrationItem[];
 };
 

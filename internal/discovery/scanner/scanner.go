@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"kryptkeeper/internal/ca"
 )
 
 // DiscoveredCert holds metadata extracted from a TLS handshake.
@@ -497,7 +499,7 @@ func certToDiscovered(cert *x509.Certificate, scannedHost string, isLeaf bool) D
 		DNSNames:           cert.DNSNames,
 		ValidFrom:          cert.NotBefore,
 		ValidUntil:         cert.NotAfter,
-		PublicKeyAlgorithm: cert.PublicKeyAlgorithm.String(),
+		PublicKeyAlgorithm: ca.StoredPublicKeyAlgorithm(cert),
 		SignatureAlgorithm: cert.SignatureAlgorithm.String(),
 		IsCA:               cert.IsCA,
 		RiskScore:          riskScore,

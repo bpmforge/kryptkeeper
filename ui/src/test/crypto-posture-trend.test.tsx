@@ -20,6 +20,8 @@ const report = {
   algorithm_breakdown: { RSA: 6, ECDSA: 4 },
   pqc_readiness: {
     quantum_safe: 2,
+    quantum_safe_leaf_only: 0,
+    quantum_safe_percent: 20,
     migration_ready: 1,
     vulnerable: 5,
     not_applicable: 2,

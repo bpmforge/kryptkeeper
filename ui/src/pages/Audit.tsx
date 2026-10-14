@@ -14,6 +14,7 @@ import {
 import { PageHeader } from "../components/PageHeader";
 import { canReadOperationalSummaries, useAuthz } from "../lib/auth";
 import { AUDIT_OUTCOMES, auditOutcomeTone } from "../lib/auditOutcome";
+import { isReadOnlyAction } from "../lib/auditActions";
 import type { AuditRow } from "../lib/models";
 
 type AuditFilters = {
@@ -49,6 +50,7 @@ export default function Audit() {
   const [filters, setFilters] = useState<AuditFilters>(initialFilters);
   const [appliedFilters, setAppliedFilters] =
     useState<AuditFilters>(initialFilters);
+  const [hideReadOnly, setHideReadOnly] = useState(false);
   const [cursor, setCursor] = useState<string | null | undefined>(undefined);
   const [selectedAuditId, setSelectedAuditId] = useState<string | null>(null);
 
@@ -72,7 +74,18 @@ export default function Audit() {
     queryFn: () => api.auditList(queryParams),
     enabled: canReadOperationalSummaries(authz.data?.role, authz.data?.scopes),
   });
-  const rows = (audit.data?.data ?? []) as AuditRow[];
+  const allRows = (audit.data?.data ?? []) as AuditRow[];
+  // Client-side on purpose: GET /audit only takes an exact `action` match, so
+  // the server cannot express "everything except reads". Pages are therefore
+  // filtered after fetch and may show fewer than 50 rows.
+  // Only successful reads are hidden: a denied or failed read (e.g. an
+  // authz.check that was refused) is security-relevant and stays visible.
+  const rows = hideReadOnly
+    ? allRows.filter(
+        (row) => !(isReadOnlyAction(row.action) && row.outcome === "success"),
+      )
+    : allRows;
+  const hiddenCount = allRows.length - rows.length;
   const meta = audit.data?.meta;
   const selectedKey = id ?? selectedAuditId ?? null;
   const pageHit = selectedKey
@@ -128,6 +141,8 @@ export default function Audit() {
       if (!next || all.length >= EXPORT_CAP) break;
       nextCursor = next;
     }
+    // The export is evidence, so it stays complete regardless of the
+    // on-screen "Hide read-only events" toggle.
     return all.slice(0, EXPORT_CAP);
   };
 
@@ -280,6 +295,18 @@ export default function Audit() {
             />
           </label>
         </div>
+        <label className="mt-4 flex items-center gap-2 text-sm text-foreground">
+          <input
+            type="checkbox"
+            checked={hideReadOnly}
+            onChange={(e) => setHideReadOnly(e.target.checked)}
+          />
+          <span>Hide read-only events</span>
+          <span className="text-xs text-muted-foreground">
+            (successful list, get, read, view, search — denials, downloads and exports stay
+            visible)
+          </span>
+        </label>
         <div className="mt-4 flex flex-wrap gap-2">
           <Button
             tone="primary"
@@ -479,6 +506,9 @@ export default function Audit() {
             Next
           </Button>
           <div className="ml-auto text-sm text-muted-foreground">
+            {hideReadOnly && hiddenCount > 0
+              ? `${hiddenCount} read-only hidden on this page · `
+              : ""}
             Total: {meta?.total ?? 0} · Principal:{" "}
             {audit.data?.principal ?? authz.data?.principal ?? "—"}
           </div>

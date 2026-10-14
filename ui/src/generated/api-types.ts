@@ -3586,14 +3586,17 @@ export interface components {
             /** Format: date-time */
             generated_at?: string;
             pqc_readiness?: {
+                /** @description Full chain PQC (leaf key and every signature to the root). */
                 quantum_safe?: number;
-                hybrid_quantum_safe?: number;
+                /** @description PQC subject key under a classical issuing chain; never counted as quantum_safe. */
+                quantum_safe_leaf_only?: number;
+                /** @description Short-lived classical certificates plus hybrid certificates. */
                 migration_ready?: number;
                 vulnerable?: number;
                 not_applicable?: number;
-                /** @description Includes migration-ready classical certs. */
+                /** @description PQC readiness: (quantum_safe + quantum_safe_leaf_only + migration_ready) / total_certs, integer percent. */
                 pqc_score_percent?: number;
-                /** @description Only certificates that are post-quantum today. */
+                /** @description Full-chain quantum_safe / total_certs, integer percent. */
                 quantum_safe_percent?: number;
             };
             expiry_buckets?: {
@@ -3695,9 +3698,9 @@ export interface components {
             generated_at?: string;
             org?: string;
             total_certs?: number;
-            /** @description Includes migration-ready classical certs. */
+            /** @description PQC readiness: (quantum_safe + quantum_safe_leaf_only + migration_ready) / total_certs, integer percent. */
             pqc_score_percent?: number;
-            /** @description Only certificates that are post-quantum today. */
+            /** @description Full-chain quantum_safe / total_certs, integer percent. */
             quantum_safe_percent?: number;
             automation_percent?: number;
             compliance_pass_percent?: number;
@@ -3725,9 +3728,9 @@ export interface components {
             migration_ready?: number;
             quantum_safe?: number;
             quantum_safe_leaf_only?: number;
-            /** @description Includes migration-ready classical certs. */
+            /** @description PQC readiness: (quantum_safe + quantum_safe_leaf_only + migration_ready) / total_certs, integer percent. */
             pqc_score_percent?: number;
-            /** @description Only certificates that are post-quantum today. */
+            /** @description Full-chain quantum_safe / total_certs, integer percent. */
             quantum_safe_percent?: number;
             /** @enum {string} */
             status?: "complete" | "on_track" | "at_risk" | "behind";
@@ -4005,6 +4008,13 @@ export interface operations {
                 "application/json": {
                     ca_id: string;
                     template_id: string;
+                    /**
+                     * @description PEM-encoded PKCS#10 request. Accepted labels: `CERTIFICATE REQUEST`
+                     *     (RSA, ECDSA, Ed25519, and ML-DSA-44/65/87 as emitted by OpenSSL 3.5+;
+                     *     ML-DSA is detected from the public-key algorithm OID, not the label),
+                     *     `ML-DSA CERTIFICATE REQUEST`, and `HYBRID CERTIFICATE REQUEST`.
+                     *     The request's self-signature is always verified.
+                     */
                     csr_pem: string;
                     team_id?: string;
                 };
@@ -4025,7 +4035,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Invalid CSR */
+            /** @description Invalid request body, or a CSR whose signature does not verify or whose key type is unsupported */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -4034,6 +4044,13 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The issuing CA is not active or has no signing key (imported without a private key) */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4605,6 +4622,10 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
+                    /**
+                     * @description PEM-encoded PKCS#10 request for the renewed key. Same accepted labels and
+                     *     key types as `POST /certificates` (including ML-DSA under `CERTIFICATE REQUEST`).
+                     */
                     csr_pem: string;
                 };
             };
@@ -4617,7 +4638,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Already renewed */
+            /** @description Invalid request body, or a CSR whose signature does not verify or whose key type is unsupported */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already renewed, or the issuing CA is not active or has no signing key */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4826,7 +4854,11 @@ export interface operations {
                     name?: string;
                     /** @enum {string} */
                     type?: "root" | "intermediate";
-                    algorithm?: string;
+                    /**
+                     * @description CA key algorithm; case and separators are ignored (ML-DSA-65, mldsa65 and ml-dsa-65 are equivalent). ML-DSA CAs require the software key backend (HSM-held ML-DSA keys are refused, see ADR_PQC_KEYS_SOFTWARE_ONLY).
+                     * @enum {string}
+                     */
+                    algorithm?: "ECDSA-P256" | "ECDSA-P384" | "RSA-2048" | "RSA-4096" | "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87";
                     subject_cn: string;
                 };
             };
@@ -4834,6 +4866,13 @@ export interface operations {
         responses: {
             /** @description CA created */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unsupported algorithm or the engine refused the request */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

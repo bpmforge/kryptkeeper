@@ -442,10 +442,10 @@ func (e *Engine) lookupActiveCA(caID string) (*CA, error) {
 		return nil, ErrCANotFound
 	}
 	if ca.Status != "active" {
-		return nil, fmt.Errorf("CA %s is not active", caID)
+		return nil, fmt.Errorf("%w: %s", ErrCANotActive, caID)
 	}
 	if ca.KeyID == "" {
-		return nil, fmt.Errorf("CA %s has no signing key (imported without private key)", caID)
+		return nil, fmt.Errorf("%w: %s (imported without private key)", ErrCANoSigningKey, caID)
 	}
 	return ca, nil
 }
@@ -630,10 +630,10 @@ func (e *Engine) issueLeafCertificate(caID string, req IssuanceRequest, params l
 		return nil, ErrCANotFound
 	}
 	if ca.Status != "active" {
-		return nil, fmt.Errorf("CA %s is not active", caID)
+		return nil, fmt.Errorf("%w: %s", ErrCANotActive, caID)
 	}
 	if ca.KeyID == "" {
-		return nil, fmt.Errorf("CA %s has no signing key (imported without private key)", caID)
+		return nil, fmt.Errorf("%w: %s (imported without private key)", ErrCANoSigningKey, caID)
 	}
 
 	signer, err := e.keys.Signer(ca.KeyID)

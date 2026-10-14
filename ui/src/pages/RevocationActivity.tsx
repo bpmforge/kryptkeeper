@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
+import { extractList } from "../lib/models";
+import type { CaRecord } from "../lib/models";
 import { Badge, Panel, Select, StateMessage } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
 import { ReportSkeleton } from "../components/Skeletons";
@@ -43,6 +45,16 @@ export default function RevocationActivity() {
     queryFn: () => api.revocationActivity(days),
   });
   const report = q.data?.data as RevData | undefined;
+  const casQuery = useQuery({
+    queryKey: ["cas", { limit: 200 }],
+    queryFn: () => api.cas({ limit: 200 }),
+  });
+  const caNames = new Map(
+    extractList<CaRecord>(casQuery.data?.data, ["items"]).map((c) => [
+      c.id,
+      c.display_name || c.name || "",
+    ]),
+  );
 
   return (
     <div className="p-6 space-y-6 max-w-5xl mx-auto fade-in-up">
@@ -119,8 +131,11 @@ export default function RevocationActivity() {
                     key={ca}
                     className="flex items-center justify-between py-2 border-b border-border/50 last:border-0"
                   >
-                    <span className="text-sm text-foreground truncate">
-                      {ca}
+                    <span
+                      className="text-sm text-foreground truncate"
+                      title={ca}
+                    >
+                      {caNames.get(ca) || ca}
                     </span>
                     <span className="text-sm font-bold text-state-attn">
                       {count}

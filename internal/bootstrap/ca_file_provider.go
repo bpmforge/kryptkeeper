@@ -24,6 +24,7 @@ func NewFileCAProviderFromEnv() CAProvider {
 	if path == "" {
 		path = defaultCAFilePath
 	}
+	initStateDir(path)
 	return &fileCAProvider{filePath: path}
 }
 
@@ -262,5 +263,5 @@ func (p *fileCAProvider) saveItems(items []CAListItem) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p.filePath, body, 0o600)
+	return writeStateFile(p.filePath, body)
 }
