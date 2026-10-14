@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kryptkeeper</title>
+<meta name="description" content="Kryptkeeper is an open-source, self-hosted PKI and certificate lifecycle platform: a CA, ACME/EST/SCEP/CMP enrollment, discovery, and unattended renewal. Apache 2.0.">
+<meta property="og:title" content="Kryptkeeper">
+<meta property="og:description" content="Self-hosted PKI and certificate lifecycle management. Apache 2.0.">
+<meta property="og:url" content="https://kryptkeeper.io/">
+<meta property="og:type" content="website">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Serif:wght@500;600&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <svg viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M16 2 4 6.5v8.6c0 7.3 5.1 13.4 12 14.9 6.9-1.5 12-7.6 12-14.9V6.5L16 2Z" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>
+      <circle cx="16" cy="13" r="3.4" fill="var(--accent)"/>
+      <path d="M14.6 15.5h2.8l.9 6.5h-4.6l.9-6.5Z" fill="var(--accent)"/>
+    </svg>
+    Kryptkeeper
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="#capabilities">Capabilities</a>
+    <a href="tour.html">Tour</a>
+    <a href="#protocols">Protocols</a>
+    <a href="#install">Install</a>
+    <a href="#maturity">Maturity</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main>
+<div class="hero">
+  <div class="stack">
+    <span class="label">Open-source PKI · Apache 2.0</span>
+    <h1 style="margin-top:1rem">Run your own certificate authority, and stop finding out about expiry from an outage.</h1>
+    <p class="lede">Kryptkeeper is a self-hosted CA and certificate lifecycle platform. It issues over ACME, EST, SCEP, CMP and Windows autoenrollment, finds the certificates you didn't know about, and renews and installs them without a person in the loop.</p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/bpmforge/kryptkeeper/releases/tag/v0.9.1">Download v0.9.1</a>
+      <a class="btn" href="https://github.com/bpmforge/kryptkeeper">View on GitHub</a>
+      <a class="btn" href="tour.html">See it in action</a>
+    </div>
+    <p class="meta-line">Single Go binary · SQLite or PostgreSQL · signed releases</p>
+  </div>
+
+  <figure class="chain" aria-label="Example certificate chain managed by Kryptkeeper" style="margin:0">
+    <div class="cert">
+      <div class="kind"><b>Root CA</b><span class="pill ok">dual control</span></div>
+      <dt>Subject</dt><dd>CN=Example Root CA</dd>
+      <dt>Key</dt><dd>ECDSA P-384 · PKCS#11</dd>
+      <dt>Not after</dt><dd>2046-10-12</dd>
+    </div>
+    <div class="link">signs</div>
+    <div class="cert">
+      <div class="kind"><b>Issuing CA</b><span class="pill ok">OCSP · CRL</span></div>
+      <dt>Subject</dt><dd>CN=Example Issuing CA 1</dd>
+      <dt>Key</dt><dd>ML-DSA-65 + ECDSA P-256 (hybrid)</dd>
+      <dt>Not after</dt><dd>2031-10-12</dd>
+    </div>
+    <div class="link">issues via ACME dns-01</div>
+    <div class="cert leaf">
+      <div class="kind"><b>api.example.com</b><span class="pill renew">renews in 12 days</span></div>
+      <dt>Template</dt><dd>tls-server · P90D</dd>
+      <dt>Installed</dt><dd>nginx on 3 hosts · verified</dd>
+      <dt>Owner</dt><dd>platform-team</dd>
+    </div>
+  </figure>
+</div>
+
+<section id="capabilities">
+  <div class="section-head">
+    <span class="label">Capabilities</span>
+    <h2>The whole certificate lifecycle in one place</h2>
+  </div>
+  <div class="caps">
+    <div class="cap">
+      <h3>Certificate authority</h3>
+      <p>Root and intermediate CAs, templates with name, key-strength and SSH policy, CSR-in issuance, renew, revoke and import. Post-quantum ML-DSA and hybrid certificates with software keys.</p>
+    </div>
+    <div class="cap">
+      <h3>Unattended renewal</h3>
+      <p>Renews and installs on nginx, Apache and HAProxy over SSH, on hosts running the agent, and on Kubernetes, IIS, F5 and Citrix targets. Checks the served certificate, rolls back on failure, and tells the owner when it gives up.</p>
+    </div>
+    <div class="cap">
+      <h3>Discovery and inventory</h3>
+      <p>Network TLS scanning with ML-KEM detection, Kubernetes and service-mesh discovery, agentless WinRM discovery, CT log monitoring and a cloud key inventory.</p>
+    </div>
+    <div class="cap">
+      <h3>Windows autoenrollment</h3>
+      <p>Native MS-XCEP and MS-WSTEP servers, so domain machines enroll through Group Policy without an ADCS server.</p>
+    </div>
+    <div class="cap">
+      <h3>Governance</h3>
+      <p>Append-only audit log with SIEM forwarding, an approval queue that keeps proposer and approver apart, key dual control on by default, custom roles, OIDC, SAML and SCIM.</p>
+    </div>
+    <div class="cap">
+      <h3>Revocation built in</h3>
+      <p>OCSP responder and CRL distribution ship in the open-source release, not behind a paid tier.</p>
+    </div>
+  </div>
+</section>
+
+<section id="protocols">
+  <div class="section-head">
+    <span class="label">Enrollment protocols</span>
+    <h2>Speaks the protocols your clients already use</h2>
+    <p class="muted">certbot and acme.sh, network devices, MDM, and Windows clients all enroll against the same CA.</p>
+  </div>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th scope="col">Protocol</th><th scope="col">Spec</th><th scope="col">Typical client</th></tr></thead>
+      <tbody>
+        <tr><td class="proto">ACME</td><td class="rfc">RFC 8555</td><td>certbot, lego, acme.sh; http-01, and dns-01 for wildcards</td></tr>
+        <tr><td class="proto">EST</td><td class="rfc">RFC 7030</td><td>Enterprise devices and services</td></tr>
+        <tr><td class="proto">SCEP</td><td class="rfc">RFC 8894</td><td>MDM and device enrollment with one-time challenges</td></tr>
+        <tr><td class="proto">CMP</td><td class="rfc">RFC 4210</td><td>Certificate Management Protocol clients</td></tr>
+        <tr><td class="proto">MS-XCEP / MS-WSTEP</td><td class="rfc">[MS-XCEP]</td><td>Windows Group Policy autoenrollment</td></tr>
+        <tr><td class="proto">OCSP</td><td class="rfc">RFC 6960 / 5019</td><td>Real-time revocation checks</td></tr>
+        <tr><td class="proto">CRL</td><td class="rfc">RFC 5280</td><td>Revocation lists for offline and legacy clients</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="install">
+  <div class="two">
+    <div>
+      <span class="label">Quick start</span>
+      <h2>Running in a few minutes</h2>
+      <p>Docker Compose with SQLite. Set two different secrets in <code>.env</code>; the hub creates its root CA on first boot. The dashboard comes up on port 3000 and the API on 8080.</p>
+      <div class="code">
+        <button class="copy" type="button" data-copy="qs">Copy</button>
+<pre id="qs">git clone https://github.com/bpmforge/kryptkeeper.git
+cd kryptkeeper
+cp env.example .env
+<span class="c"># set APP_BOOTSTRAP_TOKEN and KRYPTKEEPER_KEYSTORE_PASSPHRASE
+# (different values): openssl rand -hex 32</span>
+docker compose up -d</pre>
+      </div>
+      <p>Helm, Terraform, binary, deb/rpm and air-gapped installs are in the <a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/deployment.md">deployment guide</a>.</p>
+    </div>
+    <div>
+      <span class="label">Verify the release</span>
+      <h2>Signed without a key to leak</h2>
+      <p>Checksums and images are signed keyless with Sigstore cosign, bound to the GitHub release workflow. There is no long-lived signing key to fetch or trust.</p>
+      <div class="code">
+        <button class="copy" type="button" data-copy="vf">Copy</button>
+<pre id="vf">cosign verify ghcr.io/bpmforge/kryptkeeper:0.9.1 \
+  --certificate-identity \
+  "https://github.com/bpmforge/kryptkeeper/.github/workflows/release.yml@refs/tags/v0.9.1" \
+  --certificate-oidc-issuer \
+  "https://token.actions.githubusercontent.com"</pre>
+      </div>
+      <p>Images: <code>ghcr.io/bpmforge/kryptkeeper</code>, <code>-agent</code>, <code>-certmanager</code>, <code>-mcp</code> for linux/amd64 and linux/arm64.</p>
+    </div>
+  </div>
+</section>
+
+<section id="maturity">
+  <div class="section-head">
+    <span class="label">v0.9.1 status</span>
+    <h2>What's proven, what's beta</h2>
+    <p class="muted">The version number is below 1.0 on purpose. Each area is labelled by how it was tested: validated means run against real clients, not only unit tests.</p>
+  </div>
+  <div class="maturity">
+    <div class="tier validated">
+      <h3>Validated</h3>
+      <ul>
+        <li>ACME against certbot and lego</li>
+        <li>EST, SCEP, CMP, OCSP and CRL against openssl</li>
+        <li>SSH certificates with OpenSSH</li>
+        <li>Unattended renewal on nginx and Apache, with rollback</li>
+        <li>Windows autoenrollment on a Kerberos lab</li>
+        <li>SQLite and PostgreSQL, including upgrades</li>
+      </ul>
+    </div>
+    <div class="tier beta">
+      <h3>Beta</h3>
+      <ul>
+        <li>Reports, compliance evidence, CBOM, PQC readiness</li>
+        <li>SAML, OIDC and SCIM</li>
+        <li>CT monitoring and cloud inventory</li>
+        <li>Terraform provider, Helm chart, MCP server</li>
+      </ul>
+    </div>
+    <div class="tier exp">
+      <h3>Experimental or unverified</h3>
+      <ul>
+        <li>Multi-tenancy (not a security boundary yet)</li>
+        <li>HashiCorp Vault and GCP Cloud KMS key stores</li>
+        <li>F5 and Citrix plugins on real devices</li>
+        <li>SCEP from network devices</li>
+      </ul>
+    </div>
+  </div>
+  <p class="muted" style="margin-top:1.5rem">Full detail is in the <a href="https://github.com/bpmforge/kryptkeeper/releases/tag/v0.9.1">v0.9.1 release notes</a>.</p>
+</section>
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+<script>
+document.querySelectorAll("button.copy").forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    var pre = document.getElementById(btn.dataset.copy);
+    var text = pre.innerText;
+    function done(label) { btn.textContent = label; setTimeout(function () { btn.textContent = "Copy"; }, 1600); }
+    function selectIt() {
+      var r = document.createRange(); r.selectNodeContents(pre);
+      var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      done("Selected");
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done("Copied"); }, selectIt);
+    } else { selectIt(); }
+  });
+});
+</script>
+</body>
+</html>
