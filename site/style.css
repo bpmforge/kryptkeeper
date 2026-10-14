@@ -1,21 +1,28 @@
 /* Layout: one 68rem column; hero pairs the pitch with a rendered certificate chain,
    then capability grid, protocol table, quickstart, release verification, maturity, footer.
-   Palette and faces come from the product's own docs/design/STYLE_GUIDE.md. */
+   Palette and type match the product UI (ui/src/index.css): warm stone neutrals,
+   sage primary, amber and brick states, Geist; wordmark gradient from the app sidebar. */
 :root {
-  --bg: #0b0f14;
-  --surface: #11161d;
-  --surface-2: #171d26;
-  --fg: #e7edf5;
-  --muted: #9aa7b6;
-  --border: #263244;
-  --accent: #56b6c2;
-  --accent-2: #d19a66;
-  --ok: #4caf7d;
-  --warn: #f0b35a;
-  --code-bg: #0e131a;
-  --font-display: "IBM Plex Serif", Georgia, "Times New Roman", serif;
-  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --bg: #1a1917;
+  --surface: #201e1b;
+  --surface-2: #242220;
+  --fg: #ece9e4;
+  --muted: #a5a099;
+  --border: #2c2a27;
+  --accent: #7fae8c;
+  --accent-fg: #16150f;
+  --accent-2: #d8a657;
+  --ok: #7fae8c;
+  --warn: #d8a657;
+  --danger: #c05f4e;
+  --code-bg: #161513;
+  --edge: #4a463f;
+  --shadow: 0 0 0 1px rgba(255, 255, 255, 0.03), 0 10px 28px -6px rgba(0, 0, 0, 0.65), 0 2px 6px rgba(0, 0, 0, 0.4);
+  --brand-a: #45c6e8;
+  --brand-b: #839ef2;
+  --font-display: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --step--1: 0.875rem;
   --step-0: 1rem;
   --step-1: 1.25rem;
@@ -25,15 +32,19 @@
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --bg: #f6f8fa; --surface: #ffffff; --surface-2: #eef2f6; --fg: #121820;
-    --muted: #4d5b6b; --border: #d3dbe4; --accent: #1f7f8c; --accent-2: #9a5b22;
-    --ok: #2e7d55; --warn: #8a5a00; --code-bg: #eef2f6; color-scheme: light;
+    --bg: #fcfcfb; --surface: #ffffff; --surface-2: #f7f7f5; --fg: #17191c;
+    --muted: #707378; --border: #e6e6e3; --accent: #1f6f4f; --accent-fg: #fcfcfb;
+    --accent-2: #a86a12; --ok: #1f6f4f; --warn: #a26611; --danger: #a8342a;
+    --code-bg: #f0f0ec; --brand-a: #1b8fb3; --brand-b: #4f63c9; --edge: #d8d8d4;
+    --shadow: 0 1px 2px rgba(23, 25, 28, 0.06), 0 10px 28px -8px rgba(23, 25, 28, 0.16); color-scheme: light;
   }
 }
 :root[data-theme="light"] {
-  --bg: #f6f8fa; --surface: #ffffff; --surface-2: #eef2f6; --fg: #121820;
-  --muted: #4d5b6b; --border: #d3dbe4; --accent: #1f7f8c; --accent-2: #9a5b22;
-  --ok: #2e7d55; --warn: #8a5a00; --code-bg: #eef2f6; color-scheme: light;
+  --bg: #fcfcfb; --surface: #ffffff; --surface-2: #f7f7f5; --fg: #17191c;
+  --muted: #707378; --border: #e6e6e3; --accent: #1f6f4f; --accent-fg: #fcfcfb;
+  --accent-2: #a86a12; --ok: #1f6f4f; --warn: #a26611; --danger: #a8342a;
+  --code-bg: #f0f0ec; --brand-a: #1b8fb3; --brand-b: #4f63c9; --edge: #d8d8d4;
+    --shadow: 0 1px 2px rgba(23, 25, 28, 0.06), 0 10px 28px -8px rgba(23, 25, 28, 0.16); color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -48,7 +59,7 @@ body {
 a { color: var(--accent); text-underline-offset: 3px; }
 a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
 .wrap { max-width: 68rem; margin-inline: auto; }
-h1, h2, h3 { font-family: var(--font-display); font-weight: 600; line-height: 1.15; text-wrap: balance; margin: 0; }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; text-wrap: balance; margin: 0; }
 h2 { font-size: var(--step-2); }
 h3 { font-size: var(--step-1); font-family: var(--font-body); font-weight: 600; }
 p { margin: 0; }
@@ -65,8 +76,10 @@ header.site {
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
   padding-block: 1.25rem; border-bottom: 1px solid var(--border);
 }
-.brand { display: flex; align-items: center; gap: 0.6rem; color: var(--fg); text-decoration: none; font: 600 1.15rem/1 var(--font-display); }
-.brand svg { width: 28px; height: 28px; flex: none; }
+.brand { display: flex; align-items: center; gap: 0.6rem; color: var(--fg); text-decoration: none; font: 600 1.15rem/1 var(--font-display); letter-spacing: -0.01em; }
+.brand .tile { width: 30px; height: 30px; flex: none; border-radius: 8px; background: var(--ok); color: var(--accent-fg); display: grid; place-items: center; }
+.brand .tile svg { width: 18px; height: 18px; }
+.brand .word { background: linear-gradient(90deg, var(--brand-a), var(--brand-b)); -webkit-background-clip: text; background-clip: text; color: transparent; }
 nav.top { display: flex; flex-wrap: wrap; gap: 1.25rem; font-size: var(--step--1); }
 nav.top a { color: var(--muted); text-decoration: none; }
 nav.top a:hover { color: var(--fg); }
@@ -85,7 +98,7 @@ nav.top a:hover { color: var(--fg); }
   padding: 0.7rem 1.1rem; border-radius: 6px; font-weight: 600; font-size: var(--step--1);
   text-decoration: none; border: 1px solid var(--border); color: var(--fg); background: var(--surface);
 }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
 .btn:hover { border-color: var(--accent); }
 .meta-line { margin-top: 1.25rem; font: 400 var(--step--1)/1.5 var(--font-mono); color: var(--muted); }
 
@@ -143,7 +156,7 @@ td.rfc { font-family: var(--font-mono); font-variant-numeric: tabular-nums; colo
 .tier { display: flex; flex-direction: column; gap: 0.75rem; padding-top: 1rem; border-top: 3px solid var(--border); min-width: 0; }
 .tier.validated { border-top-color: var(--ok); }
 .tier.beta { border-top-color: var(--warn); }
-.tier.exp { border-top-color: var(--accent-2); }
+.tier.exp { border-top-color: var(--danger); }
 .tier ul { margin: 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.95rem; display: flex; flex-direction: column; gap: 0.35rem; }
 
 footer.site { padding-block: 2.5rem 3rem; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: 1.5rem 3rem; justify-content: space-between; font-size: var(--step--1); color: var(--muted); }
@@ -184,3 +197,14 @@ footer .addr { font-family: var(--font-mono); color: var(--fg); user-select: all
 @media (max-width: 880px) {
   .shot { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Elevation: dark stone surfaces sit too close to the page background, so
+   framed content (screenshots, certificate cards, code, tables) gets a lighter
+   edge and a soft shadow to lift it off the page. */
+.frame, .cert, .code, .table-scroll {
+  border-color: var(--edge);
+  box-shadow: var(--shadow);
+}
+.cert.leaf { border-color: var(--accent); }
+.frame .bar { background: var(--surface-2); }
+.btn { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25); }
