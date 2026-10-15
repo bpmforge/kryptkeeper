@@ -95,10 +95,11 @@ jobs:
       # wixl builds the Windows agent MSI from a goreleaser post-build hook
       # (.goreleaser.yaml, build kryptkeeper-agent-windows); the MSI then lands
       # in checksums.txt via checksum.extra_files and is signed with it.
-      - name: Install msitools (wixl, Windows agent MSI)
+      # Ubuntu 24.04 ships wixl as its own package, separate from msitools.
+      - name: Install msitools + wixl (Windows agent MSI)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends msitools
+          sudo apt-get install -y --no-install-recommends msitools wixl
           wixl --version
 
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
