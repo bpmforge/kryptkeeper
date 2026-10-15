@@ -14,6 +14,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/acme"
@@ -34,7 +36,7 @@ type AcmeRenewer struct {
 	HTTPClient *http.Client
 
 	// HTTP01Addr is where the temporary HTTP-01 listener binds when no web
-	// root is configured. Empty means ":80", the only port a CA validates.
+	// root is configured. Empty means ":80" (IPv4 and IPv6 both), the only port a CA validates.
 	HTTP01Addr string
 }
 
@@ -82,11 +84,11 @@ func (r *AcmeRenewer) Renew(ctx context.Context, identifiers []string, webRoot s
 		// only after the order, as an opaque challenge failure.
 		addr := r.http01Addr()
 		log.Printf("acme: http-01 challenge will listen on %s", addr)
-		ln, err := listenHTTP01(addr)
+		lns, err := listenHTTP01(addr)
 		if err != nil {
 			return nil, err
 		}
-		_ = ln.Close()
+		closeAll(lns)
 	}
 
 	accountKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -175,7 +177,7 @@ func (r *AcmeRenewer) satisfyAuthz(ctx context.Context, client *acme.Client, aut
 		return fmt.Errorf("accept challenge: %w", err)
 	}
 	if _, err := client.WaitAuthorization(ctx, authURL); err != nil {
-		return fmt.Errorf("wait authorization: %w", err)
+		return fmt.Errorf("wait authorization: %w", describeAuthzError(err))
 	}
 	return nil
 }
@@ -201,12 +203,14 @@ func serveChallenge(ctx context.Context, token, keyAuth, webRoot, addr string) (
 	mux.HandleFunc(challengePath, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, keyAuth) // no recovery path once the challenge response has started
 	})
-	ln, err := listenHTTP01(addr)
+	lns, err := listenHTTP01(addr)
 	if err != nil {
 		return nil, err
 	}
 	srv := &http.Server{Handler: mux}
-	go func() { _ = srv.Serve(ln) }()
+	for _, ln := range lns {
+		go func() { _ = srv.Serve(ln) }()
+	}
 	return func() { _ = srv.Shutdown(ctx) }, nil
 }
 
@@ -217,16 +221,78 @@ func (r *AcmeRenewer) http01Addr() string {
 	return defaultHTTP01Addr
 }
 
-// listenHTTP01 binds the HTTP-01 listener. The usual causes of failure are
+// listenHTTP01 binds the HTTP-01 listener(s). The usual causes of failure are
 // another web server (IIS, nginx) holding the port, a lack of privilege, or
 // a previous renewal still running; the error names them instead of passing
 // the bare OS message on.
-func listenHTTP01(addr string) (net.Listener, error) {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("cannot listen on %s for the ACME HTTP-01 challenge: port 80 in use or not permitted; see docs/ops/WINDOWS_AGENT.md: %w", addr, err)
+//
+// With no host in addr, IPv4 (0.0.0.0) and IPv6 ([::]) are bound separately.
+// A single dual-stack "tcp" bind is not enough: on Windows an IPv4-only
+// listener on 0.0.0.0:80 does not stop a [::]:80 bind from succeeding, so the
+// busy port went undetected and the CA's IPv4 connection reached the other
+// server. A family the host does not support is skipped.
+func listenHTTP01(addr string) ([]net.Listener, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host != "" {
+		ln, lerr := net.Listen("tcp", addr)
+		if lerr != nil {
+			return nil, http01ListenError(addr, lerr)
+		}
+		return []net.Listener{ln}, nil
 	}
-	return ln, nil
+	var lns []net.Listener
+	for _, f := range []struct{ network, addr string }{
+		{"tcp4", net.JoinHostPort("0.0.0.0", port)},
+		{"tcp6", net.JoinHostPort("::", port)},
+	} {
+		ln, lerr := net.Listen(f.network, f.addr)
+		if lerr != nil {
+			if isAddrFamilyUnsupported(lerr) {
+				continue
+			}
+			closeAll(lns)
+			return nil, http01ListenError(f.addr, lerr)
+		}
+		lns = append(lns, ln)
+	}
+	if len(lns) == 0 {
+		return nil, http01ListenError(addr, errors.New("no usable IPv4 or IPv6 address family"))
+	}
+	return lns, nil
+}
+
+func http01ListenError(addr string, err error) error {
+	return fmt.Errorf("cannot listen on %s for the ACME HTTP-01 challenge: port 80 in use or not permitted; see docs/ops/WINDOWS_AGENT.md: %w", addr, err)
+}
+
+func closeAll(lns []net.Listener) {
+	for _, ln := range lns {
+		_ = ln.Close()
+	}
+}
+
+// isAddrFamilyUnsupported reports an IP family the host lacks (e.g. IPv6
+// disabled). 10047 is Windows WSAEAFNOSUPPORT, which syscall.EAFNOSUPPORT
+// does not match there.
+func isAddrFamilyUnsupported(err error) bool {
+	if errors.Is(err, syscall.EAFNOSUPPORT) || errors.Is(err, syscall.EADDRNOTAVAIL) {
+		return true
+	}
+	var en syscall.Errno
+	if errors.As(err, &en) && uintptr(en) == 10047 {
+		return true
+	}
+	return strings.Contains(err.Error(), "address family not supported")
+}
+
+// describeAuthzError makes sure an authorization failure carries a reason.
+// A CA that reports no challenge error would otherwise print an empty detail.
+func describeAuthzError(err error) error {
+	var ae *acme.AuthorizationError
+	if errors.As(err, &ae) && len(ae.Errors) == 0 {
+		return fmt.Errorf("%w (the CA gave no detail; check the challenge URL is reachable from the CA on port 80 and the Hub log)", err)
+	}
+	return err
 }
 
 // isACMEConflict returns true when account already exists (registration is idempotent).

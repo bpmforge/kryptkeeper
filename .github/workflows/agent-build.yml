@@ -107,4 +107,6 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Run tests
-        run: go test ./...
+        # Agent packages only: ci-pr/ci-main already run the whole module, and
+        # internal/bootstrap alone exceeds go test's 10m default on a busy runner.
+        run: go test -timeout 15m ./cmd/kryptkeeper-agent/... ./internal/agentclient/... ./internal/agentdiscovery/... ./internal/agentinstall/...

@@ -72,7 +72,8 @@ Homebrew 7 refuses to install a formula file that is not in a tap, so create
 a throwaway local tap:
 
 ```bash
-gh release download v0.9.4 --repo bpmforge/kryptkeeper --pattern kryptkeeper.rb
+TAG=v0.9.4   # set to the release you are installing
+gh release download "$TAG" --repo bpmforge/kryptkeeper --pattern kryptkeeper.rb
 brew tap-new local/kryptkeeper
 cp kryptkeeper.rb "$(brew --repository local/kryptkeeper)/Formula/"
 brew install local/kryptkeeper/kryptkeeper

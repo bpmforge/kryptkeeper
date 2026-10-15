@@ -1327,7 +1327,9 @@ run_tls_smoke() {
 
   local https_base="https://127.0.0.1:${tls_port}"
   local attempt up=""
-  for attempt in {1..40}; do
+  # 120 x 0.25s: migrations plus root-CA and TLS self-issue took >10s on a
+  # busy shared CI runner.
+  for attempt in {1..120}; do
     if ! kill -0 "$tls_pid" >/dev/null 2>&1; then
       echo "[smoke] ERROR TLS pass: local binary exited before health checks completed" >&2
       [[ -f "$tls_app_log" ]] && cat "$tls_app_log" >&2

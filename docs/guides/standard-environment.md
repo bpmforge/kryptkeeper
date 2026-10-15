@@ -11,8 +11,8 @@ hand. Pick the mode by what you can put on the host.
 | Linux nginx (agent can run) | Agent | the `kryptkeeper-agent` binary | hub tasks the agent | validated live |
 | Windows IIS | WinRM push | WinRM reachable from the hub | hub scheduler | install validated live (Windows lab); scheduled renewal unit-tested |
 | Kubernetes TLS Secret | Kubernetes push | a service-account token | hub scheduler | install validated live (`tests/live/k8s`, kind); scheduled renewal unit-tested |
-| Windows agent | Agent | the Windows agent, inbound TCP 80 for HTTP-01 (`docs/ops/WINDOWS_AGENT.md`); renew-only, no install step in v0.9 | hub tasks the agent | service validated live; renewal needs the port 80 rule |
-| macOS agent | Agent (launchd) | the macOS agent; see `docs/ops/MACOS_AGENT.md` | hub tasks the agent | documented, validation pending |
+| Windows agent | Agent | the Windows agent, inbound TCP 80 for HTTP-01 (`docs/ops/WINDOWS_AGENT.md`); renew-only, no install step in v0.9 | hub tasks the agent | validated (install/enroll/renew guard; no install target in v0.9); renewal needs the port 80 rule; see `docs/release/LIVE_RESULTS_WINDOWS_AGENT_v0.9.4.md` |
+| macOS agent | Agent (launchd) | the macOS agent; see `docs/ops/MACOS_AGENT.md` | hub tasks the agent | validated (v0.9.4-rc.2); see `docs/release/LIVE_RESULTS_MACOS_v0.9.4.md` |
 | macOS keychain | Keychain install | SSH to the Mac | n/a | not yet validated |
 
 The reference for everything marked "validated live" is

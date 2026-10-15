@@ -8,6 +8,8 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-15
+
 ### Added
 
 - **Releases now ship the Windows agent.** `kryptkeeper-agent_<version>_windows_amd64.zip`
@@ -20,7 +22,7 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
   the whole release set locally.
 - **macOS agent as a LaunchDaemon.** `packaging/macos/com.kryptkeeper.agent.plist`
   and `docs/ops/MACOS_AGENT.md` (launchctl bootstrap/bootout, enrollment, logs).
-  Documented; live validation pending.
+  Validated live on macOS with the v0.9.4-rc.2 assets.
 - **Windows agent docs: HTTP-01 needs inbound TCP 80.** `docs/ops/WINDOWS_AGENT.md`
   gives the scoped firewall rule, the IIS/port-80 conflict guidance and the
   v0.9 no-install limit.
@@ -35,6 +37,16 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ### Fixed
 
+- **Agent ACME renewal detects a busy :80 on Windows.** The pre-check bound
+  only dual-stack `tcp :80`, which succeeds beside an IPv4-only listener on
+  `0.0.0.0:80`, so renewal failed later with an opaque ACME error. IPv4 and IPv6
+  are now probed separately (an unsupported family is skipped) and the challenge
+  server listens on both.
+- **ACME authorization failures say why.** The Hub never recorded a reason on a
+  failed http-01/dns-01 challenge, so clients printed `authorization error for X: `
+  with nothing after the colon. The challenge `error` problem now carries the
+  fetch/lookup failure (e.g. the URL and status or connection error), and the
+  agent adds a hint when a CA still gives no detail.
 - **Homebrew packaging was broken.** The formula template expected raw
   `kryptkeeper-darwin-*` binaries that the goreleaser release never published
   and the `homebrew-formula` job had been removed; it now renders from the

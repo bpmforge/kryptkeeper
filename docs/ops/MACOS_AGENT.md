@@ -1,8 +1,7 @@
 # macOS agent: install and run as a LaunchDaemon
 
-**Status: documented, validation pending.** The plist lints (`plutil -lint`) and
-the agent builds for darwin, but no live launchd run has been recorded yet.
-Treat the steps as unproven until a validation report lands.
+**Status: validated** on v0.9.4-rc.2 (install, enroll, renew); see
+`docs/release/LIVE_RESULTS_MACOS_v0.9.4.md`.
 
 The agent runs as root under launchd, starts at boot, and is restarted if it
 exits. It discovers certificates and renews them over ACME HTTP-01 against the
@@ -10,6 +9,9 @@ hub. (For installing a renewed certificate into the macOS System keychain the
 hub reaches the Mac over SSH instead: see `docs/ops/MACOS_KEYCHAIN.md`.)
 
 ## Install
+Downloading release assets with `gh release download` needs the GitHub CLI
+(`gh`); `curl -LO` on the release asset URLs works too.
+
 1. Put the binary at `/usr/local/bin/kryptkeeper-agent` (`darwin_arm64` or
    `darwin_amd64` from the release archive) and `chmod 0755` it.
 2. Create the support and log directories:
@@ -22,12 +24,15 @@ hub reaches the Mac over SSH instead: see `docs/ops/MACOS_KEYCHAIN.md`.)
    hub's `KRYPTKEEPER_AGENT_ENROLLMENT_SECRETS`; the hub refuses
    self-registration without it). If the hub's certificate is self-issued,
    copy its CA to `/Library/Application Support/Kryptkeeper/hub-ca.pem` and
-   uncomment `KRYPTKEEPER_HUB_CA_CERT_FILE`.
+   uncomment `KRYPTKEEPER_HUB_CA_CERT_FILE`. Edit with a text editor
+   (`nano`/`vim`), and uncomment that block first if you need it: PlistBuddy
+   rewrites the whole file and strips XML comments, including the commented
+   `KRYPTKEEPER_HUB_CA_CERT_FILE` block.
 4. Install it root-owned and private, since it holds the enrollment secret:
    ```
    sudo install -m 0600 -o root -g wheel packaging/macos/com.kryptkeeper.agent.plist \
      /Library/LaunchDaemons/com.kryptkeeper.agent.plist
-   plutil -lint /Library/LaunchDaemons/com.kryptkeeper.agent.plist
+   sudo plutil -lint /Library/LaunchDaemons/com.kryptkeeper.agent.plist
    ```
 
 ## How settings are loaded
@@ -40,7 +45,8 @@ on first start it registers and writes `KRYPTKEEPER_AGENT_ID` and
 starts reuse them. Do not point that variable at a file holding other settings:
 the agent replaces it on registration.
 After the first successful registration, remove the enrollment secret from the
-plist and reload it.
+plist and reload it. Use `sudo nano`/`sudo vim` for this too (the file is
+root-owned, mode 0600); PlistBuddy would strip the comments.
 
 ## Start, stop, status
 ```

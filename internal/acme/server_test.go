@@ -1168,6 +1168,16 @@ func TestACMEHTTP01ValidationFails(t *testing.T) {
 	if result.Status != "invalid" {
 		t.Errorf("expected authz invalid after unreachable host, got %s", result.Status)
 	}
+	// N2: the failure reason must reach the client, not an empty detail.
+	var chErr *Problem
+	for _, ch := range result.Challenges {
+		if ch.Type == "http-01" {
+			chErr = ch.Error
+		}
+	}
+	if chErr == nil || !strings.Contains(chErr.Detail, "/.well-known/acme-challenge/") {
+		t.Errorf("http-01 challenge error = %+v, want detail naming the fetched URL", chErr)
+	}
 }
 
 // TestACMEHTTP01TokenOnlyResponseNowRejected proves the closed half of

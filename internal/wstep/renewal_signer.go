@@ -8,7 +8,7 @@ package wstep
 // identified by subject key identifier (the new key signing itself), and
 // version 1, identified by issuer and serial (the old certificate, which is
 // embedded). Both go.mozilla.org/pkcs7 and github.com/smallstep/pkcs7 parse
-// such a message as having no signers at all (measured on a real kk-win11
+// such a message as having no signers at all (measured on a real lab-win11
 // renewal, W20-11), so the old-key signature is verified here, per RFC 5652
 // 5.4, for the one shape needed: a version-1 SignerInfo with signed
 // attributes whose certificate is in the message. The result only labels

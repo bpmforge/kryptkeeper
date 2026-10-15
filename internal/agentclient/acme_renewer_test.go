@@ -12,11 +12,15 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/acme"
 )
 
 func TestEncodeCertChain_SingleCert(t *testing.T) {
@@ -174,5 +178,59 @@ func TestRenew_WebRootSkipsPortCheck(t *testing.T) {
 	_, err = r.Renew(context.Background(), []string{"example.test"}, t.TempDir())
 	if err == nil || strings.Contains(err.Error(), "port 80") {
 		t.Fatalf("web-root renewal must not probe the port, got %v", err)
+	}
+}
+
+// F1: an IPv4-only listener must be detected when the check has no host, as
+// on Windows where a dual-stack bind alone would succeed beside it.
+func TestListenHTTP01_DetectsIPv4OnlyListener(t *testing.T) {
+	busy, err := net.Listen("tcp4", "0.0.0.0:0")
+	if err != nil {
+		t.Skipf("no IPv4: %v", err)
+	}
+	defer busy.Close()
+	_, port, _ := net.SplitHostPort(busy.Addr().String())
+
+	if lns, err := listenHTTP01(":" + port); err == nil {
+		closeAll(lns)
+		t.Fatal("expected busy-port error for IPv4-only listener")
+	} else if !strings.Contains(err.Error(), "port 80 in use or not permitted") {
+		t.Errorf("error %q lacks cause", err)
+	}
+}
+
+func TestListenHTTP01_ServesIPv4(t *testing.T) {
+	probe, err := net.Listen("tcp4", "0.0.0.0:0")
+	if err != nil {
+		t.Skipf("no IPv4: %v", err)
+	}
+	_, port, _ := net.SplitHostPort(probe.Addr().String())
+	probe.Close()
+
+	cleanup, err := serveChallenge(context.Background(), "tok", "tok.key", "", ":"+port)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	resp, err := http.Get("http://127.0.0.1:" + port + "/.well-known/acme-challenge/tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if string(b) != "tok.key" {
+		t.Errorf("body = %q", b)
+	}
+}
+
+// N2: a CA that reports no challenge error still gets a hint in the message.
+func TestDescribeAuthzError(t *testing.T) {
+	empty := &acme.AuthorizationError{Identifier: "example.test"}
+	if got := describeAuthzError(empty).Error(); !strings.Contains(got, "no detail") {
+		t.Errorf("got %q", got)
+	}
+	withDetail := &acme.AuthorizationError{Identifier: "example.test", Errors: []error{&acme.Error{ProblemType: "urn:ietf:params:acme:error:connection", Detail: "connection timed out fetching http://example.test/.well-known/acme-challenge/x"}}}
+	if got := describeAuthzError(withDetail); got != error(withDetail) || !strings.Contains(got.Error(), "timed out") {
+		t.Errorf("detail lost: %v", got)
 	}
 }

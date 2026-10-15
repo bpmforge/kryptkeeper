@@ -1265,17 +1265,13 @@ func (s *Server) validateHTTP01(identifier, token string, ch *Challenge, authz *
 
 	if kaErr != nil {
 		log.Printf("acme http-01 validation failed for %q: %v", identifier, kaErr)
-		ch.Status = "invalid"
-		authz.Status = "invalid"
-		s.store.SaveAuthz(authz)
+		failChallenge(s.store, ch, authz, "urn:ietf:params:acme:error:connection", "could not compute key authorization")
 		return
 	}
 
 	if err != nil {
 		log.Printf("acme http-01 validation fetch failed for %q: %v", identifier, err)
-		ch.Status = "invalid"
-		authz.Status = "invalid"
-		s.store.SaveAuthz(authz)
+		failChallenge(s.store, ch, authz, "urn:ietf:params:acme:error:connection", fmt.Sprintf("connection failed fetching %s: %v", url, err))
 		return
 	}
 	defer resp.Body.Close()
@@ -1287,9 +1283,7 @@ func (s *Server) validateHTTP01(identifier, token string, ch *Challenge, authz *
 		// The body is attacker-controlled and the fetch is unauthenticated,
 		// so it is never logged.
 		log.Printf("acme http-01 validation failed for %q: status=%d body_len=%d", identifier, resp.StatusCode, len(body))
-		ch.Status = "invalid"
-		authz.Status = "invalid"
-		s.store.SaveAuthz(authz)
+		failChallenge(s.store, ch, authz, "urn:ietf:params:acme:error:unauthorized", fmt.Sprintf("unexpected response fetching %s: status %d (a 200 with the exact key authorization is required)", url, resp.StatusCode))
 		return
 	}
 
@@ -1298,6 +1292,16 @@ func (s *Server) validateHTTP01(identifier, token string, ch *Challenge, authz *
 	authz.Status = "valid"
 	s.store.SaveAuthz(authz)
 	s.updateOrderStatus()
+}
+
+// failChallenge marks the challenge and its authorization invalid and records
+// the reason as the challenge error (RFC 8555 §8.3), so clients can report why
+// validation failed instead of an empty authorization error. Caller holds s.mu.
+func failChallenge(st Store, ch *Challenge, authz *Authorization, problemType, detail string) {
+	ch.Status = "invalid"
+	ch.Error = &Problem{Type: problemType, Detail: detail, Status: http.StatusBadRequest}
+	authz.Status = "invalid"
+	st.SaveAuthz(authz)
 }
 
 func (s *Server) updateOrderStatus() {
@@ -1380,17 +1384,13 @@ func (s *Server) validateDNS01(identifier, token string, ch *Challenge, authz *A
 
 	if kaErr != nil {
 		log.Printf("acme dns-01 validation failed for %q: %v", dnsName, kaErr)
-		ch.Status = "invalid"
-		authz.Status = "invalid"
-		s.store.SaveAuthz(authz)
+		failChallenge(s.store, ch, authz, "urn:ietf:params:acme:error:dns", "could not compute key authorization")
 		return
 	}
 
 	if err != nil {
 		log.Printf("acme dns-01 validation lookup failed for %q: %v", dnsName, err)
-		ch.Status = "invalid"
-		authz.Status = "invalid"
-		s.store.SaveAuthz(authz)
+		failChallenge(s.store, ch, authz, "urn:ietf:params:acme:error:dns", fmt.Sprintf("DNS lookup of %s failed: %v", dnsName, err))
 		return
 	}
 
@@ -1409,9 +1409,7 @@ func (s *Server) validateDNS01(identifier, token string, ch *Challenge, authz *A
 	}
 
 	log.Printf("acme dns-01 validation failed for %s: no TXT record matching expected digest", dnsName)
-	ch.Status = "invalid"
-	authz.Status = "invalid"
-	s.store.SaveAuthz(authz)
+	failChallenge(s.store, ch, authz, "urn:ietf:params:acme:error:unauthorized", "no TXT record at "+dnsName+" matches the expected digest")
 }
 
 // handleRenewalInfo implements the ACME ARI (Renewal Information) endpoint.
