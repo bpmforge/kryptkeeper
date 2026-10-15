@@ -371,11 +371,19 @@ func TestActiveCertCounts_TrackIssueRevokeRenew(t *testing.T) {
 	if got := count(); got != 2 {
 		t.Fatalf("after renew: %d, want 2", got)
 	}
+	// An expired-status cert still needs replacing, so it stays active
+	// (certificate_active.go); only revoked and superseded ones leave the count.
 	if _, err := p.UpdateEstate(ctx, fps[2], EstateUpdate{RenewalStatus: "expired"}); err != nil {
 		t.Fatal(err)
 	}
+	if got := count(); got != 2 {
+		t.Fatalf("after expiring one: %d, want 2", got)
+	}
+	if _, err := p.UpdateEstate(ctx, fps[2], EstateUpdate{RenewalStatus: "revoked"}); err != nil {
+		t.Fatal(err)
+	}
 	if got := count(); got != 1 {
-		t.Fatalf("after expiring one: %d, want 1", got)
+		t.Fatalf("after status-revoking one: %d, want 1", got)
 	}
 }
 

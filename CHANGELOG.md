@@ -6,6 +6,195 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [0.9.3] - 2026-10-15
+
+### Behaviour changes
+
+- **Discovery now defaults to the `db` provider.** The code default (unset),
+  `env.example`, `docker-compose.yml` and the Helm chart used `file` or
+  `scanner`, which are stubs: `scanner` is in-memory, scans port 443 only, ignores
+  `scan_type` and custom ports, persists no certificates and shows no flags or
+  posture. Compose users upgrading switch from that to persisted discovery: the
+  inventory now survives restarts and scans use the catalogue port list for their
+  scan type. An unknown value now falls back to `db` (it fell back to `file`).
+  `APP_DISCOVERY_PROVIDER=scanner` and `file` stay selectable; set
+  `APP_DISCOVERY_PROVIDER=file` explicitly if you relied on the unset behaviour.
+
+### Added
+
+- **Discovery says whose certificate it is.** Every TLS-served chain is now
+  verified (a real `x509` Verify of the leaf with the served intermediates)
+  against the system roots and this hub's own CAs, and each discovered leaf gets
+  a `trust_class`: `managed` (chains to a hub CA), `public` (chains to a system
+  root), `private_other` (some other CA), `self_signed`, or `unknown`.
+  `chain_complete` / `chain_trusted` are now populated, and new risk flags
+  `INCOMPLETE_CHAIN` (the server did not send enough to reach an anchor) and
+  `UNTRUSTED_ROOT` (the served chain ends in a root nobody here trusts) are
+  raised (see Fixed for the final `INCOMPLETE_CHAIN` rule). An expired certificate is still attributed to its issuer; expiry is
+  flagged separately. Intermediates and roots a server presents are stored as
+  chain CAs (migration `000077`: `trust_class`, `is_ca`) and kept out of the leaf
+  inventory, the Unmanaged filter and the dashboard counts. The trust class is
+  on certificates, discovery endpoints (with a `trust_class` filter on
+  `/certificates` and `/discovery/endpoints`) and both summaries; the Dashboard
+  shows a "Seen on the network by issuer" breakdown whose segments open the filtered
+  inventory, and the Certificates and Discovery pages filter by it. There is no
+  AIA fetching, so a leaf served alone under an intermediate no pool holds reads
+  `private_other` with unknown chain completeness.
+
+- **Discovery detects servers that only speak TLS 1.0, TLS 1.1 or SSLv3.** The
+  scanner's Go client cannot handshake below TLS 1.2 by default, so such a server
+  looked like a generic failure. When the normal handshake fails on an open
+  port, the scanner retries once with `MinVersion` lowered to TLS 1.0 (capture
+  only; normal verification is untouched, and a modern server never sees the
+  retry) and, failing that, sends a minimal ClientHello capped at TLS 1.1 and
+  reads the ServerHello version without completing a handshake. The endpoint is
+  recorded with `DEPRECATED_TLS_VERSION: TLSv1.0` (or `TLSv1.1`, `SSLv3`) and
+  counts as risky; its certificate is captured when the Go handshake could
+  complete. A server whose only suites are ones Go will not offer (RC4,
+  3DES-only) is found by the raw probe and has no certificate. There is no
+  policy flagging TLS 1.2 without 1.3, so none is added.
+
+### Changed
+
+- **A certificate served under a name it does not vouch for makes that endpoint
+  risky.** `HOSTNAME_MISMATCH` joins `EXPIRED`, `SELF_SIGNED`, `WEAK_KEY`,
+  `WEAK_SIGNATURE` and `UNTRUSTED_ROOT` in the risky-endpoint rule (summary
+  count, `risky_only` filter and the per-endpoint `risky` field), and a link's
+  mismatch also adds its 20 points to that endpoint's score. It applies only to
+  the endpoint where the name does not match. `INCOMPLETE_CHAIN` stays a
+  finding but is not risky on its own.
+
+### Fixed
+
+- **Certificate chain verdicts no longer contradict the endpoint view.**
+  `chain_complete` / `chain_trusted` are omitted from the certificate API (list,
+  detail, CSV export blank) for discovered certificates: completeness is a fact
+  about each endpoint (`mapped_certs[]` on `/discovery/endpoints`), and the
+  certificate-row column was a stale default. Hub-issued/imported certs keep the
+  value from issuance, now labelled "as issued" in the UI detail panel.
+- **A failed TLS handshake on an open port is a finding like NOT_TLS.**
+  `TLS_HANDSHAKE_FAILED` is now risky, and any endpoint with a high-severity
+  endpoint finding scores at least 20 instead of 0. A Postgres server that
+  answers the SSLRequest with `N` is reported as `POSTGRES_TLS_DISABLED`
+  (risky, plaintext database) rather than a generic handshake failure.
+- **UI:** the certificate inventory table scrolls inside its card instead of
+  clipping Risk/Estate at 1440px; the Discovery endpoint list shows the trust
+  class, the top two findings (+N) and a risky marker, and the observed protocol
+  ("not TLS") instead of the scan's intended one; the dashboard PQC readiness
+  card lists the parts of its percentage (quantum-safe, leaf-only PQC,
+  migration-ready, vulnerable) and the expiry-cliff line no longer calls
+  already-expired certificates "expiring".
+
+- **`INCOMPLETE_CHAIN` was noise.** Every private-CA leaf was flagged for not
+  serving its root (omitting the root is normal), including correctly
+  configured leaf+intermediate servers, and so was publicly trusted
+  `example.com`. It now fires only when an intermediate is provably missing: the
+  chain verifies only through a CA certificate the server did not send (a hub
+  intermediate, or one the platform verifier supplied), or a lone leaf names a
+  hub intermediate by AuthorityKeyId. A private chain whose issuing CA the hub
+  does not hold cannot be judged; `chain_complete` is then unknown (omitted/NULL),
+  never `false`, and nothing is flagged. A leaf served alone under a public
+  intermediate no pool holds also reads unknown (no AIA fetching).
+- **Endpoint-specific facts no longer live on the shared certificate row.**
+  `HOSTNAME_MISMATCH`, `INCOMPLETE_CHAIN`, `UNTRUSTED_ROOT` and
+  `chain_complete`/`chain_trusted` were stored on `certificates`, so the same
+  certificate served on two hostnames flipped with whichever endpoint was
+  scanned last (the earlier IP-sweep merge was a stopgap, now removed). They are
+  stored on the `certificate_endpoints` link (migration `000079`:
+  `endpoint_flags`, `endpoint_risk_score`, `chain_complete`, `chain_trusted`)
+  and each endpoint's `mapped_certs` entry carries its own flags, score and
+  `chain_complete`. The certificate row keeps only intrinsic flags (`EXPIRED`,
+  `WEAK_KEY`, `WEAK_SIGNATURE`, `SELF_SIGNED`, `PQC_VULNERABLE`, `trust_class`);
+  its own `chain_complete` is no longer maintained for discovered certs. The
+  risky rule and the findings funnel evaluate endpoint flags per endpoint. Links
+  written before the migration start empty and fill in on the next scan of each
+  endpoint.
+- **Hub-issued certificates found on the network are classed `managed`.** A
+  mapped cert's `trust_class` is always the effective class (it was empty for
+  managed certs), and the dashboard breakdown, now labelled "Seen on the network
+  by issuer", counts distinct certificates with an active endpoint mapping by
+  class, managed ones included (it showed 0 managed while a managed cert was
+  served on two endpoints). The classes sum to `mapped_certificates`, and each
+  segment opens the matching endpoints.
+- CI: race-enabled unit tests (`unit-backend`, `release-candidate`, `make
+  test-race`) run with `-timeout 30m`; `internal/bootstrap` under `-race` takes
+  about ten minutes, the default test timeout.
+
+- **Hosts that answer but are not usable TLS no longer vanish from a scan.** A
+  plain-HTTP host or a TLS 1.0-only host in a `/27` sweep was dropped from the
+  inventory while the job reported `completed`. An open port that is not TLS is
+  now recorded with a `NOT_TLS` finding, one whose handshake fails with
+  `TLS_HANDSHAKE_FAILED: <error>`; closed or filtered ports are still not
+  recorded, so a range scan does not flood the inventory. A scan that reached
+  such hosts finishes `completed_with_errors` (new status, migration `000078`)
+  and `GET /discovery/scan-jobs` returns an `error` string saying which hosts
+  and how many ports were closed; the Discovery page shows it. A failed
+  targeted job named an arbitrary catalogue port (5986, 465) because it took
+  whichever probe errored first; it now names the host and port deterministically,
+  443 first. Nothing reachable still reads `failed`.
+- **The "Risky" count, the "Risky only" filter and the dashboard now agree and
+  catch what matters.** Risky meant `risk_score >= 70`, so expired,
+  self-signed, weak-key and weak-signature certificates scored 40-60 were
+  hidden. An endpoint is now risky if a currently-active certificate scores 70
+  or more or carries `EXPIRED`, `SELF_SIGNED`, `WEAK_KEY`, `WEAK_SIGNATURE` or
+  `UNTRUSTED_ROOT`, or if the endpoint has a `NOT_TLS` or
+  `DEPRECATED_TLS_VERSION` finding. `risky_endpoints`, the filter and a new
+  `risky` field on each endpoint share that one rule. The Findings widget
+  stayed at 0 because it counted only cipheraudit issues; it now also counts
+  each current certificate's finding flags (expiry, self-signed, weak key or
+  signature, hostname mismatch, incomplete chain, untrusted root; the
+  informational `PQC_VULNERABLE` is not counted), per endpoint like the existing
+  issues.
+
+- **Discovered certificates now reach the certificate inventory.** The
+  dashboard counted them as unmanaged but `/certificates` (and the Estate =
+  Unmanaged filter) never listed them: discovery wrote NULL `issuer_cn` /
+  `key_size_bits`, the inventory loader scanned those into plain values and
+  skipped every such row, and the inventory was only loaded at startup. Discovery
+  now writes issuer CN, key size and the stored key algorithm; the loader
+  tolerates NULLs in every nullable column; and the provider merges new or
+  re-scanned discovery rows (unmanaged/external only) from the table within
+  seconds, no restart. Discovered certificates stay `unmanaged`/`discovered`.
+  Discovery scans no longer overwrite the risk of a managed certificate, and the
+  Postgres upsert now sends real arrays for `subject_alt_names`/`risk_flags`.
+- **SELF_SIGNED is flagged for `openssl req -x509` certificates.** These carry
+  `CA:TRUE`, which exempted them. The leaf a server presents is now flagged
+  when its subject equals its issuer and its own signature verifies under its
+  own key; self-signed roots higher in a served chain stay unflagged.
+- **HOSTNAME_MISMATCH no longer fires on every IP-target scan.** An IP-literal
+  target only flags a certificate that has IP SANs none of which match; a
+  DNS-only certificate reached by IP is not a mismatch. (The mismatch is now a
+  per-endpoint fact, so it no longer depends on scan order; see below.)
+- The Audit page's Resource column is readable: `GET /api/v1/audit` now adds a
+  read-time `resource_name` (certificate common name, CA/template display name,
+  "<template> for <CN or requester>" for approvals, notification rule name,
+  scan target), resolved once per request and only for resources the caller may
+  read. The stored record and `resource_id` are unchanged. The UI shows the name
+  with the type and a shortened ID beneath it, and the CSV export gains a
+  trailing `resource_name` column.
+- A `certificate.issue` row recorded when approval is required now carries the
+  `approval_id` in its change summary. Rows written before a certificate exists
+  (failures, denials, pending approval) intentionally keep the collection name
+  `certificates` as `resource_id`; successful issues already record the issued
+  fingerprint.
+- **One counting rule for certificate totals.** Pages disagreed on the same
+  estate (e.g. 49 on the dashboard, expiry timeline and posture reports vs 39
+  on the CA hierarchy) because revoked certificates were counted by some and
+  not others. An *active* certificate is now one that is not revoked and not
+  superseded by a renewal (`internal/bootstrap/certificate_active.go`, mirrored
+  in the UI by `isActiveCertificate`). The dashboard summary (`total`,
+  expiring/expired, estate split), per-CA "N certs", expiry timeline, crypto
+  posture, executive summary, PQC countdown/migration/waves, algorithm sunset,
+  compliance evidence and the dashboard expiry horizon all use it. The
+  dashboard summary gains a separate `revoked` figure. The certificate
+  inventory remains a record listing and is relabelled "N records (revoked and
+  superseded included)"; status filters are unchanged. Per-CA counts now also
+  keep certificates whose status was set to `expired` / `reissue_required`
+  (only revoked and renewed ones leave the count).
+- `POST /api/v1/certificates` and `POST /api/v1/certificates/{fingerprint}/renew`
+  responses now include `key_algorithm_display` (e.g. `ML-DSA-65`), as list and
+  get already did. It was derived on the stored copy only.
+
 ## [0.9.1] - 2026-10-14
 
 ### Fixed

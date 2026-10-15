@@ -166,7 +166,7 @@ func TestIntegration_IssuedCertSurvivesProviderRestart_Postgres(t *testing.T) {
 	if len(got.KeyUsage) == 0 {
 		t.Fatalf("key_usage after restart is empty, want non-empty (TEXT[] round-trip)")
 	}
-	if !got.ChainComplete || !got.ChainTrusted {
+	if !boolVal(got.ChainComplete) || !boolVal(got.ChainTrusted) {
 		t.Fatalf("chain_complete/chain_trusted after restart = %v/%v, want true/true (BOOLEAN round-trip)", got.ChainComplete, got.ChainTrusted)
 	}
 }

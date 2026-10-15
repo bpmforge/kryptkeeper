@@ -70,7 +70,7 @@ func derivePQCWaves(certs []CertificateItem) []derivedWave {
 	byWave := map[string][]MigrationWaveMember{}
 	teamVotes := map[string]map[string]int{}
 
-	for _, c := range certs {
+	for _, c := range activeCertificates(certs) {
 		if c.PQCReadiness != "vulnerable" {
 			continue
 		}

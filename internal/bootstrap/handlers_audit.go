@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-func registerAuditHandlers(mux *http.ServeMux, auth *Authenticator, roles *CustomRoleStore, auditProvider AuditProvider) {
+func registerAuditHandlers(mux *http.ServeMux, auth *Authenticator, roles *CustomRoleStore, auditProvider AuditProvider, names auditNameSources) {
 	mux.HandleFunc("/api/v1/audit", func(w http.ResponseWriter, r *http.Request) {
 		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
 		if err != nil {
@@ -62,7 +62,7 @@ func registerAuditHandlers(mux *http.ServeMux, auth *Authenticator, roles *Custo
 		emitAuditEvent(r, auditProvider, principal, "audit.list", "audit_log", "audit", AuditOutcomeSuccess)
 
 		resp := struct {
-			Data []AuditEntry `json:"data"`
+			Data []auditEntryView `json:"data"`
 			Meta struct {
 				Total      int     `json:"total"`
 				Limit      int     `json:"limit"`
@@ -71,7 +71,7 @@ func registerAuditHandlers(mux *http.ServeMux, auth *Authenticator, roles *Custo
 			} `json:"meta"`
 			Principal string `json:"principal"`
 		}{
-			Data:      result.Entries,
+			Data:      names.resolveAuditNames(r.Context(), pd, result.Entries),
 			Principal: principal,
 		}
 		resp.Meta.Total = result.Total

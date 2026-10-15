@@ -86,7 +86,9 @@ jobs:
 
   unit-backend:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # 45: internal/bootstrap alone takes ~10 min under -race, and this job
+    # shares the runner with integration-core's own bootstrap run.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Setup Go
@@ -99,7 +101,9 @@ jobs:
         if: ${{ hashFiles('go.mod') != '' }}
         run: |
           set -euo pipefail
-          go test ./... -race
+          # -timeout 30m: internal/bootstrap under -race exceeds the 10m
+          # default (same reason as the integration-core job below).
+          go test ./... -race -timeout 30m
       - name: Skip marker
         if: ${{ hashFiles('go.mod') == '' }}
         run: echo "No Go module detected; skipping backend unit tests"
@@ -177,9 +181,10 @@ jobs:
           # no Go packages, so `go test ./tests/integration/...` matched nothing.
           pkgs=$(grep -rl --include='*_test.go' KRYPTKEEPER_TEST_POSTGRES_DSN ./internal | xargs -n1 dirname | sort -u)
           # -p 1: these packages DROP SCHEMA on the one shared database.
-          # -timeout 30m: internal/bootstrap under -race exceeds the 10m default
-          # on 2-vCPU hosted runners.
-          go test -race -count=1 -p 1 -timeout 30m $pkgs
+          # No -race here: unit-backend already runs the whole module under
+          # -race on every PR, and this job exists for the live-Postgres paths;
+          # ci-main keeps -race on this run for coverage on main.
+          go test -count=1 -p 1 -timeout 30m $pkgs
       - name: Skip marker
         if: ${{ hashFiles('go.mod') == '' }}
         run: echo "No Go module detected; skipping integration tests"

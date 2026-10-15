@@ -7,15 +7,16 @@ package bootstrap
 import (
 	"context"
 	"crypto/rand"
+	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +24,7 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
 
+	"kryptkeeper/internal/ca"
 	"kryptkeeper/internal/cipheraudit"
 	"kryptkeeper/internal/discovery/scanner"
 )
@@ -35,36 +37,92 @@ import (
 // two-column insert could never satisfy it, so every scan that found a
 // certificate failed to persist. The unit-test schema was a two-column
 // stand-in and hid that; it now mirrors the migration.
-func discoveredCertRow(cert scanner.DiscoveredCert, now string) (args []any, ok bool) {
-	alg, ok := normalizeDiscoveredKeyAlgorithm(cert.PublicKeyAlgorithm)
+//
+// Postgres types subject_alt_names and risk_flags TEXT[] (migration 000002);
+// sqlite has no array type and keeps JSON text. Sending sqlite's JSON string to
+// a TEXT[] column is rejected as a malformed array literal -- the same trap
+// writeCertToDB documents (S-66) -- so the postgres argument list carries
+// real slices.
+func discoveredCertRow(cert scanner.DiscoveredCert, now string, postgres bool) (args []any, ok bool) {
+	// The raw DER is the authority for the key facts the certificates table
+	// stores (issuer CN, key size, stored algorithm name). Sources that build a
+	// DiscoveredCert by hand (service mesh, WinRM) never set them, so deriving
+	// here keeps every source's row complete; an unparseable Raw (tests, a
+	// truncated capture) degrades to NULLs rather than dropping the cert.
+	keyAlg := cert.PublicKeyAlgorithm
+	var issuerCN any
+	var keyBits any
+	if parsed, err := x509.ParseCertificate(cert.Raw); err == nil {
+		keyAlg = ca.StoredPublicKeyAlgorithm(parsed)
+		if cn := parsed.Issuer.CommonName; cn != "" {
+			issuerCN = cn
+		}
+		if bits := ca.PublicKeyBits(parsed.PublicKey); bits > 0 {
+			keyBits = bits
+		}
+	}
+	alg, ok := normalizeDiscoveredKeyAlgorithm(keyAlg)
 	if !ok {
 		// The CHECK constraint would reject the row; skipping one exotic
 		// certificate beats failing the whole scan transaction.
 		log.Printf("discovery: skipping cert %s: unsupported public key algorithm %q", cert.Fingerprint, cert.PublicKeyAlgorithm)
 		return nil, false
 	}
-	sans, _ := json.Marshal(cert.DNSNames)
-	flags := cert.RiskFlags
+	// Endpoint-scoped flags (HOSTNAME_MISMATCH, INCOMPLETE_CHAIN,
+	// UNTRUSTED_ROOT) belong to the certificate_endpoints link, so the shared
+	// row carries only what is true of the certificate wherever it is served.
+	// The score subtraction is approximate only when the scanner's own sum hit
+	// its 100 cap, where both values are far past any threshold.
+	flags, _, endpointScore := scanner.SplitEndpointFlags(cert.RiskFlags)
 	if flags == nil {
 		flags = []string{}
 	}
-	flagsJSON, _ := json.Marshal(flags)
+	certScore := max(cert.RiskScore-endpointScore, 0)
+	dnsNames := cert.DNSNames
+	if dnsNames == nil {
+		dnsNames = []string{}
+	}
+	var sansArg, flagsArg any = dnsNames, flags
+	if !postgres {
+		sans, _ := json.Marshal(dnsNames)
+		flagsJSON, _ := json.Marshal(flags)
+		sansArg, flagsArg = string(sans), string(flagsJSON)
+	}
 	return []any{
 		cert.Fingerprint,
 		cert.SerialNumber,
 		cert.SubjectDN,
 		cert.CommonName,
-		string(sans),
+		sansArg,
 		cert.IssuerDN,
 		cert.ValidFrom.UTC().Format(time.RFC3339),
 		cert.ValidUntil.UTC().Format(time.RFC3339),
 		alg,
 		cert.SignatureAlgorithm,
-		cert.RiskScore,
-		string(flagsJSON),
+		certScore,
+		flagsArg,
 		base64.StdEncoding.EncodeToString(cert.Raw),
 		now,
+		issuerCN,
+		keyBits,
+		boolArg(false, postgres), // chain completeness is per endpoint: certificate_endpoints.chain_complete
+		boolArg(cert.ChainTrusted, postgres),
+		nullString(cert.TrustClass),
+		boolArg(cert.ChainCA, postgres),
 	}, true
+}
+
+// boolArg renders a flag for the certificates column: native BOOLEAN on
+// postgres, 0/1 on sqlite (which has no boolean type).
+func boolArg(v, postgres bool) any {
+	switch {
+	case postgres:
+		return v
+	case v:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // normalizeDiscoveredKeyAlgorithm maps crypto/x509's
@@ -138,7 +196,42 @@ func scanScopePorts(scope string) []int {
 const discoveredCertUpsertColumns = `(fingerprint_sha256, serial_number, subject_dn, common_name,
  subject_alt_names, issuer_dn, valid_from, valid_until,
  public_key_algorithm, signature_algorithm, risk_score, risk_flags, raw_cert_b64, updated_at,
- source, origin, management_state)`
+ issuer_cn, key_size_bits, chain_complete, chain_trusted, trust_class, is_ca, source, origin, management_state)`
+
+// discoveredCertConflictUpdate{SQLite,Postgres} are the ON CONFLICT bodies. It refreshes
+// only discovery-owned facts and is gated off for managed certificates: the
+// hub scores those with its own rules, and a scan (whose verdict depends on
+// whether it targeted an IP or a name) must not rewrite them. issuer_cn and
+// key_size_bits backfill rows discovery wrote before those columns existed.
+//
+// The issuer verdict (trust_class, chain_trusted) is only overwritten by a scan
+// that produced one: a WinRM or mesh sighting of the same cert carries no
+// trust_class and must not erase what a network scan established. Everything
+// endpoint-specific (hostname match, served-chain completeness, the chain
+// flags) is written to certificate_endpoints instead, never here. is_ca is "leaf wins": a cert seen as a served
+// leaf anywhere stays in the leaf inventory even if another endpoint also
+// serves it as part of its chain.
+const discoveredCertConflictUpdateSQLite = `
+    risk_score = excluded.risk_score, risk_flags = excluded.risk_flags,
+    issuer_cn = COALESCE(certificates.issuer_cn, excluded.issuer_cn),
+    key_size_bits = COALESCE(certificates.key_size_bits, excluded.key_size_bits),
+    chain_trusted = CASE WHEN excluded.trust_class IS NULL THEN certificates.chain_trusted ELSE excluded.chain_trusted END,
+    trust_class = COALESCE(excluded.trust_class, certificates.trust_class),
+    is_ca = MIN(excluded.is_ca, certificates.is_ca),
+    updated_at = excluded.updated_at
+WHERE certificates.management_state <> 'managed'
+`
+
+const discoveredCertConflictUpdatePostgres = `
+    risk_score = excluded.risk_score, risk_flags = excluded.risk_flags,
+    issuer_cn = COALESCE(certificates.issuer_cn, excluded.issuer_cn),
+    key_size_bits = COALESCE(certificates.key_size_bits, excluded.key_size_bits),
+    chain_trusted = CASE WHEN excluded.trust_class IS NULL THEN certificates.chain_trusted ELSE excluded.chain_trusted END,
+    trust_class = COALESCE(excluded.trust_class, certificates.trust_class),
+    is_ca = (excluded.is_ca AND certificates.is_ca),
+    updated_at = excluded.updated_at
+WHERE certificates.management_state <> 'managed'
+`
 
 type dbDiscoveryStore interface {
 	EnsureSchema(ctx context.Context) error
@@ -176,17 +269,23 @@ type discoveryEndpointFindings struct {
 // see the W2-11 SCOPE GAP note in docs/board/plan.json).
 func listDiscoveryEndpointFindings(ctx context.Context, db *sql.DB, endpointsQuery, certEndpointsQuery string) ([]discoveryEndpointFindings, error) {
 	certsByEndpoint := make(map[string][]string)
+	flagFindingsByEndpoint := make(map[string][]string)
 	certRows, err := db.QueryContext(ctx, certEndpointsQuery)
 	if err != nil {
 		return nil, err
 	}
 	for certRows.Next() {
-		var endpointID, fingerprint string
-		if err := certRows.Scan(&endpointID, &fingerprint); err != nil {
+		var endpointID, fingerprint, flagsText, linkFlagsText string
+		if err := certRows.Scan(&endpointID, &fingerprint, &flagsText, &linkFlagsText); err != nil {
 			certRows.Close()
 			return nil, err
 		}
 		certsByEndpoint[endpointID] = append(certsByEndpoint[endpointID], fingerprint)
+		// Each link contributes the certificate's own flags plus what THIS
+		// endpoint's serving of it adds, so a mismatch on one endpoint is one
+		// finding there and none on the endpoint where the name matches.
+		flagFindingsByEndpoint[endpointID] = append(flagFindingsByEndpoint[endpointID],
+			certFlagFindings(mergeLinkFlags(parseRiskFlagsText(flagsText), parseRiskFlagsText(linkFlagsText)))...)
 	}
 	if err := certRows.Err(); err != nil {
 		certRows.Close()
@@ -212,6 +311,13 @@ func listDiscoveryEndpointFindings(ctx context.Context, db *sql.DB, endpointsQue
 				return nil, fmt.Errorf("unmarshal issues for endpoint %s: %w", endpointID, err)
 			}
 		}
+		// The certificate's own risk flags (EXPIRED, SELF_SIGNED, WEAK_KEY, ...)
+		// are findings too. Before this the widget counted only cipheraudit's
+		// issues, so it read 0 on a hub full of expired and self-signed
+		// certificates. Like cipheraudit's, they are counted per endpoint with
+		// no dedup (see FindingFunnelSummary), and suppressed by an exception
+		// whose issue string is the flag code on that certificate.
+		issues = append(issues, flagFindingsByEndpoint[endpointID]...)
 		if len(issues) == 0 {
 			continue
 		}
@@ -291,6 +397,10 @@ CREATE TABLE IF NOT EXISTS certificate_endpoints (
     first_seen TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     last_seen TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     currently_active INTEGER NOT NULL DEFAULT 1,
+    endpoint_flags TEXT NOT NULL DEFAULT '[]',
+    endpoint_risk_score INTEGER NOT NULL DEFAULT 0,
+    chain_complete INTEGER,
+    chain_trusted INTEGER,
     PRIMARY KEY (certificate_fingerprint, endpoint_id)
 );
 CREATE INDEX IF NOT EXISTS idx_ce_endpoint ON certificate_endpoints(endpoint_id);
@@ -312,7 +422,13 @@ CREATE TABLE IF NOT EXISTS certificates (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     source TEXT NOT NULL DEFAULT 'discovery_network',
     origin TEXT NOT NULL DEFAULT 'discovered',
-    management_state TEXT NOT NULL DEFAULT 'unmanaged'
+    management_state TEXT NOT NULL DEFAULT 'unmanaged',
+    issuer_cn TEXT,
+    key_size_bits INTEGER,
+    chain_complete INTEGER NOT NULL DEFAULT 0,
+    chain_trusted INTEGER NOT NULL DEFAULT 0,
+    trust_class TEXT,
+    is_ca INTEGER NOT NULL DEFAULT 0
 );`
 
 const postgresDiscoverySchema = `
@@ -346,6 +462,10 @@ CREATE TABLE IF NOT EXISTS certificate_endpoints (
     first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     currently_active BOOLEAN NOT NULL DEFAULT TRUE,
+    endpoint_flags TEXT NOT NULL DEFAULT '[]',
+    endpoint_risk_score INTEGER NOT NULL DEFAULT 0,
+    chain_complete BOOLEAN,
+    chain_trusted BOOLEAN,
     PRIMARY KEY (certificate_fingerprint, endpoint_id)
 );
 CREATE INDEX IF NOT EXISTS idx_ce_endpoint ON certificate_endpoints(endpoint_id);
@@ -367,7 +487,13 @@ CREATE TABLE IF NOT EXISTS certificates (
     updated_at TEXT NOT NULL DEFAULT NOW()::TEXT,
     source TEXT NOT NULL DEFAULT 'discovery_network',
     origin TEXT NOT NULL DEFAULT 'discovered',
-    management_state TEXT NOT NULL DEFAULT 'unmanaged'
+    management_state TEXT NOT NULL DEFAULT 'unmanaged',
+    issuer_cn TEXT,
+    key_size_bits INTEGER,
+    chain_complete BOOLEAN NOT NULL DEFAULT FALSE,
+    chain_trusted BOOLEAN NOT NULL DEFAULT FALSE,
+    trust_class TEXT,
+    is_ca BOOLEAN NOT NULL DEFAULT FALSE
 );`
 
 // runDiscoveryScan actually executes a network scan. Overridable in tests
@@ -473,8 +599,8 @@ var auditEndpointTLSIssues = func(host string, port int) []string {
 func auditEndpointTLSIssuesBatch(results []scanner.DiscoveredEndpoint) ([]string, error) {
 	issuesByEndpoint := make([]string, len(results))
 	for i, ep := range results {
-		if ep.Error != "" {
-			continue
+		if ep.Error != "" || len(ep.Findings) > 0 {
+			continue // an endpoint finding already says what is wrong; a second dial would only add "connection failed" noise
 		}
 		// W12-04: port 0 means no socket to audit (mesh/K8s-secret
 		// sources) — a forced dial would stamp a false Grade-F
@@ -700,6 +826,7 @@ func (p *dbDiscoveryProvider) RequeueScanJob(ctx context.Context, scanJobID stri
 type sqliteDiscoveryStore struct {
 	db        *sql.DB
 	winrmScan winRMTargetScanner
+	trust     discoveryTrust
 }
 
 func (s *sqliteDiscoveryStore) EnsureSchema(ctx context.Context) error {
@@ -721,7 +848,7 @@ func (s *sqliteDiscoveryStore) EnsureSchema(ctx context.Context) error {
 	// certificates mirror predates the full-column upsert. Against the
 	// migration-managed table every one of these is a duplicate-column
 	// no-op.
-	for _, stmt := range discoveryCertMirrorUpgrades {
+	for _, stmt := range slices.Concat(discoveryCertMirrorUpgrades, discoveryTrustMirrorUpgradesSQLite, discoveryLinkUpgradesSQLite) {
 		_, _ = s.db.ExecContext(ctx, stmt) // best-effort upgrade: duplicate-column error = already migrated
 	}
 	// Scan runners are in-process goroutines: any job still queued/running
@@ -752,7 +879,41 @@ var discoveryCertMirrorUpgrades = []string{
 	"ALTER TABLE certificates ADD COLUMN source TEXT NOT NULL DEFAULT 'discovery_network'",
 	"ALTER TABLE certificates ADD COLUMN origin TEXT NOT NULL DEFAULT 'discovered'",
 	"ALTER TABLE certificates ADD COLUMN management_state TEXT NOT NULL DEFAULT 'unmanaged'",
+	"ALTER TABLE certificates ADD COLUMN issuer_cn TEXT",
+	"ALTER TABLE certificates ADD COLUMN key_size_bits INTEGER",
+	"ALTER TABLE certificates ADD COLUMN trust_class TEXT",
 }
+
+// Trust-verdict columns differ in type by dialect (sqlite has no BOOLEAN).
+var (
+	discoveryTrustMirrorUpgradesSQLite = []string{
+		"ALTER TABLE certificates ADD COLUMN chain_complete INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE certificates ADD COLUMN chain_trusted INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE certificates ADD COLUMN is_ca INTEGER NOT NULL DEFAULT 0",
+	}
+	discoveryTrustMirrorUpgradesPostgres = []string{
+		"ALTER TABLE certificates ADD COLUMN chain_complete BOOLEAN NOT NULL DEFAULT FALSE",
+		"ALTER TABLE certificates ADD COLUMN chain_trusted BOOLEAN NOT NULL DEFAULT FALSE",
+		"ALTER TABLE certificates ADD COLUMN is_ca BOOLEAN NOT NULL DEFAULT FALSE",
+	}
+)
+
+// Endpoint-scoped columns on certificate_endpoints (migration 000079); a
+// pre-existing link table gets them here, a migrated one already has them.
+var (
+	discoveryLinkUpgradesSQLite = []string{
+		"ALTER TABLE certificate_endpoints ADD COLUMN endpoint_flags TEXT NOT NULL DEFAULT '[]'",
+		"ALTER TABLE certificate_endpoints ADD COLUMN endpoint_risk_score INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE certificate_endpoints ADD COLUMN chain_complete INTEGER",
+		"ALTER TABLE certificate_endpoints ADD COLUMN chain_trusted INTEGER",
+	}
+	discoveryLinkUpgradesPostgres = []string{
+		"ALTER TABLE certificate_endpoints ADD COLUMN IF NOT EXISTS endpoint_flags TEXT NOT NULL DEFAULT '[]'",
+		"ALTER TABLE certificate_endpoints ADD COLUMN IF NOT EXISTS endpoint_risk_score INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE certificate_endpoints ADD COLUMN IF NOT EXISTS chain_complete BOOLEAN",
+		"ALTER TABLE certificate_endpoints ADD COLUMN IF NOT EXISTS chain_trusted BOOLEAN",
+	}
+)
 
 // upsertOutcome summarizes what upsertScanResults actually persisted.
 // W19-22: a single row's failure (the port/protocol CHECK, or any future
@@ -834,6 +995,7 @@ func parseDiscoveryIssuesJSON(raw string) []string {
 // GetSummary/ListEndpoints' risk-score JOINs resolve against real data —
 // see G-55 in DESIGN_REVIEW.md.
 func (s *sqliteDiscoveryStore) upsertScanResults(ctx context.Context, results []scanner.DiscoveredEndpoint) (upsertOutcome, error) {
+	s.trust.classify(ctx, results)
 	issuesByEndpoint, err := auditEndpointTLSIssuesBatch(results)
 	if err != nil {
 		return upsertOutcome{}, err
@@ -850,13 +1012,10 @@ func (s *sqliteDiscoveryStore) upsertScanResults(ctx context.Context, results []
 	var out upsertOutcome
 
 	for i, ep := range results {
-		if ep.Error != "" && ep.Port != 0 {
+		if endpointNeverReached(ep) {
 			continue
 		}
-		issuesJSON := issuesByEndpoint[i]
-		if ep.Error != "" {
-			issuesJSON = discoveryErrorIssuesJSON(ep.Error)
-		}
+		issuesJSON := endpointIssuesJSON(ep, issuesByEndpoint[i])
 
 		spErr := upsertOneEndpointWithSavepoint(ctx, tx, fmt.Sprintf("sp_ep_%d", i), func() error {
 			var endpointID string
@@ -876,34 +1035,26 @@ RETURNING id
 				return fmt.Errorf("upsert endpoint %s:%d: %w", ep.Host, ep.Port, err)
 			}
 
-			if ep.Error != "" {
-				return nil // no certs, no staleness sweep for an error-carrying source
+			if !endpointCertsObserved(ep) {
+				return nil // no certs, no staleness sweep: nothing was learned about them
 			}
 
 			for _, cert := range ep.Certs {
 				if cert.Fingerprint == "" {
 					continue
 				}
-				args, ok := discoveredCertRow(cert, now)
+				args, ok := discoveredCertRow(cert, now, false)
 				if !ok {
 					continue
 				}
 				if _, err := tx.ExecContext(ctx, `
 INSERT INTO certificates `+discoveredCertUpsertColumns+`
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovery_network', 'discovered', 'unmanaged')
-ON CONFLICT (fingerprint_sha256) DO UPDATE SET
-    risk_score = excluded.risk_score, risk_flags = excluded.risk_flags,
-    updated_at = excluded.updated_at
-`, args...); err != nil {
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovery_network', 'discovered', 'unmanaged')
+ON CONFLICT (fingerprint_sha256) DO UPDATE SET`+discoveredCertConflictUpdateSQLite, args...); err != nil {
 					return fmt.Errorf("upsert certificates %s: %w", cert.Fingerprint, err)
 				}
-				if _, err := tx.ExecContext(ctx, `
-INSERT INTO certificate_endpoints (certificate_fingerprint, endpoint_id, first_seen, last_seen, currently_active)
-VALUES (?, ?, ?, ?, 1)
-ON CONFLICT (certificate_fingerprint, endpoint_id) DO UPDATE SET
-    last_seen = excluded.last_seen, currently_active = 1
-`, cert.Fingerprint, endpointID, now, now); err != nil {
-					return fmt.Errorf("upsert certificate_endpoints %s/%s: %w", cert.Fingerprint, endpointID, err)
+				if err := upsertCertificateLink(ctx, tx, false, cert, endpointID, now); err != nil {
+					return err
 				}
 				touchedPairs[[2]string{endpointID, cert.Fingerprint}] = true
 			}
@@ -964,20 +1115,54 @@ func (s *sqliteDiscoveryStore) GetSummary(ctx context.Context) (DiscoverySummary
 	err := s.db.QueryRowContext(ctx, `
 SELECT
     (SELECT COUNT(*) FROM endpoints) AS discovered_endpoints,
-    (SELECT COUNT(DISTINCT certificate_fingerprint) FROM certificate_endpoints WHERE currently_active = 1) AS mapped_certificates,
-    (SELECT COUNT(*) FROM endpoints WHERE id IN (
-        SELECT endpoint_id FROM certificate_endpoints ce
-        JOIN certificates c ON ce.certificate_fingerprint = c.fingerprint_sha256
-        WHERE c.risk_score >= 70 AND ce.currently_active = 1
-    )) AS risky_endpoints,
+    (SELECT COUNT(DISTINCT ce.certificate_fingerprint) FROM certificate_endpoints ce
+        LEFT JOIN certificates c ON ce.certificate_fingerprint = c.fingerprint_sha256
+        WHERE ce.currently_active = 1 AND COALESCE(c.is_ca, 0) = 0) AS mapped_certificates,
+    (SELECT COUNT(*) FROM endpoints e WHERE `+riskyEndpointSQL("1")+`) AS risky_endpoints,
     (SELECT COUNT(*) FROM scan_jobs WHERE status IN ('queued', 'running')) AS active_scan_jobs
 `).Scan(&summary.DiscoveredEndpoints, &summary.MappedCertificates, &summary.RiskyEndpoints, &summary.ActiveScanJobs)
+	if err != nil {
+		return summary, err
+	}
+	summary.TrustClasses, err = loadTrustClassCounts(ctx, s.db, "ce.currently_active = 1", "COALESCE(c.is_ca, 0) = 0")
 	return summary, err
+}
+
+// loadTrustClassCounts counts the distinct leaf certificates currently seen on
+// the network per effective trust class, hub-issued ones included: a managed
+// cert served on two endpoints is one managed certificate, and the classes
+// always sum to the number of distinct certificates with an active endpoint
+// mapping (the mapped_certificates figure). activeCond/notCA are the dialect's
+// predicates over `ce` / `c`. Chain CAs are not leaf inventory; a certificate
+// never classified, or carrying a value outside the vocabulary, counts as
+// unknown. A managed row never carries a discovery verdict (discovery does not
+// write managed rows), so management_state decides it.
+func loadTrustClassCounts(ctx context.Context, db *sql.DB, activeCond, notCA string) (TrustClassCounts, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT `+effectiveTrustClassSQL+` AS class, COUNT(DISTINCT ce.certificate_fingerprint)
+FROM certificate_endpoints ce
+LEFT JOIN certificates c ON ce.certificate_fingerprint = c.fingerprint_sha256
+WHERE `+activeCond+` AND `+notCA+`
+GROUP BY `+effectiveTrustClassSQL)
+	if err != nil {
+		return TrustClassCounts{}, err
+	}
+	defer rows.Close()
+	var out TrustClassCounts
+	for rows.Next() {
+		var class string
+		var n int
+		if err := rows.Scan(&class, &n); err != nil {
+			return TrustClassCounts{}, err
+		}
+		out.add(class, n)
+	}
+	return out, rows.Err()
 }
 
 func (s *sqliteDiscoveryStore) ListEndpointFindings(ctx context.Context) ([]discoveryEndpointFindings, error) {
 	return listDiscoveryEndpointFindings(ctx, s.db, "SELECT id, issues FROM endpoints",
-		"SELECT endpoint_id, certificate_fingerprint FROM certificate_endpoints WHERE currently_active = 1")
+		"SELECT ce.endpoint_id, ce.certificate_fingerprint, COALESCE(CAST(c.risk_flags AS TEXT), '[]'), COALESCE(ce.endpoint_flags, '[]') FROM certificate_endpoints ce LEFT JOIN certificates c ON ce.certificate_fingerprint = c.fingerprint_sha256 WHERE ce.currently_active = 1")
 }
 
 func (s *sqliteDiscoveryStore) ListEndpoints(ctx context.Context, q DiscoveryEndpointQuery) (DiscoveryEndpointResult, error) {
@@ -1000,10 +1185,13 @@ func (s *sqliteDiscoveryStore) ListEndpoints(ctx context.Context, q DiscoveryEnd
 		args = append(args, q.Protocol)
 	}
 	if q.RiskyOnly {
+		where = append(where, riskyEndpointSQL("1"))
+	}
+	if q.TrustClass != "" {
 		where = append(where, `e.id IN (
-			SELECT endpoint_id FROM certificate_endpoints ce
+			SELECT ce.endpoint_id FROM certificate_endpoints ce
 			JOIN certificates c ON ce.certificate_fingerprint = c.fingerprint_sha256
-			WHERE c.risk_score >= 70 AND ce.currently_active = 1
+			WHERE `+trustClassPredicate(q.TrustClass, "c", "ce.currently_active = 1", "c.is_ca = 0")+`
 		)`)
 	}
 	whereSQL := ""
@@ -1065,6 +1253,7 @@ LIMIT ? OFFSET ?
 	if err := attachMappedCerts(ctx, s.db, "?", endpoints); err != nil {
 		return DiscoveryEndpointResult{}, err
 	}
+	markRiskyEndpoints(endpoints)
 
 	end := cursor + limit
 	if end > total {
@@ -1113,13 +1302,28 @@ func attachMappedCerts(ctx context.Context, db *sql.DB, style string, endpoints 
 		args = append(args, endpoints[i].ID)
 	}
 	active := "1"
+	// risk_flags is JSON text on sqlite but TEXT[] on postgres, where a bare
+	// '[]' literal is a malformed array and the array prints as {A,B}; emit
+	// JSON there so both dialects unmarshal the same way.
+	riskFlags := "COALESCE(c.risk_flags, '[]')"
+	// is_ca is a native BOOLEAN on postgres, 0/1 on sqlite.
+	chainBool := "COALESCE(c.is_ca, 0)"
+	// chain_complete / chain_trusted are the LINK's: nullable, -1 = never judged
+	// for this endpoint.
+	chainComplete := "CASE WHEN ce.chain_complete IS NULL THEN -1 WHEN ce.chain_complete <> 0 THEN 1 ELSE 0 END"
+	chainTrusted := "CASE WHEN ce.chain_trusted IS NULL THEN -1 WHEN ce.chain_trusted <> 0 THEN 1 ELSE 0 END"
 	if style == "$" {
 		active = "true"
+		riskFlags = "COALESCE(array_to_json(c.risk_flags)::text, '[]')"
+		chainBool = "CASE WHEN c.is_ca THEN 1 ELSE 0 END"
+		chainComplete = "CASE WHEN ce.chain_complete IS NULL THEN -1 WHEN ce.chain_complete THEN 1 ELSE 0 END"
+		chainTrusted = "CASE WHEN ce.chain_trusted IS NULL THEN -1 WHEN ce.chain_trusted THEN 1 ELSE 0 END"
 	}
 	rows, err := db.QueryContext(ctx, `
 SELECT ce.endpoint_id, ce.certificate_fingerprint,
        COALESCE(c.common_name, ''), COALESCE(CAST(c.valid_until AS TEXT), ''), COALESCE(c.risk_score, 0),
-       COALESCE(c.risk_flags, '[]')
+       `+riskFlags+`, `+effectiveTrustClassSQL+`, `+chainBool+`, `+chainComplete+`, `+chainTrusted+`,
+       COALESCE(ce.endpoint_flags, '[]'), COALESCE(ce.endpoint_risk_score, 0)
 FROM certificate_endpoints ce
 LEFT JOIN certificates c ON ce.certificate_fingerprint = c.fingerprint_sha256
 WHERE ce.currently_active = `+active+` AND ce.endpoint_id IN (`+strings.Join(placeholders, ", ")+`)
@@ -1130,14 +1334,21 @@ ORDER BY ce.certificate_fingerprint ASC
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var endpointID, flagsJSON string
+		var endpointID, flagsJSON, linkFlagsJSON string
+		var isCA, complete, trusted, linkScore int
 		var mc DiscoveryMappedCert
-		if err := rows.Scan(&endpointID, &mc.Fingerprint, &mc.CommonName, &mc.ValidUntil, &mc.RiskScore, &flagsJSON); err != nil {
+		if err := rows.Scan(&endpointID, &mc.Fingerprint, &mc.CommonName, &mc.ValidUntil, &mc.RiskScore, &flagsJSON, &mc.TrustClass, &isCA, &complete, &trusted, &linkFlagsJSON, &linkScore); err != nil {
 			return err
 		}
-		if flagsJSON != "" && flagsJSON != "[]" {
-			_ = json.Unmarshal([]byte(flagsJSON), &mc.RiskFlags) // best-effort: malformed stored JSON leaves the slice empty
+		mc.ChainCA, mc.ChainTrusted = isCA == 1, trusted == 1
+		if complete >= 0 {
+			known := complete == 1
+			mc.ChainComplete = &known
 		}
+		// The certificate's own flags and score plus what this endpoint's
+		// serving of it adds.
+		mc.RiskFlags = mergeLinkFlags(parseRiskFlagsText(flagsJSON), parseRiskFlagsText(linkFlagsJSON))
+		mc.RiskScore = min(mc.RiskScore+linkScore, 100)
 		if i, ok := byID[endpointID]; ok {
 			endpoints[i].MappedCerts = append(endpoints[i].MappedCerts, mc)
 		}
@@ -1184,7 +1395,7 @@ func (s *sqliteDiscoveryStore) ListScanJobs(ctx context.Context, q DiscoveryScan
 
 	listArgs := append(append([]any{}, args...), limit, cursor)
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, type, scope, status, created_at
+SELECT id, type, scope, status, created_at, COALESCE(error_message, '')
 FROM scan_jobs`+whereSQL+`
 ORDER BY created_at DESC
 LIMIT ? OFFSET ?
@@ -1197,7 +1408,7 @@ LIMIT ? OFFSET ?
 	jobs := make([]DiscoveryScanJob, 0)
 	for rows.Next() {
 		var j DiscoveryScanJob
-		if err := rows.Scan(&j.ID, &j.ScanType, &j.Target, &j.Status, &j.QueuedAt); err != nil {
+		if err := rows.Scan(&j.ID, &j.ScanType, &j.Target, &j.Status, &j.QueuedAt, &j.Error); err != nil {
 			return DiscoveryScanJobResult{}, err
 		}
 		j.Target = scanScopeTarget(j.Target)
@@ -1293,27 +1504,15 @@ func (s *sqliteDiscoveryStore) runAndPersistScan(ctx context.Context, jobID, tar
 	defer afterDiscoveryScanPersist(jobID)
 	result := runWinRMOrNetworkScan(ctx, s.winrmScan, jobID, target, scanType, extraPorts)
 
-	status := "completed"
-	errMsg := ""
-	if result.Status != "" && result.Status != "completed" {
-		status = "failed"
-		// The runner's reason used to be dropped here, leaving a failed
-		// row with an empty error_message: an unreachable WinRM host and
-		// a mis-wired runner looked identical (live, 2026-09-10).
-		errMsg = truncateScanError(errors.New(firstEndpointError(result.Endpoints)))
-	}
 	out, err := s.upsertScanResults(ctx, result.Endpoints)
 	if err != nil {
 		log.Printf("discovery scan %s: persist results failed: %v", jobID, err)
-		status = "failed"
-		errMsg = truncateScanError(err)
 	} else if skipMsg := summarizeUpsertSkips(out); skipMsg != "" {
 		// W19-22: a per-row skip (isolated by upsertOneEndpointWithSavepoint)
-		// no longer aborts the whole scan, but it must not go unreported —
-		// surfaced here rather than only via log.Printf below.
+		// no longer aborts the whole scan, but it must not go unreported.
 		log.Printf("discovery scan %s: %s", jobID, skipMsg)
-		errMsg = truncateScanError(errors.New(skipMsg))
 	}
+	status, errMsg := scanJobOutcome(result, out, err)
 	if _, err := s.db.ExecContext(ctx, "UPDATE scan_jobs SET status = ?, error_message = ? WHERE id = ?", status, errMsg, jobID); err != nil {
 		log.Printf("discovery scan %s: finalize status failed: %v", jobID, err)
 	}
@@ -1329,17 +1528,6 @@ func summarizeUpsertSkips(out upsertOutcome) string {
 		return ""
 	}
 	return fmt.Sprintf("%d endpoint(s) persisted, %d skipped: %s", out.Persisted, out.Skipped, out.FirstSkipReason)
-}
-
-// firstEndpointError returns the first per-endpoint error in a failed
-// result, or a generic reason when the runner reported none.
-func firstEndpointError(eps []scanner.DiscoveredEndpoint) string {
-	for _, ep := range eps {
-		if ep.Error != "" {
-			return ep.Error
-		}
-	}
-	return "scan failed without a reported reason"
 }
 
 // truncateScanError bounds what lands in scan_jobs.error_message — the
@@ -1405,6 +1593,7 @@ VALUES (?, ?, 'api', ?, 'queued', ?)
 type postgresDiscoveryStore struct {
 	db        *sql.DB
 	winrmScan winRMTargetScanner
+	trust     discoveryTrust
 }
 
 func (s *postgresDiscoveryStore) EnsureSchema(ctx context.Context) error {
@@ -1422,7 +1611,7 @@ func (s *postgresDiscoveryStore) EnsureSchema(ctx context.Context) error {
 	_, _ = s.db.ExecContext(ctx, "ALTER TABLE endpoints ADD COLUMN ssh_banner TEXT")                   // best-effort upgrade: duplicate-column error = already migrated
 	_, _ = s.db.ExecContext(ctx, "ALTER TABLE endpoints ADD COLUMN ssh_host_key_algorithms TEXT")      // best-effort upgrade: duplicate-column error = already migrated
 	_, _ = s.db.ExecContext(ctx, "ALTER TABLE endpoints ADD COLUMN crypto_posture TEXT")               // best-effort upgrade: duplicate-column error = already migrated
-	for _, stmt := range discoveryCertMirrorUpgrades {
+	for _, stmt := range slices.Concat(discoveryCertMirrorUpgrades, discoveryTrustMirrorUpgradesPostgres, discoveryLinkUpgradesPostgres) {
 		_, _ = s.db.ExecContext(ctx, stmt) // best-effort upgrade: duplicate-column error = already migrated
 	}
 	if _, err := s.db.ExecContext(ctx,
@@ -1442,6 +1631,7 @@ func (s *postgresDiscoveryStore) EnsureSchema(ctx context.Context) error {
 // after a first-endpoint failure would itself fail with "current
 // transaction is aborted."
 func (s *postgresDiscoveryStore) upsertScanResults(ctx context.Context, results []scanner.DiscoveredEndpoint) (upsertOutcome, error) {
+	s.trust.classify(ctx, results)
 	issuesByEndpoint, err := auditEndpointTLSIssuesBatch(results)
 	if err != nil {
 		return upsertOutcome{}, err
@@ -1458,13 +1648,10 @@ func (s *postgresDiscoveryStore) upsertScanResults(ctx context.Context, results 
 	var out upsertOutcome
 
 	for i, ep := range results {
-		if ep.Error != "" && ep.Port != 0 {
+		if endpointNeverReached(ep) {
 			continue
 		}
-		issuesJSON := issuesByEndpoint[i]
-		if ep.Error != "" {
-			issuesJSON = discoveryErrorIssuesJSON(ep.Error)
-		}
+		issuesJSON := endpointIssuesJSON(ep, issuesByEndpoint[i])
 
 		spErr := upsertOneEndpointWithSavepoint(ctx, tx, fmt.Sprintf("sp_ep_%d", i), func() error {
 			var endpointID string
@@ -1484,34 +1671,26 @@ RETURNING id
 				return fmt.Errorf("upsert endpoint %s:%d: %w", ep.Host, ep.Port, err)
 			}
 
-			if ep.Error != "" {
-				return nil // no certs, no staleness sweep for an error-carrying source
+			if !endpointCertsObserved(ep) {
+				return nil // no certs, no staleness sweep: nothing was learned about them
 			}
 
 			for _, cert := range ep.Certs {
 				if cert.Fingerprint == "" {
 					continue
 				}
-				args, ok := discoveredCertRow(cert, now.Format(time.RFC3339))
+				args, ok := discoveredCertRow(cert, now.Format(time.RFC3339), true)
 				if !ok {
 					continue
 				}
 				if _, err := tx.ExecContext(ctx, `
 INSERT INTO certificates `+discoveredCertUpsertColumns+`
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'discovery_network', 'discovered', 'unmanaged')
-ON CONFLICT (fingerprint_sha256) DO UPDATE SET
-    risk_score = excluded.risk_score, risk_flags = excluded.risk_flags,
-    updated_at = excluded.updated_at
-`, args...); err != nil {
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, 'discovery_network', 'discovered', 'unmanaged')
+ON CONFLICT (fingerprint_sha256) DO UPDATE SET`+discoveredCertConflictUpdatePostgres, args...); err != nil {
 					return fmt.Errorf("upsert certificates %s: %w", cert.Fingerprint, err)
 				}
-				if _, err := tx.ExecContext(ctx, `
-INSERT INTO certificate_endpoints (certificate_fingerprint, endpoint_id, first_seen, last_seen, currently_active)
-VALUES ($1, $2, $3, $4, true)
-ON CONFLICT (certificate_fingerprint, endpoint_id) DO UPDATE SET
-    last_seen = excluded.last_seen, currently_active = true
-`, cert.Fingerprint, endpointID, now, now); err != nil {
-					return fmt.Errorf("upsert certificate_endpoints %s/%s: %w", cert.Fingerprint, endpointID, err)
+				if err := upsertCertificateLink(ctx, tx, true, cert, endpointID, now); err != nil {
+					return err
 				}
 				touchedPairs[[2]string{endpointID, cert.Fingerprint}] = true
 			}
@@ -1570,20 +1749,22 @@ func (s *postgresDiscoveryStore) GetSummary(ctx context.Context) (DiscoverySumma
 	err := s.db.QueryRowContext(ctx, `
 SELECT
     (SELECT COUNT(*) FROM endpoints) AS discovered_endpoints,
-    (SELECT COUNT(DISTINCT certificate_fingerprint) FROM certificate_endpoints WHERE currently_active = true) AS mapped_certificates,
-    (SELECT COUNT(*) FROM endpoints WHERE id IN (
-        SELECT endpoint_id FROM certificate_endpoints ce
-        JOIN certificates c ON ce.certificate_fingerprint = c.fingerprint_sha256
-        WHERE c.risk_score >= 70 AND ce.currently_active = true
-    )) AS risky_endpoints,
+    (SELECT COUNT(DISTINCT ce.certificate_fingerprint) FROM certificate_endpoints ce
+        LEFT JOIN certificates c ON ce.certificate_fingerprint = c.fingerprint_sha256
+        WHERE ce.currently_active = true AND NOT COALESCE(c.is_ca, FALSE)) AS mapped_certificates,
+    (SELECT COUNT(*) FROM endpoints e WHERE `+riskyEndpointSQL("true")+`) AS risky_endpoints,
     (SELECT COUNT(*) FROM scan_jobs WHERE status IN ('queued', 'running')) AS active_scan_jobs
 `).Scan(&summary.DiscoveredEndpoints, &summary.MappedCertificates, &summary.RiskyEndpoints, &summary.ActiveScanJobs)
+	if err != nil {
+		return summary, err
+	}
+	summary.TrustClasses, err = loadTrustClassCounts(ctx, s.db, "ce.currently_active = true", "NOT COALESCE(c.is_ca, FALSE)")
 	return summary, err
 }
 
 func (s *postgresDiscoveryStore) ListEndpointFindings(ctx context.Context) ([]discoveryEndpointFindings, error) {
 	return listDiscoveryEndpointFindings(ctx, s.db, "SELECT id, issues FROM endpoints",
-		"SELECT endpoint_id, certificate_fingerprint FROM certificate_endpoints WHERE currently_active = true")
+		"SELECT ce.endpoint_id, ce.certificate_fingerprint, COALESCE(CAST(c.risk_flags AS TEXT), '[]'), COALESCE(ce.endpoint_flags, '[]') FROM certificate_endpoints ce LEFT JOIN certificates c ON ce.certificate_fingerprint = c.fingerprint_sha256 WHERE ce.currently_active = true")
 }
 
 func (s *postgresDiscoveryStore) ListEndpoints(ctx context.Context, q DiscoveryEndpointQuery) (DiscoveryEndpointResult, error) {
@@ -1608,10 +1789,13 @@ func (s *postgresDiscoveryStore) ListEndpoints(ctx context.Context, q DiscoveryE
 		nextArg++
 	}
 	if q.RiskyOnly {
+		where = append(where, riskyEndpointSQL("true"))
+	}
+	if q.TrustClass != "" {
 		where = append(where, `e.id IN (
-			SELECT endpoint_id FROM certificate_endpoints ce
+			SELECT ce.endpoint_id FROM certificate_endpoints ce
 			JOIN certificates c ON ce.certificate_fingerprint = c.fingerprint_sha256
-			WHERE c.risk_score >= 70 AND ce.currently_active = true
+			WHERE `+trustClassPredicate(q.TrustClass, "c", "ce.currently_active = true", "NOT c.is_ca")+`
 		)`)
 	}
 	whereSQL := ""
@@ -1678,6 +1862,7 @@ LIMIT `+limitPlaceholder+` OFFSET `+offsetPlaceholder+`
 	if err := attachMappedCerts(ctx, s.db, "$", endpoints); err != nil {
 		return DiscoveryEndpointResult{}, err
 	}
+	markRiskyEndpoints(endpoints)
 
 	end := cursor + limit
 	if end > total {
@@ -1753,7 +1938,7 @@ func (s *postgresDiscoveryStore) ListScanJobs(ctx context.Context, q DiscoverySc
 	args = append(args, cursor)
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, type, scope, status, created_at
+SELECT id, type, scope, status, created_at, COALESCE(error_message, '')
 FROM scan_jobs`+whereSQL+`
 ORDER BY created_at DESC
 LIMIT `+limitPlaceholder+` OFFSET `+offsetPlaceholder+`
@@ -1767,7 +1952,7 @@ LIMIT `+limitPlaceholder+` OFFSET `+offsetPlaceholder+`
 	for rows.Next() {
 		var j DiscoveryScanJob
 		var createdAt time.Time
-		if err := rows.Scan(&j.ID, &j.ScanType, &j.Target, &j.Status, &createdAt); err != nil {
+		if err := rows.Scan(&j.ID, &j.ScanType, &j.Target, &j.Status, &createdAt, &j.Error); err != nil {
 			return DiscoveryScanJobResult{}, err
 		}
 		j.Target = scanScopeTarget(j.Target)
@@ -1856,24 +2041,15 @@ func (s *postgresDiscoveryStore) runAndPersistScan(ctx context.Context, jobID, t
 	defer afterDiscoveryScanPersist(jobID)
 	result := runWinRMOrNetworkScan(ctx, s.winrmScan, jobID, target, scanType, extraPorts)
 
-	status := "completed"
-	errMsg := ""
-	if result.Status != "" && result.Status != "completed" {
-		status = "failed"
-		// The runner's reason used to be dropped here, leaving a failed
-		// row with an empty error_message: an unreachable WinRM host and
-		// a mis-wired runner looked identical (live, 2026-09-10).
-		errMsg = truncateScanError(errors.New(firstEndpointError(result.Endpoints)))
-	}
 	out, err := s.upsertScanResults(ctx, result.Endpoints)
 	if err != nil {
 		log.Printf("discovery scan %s: persist results failed: %v", jobID, err)
-		status = "failed"
-		errMsg = truncateScanError(err)
 	} else if skipMsg := summarizeUpsertSkips(out); skipMsg != "" {
+		// W19-22: a per-row skip (isolated by upsertOneEndpointWithSavepoint)
+		// no longer aborts the whole scan, but it must not go unreported.
 		log.Printf("discovery scan %s: %s", jobID, skipMsg)
-		errMsg = truncateScanError(errors.New(skipMsg))
 	}
+	status, errMsg := scanJobOutcome(result, out, err)
 	if _, err := s.db.ExecContext(ctx, "UPDATE scan_jobs SET status = $1, error_message = $2 WHERE id = $3", status, errMsg, jobID); err != nil {
 		log.Printf("discovery scan %s: finalize status failed: %v", jobID, err)
 	}

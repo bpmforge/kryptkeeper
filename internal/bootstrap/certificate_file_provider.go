@@ -101,6 +101,9 @@ func filterFileCertificates(items []CertificateItem, query CertificateListQuery)
 		if query.ManagementState != "" && item.ManagementState != query.ManagementState {
 			continue
 		}
+		if query.TrustClass != "" && item.TrustClass != query.TrustClass {
+			continue
+		}
 		if query.TemplateID != "" && item.TemplateID != query.TemplateID {
 			continue
 		}
@@ -206,8 +209,8 @@ func (p *fileCertificateProvider) IssueCertificate(_ context.Context, req Certif
 		SignatureAlgorithm: "ecdsa-with-SHA256",
 		ExtendedKeyUsage:   []string{"TLS Web Server Authentication"},
 		KeyUsage:           []string{"Digital Signature"},
-		ChainComplete:      true,
-		ChainTrusted:       true,
+		ChainComplete:      boolRef(true),
+		ChainTrusted:       boolRef(true),
 		PQCVulnerable:      true,
 		RiskScore:          5,
 		RiskFlags:          []string{},
@@ -379,8 +382,8 @@ func (p *fileCertificateProvider) ImportCertificate(_ context.Context, req Certi
 		SignatureAlgorithm: "sha256WithRSAEncryption",
 		ExtendedKeyUsage:   []string{"TLS Web Server Authentication"},
 		KeyUsage:           []string{"Digital Signature"},
-		ChainComplete:      true,
-		ChainTrusted:       true,
+		ChainComplete:      boolRef(true),
+		ChainTrusted:       boolRef(true),
 		PQCVulnerable:      false,
 		RiskScore:          15,
 		RiskFlags:          []string{},
@@ -442,6 +445,7 @@ func (p *fileCertificateProvider) loadItems() ([]CertificateItem, error) {
 			items[i].Origin = estateOrigin(items[i])
 			items[i].ManagementState = estateManagementState(items[i])
 		}
+		items[i].TrustClass = effectiveTrustClass(items[i])
 	}
 	return items, nil
 }

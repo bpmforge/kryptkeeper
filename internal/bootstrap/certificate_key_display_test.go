@@ -31,6 +31,20 @@ func TestCACertificateProvider_MLDSALeafExposesParameterSet(t *testing.T) {
 	if detail.KeyAlgorithmDisplay != "ML-DSA-65" {
 		t.Errorf("KeyAlgorithmDisplay = %q, want ML-DSA-65", detail.KeyAlgorithmDisplay)
 	}
+	// The POST /certificates response is built from the issue result, not from
+	// the stored copy, so it must carry the field itself.
+	if result.KeyAlgorithmDisplay != "ML-DSA-65" {
+		t.Errorf("issue result KeyAlgorithmDisplay = %q, want ML-DSA-65", result.KeyAlgorithmDisplay)
+	}
+
+	renewCSR, _ := generateTestMLDSACSRPEM(t, keys, "paramset-2.example.com", "paramset.example.com")
+	renewed, err := provider.RenewCertificate(ctx, result.FingerprintSHA256, CertificateRenewRequest{CSRPEM: renewCSR})
+	if err != nil {
+		t.Fatalf("renew ML-DSA leaf: %v", err)
+	}
+	if renewed.KeyAlgorithmDisplay != "ML-DSA-65" {
+		t.Errorf("renew result KeyAlgorithmDisplay = %q, want ML-DSA-65", renewed.KeyAlgorithmDisplay)
+	}
 }
 
 func TestKeyAlgorithmDisplayNonMLDSA(t *testing.T) {

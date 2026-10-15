@@ -15,10 +15,6 @@ import (
 // a fresh environment must not show fabricated endpoints its counters deny.
 const discoveryDemoSeedsEnv = "APP_DISCOVERY_DEMO_SEEDS"
 
-// riskyEndpointThreshold is shared by ListEndpoints' RiskyOnly filter and
-// GetSummary so both surfaces count the same set as risky.
-const riskyEndpointThreshold = 70
-
 type fileDiscoveryProvider struct{}
 
 func newFileDiscoveryProvider() DiscoveryProvider {
@@ -32,7 +28,7 @@ func (p *fileDiscoveryProvider) GetSummary(_ context.Context) (DiscoverySummary,
 	endpoints := seedDiscoveryEndpoints()
 	risky := 0
 	for _, ep := range endpoints {
-		if ep.RiskScore >= riskyEndpointThreshold {
+		if endpointIsRisky(ep) {
 			risky++
 		}
 	}
@@ -57,7 +53,8 @@ func (p *fileDiscoveryProvider) ListEndpoints(_ context.Context, query Discovery
 		if query.Protocol != "" && !strings.EqualFold(ep.Protocol, query.Protocol) {
 			continue
 		}
-		if query.RiskyOnly && ep.RiskScore < riskyEndpointThreshold {
+		ep.Risky = endpointIsRisky(ep)
+		if query.RiskyOnly && !ep.Risky {
 			continue
 		}
 		filtered = append(filtered, ep)

@@ -17,6 +17,7 @@ import { canManageCertificates, useAuthz } from "../lib/auth";
 import { extractList } from "../lib/models";
 import { useCaNames } from "../lib/useResourceNames";
 import { savePemFile } from "../lib/utils";
+import { TRUST_CLASSES, TRUST_CLASS_LABEL } from "../lib/trustClass";
 import type { CaRecord, CertificateRecord } from "../lib/models";
 
 type CertFilters = {
@@ -28,6 +29,7 @@ type CertFilters = {
   order: string;
   origin: string;
   management_state: string;
+  trust_class: string;
 };
 
 const initialFilters: CertFilters = {
@@ -38,6 +40,7 @@ const initialFilters: CertFilters = {
   grade: "",
   origin: "",
   management_state: "",
+  trust_class: "",
   order: "desc",
 };
 
@@ -533,6 +536,7 @@ export default function Certificates() {
     order: searchParams.get("order") ?? "desc",
     origin: searchParams.get("origin") ?? "",
     management_state: searchParams.get("management_state") ?? "",
+    trust_class: searchParams.get("trust_class") ?? "",
   }));
   const [cursor, setCursor] = useState<string | null>(
     searchParams.get("cursor") ?? null,
@@ -595,6 +599,7 @@ export default function Certificates() {
       order: filters.order,
       origin: filters.origin,
       management_state: filters.management_state,
+      trust_class: filters.trust_class,
       limit: 50,
       ...(cursor ? { cursor } : {}),
     }),
@@ -1053,6 +1058,21 @@ export default function Certificates() {
             </Select>
           </label>
           <label className="space-y-2 text-sm text-foreground">
+            <span>Issuer</span>
+            <Select
+              aria-label="Filter by trust class"
+              value={filters.trust_class}
+              onChange={(e) => updateFilter({ trust_class: e.target.value })}
+            >
+              <option value="">Any issuer</option>
+              {TRUST_CLASSES.map((cls) => (
+                <option key={cls} value={cls}>
+                  {TRUST_CLASS_LABEL[cls]}
+                </option>
+              ))}
+            </Select>
+          </label>
+          <label className="space-y-2 text-sm text-foreground">
             <span>Sort order</span>
             <Select
               aria-label="Sort certificates"
@@ -1100,9 +1120,9 @@ export default function Certificates() {
         />
       ) : null}
 
-      <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
         <Panel
-          title={`Certificate inventory${meta ? ` · ${meta.total ?? 0} total` : ""}`}
+          title={`Certificate inventory${meta ? ` · ${meta.total ?? 0} ${filters.status ? "matching" : "records"}` : ""}`}
           subtitle="Click a row to inspect details"
         >
           <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-foreground">
@@ -1137,7 +1157,10 @@ export default function Certificates() {
               {selectedCount} selected
             </span>
           </div>
-          <div className="overflow-hidden rounded-xl border border-border">
+          <div
+            data-testid="certificate-inventory-scroll"
+            className="overflow-x-auto rounded-xl border border-border"
+          >
             <table className="min-w-full divide-y divide-border">
               <thead className="bg-background/80">
                 <tr>
@@ -1352,7 +1375,7 @@ export default function Certificates() {
           <div className="mt-4 flex items-center justify-between text-sm text-muted-foreground">
             <span>
               {meta?.total != null
-                ? `${meta.total} total · page size ${meta.limit ?? 50}`
+                ? `${meta.total} ${filters.status ? "matching" : "records (revoked and superseded included)"} · page size ${meta.limit ?? 50}`
                 : "Loading…"}
             </span>
             <div className="flex gap-2">
@@ -1438,6 +1461,23 @@ export default function Certificates() {
                   <div className="text-muted-foreground">Origin</div>
                   <div className="text-foreground">
                     {selectedCert.origin || "internal"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Chain</div>
+                  <div
+                    className="text-foreground"
+                    data-testid="certificate-chain"
+                  >
+                    {selectedCert.chain_complete === undefined ? (
+                      // Discovered certificates carry no cert-level verdict:
+                      // completeness is what each endpoint served.
+                      <span className="text-muted-foreground">
+                        judged per endpoint (see Discovery)
+                      </span>
+                    ) : (
+                      `${selectedCert.chain_complete ? "complete" : "incomplete"} as issued`
+                    )}
                   </div>
                 </div>
                 <div>

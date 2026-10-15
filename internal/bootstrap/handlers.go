@@ -118,7 +118,10 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	RegisterCBOMHandlers(mux, auth, certificateProvider, keys, discoveryProvider, auditProvider)
 	registerNotificationHandlers(mux, auth, notificationProvider, auditProvider)
 	registerDashboardHandlers(mux, auth, certSummaryProvider, discoveryProvider, notificationProvider, dashboardActionProvider, auditProvider)
-	registerAuditHandlers(mux, auth, roleStore, auditProvider)
+	registerAuditHandlers(mux, auth, roleStore, auditProvider, auditNameSources{
+		certs: certificateProvider, cas: caProvider, templates: templateProvider,
+		approvals: approvalStore, notifs: notificationProvider, discovery: discoveryProvider,
+	})
 	tenantStore := NewTenantStoreFromEnv()
 	setActiveTenantStore(tenantStore)
 	registerCAHandlers(mux, auth, caProvider, tenantStore, auditProvider)
@@ -129,6 +132,11 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	// scan of a managed target reaches the host with its stored credential.
 	if s, ok := discoveryProvider.(winRMScanSetter); ok {
 		s.SetWinRMScanner(newWinRMTargetScanner(managedTargetStore, newOutboundCredentialStoreFromEnv(), liveWinRMEnumerator))
+	}
+	// Discovered chains are classified against this hub's own CAs, so the
+	// scan store needs to read them through the CA provider.
+	if s, ok := discoveryProvider.(hubCASetter); ok {
+		s.SetHubCASource(hubCAsFromProvider(caProvider))
 	}
 	// W5-13: hub-side renewal execution — key/CSR hub-side, renew, SSH install.
 	registerRenewalExecuteHandler(mux, auth, certificateProvider, managedTargetStore, newOutboundCredentialStoreFromEnv(), auditProvider, cfg.plugins)

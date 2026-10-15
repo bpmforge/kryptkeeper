@@ -56,6 +56,12 @@ type caCertificateProvider struct {
 	// RevokeCertificate still updates revStore, it just can't clear OCSP's
 	// cache for the serial.
 	ocspInvalidator ca.RevocationCacheInvalidator
+	// Lazy pickup of rows other writers (discovery) add to the certificates
+	// table after startup; see certificate_discovery_refresh.go.
+	discoveryRefreshEvery time.Duration
+	refreshMu             sync.Mutex // serialises refreshes; never held with mu
+	discoveryWatermark    string     // newest updated_at already merged
+	lastDiscoveryRefresh  time.Time
 }
 
 type storedCert struct {
@@ -74,6 +80,8 @@ func NewCACertificateProvider(engine ca.Service, revStore ca.RevocationStore, db
 		db:       db,
 		postgres: postgres,
 		certs:    make(map[string]*storedCert),
+
+		discoveryRefreshEvery: defaultDiscoveryRefreshEvery,
 	}
 	if db != nil {
 		// S-50: a failed hydrate used to be discarded, leaving the provider
@@ -96,6 +104,29 @@ func NewCACertificateProvider(engine ca.Service, revStore ca.RevocationStore, db
 // serving it as an empty inventory would report "no certificates" for a
 // database full of them.
 func (p *caCertificateProvider) loadCertsFromDB() error {
+	loaded, err := p.queryCerts("")
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	for _, sc := range loaded {
+		p.putUnindexedLocked(sc.item.FingerprintSHA256, sc)
+	}
+	// One sort and one key-reuse pass for the whole load, not one per row.
+	p.rebuildIndexLocked()
+	p.flagAllKeyReuseLocked()
+	p.mu.Unlock()
+	p.noteDiscoveryWatermark(loaded)
+	return nil
+}
+
+// queryCerts reads certificates rows (optionally narrowed by a trailing SQL
+// clause with ?-style placeholders in args) into storedCerts without touching
+// the in-memory indexes. Every nullable column is COALESCEd here: discovery
+// writes rows with NULL issuer_cn, key_size_bits, key usages and so on, and a
+// plain-string Scan of a NULL fails the whole row, which silently dropped
+// every discovered certificate from the inventory.
+func (p *caCertificateProvider) queryCerts(where string, args ...any) ([]*storedCert, error) {
 	// Postgres stores subject_alt_names/extended_key_usage/key_usage/risk_flags
 	// as native TEXT[] and chain_complete/chain_trusted/pqc_vulnerable as native
 	// BOOLEAN (see writeCertToDB); sqlite has neither type and stores the same
@@ -103,37 +134,49 @@ func (p *caCertificateProvider) loadCertsFromDB() error {
 	// shape in the query itself lets the scan targets and json.Unmarshal calls
 	// below stay identical for both backends.
 	query := `
-		SELECT fingerprint_sha256, serial_number, common_name, subject_dn,
-		       subject_alt_names, issuer_dn, issuer_cn, ca_id, template_id,
-		       team_id, valid_from, valid_until, public_key_algorithm, key_size_bits,
-		       signature_algorithm, extended_key_usage, key_usage,
+		SELECT fingerprint_sha256, serial_number, COALESCE(common_name,''), subject_dn,
+		       COALESCE(subject_alt_names,'[]'), issuer_dn, COALESCE(issuer_cn,''), ca_id, template_id,
+		       team_id, valid_from, valid_until, public_key_algorithm, COALESCE(key_size_bits,0),
+		       signature_algorithm, COALESCE(extended_key_usage,'[]'), COALESCE(key_usage,'[]'),
 		       chain_complete, chain_trusted, pqc_vulnerable, COALESCE(pqc_readiness,''),
 		       risk_score, risk_flags, grade, renewal_method, renewal_status,
 		       source, raw_cert_b64, revoked_at, revocation_reason,
 		       created_at, updated_at,
 		       COALESCE(owner_email,''), COALESCE(owner_team,''), COALESCE(service_name,''), COALESCE(labels,'[]'),
-		       COALESCE(origin,''), COALESCE(management_state,''), COALESCE(renewal_connector_id,'')
+		       COALESCE(origin,''), COALESCE(management_state,''), COALESCE(renewal_connector_id,''),
+		       COALESCE(trust_class,'')
 		FROM certificates`
+	notChainCA := " COALESCE(is_ca,0) = 0"
 	if p.postgres {
 		query = `
-		SELECT fingerprint_sha256, serial_number, common_name, subject_dn,
-		       COALESCE(array_to_json(subject_alt_names)::text, '[]'), issuer_dn, issuer_cn, ca_id, template_id,
-		       team_id, valid_from, valid_until, public_key_algorithm, key_size_bits,
+		SELECT fingerprint_sha256, serial_number, COALESCE(common_name,''), subject_dn,
+		       COALESCE(array_to_json(subject_alt_names)::text, '[]'), issuer_dn, COALESCE(issuer_cn,''), ca_id, template_id,
+		       team_id, valid_from, valid_until, public_key_algorithm, COALESCE(key_size_bits,0),
 		       signature_algorithm, COALESCE(array_to_json(extended_key_usage)::text, '[]'), COALESCE(array_to_json(key_usage)::text, '[]'),
 		       CASE WHEN chain_complete THEN 1 ELSE 0 END, CASE WHEN chain_trusted THEN 1 ELSE 0 END, CASE WHEN pqc_vulnerable THEN 1 ELSE 0 END, COALESCE(pqc_readiness,''),
 		       risk_score, COALESCE(array_to_json(risk_flags)::text, '[]'), grade, renewal_method, renewal_status,
 		       source, raw_cert_b64, revoked_at, revocation_reason,
 		       created_at, updated_at,
 		       COALESCE(owner_email,''), COALESCE(owner_team,''), COALESCE(service_name,''), COALESCE(labels,'[]'),
-		       COALESCE(origin,''), COALESCE(management_state,''), COALESCE(renewal_connector_id,'')
+		       COALESCE(origin,''), COALESCE(management_state,''), COALESCE(renewal_connector_id,''),
+		       COALESCE(trust_class,'')
 		FROM certificates`
+		notChainCA = " NOT COALESCE(is_ca, FALSE)"
 	}
-	rows, err := p.db.Query(query)
+	// Intermediates/roots captured from a served chain stay in the table
+	// (queryable via discovery) but are not leaf inventory.
+	if where == "" {
+		where = " WHERE" + notChainCA
+	} else {
+		where += " AND" + notChainCA
+	}
+	rows, err := p.db.Query(query+where, args...)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
 
+	var loaded []*storedCert
 	for rows.Next() {
 		var (
 			fp, serial, cn, subjectDN            string
@@ -157,6 +200,7 @@ func (p *caCertificateProvider) loadCertsFromDB() error {
 			labelsJSON                           string
 			origin, managementState              string
 			renewalConnectorID                   string
+			trustClass                           string
 		)
 
 		if err := rows.Scan(
@@ -169,7 +213,7 @@ func (p *caCertificateProvider) loadCertsFromDB() error {
 			&source, &rawCertB64, &revokedAt, &revocationReason,
 			&createdAt, &updatedAt,
 			&ownerEmail, &ownerTeam, &serviceName, &labelsJSON,
-			&origin, &managementState, &renewalConnectorID,
+			&origin, &managementState, &renewalConnectorID, &trustClass,
 		); err != nil {
 			// S-50: skipping is right — one unreadable row should not cost
 			// the whole inventory — but it must not be silent.
@@ -203,8 +247,8 @@ func (p *caCertificateProvider) loadCertsFromDB() error {
 			SignatureAlgorithm: sigAlgo,
 			ExtendedKeyUsage:   ekus,
 			KeyUsage:           kus,
-			ChainComplete:      chainComplete == 1,
-			ChainTrusted:       chainTrusted == 1,
+			ChainComplete:      chainFact(origin, chainComplete == 1),
+			ChainTrusted:       chainFact(origin, chainTrusted == 1),
 			PQCVulnerable:      pqcVuln == 1,
 			PQCReadiness:       pqcReadiness,
 			RiskScore:          riskScore,
@@ -222,6 +266,13 @@ func (p *caCertificateProvider) loadCertsFromDB() error {
 			Origin:             origin,
 			ManagementState:    managementState,
 			RenewalConnectorID: renewalConnectorID,
+			TrustClass:         trustClass,
+		}
+		// Discovery never writes a grade (the column defaults to 'A'), so a
+		// risky discovered cert would read as grade A. Derive it from the
+		// stored score the same way issuance does.
+		if isDiscoverySource(item.Source) {
+			item.Grade = computeGrade(item.RiskScore)
 		}
 		// Defensive derivation (spec decision 3): a snapshot restored from a
 		// pre-000043 database loads with empty estate fields — derive them
@@ -266,19 +317,12 @@ func (p *caCertificateProvider) loadCertsFromDB() error {
 			item.KeySizeBits = publicKeyBits(parsed)
 		}
 
-		p.mu.Lock()
-		p.putUnindexedLocked(fp, &storedCert{item: item, certPEM: certPEM, x509: parsed})
-		p.mu.Unlock()
+		loaded = append(loaded, &storedCert{item: item, certPEM: certPEM, x509: parsed})
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
-	// One sort and one key-reuse pass for the whole load, not one per row.
-	p.mu.Lock()
-	p.rebuildIndexLocked()
-	p.flagAllKeyReuseLocked()
-	p.mu.Unlock()
-	return nil
+	return loaded, nil
 }
 
 // spkiHash returns a hex-encoded SHA-256 hash of the certificate's SubjectPublicKeyInfo DER bytes.
@@ -365,8 +409,8 @@ func (p *caCertificateProvider) IssueCertificate(ctx context.Context, req Certif
 		SignatureAlgorithm: issued.Certificate.SignatureAlgorithm.String(),
 		ExtendedKeyUsage:   ekuStrings(issued.Certificate.ExtKeyUsage),
 		KeyUsage:           kuStrings(issued.Certificate.KeyUsage),
-		ChainComplete:      true,
-		ChainTrusted:       true,
+		ChainComplete:      boolRef(true),
+		ChainTrusted:       boolRef(true),
 		PQCVulnerable:      isPQCVulnerable(issued.Certificate),
 		PQCReadiness:       computePQCReadiness(issued.Certificate, chainClassical),
 		RiskScore:          adjustRiskForChain(computeRiskScore(issued.Certificate, time.Now()), true),
@@ -381,6 +425,9 @@ func (p *caCertificateProvider) IssueCertificate(ctx context.Context, req Certif
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
+	// addLocked derives this on the stored copy only; the response item is a
+	// separate value and would otherwise omit it.
+	item.KeyAlgorithmDisplay = keyAlgorithmDisplay(issued.Certificate)
 
 	p.mu.Lock()
 	p.addLocked(issued.Fingerprint, &storedCert{
@@ -446,9 +493,12 @@ func (p *caCertificateProvider) RevokeCertificate(_ context.Context, fingerprint
 		}
 	}
 
+	// RevokedAt is set AFTER the status change: the per-CA active count is
+	// adjusted from the item's state before and after, and isActiveCertificate
+	// reads RevokedAt, so setting it first would skip the decrement.
+	p.setRenewalStatusLocked(stored, string(RenewalStatusRevoked))
 	stored.item.RevokedAt = &nowStr
 	stored.item.RevocationReason = &req.ReasonCode
-	p.setRenewalStatusLocked(stored, string(RenewalStatusRevoked))
 	stored.item.UpdatedAt = nowStr
 	stored.item.ETag++
 	metrics.CertRevokeTotal.Inc()
@@ -555,8 +605,8 @@ func (p *caCertificateProvider) RenewCertificate(ctx context.Context, fingerprin
 		SignatureAlgorithm: issued.Certificate.SignatureAlgorithm.String(),
 		ExtendedKeyUsage:   ekuStrings(issued.Certificate.ExtKeyUsage),
 		KeyUsage:           kuStrings(issued.Certificate.KeyUsage),
-		ChainComplete:      true,
-		ChainTrusted:       true,
+		ChainComplete:      boolRef(true),
+		ChainTrusted:       boolRef(true),
 		PQCVulnerable:      isPQCVulnerable(issued.Certificate),
 		PQCReadiness:       computePQCReadiness(issued.Certificate, chainClassical),
 		RiskScore:          adjustRiskForChain(computeRiskScore(issued.Certificate, time.Now()), true),
@@ -576,6 +626,7 @@ func (p *caCertificateProvider) RenewCertificate(ctx context.Context, fingerprin
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}
+	item.KeyAlgorithmDisplay = keyAlgorithmDisplay(issued.Certificate)
 
 	// S-50 (found while landing it): renewed certificates were never
 	// persisted AT ALL — memory-only, gone on restart, same family as the
@@ -721,8 +772,8 @@ func (p *caCertificateProvider) RecordIssuedCertificateWithTemplate(_ context.Co
 		SignatureAlgorithm: cert.SignatureAlgorithm.String(),
 		ExtendedKeyUsage:   ekuStrings(cert.ExtKeyUsage),
 		KeyUsage:           kuStrings(cert.KeyUsage),
-		ChainComplete:      true,
-		ChainTrusted:       true,
+		ChainComplete:      boolRef(true),
+		ChainTrusted:       boolRef(true),
 		PQCVulnerable:      isPQCVulnerable(cert),
 		PQCReadiness:       computePQCReadiness(cert, chainClassical),
 		RiskScore:          adjustRiskForChain(computeRiskScore(cert, time.Now()), true),
@@ -764,6 +815,7 @@ func (p *caCertificateProvider) RecordIssuedCertificateWithTemplate(_ context.Co
 }
 
 func (p *caCertificateProvider) GetCertificate(_ context.Context, fingerprint string) (CertificateDetail, bool, error) {
+	p.refreshDiscovered()
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -775,6 +827,7 @@ func (p *caCertificateProvider) GetCertificate(_ context.Context, fingerprint st
 }
 
 func (p *caCertificateProvider) GetCertificateChain(_ context.Context, fingerprint string) (CertificateChainResult, bool, error) {
+	p.refreshDiscovered()
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -1514,7 +1567,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 		} else {
 			riskFlagsArg = item.RiskFlags
 		}
-		chainCompleteArg, chainTrustedArg, pqcVulnArg = item.ChainComplete, item.ChainTrusted, item.PQCVulnerable
+		chainCompleteArg, chainTrustedArg, pqcVulnArg = boolVal(item.ChainComplete), boolVal(item.ChainTrusted), item.PQCVulnerable
 	} else {
 		sanJSON, _ := json.Marshal(item.SubjectAltNames)
 		ekuJSON, _ := json.Marshal(item.ExtendedKeyUsage)
@@ -1528,8 +1581,8 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 			}
 			return 0
 		}
-		chainCompleteArg = toInt(item.ChainComplete)
-		chainTrustedArg = toInt(item.ChainTrusted)
+		chainCompleteArg = toInt(boolVal(item.ChainComplete))
+		chainTrustedArg = toInt(boolVal(item.ChainTrusted))
 		pqcVulnArg = toInt(item.PQCVulnerable)
 	}
 

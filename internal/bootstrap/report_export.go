@@ -44,7 +44,7 @@ func inventoryExportRow(c CertificateItem) []string {
 		c.FingerprintSHA256, c.SerialNumber, c.CommonName, c.SubjectDN,
 		strings.Join(c.SubjectAltNames, ";"), c.IssuerCN, c.CAID, c.TeamID,
 		c.ValidFrom, c.ValidUntil, c.PublicKeyAlgorithm, strconv.Itoa(c.KeySizeBits),
-		c.SignatureAlgorithm, strconv.FormatBool(c.ChainComplete), strconv.FormatBool(c.ChainTrusted),
+		c.SignatureAlgorithm, optBool(c.ChainComplete), optBool(c.ChainTrusted),
 		c.PQCReadiness, strconv.Itoa(c.RiskScore), strings.Join(c.RiskFlags, ";"), c.Grade,
 		c.RenewalStatus, c.Source,
 	}
@@ -244,4 +244,13 @@ func registerReportExportHandlers(mux *http.ServeMux, auth *Authenticator, certP
 		return rows
 	}, inventoryExportColumns))
 	mux.HandleFunc("/api/v1/reports/export/findings", handle("kryptkeeper-findings", findingsExportRows, findingsExportColumns))
+}
+
+// optBool renders a nullable verdict; blank = not judged at certificate level
+// (discovered certificates: see CertificateItem.ChainComplete).
+func optBool(p *bool) string {
+	if p == nil {
+		return ""
+	}
+	return strconv.FormatBool(*p)
 }

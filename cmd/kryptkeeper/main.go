@@ -301,7 +301,7 @@ func main() {
 	var discoveryProvider bootstrap.DiscoveryProvider
 	if strings.ToLower(strings.TrimSpace(os.Getenv("APP_DISCOVERY_PROVIDER"))) == "scanner" {
 		discoveryProvider = bootstrap.NewScannerDiscoveryProvider(nil, 50)
-		log.Print("discovery provider: scanner")
+		log.Print("discovery provider: scanner (minimal in-memory mode: 443 only, nothing persisted; use db for full discovery)")
 	} else {
 		discoveryProvider = bootstrap.NewDiscoveryProviderFromEnv()
 	}

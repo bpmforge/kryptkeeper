@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"kryptkeeper/internal/ca"
+	"kryptkeeper/internal/discovery/scanner"
 )
 
 const (
@@ -129,17 +130,23 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 			issued, err := provider.IssueCertificate(r.Context(), req)
 			if err != nil {
 				if errors.Is(err, errApprovalRequired) {
-					emitAuditEvent(r, auditProvider, pd.ID, "certificate.issue", "certificate", "certificates", AuditOutcomePendingApproval)
+					// No certificate exists yet, so the row keeps the collection
+					// name as resource_id; the approval ID goes in the change
+					// summary so the pending request is traceable from the log.
 					if approvalStore == nil {
+						emitAuditEvent(r, auditProvider, pd.ID, "certificate.issue", "certificate", "certificates", AuditOutcomePendingApproval)
 						writeServiceUnavailable(w, "approval store not configured")
 						return
 					}
 					approvalID, aerr := newApprovalID()
 					if aerr != nil {
+						emitAuditEvent(r, auditProvider, pd.ID, "certificate.issue", "certificate", "certificates", AuditOutcomePendingApproval)
 						log.Printf("approval ID generation failed: %v", aerr)
 						writeServiceUnavailable(w, "approval request failed")
 						return
 					}
+					emitAuditEventDetail(r, auditProvider, pd.ID, "certificate.issue", "certificate", "certificates", AuditOutcomePendingApproval,
+						fmt.Sprintf(`{"approval_id":%q,"template_id":%q,"ca_id":%q}`, approvalID, req.TemplateID, req.CAID))
 					apr := ApprovalRequest{
 						ID:          approvalID,
 						TemplateID:  req.TemplateID,
@@ -226,9 +233,14 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 			TeamID:          strings.TrimSpace(r.URL.Query().Get("team_id")),
 			Origin:          strings.TrimSpace(r.URL.Query().Get("origin")),
 			ManagementState: strings.TrimSpace(r.URL.Query().Get("management_state")),
+			TrustClass:      strings.TrimSpace(r.URL.Query().Get("trust_class")),
 			Status:          strings.TrimSpace(r.URL.Query().Get("status")),
 			Grades:          strings.Split(strings.TrimSpace(r.URL.Query().Get("grade")), ","),
 			Order:           strings.TrimSpace(r.URL.Query().Get("order")),
+		}
+		if query.TrustClass != "" && !scanner.IsTrustClass(query.TrustClass) {
+			writeBadRequest(w, "trust_class must be one of managed, public, private_other, self_signed, unknown")
+			return
 		}
 		if err := authorizeCertificateListQuery(&query, pd); err != nil {
 			// S-57: the last bare denial in the file — list has exactly one

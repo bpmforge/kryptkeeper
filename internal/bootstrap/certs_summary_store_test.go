@@ -122,7 +122,7 @@ func TestDBCertSummaryStoreLoadsSummaryFromSQLite(t *testing.T) {
 	}
 	defer db.Close()
 
-	if _, err := db.Exec(`CREATE TABLE certificates (valid_until TEXT NOT NULL, management_state TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE certificates (valid_until TEXT NOT NULL, management_state TEXT, revoked_at TEXT, renewal_status TEXT, is_ca INTEGER NOT NULL DEFAULT 0)`); err != nil {
 		t.Fatalf("failed to create certificates table: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO certificates(valid_until) VALUES
@@ -243,7 +243,7 @@ func TestCertSummaryProviderFromEnvFollowsCACertificateProvider(t *testing.T) {
 		t.Fatalf("failed to open temp db: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE certificates (valid_until TEXT NOT NULL, management_state TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE certificates (valid_until TEXT NOT NULL, management_state TEXT, revoked_at TEXT, renewal_status TEXT, is_ca INTEGER NOT NULL DEFAULT 0)`); err != nil {
 		t.Fatalf("failed to create certificates table: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO certificates(valid_until) VALUES (datetime('now', '+45 day'))`); err != nil {
@@ -292,7 +292,7 @@ func TestCertSummaryProviderFromEnvSelectsSQLiteDBStore(t *testing.T) {
 		t.Fatalf("failed to open temp db: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE certificates (valid_until TEXT NOT NULL, management_state TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE certificates (valid_until TEXT NOT NULL, management_state TEXT, revoked_at TEXT, renewal_status TEXT, is_ca INTEGER NOT NULL DEFAULT 0)`); err != nil {
 		t.Fatalf("failed to create certificates table: %v", err)
 	}
 	_ = db.Close()
@@ -320,7 +320,7 @@ func TestDBCertSummaryProviderReadsFromConfiguredSQLiteDSN(t *testing.T) {
 	}
 	defer db.Close()
 
-	if _, err := db.Exec(`CREATE TABLE certificates (valid_until TEXT NOT NULL, management_state TEXT)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE certificates (valid_until TEXT NOT NULL, management_state TEXT, revoked_at TEXT, renewal_status TEXT, is_ca INTEGER NOT NULL DEFAULT 0)`); err != nil {
 		t.Fatalf("failed to create certificates table: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO certificates(valid_until) VALUES

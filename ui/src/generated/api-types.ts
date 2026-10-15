@@ -3337,6 +3337,26 @@ export interface components {
             risk_score?: number;
             /** @enum {string} */
             renewal_status?: "active" | "renewed" | "revoked" | "expired" | "reissue_required";
+            trust_class?: components["schemas"]["TrustClass"];
+            /** @description The chain as this hub issued or ingested it. ABSENT for discovery-found certs (`origin` = discovered): whether a served chain is complete is a fact about an endpoint, so it is reported per endpoint (`mapped_certs[].chain_complete` on /discovery/endpoints) and never as a certificate-level value that could contradict it. A hub-issued cert served without its intermediate is complete here and incomplete on that endpoint. */
+            chain_complete?: boolean;
+            /** @description Same contract as `chain_complete`: the chain as issued/ingested by the hub, absent for discovered certs (see `mapped_certs[].chain_trusted` on /discovery/endpoints). */
+            chain_trusted?: boolean;
+            /** @description Certificate-intrinsic flags only (EXPIRED, WEAK_KEY, SELF_SIGNED, ...). HOSTNAME_MISMATCH, INCOMPLETE_CHAIN and UNTRUSTED_ROOT depend on the endpoint serving the certificate and are reported on `mapped_certs[].risk_flags` of /discovery/endpoints. */
+            risk_flags?: string[];
+        };
+        /**
+         * @description Whose certificate this is, from a real x509 verification of the chain the server presented (never the permissive TLS handshake). managed = chains to one of this hub's CAs (also any hub-managed certificate); public = chains to a system root; private_other = neither, issued by some other CA; self_signed = the leaf vouches only for itself; unknown = could not be classified. Empty/absent on certificates that discovery did not find.
+         * @enum {string}
+         */
+        TrustClass: "managed" | "public" | "private_other" | "self_signed" | "unknown";
+        /** @description Distinct leaf certificates seen on the network (at least one active endpoint mapping) per effective trust class, hub-issued certificates included under `managed`. A certificate served on several endpoints counts once; the classes sum to `mapped_certificates`. Intermediates and roots captured from a served chain are not counted. */
+        TrustClassCounts: {
+            managed: number;
+            public: number;
+            private_other: number;
+            self_signed: number;
+            unknown: number;
         };
         CAItem: {
             id?: string;
@@ -3370,6 +3390,27 @@ export interface components {
             created_by?: string;
             /** Format: date-time */
             created_at?: string;
+        };
+        /** @description One append-only audit record. resource_name is the only field not stored with the record. */
+        AuditEntry: {
+            /** Format: int64 */
+            id: number;
+            timestamp: string;
+            action: string;
+            actor_type: string;
+            actor_id: string;
+            resource_type: string;
+            /** @description Authoritative reference to the resource (e.g. a certificate fingerprint). Pre-issue failure and pending-approval certificate.issue rows carry the collection name "certificates" because no certificate exists yet. */
+            resource_id: string;
+            /** @description Human-readable name resolved at read time (certificate common name, CA/template display name, "<template> for <CN or requester>" for approvals, notification rule name, scan target). Omitted when the resource no longer exists, is not resolvable, or the caller may not read it. Never stored. */
+            resource_name?: string;
+            trace_id?: string;
+            outcome: string;
+            source_ip?: string;
+            user_agent?: string;
+            session_id?: string;
+            change_summary?: string;
+            tenant?: string;
         };
         UserRecord: {
             id?: string;
@@ -3790,10 +3831,15 @@ export interface components {
             id?: string;
             scan_type?: string;
             target?: string;
-            /** @enum {string} */
-            status?: "queued" | "running" | "completed" | "failed" | "cancelled";
+            /**
+             * @description `completed_with_errors`: the scan ran and recorded what it found, but some hosts answered and failed (plain HTTP on a TLS port, a failed handshake) -- see `error` for which.
+             * @enum {string}
+             */
+            status?: "queued" | "running" | "completed" | "completed_with_errors" | "failed" | "cancelled";
             /** Format: date-time */
             queued_at?: string;
+            /** @description Why a job failed, or for `completed_with_errors` which hosts answered but could not be read and how many closed ports were not recorded. Absent for a clean run. Truncated to 500 characters. */
+            error?: string;
         };
         /** @description Matches internal/bootstrap/event_bus.go's Event struct -- the stable envelope every GET /events `data:` line carries (W8-14). `status` reuses DiscoveryScanJob.status's vocabulary verbatim rather than a parallel one. `op_id` is the id the client already holds from the call that started the operation (e.g. DiscoveryScanJob.id from POST /discovery/scans) -- correlation needs no new lookup. Only `scan` has a producer wired today (the discovery scan create/cancel/requeue endpoints); renew/install/migrate are follow-up tickets and reuse this same envelope once wired. */
         OperationEvent: {
@@ -3815,13 +3861,17 @@ export interface components {
             risky_endpoints?: number;
             active_scan_jobs?: number;
             findings?: components["schemas"]["FindingFunnelSummary"];
+            trust_classes?: components["schemas"]["TrustClassCounts"];
         };
         /** @description Matches internal/bootstrap/handlers_dashboard.go's GET /dashboard/summary response struct. `discovery` is a narrower projection of DiscoverySummary (no mapped_certificates) but carries the same `findings` sub-object (W2-11) — see FindingFunnelSummary. */
         DashboardSummary: {
             resource?: string;
             principal?: string;
             certificates?: {
+                /** @description Active certificates: not revoked and not superseded by a renewal. Expiring/expired counts use the same rule. */
                 total?: number;
+                /** @description Revoked certificates, reported separately from `total`. */
+                revoked?: number;
                 expiring_30_days?: number;
                 expired?: number;
                 source?: string;
@@ -3831,6 +3881,7 @@ export interface components {
                 risky_endpoints?: number;
                 active_scan_jobs?: number;
                 findings?: components["schemas"]["FindingFunnelSummary"];
+                trust_classes?: components["schemas"]["TrustClassCounts"];
             };
             notifications?: {
                 pending_notifications?: number;
@@ -3973,6 +4024,8 @@ export interface operations {
                 status?: "active" | "revoked";
                 origin?: "internal" | "imported" | "discovered" | "synced";
                 management_state?: "managed" | "external" | "unmanaged";
+                /** @description Keep certificates of one trust class. Served-chain intermediates and roots (discovery) are never listed. */
+                trust_class?: components["schemas"]["TrustClass"];
             };
             header?: never;
             path?: never;
@@ -5594,7 +5647,10 @@ export interface operations {
         parameters: {
             query?: {
                 protocol?: string;
+                /** @description Keep risky endpoints: one with a currently-active certificate that scores 70 or more or carries EXPIRED, SELF_SIGNED, WEAK_KEY, WEAK_SIGNATURE or UNTRUSTED_ROOT, or with a NOT_TLS, TLS_HANDSHAKE_FAILED, POSTGRES_TLS_DISABLED or DEPRECATED_TLS_VERSION finding. `risky_endpoints` in the summaries counts the same set. */
                 risky_only?: boolean;
+                /** @description Keep endpoints currently presenting a leaf certificate of this trust class. An unknown value is a 400. */
+                trust_class?: components["schemas"]["TrustClass"];
             };
             header?: never;
             path?: never;
@@ -5643,10 +5699,20 @@ export interface operations {
                                     fingerprint?: string;
                                     common_name?: string;
                                     valid_until?: string;
+                                    /** @description The certificate's own score plus what serving it on THIS endpoint adds. */
                                     risk_score?: number;
+                                    /** @description The certificate's own flags plus the endpoint-scoped ones observed here (HOSTNAME_MISMATCH, INCOMPLETE_CHAIN, UNTRUSTED_ROOT). */
                                     risk_flags?: string[];
+                                    trust_class?: components["schemas"]["TrustClass"];
+                                    /** @description An intermediate/root this endpoint served alongside its leaf. */
+                                    chain_ca?: boolean;
+                                    /** @description Absent when completeness could not be judged for this endpoint (a private chain whose issuer the hub does not hold). false only when an intermediate is provably missing from what the server sent; omitting the root is normal. */
+                                    chain_complete?: boolean;
+                                    chain_trusted?: boolean;
                                 }[];
-                                /** @description cipheraudit findings for a real (port != 0) TLS endpoint, or -- a port-less source (e.g. a mesh/K8s-secret certificate source) -- a "discovery-error: ..." entry recording a reachability or permission failure (W19-22). */
+                                /** @description True when the endpoint matches the `risky_only` rule (score >= 70, a high-severity flag such as EXPIRED, SELF_SIGNED, WEAK_KEY, WEAK_SIGNATURE, UNTRUSTED_ROOT or HOSTNAME_MISMATCH, or a deprecated-TLS, not-TLS, failed-handshake or Postgres-TLS-disabled finding). An endpoint with such a finding scores at least 20. The UI badge reads this rather than re-deriving it from `risk_score`. */
+                                risky?: boolean;
+                                /** @description Endpoint findings: NOT_TLS, TLS_HANDSHAKE_FAILED, POSTGRES_TLS_DISABLED (the server declined the SSLRequest) or DEPRECATED_TLS_VERSION ("CODE: detail") for a port that answered but could not be read as modern TLS; otherwise cipheraudit findings for a real (port != 0) TLS endpoint, or -- a port-less source (e.g. a mesh/K8s-secret certificate source) -- a "discovery-error: ..." entry recording a reachability or permission failure (W19-22). */
                                 issues?: string[];
                             }[];
                         };
@@ -5658,7 +5724,7 @@ export interface operations {
     listDiscoveryScanJobs: {
         parameters: {
             query?: {
-                status?: "queued" | "running" | "completed" | "failed" | "cancelled";
+                status?: "queued" | "running" | "completed" | "completed_with_errors" | "failed" | "cancelled";
                 q?: string;
                 limit?: number;
                 cursor?: number;
@@ -8087,7 +8153,18 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["AuditEntry"][];
+                        meta?: {
+                            total?: number;
+                            limit?: number;
+                            next_cursor?: string | null;
+                            prev_cursor?: string | null;
+                        };
+                        principal?: string;
+                    };
+                };
             };
             /** @description The caller's role lacks the audit.read permission (pki-admin, auditor, pki-auditor, or a custom role granted it) */
             403: {

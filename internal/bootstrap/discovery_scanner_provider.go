@@ -18,6 +18,9 @@ import (
 )
 
 // scannerDiscoveryProvider wraps the real network scanner behind the DiscoveryProvider interface.
+// It is the minimal in-memory mode (APP_DISCOVERY_PROVIDER=scanner), not the
+// default: port 443 only, scan_type and custom ports ignored, nothing
+// persisted, no flags or posture. The full-featured provider is "db".
 type scannerDiscoveryProvider struct {
 	scanner *scanner.Scanner
 	mu      sync.RWMutex
@@ -42,7 +45,7 @@ func (p *scannerDiscoveryProvider) GetSummary(_ context.Context) (DiscoverySumma
 
 	risky := 0
 	for _, ep := range p.endpoints {
-		if ep.RiskScore >= 70 {
+		if endpointIsRisky(ep) {
 			risky++
 		}
 	}
@@ -68,7 +71,8 @@ func (p *scannerDiscoveryProvider) ListEndpoints(_ context.Context, q DiscoveryE
 		if q.Protocol != "" && !strings.EqualFold(ep.Protocol, q.Protocol) {
 			continue
 		}
-		if q.RiskyOnly && ep.RiskScore < 70 {
+		ep.Risky = endpointIsRisky(ep)
+		if q.RiskyOnly && !ep.Risky {
 			continue
 		}
 		filtered = append(filtered, ep)

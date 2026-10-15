@@ -14,6 +14,8 @@ export type HorizonDay = {
   offset: number;
   date: Date;
   total: number;
+  /** Certificates in `total` that have already expired (folded into day 0). */
+  expired: number;
   /** Worst state present that day — that is what the eye should catch. */
   state: HorizonState;
   counts: Record<HorizonState, number>;
@@ -26,8 +28,29 @@ export type Horizon = {
   totalInWindow: number;
   needsHuman: number;
   /** The densest run of days that is not fully automated, or null. */
-  cliff: { offset: number; date: Date; total: number; needsHuman: number } | null;
+  cliff: {
+    offset: number;
+    date: Date;
+    total: number;
+    needsHuman: number;
+    /** How many of `total` are already expired rather than about to expire. */
+    expired: number;
+  } | null;
 };
+
+/**
+ * The one counting rule (mirrors certificate_active.go on the backend): a
+ * certificate counts when it is not revoked and not superseded by a renewal.
+ * Revoked certificates cannot expire into an outage and superseded ones are
+ * replaced by a successor that is already on the horizon.
+ */
+export function isActiveCertificate(cert: CertificateRecord): boolean {
+  return (
+    !cert.revoked_at &&
+    cert.renewal_status !== "revoked" &&
+    cert.renewal_status !== "renewed"
+  );
+}
 
 /** Renewal methods that happen without a person. */
 const AUTOMATED = new Set(["acme", "est", "scep", "api"]);
@@ -58,6 +81,7 @@ export function buildHorizon(
       offset,
       date,
       total: 0,
+      expired: 0,
       state: "auto" as HorizonState,
       counts: { auto: 0, attn: 0, over: 0 },
     };
@@ -67,7 +91,7 @@ export function buildHorizon(
   let needsHuman = 0;
 
   for (const cert of certs) {
-    if (!cert.valid_until) continue;
+    if (!cert.valid_until || !isActiveCertificate(cert)) continue;
     const until = new Date(cert.valid_until);
     if (Number.isNaN(until.getTime())) continue;
 
@@ -83,6 +107,7 @@ export function buildHorizon(
 
     const day = days[slot];
     day.total += 1;
+    if (until.getTime() < now.getTime()) day.expired += 1;
     day.counts[state] += 1;
     totalInWindow += 1;
     if (state !== "auto") needsHuman += 1;
@@ -101,7 +126,13 @@ export function buildHorizon(
     const dayNeedsHuman = day.counts.attn + day.counts.over;
     if (dayNeedsHuman === 0) continue;
     if (!cliff || dayNeedsHuman > cliff.needsHuman) {
-      cliff = { offset: day.offset, date: day.date, total: day.total, needsHuman: dayNeedsHuman };
+      cliff = {
+        offset: day.offset,
+        date: day.date,
+        total: day.total,
+        needsHuman: dayNeedsHuman,
+        expired: day.expired,
+      };
     }
   }
 

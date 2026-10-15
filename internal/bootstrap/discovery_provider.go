@@ -35,14 +35,23 @@ type DiscoverySummary struct {
 	// dbDiscoveryProvider (the "db"-mode APP_DISCOVERY_PROVIDER) populates
 	// this; the file/scanner-backed providers leave it zero-valued.
 	Findings FindingFunnelSummary `json:"findings"`
+	// TrustClasses breaks discovery-found leaf certificates down by whose
+	// they are. Zero on providers without a certificate table.
+	TrustClasses TrustClassCounts `json:"trust_classes"`
 }
 
 type DiscoveryEndpoint struct {
-	ID         string `json:"id"`
-	Hostname   string `json:"hostname"`
-	Port       int    `json:"port"`
-	Protocol   string `json:"protocol"`
-	RiskScore  int    `json:"risk_score"`
+	ID        string `json:"id"`
+	Hostname  string `json:"hostname"`
+	Port      int    `json:"port"`
+	Protocol  string `json:"protocol"`
+	RiskScore int    `json:"risk_score"`
+	// Risky is the documented risky-endpoint rule (discovery_risk.go): the
+	// score threshold OR a high-severity flag or finding. It is what the
+	// risky_only filter and risky_endpoints count are built from, so a UI
+	// badge reading it cannot disagree with them the way a bare risk_score
+	// comparison did.
+	Risky      bool   `json:"risky"`
 	LastSeenAt string `json:"last_seen_at"`
 	// ServerTech is the fingerprinted web/server technology (iis, apache,
 	// nginx, …) or "" if none was read; RecommendedInstallMode is the
@@ -78,13 +87,29 @@ type DiscoveryMappedCert struct {
 	ValidUntil  string   `json:"valid_until,omitempty"`
 	RiskScore   int      `json:"risk_score"`
 	RiskFlags   []string `json:"risk_flags,omitempty"`
+	// TrustClass is whose certificate this is (managed|public|private_other|
+	// self_signed|unknown), from a real x509 verification of the served chain.
+	// ChainCA marks an intermediate/root the endpoint served alongside its leaf.
+	//
+	// RiskScore/RiskFlags are the certificate's own plus what THIS endpoint's
+	// serving of it adds (HOSTNAME_MISMATCH, INCOMPLETE_CHAIN, UNTRUSTED_ROOT):
+	// the same certificate on another endpoint carries its own set.
+	// ChainComplete is nil when completeness could not be judged (a private
+	// chain whose issuer the hub does not hold); only a proven missing
+	// intermediate is false.
+	TrustClass    string `json:"trust_class,omitempty"`
+	ChainCA       bool   `json:"chain_ca,omitempty"`
+	ChainComplete *bool  `json:"chain_complete,omitempty"`
+	ChainTrusted  bool   `json:"chain_trusted"`
 }
 
 type DiscoveryEndpointQuery struct {
 	Protocol  string
 	RiskyOnly bool
-	Limit     int
-	Cursor    int
+	// TrustClass keeps endpoints currently presenting a leaf of this class.
+	TrustClass string
+	Limit      int
+	Cursor     int
 }
 
 type DiscoveryEndpointResult struct {
@@ -101,6 +126,10 @@ type DiscoveryScanJob struct {
 	Target   string `json:"target"`
 	Status   string `json:"status"`
 	QueuedAt string `json:"queued_at"`
+	// Error explains a failed job, or summarizes what a completed_with_errors
+	// job could not read (which hosts answered but failed, how many ports were
+	// closed). Empty for a clean run.
+	Error string `json:"error,omitempty"`
 }
 
 type DiscoveryScanJobQuery struct {
@@ -195,6 +224,7 @@ type configuredDiscoveryProvider struct {
 	fileProvider DiscoveryProvider
 	dbProvider   DiscoveryProvider
 	winrmScan    winRMTargetScanner
+	hubCAs       hubCASource
 }
 
 func NewDiscoveryProviderFromEnv() DiscoveryProvider {
@@ -209,8 +239,9 @@ func NewDiscoveryProviderFromEnv() DiscoveryProvider {
 
 // resolveDiscoveryMode returns the effective discovery provider mode: store's
 // DB override for "discovery.provider" when present, else APP_DISCOVERY_PROVIDER,
-// else "file" -- the same DB-override/env-default precedence as
-// EffectiveSettings (config_store.go), for exactly the one key this needs.
+// else "db" (the full-featured provider; "file" is a read-only dev stub) -- the
+// same DB-override/env-default precedence as EffectiveSettings
+// (config_store.go), for exactly the one key this needs.
 func resolveDiscoveryMode(ctx context.Context, store ConfigStore) string {
 	raw := ""
 	if store != nil {
@@ -222,13 +253,13 @@ func resolveDiscoveryMode(ctx context.Context, store ConfigStore) string {
 		raw = os.Getenv(discoveryProviderEnv)
 	}
 	switch mode := strings.ToLower(strings.TrimSpace(raw)); mode {
-	case "", discoveryProviderFile:
-		return discoveryProviderFile
-	case discoveryProviderDB:
+	case "", discoveryProviderDB:
 		return discoveryProviderDB
-	default:
-		discoveryProviderWarnf("warning: unknown discovery provider mode %q; falling back to file", mode)
+	case discoveryProviderFile:
 		return discoveryProviderFile
+	default:
+		discoveryProviderWarnf("warning: unknown discovery provider mode %q; falling back to db", mode)
+		return discoveryProviderDB
 	}
 }
 
@@ -256,6 +287,9 @@ func (c *configuredDiscoveryProvider) current(ctx context.Context) DiscoveryProv
 			c.dbProvider = c.dbFactory()
 			if s, ok := c.dbProvider.(winRMScanSetter); ok && c.winrmScan != nil {
 				s.SetWinRMScanner(c.winrmScan)
+			}
+			if s, ok := c.dbProvider.(hubCASetter); ok && c.hubCAs != nil {
+				s.SetHubCASource(c.hubCAs)
 			}
 		}
 		c.active = c.dbProvider

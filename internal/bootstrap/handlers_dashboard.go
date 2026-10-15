@@ -69,6 +69,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 				Principal    string `json:"principal"`
 				Certificates struct {
 					Total          int `json:"total"`
+					Revoked        int `json:"revoked"`
 					Expiring30Days int `json:"expiring_30_days"`
 					Expired        int `json:"expired"`
 					// W11-01 estate split by management_state; zeros on
@@ -83,6 +84,8 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 					RiskyEndpoints      int                  `json:"risky_endpoints"`
 					ActiveScanJobs      int                  `json:"active_scan_jobs"`
 					Findings            FindingFunnelSummary `json:"findings"`
+					// Discovery-found leaf certificates by whose they are.
+					TrustClasses TrustClassCounts `json:"trust_classes"`
 				} `json:"discovery"`
 				Notifications struct {
 					PendingNotifications int `json:"pending_notifications"`
@@ -94,6 +97,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		resp.Data.Resource = "dashboard-summary"
 		resp.Data.Principal = principal.ID
 		resp.Data.Certificates.Total = certSummary.Total
+		resp.Data.Certificates.Revoked = certSummary.Revoked
 		resp.Data.Certificates.Expiring30Days = certSummary.Expiring30Days
 		resp.Data.Certificates.Expired = certSummary.Expired
 		resp.Data.Certificates.Managed = certSummary.Managed
@@ -104,6 +108,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		resp.Data.Discovery.RiskyEndpoints = discoverySummary.RiskyEndpoints
 		resp.Data.Discovery.ActiveScanJobs = discoverySummary.ActiveScanJobs
 		resp.Data.Discovery.Findings = discoverySummary.Findings
+		resp.Data.Discovery.TrustClasses = discoverySummary.TrustClasses
 		resp.Data.Notifications.PendingNotifications = notifSummary.PendingNotifications
 		resp.Data.Notifications.Escalations = notifSummary.OwnershipEscalations
 

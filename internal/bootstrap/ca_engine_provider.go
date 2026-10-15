@@ -33,7 +33,7 @@ func NewDBActiveCertCountByCA(db *sql.DB) CertCountByCA {
 		rows, err := db.QueryContext(ctx, `
 SELECT ca_id, COUNT(*)
 FROM certificates
-WHERE renewal_status = 'active' AND ca_id IS NOT NULL AND ca_id != ''
+WHERE `+activeCertSQL+` AND ca_id IS NOT NULL AND ca_id != ''
 GROUP BY ca_id`)
 		if err != nil {
 			return nil, err

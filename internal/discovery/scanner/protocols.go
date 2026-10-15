@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -49,7 +50,7 @@ func (p *ProtocolScanner) dial(ctx context.Context, host string, port int) (net.
 }
 
 func (p *ProtocolScanner) tlsCapture(conn net.Conn, host, protocol string, port int) DiscoveredEndpoint {
-	ep := DiscoveredEndpoint{Host: host, Port: port, Protocol: protocol, ScannedAt: time.Now().UTC()}
+	ep := DiscoveredEndpoint{Host: host, Port: port, Protocol: protocol, Reachable: true, ScannedAt: time.Now().UTC()}
 	tconn := tls.Client(conn, &tls.Config{ServerName: host, InsecureSkipVerify: true})
 	if err := tconn.Handshake(); err != nil {
 		ep.Error = "tls handshake: " + err.Error()
@@ -57,7 +58,9 @@ func (p *ProtocolScanner) tlsCapture(conn net.Conn, host, protocol string, port 
 	}
 	ep.TLSVersion = tlsVersionString(tconn.ConnectionState().Version)
 	for i, cert := range tconn.ConnectionState().PeerCertificates {
-		ep.Certs = append(ep.Certs, certToDiscovered(cert, host, i == 0))
+		dc := certToDiscovered(cert, host, i == 0)
+		dc.Served = true
+		ep.Certs = append(ep.Certs, dc)
 	}
 	return ep
 }
@@ -116,7 +119,7 @@ func (p *ProtocolScanner) ScanSTARTTLS(ctx context.Context, host string, port in
 	r := bufio.NewReader(conn)
 	if err := verb.greet(r); err != nil {
 		conn.Close()
-		return DiscoveredEndpoint{Host: host, Port: port, Protocol: verb.tag, Error: "greet: " + err.Error()}
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: verb.tag, Reachable: true, Error: "greet: " + err.Error()}
 	}
 	// SMTP wants an EHLO before STARTTLS; harmless for others that
 	// ignore an unknown verb, but only SMTP requires it.
@@ -126,12 +129,12 @@ func (p *ProtocolScanner) ScanSTARTTLS(ctx context.Context, host string, port in
 	}
 	if _, err := conn.Write([]byte(verb.send)); err != nil {
 		conn.Close()
-		return DiscoveredEndpoint{Host: host, Port: port, Protocol: verb.tag, Error: "send: " + err.Error()}
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: verb.tag, Reachable: true, Error: "send: " + err.Error()}
 	}
 	line, err := r.ReadString('\n')
 	if err != nil || !verb.expectOK(strings.TrimSpace(line)) {
 		conn.Close()
-		return DiscoveredEndpoint{Host: host, Port: port, Protocol: verb.tag, Error: "starttls refused: " + strings.TrimSpace(line)}
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: verb.tag, Reachable: true, Error: "starttls refused: " + strings.TrimSpace(line)}
 	}
 	return p.tlsCapture(conn, host, verb.tag, port)
 }
@@ -163,16 +166,23 @@ func (p *ProtocolScanner) scanPostgres(ctx context.Context, host string, port in
 	binary.BigEndian.PutUint32(msg[4:], 80877103)
 	if _, err := conn.Write(msg); err != nil {
 		conn.Close()
-		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Error: "sslrequest: " + err.Error()}
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Reachable: true, Error: "sslrequest: " + err.Error()}
 	}
 	reply := make([]byte, 1)
 	if _, err := conn.Read(reply); err != nil {
 		conn.Close()
-		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Error: "read: " + err.Error()}
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Reachable: true, Error: "read: " + err.Error()}
 	}
 	if reply[0] != 'S' {
 		conn.Close()
-		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Error: "server does not offer TLS (replied " + string(reply) + ")"}
+		// 'N' is a well-formed refusal, not a failed handshake: report it as
+		// its own finding. Any other byte is not a Postgres answer at all.
+		ep := DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Reachable: true, ScannedAt: time.Now().UTC(),
+			Error: "server does not offer TLS (replied " + strconv.Quote(string(reply)) + ")"}
+		if reply[0] == 'N' {
+			ep.Findings = []string{FindingPostgresTLSDisabled + ": server declined the SSLRequest"}
+		}
+		return ep
 	}
 	return p.tlsCapture(conn, host, tag, port)
 }
@@ -269,14 +279,14 @@ func (p *ProtocolScanner) ScanRDP(ctx context.Context, host string, port int) Di
 	}
 	if _, err := conn.Write(req); err != nil {
 		conn.Close()
-		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Error: "x224 request: " + err.Error()}
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Reachable: true, Error: "x224 request: " + err.Error()}
 	}
 	// Read the Connection Confirm: TPKT header then the negotiation
 	// response type byte (0x02 = grant).
 	var tpkt [4]byte
 	if _, err := readFull(conn, tpkt[:]); err != nil {
 		conn.Close()
-		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Error: "x224 confirm: " + err.Error()}
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Reachable: true, Error: "x224 confirm: " + err.Error()}
 	}
 	// Bounds-check the TPKT length from the wire before allocating: a
 	// hostile endpoint could send a length < 4 (make([]byte, negative)
@@ -285,18 +295,18 @@ func (p *ProtocolScanner) ScanRDP(ctx context.Context, host string, port int) Di
 	total := int(binary.BigEndian.Uint16(tpkt[2:4]))
 	if tpkt[0] != 0x03 || total < 12 || total > 4096 {
 		conn.Close()
-		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Error: "malformed X.224 Connection Confirm"}
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Reachable: true, Error: "malformed X.224 Connection Confirm"}
 	}
 	rest := make([]byte, total-4)
 	if _, err := readFull(conn, rest); err != nil {
 		conn.Close()
-		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Error: "x224 body: " + err.Error()}
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Reachable: true, Error: "x224 body: " + err.Error()}
 	}
 	// The RDP Negotiation Response type byte follows the 7-byte X.224
 	// CC header (rest[7]); 0x02 = TYPE_RDP_NEG_RSP granting a protocol.
 	if len(rest) < 8 || rest[7] != 0x02 {
 		conn.Close()
-		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Error: "server declined TLS security"}
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Reachable: true, Error: "server declined TLS security"}
 	}
 	return p.tlsCapture(conn, host, tag, port)
 }

@@ -111,6 +111,22 @@ A bare-metal or Helm install that leaves it unset gets `file`; set `delivery`
 to get alerts. The rule endpoints return 503 if the notification store cannot
 be opened.
 
+### Discovery provider
+
+`APP_DISCOVERY_PROVIDER` selects where discovery results live:
+
+- **`db`** (the default, and the Compose, `env.example` and Helm default):
+  persists endpoints, certificates, findings and crypto posture in the hub
+  database and runs every scan type (`fast`, `targeted`, `full`, `deep`),
+  custom ports and the WinRM source.
+- **`file`**: a read-only development stub. Scan writes are refused with 422.
+- **`scanner`**: a minimal in-memory mode. It scans port 443 only, ignores
+  `scan_type` and custom ports, persists no certificates and shows no flags or
+  posture. It is lost on restart. Select it only for a throwaway demo.
+
+Switching an existing Compose install to `db` starts a fresh persisted
+inventory; nothing the in-memory scanner held carries over.
+
 ### Missing CA keys at startup
 
 The hub refuses to start when an active CA has no usable key in the keystore,

@@ -390,7 +390,7 @@ func registerReportsHandlers(mux *http.ServeMux, auth *Authenticator, certProvid
 
 		// PDF evidence pack (v1.4): branded, auditor-ready.
 		if strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format"))) == "pdf" {
-			pdfBytes, perr := renderComplianceEvidencePDF(report, len(certs), time.Now().UTC())
+			pdfBytes, perr := renderComplianceEvidencePDF(report, len(activeCertificates(certs)), time.Now().UTC())
 			if perr != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "report.compliance_evidence", "report", "compliance-evidence", AuditOutcomeFailure)
 				log.Printf("compliance evidence pdf: %v", perr)
@@ -478,6 +478,10 @@ func computeCryptoPosture(_ context.Context, certs []CertificateItem) CryptoPost
 }
 
 func computeCryptoPostureReport(certs []CertificateItem, activeExceptions []FindingException) CryptoPostureReport {
+	// Revoked certificates cannot expire or be migrated; see certificate_active.go.
+	// This is also the funnel for the executive summary, PQC countdown and
+	// posture snapshots, so they all agree with the inventory.
+	certs = activeCertificates(certs)
 	now := time.Now().UTC()
 
 	report := CryptoPostureReport{
@@ -727,6 +731,7 @@ type ExpiryBucketEntry struct {
 }
 
 func computeExpiryTimeline(certs []CertificateItem) ExpiryTimelineReport {
+	certs = activeCertificates(certs) // revoked certs cannot expire; see certificate_active.go
 	now := time.Now().UTC()
 	report := ExpiryTimelineReport{
 		GeneratedAt: now.Format(time.RFC3339),
@@ -1176,6 +1181,7 @@ func soc2LifecycleControl(certs []CertificateItem, now time.Time) ComplianceCont
 // computeComplianceEvidenceAt is computeComplianceEvidence with an injected
 // clock so expiry-dependent controls are testable.
 func computeComplianceEvidenceAt(certs []CertificateItem, cas []CAListItem, framework string, now time.Time) ComplianceEvidenceReport {
+	certs = activeCertificates(certs) // see certificate_active.go
 	report := ComplianceEvidenceReport{
 		GeneratedAt: now.Format(time.RFC3339),
 		Framework:   framework,
@@ -1363,6 +1369,7 @@ type SunsetAlgoSummary struct {
 }
 
 func computeAlgorithmSunset(certs []CertificateItem) AlgorithmSunsetReport {
+	certs = activeCertificates(certs) // revoked certs cannot be migrated; see certificate_active.go
 	now := time.Now().UTC()
 	report := AlgorithmSunsetReport{
 		GeneratedAt: now.Format(time.RFC3339),

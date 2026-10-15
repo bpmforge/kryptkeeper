@@ -45,6 +45,19 @@ describe("buildHorizon", () => {
     expect(h.totalInWindow).toBe(2);
   });
 
+  // One counting rule: revoked and superseded certificates are not plotted
+  // (they cannot expire into an outage), but expired active ones are.
+  it("ignores revoked and renewed certificates", () => {
+    const revoked = { ...cert(10, "manual"), revoked_at: NOW.toISOString() };
+    const statusRevoked = { ...cert(11, "manual"), renewal_status: "revoked" };
+    const renewed = { ...cert(12, "acme"), renewal_status: "renewed" };
+    const active = { ...cert(13, "acme"), renewal_status: "active" };
+    const expired = { ...cert(-3, "manual"), renewal_status: "expired" };
+    const h = buildHorizon([revoked, statusRevoked, renewed, active, expired], NOW);
+    expect(h.totalInWindow).toBe(2);
+    expect(h.needsHuman).toBe(1);
+  });
+
   it("excludes certificates beyond the window", () => {
     const h = buildHorizon([cert(200, "acme")], NOW, 90);
     expect(h.totalInWindow).toBe(0);
@@ -94,5 +107,24 @@ describe("Horizon component", () => {
 
     render(<Horizon certificates={[cert(12, "acme")]} now={NOW} />);
     expect(screen.queryAllByText(/will not renew themselves/i)).toHaveLength(1);
+  });
+});
+
+describe("Horizon cliff wording for already-expired certificates", () => {
+  it("does not call an expired certificate 'expiring'", () => {
+    render(<Horizon certificates={[cert(-3, "manual")]} now={NOW} />);
+    expect(screen.getByText(/have already expired/i)).toBeInTheDocument();
+    expect(screen.queryByText(/certificates\s+expiring on/i)).toBeNull();
+  });
+
+  it("tracks how many of the cliff day's certificates are already expired", () => {
+    const h = buildHorizon([cert(-3, "manual"), cert(-1, "manual"), cert(0, "manual")], NOW);
+    expect(h.cliff?.total).toBe(3);
+    expect(h.cliff?.expired).toBe(2);
+  });
+
+  it("keeps the 'expiring on' wording for future certificates", () => {
+    render(<Horizon certificates={[cert(12, "manual")]} now={NOW} />);
+    expect(screen.getByText(/certificates\s+expiring on/i)).toBeInTheDocument();
   });
 });

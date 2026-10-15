@@ -33,7 +33,7 @@ func newGrantHarness(t *testing.T) *grantHarness {
 	registerUserHandlers(mux, h.auth, h.users, h.roles, h.audit)
 	registerCustomRoleHandlers(mux, h.auth, h.roles, h.audit)
 	registerAuthHandlers(mux, h.auth, h.audit)
-	registerAuditHandlers(mux, h.auth, h.roles, h.audit)
+	registerAuditHandlers(mux, h.auth, h.roles, h.audit, auditNameSources{})
 	registerAuditTrustHandlers(mux, h.auth, h.roles, h.audit)
 	registerPendingActionHandlers(mux, h.auth, nil, newTestPendingStore(t), h.audit, nil)
 	// A custom role that may manage users and roles but is no admin: the

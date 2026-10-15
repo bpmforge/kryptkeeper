@@ -63,7 +63,7 @@ func registerPQCMigrationHandler(mux *http.ServeMux, auth *Authenticator, certPr
 			writeServiceUnavailable(w, "report unavailable")
 			return
 		}
-		certs := reportScopeCertificates(r.Context(), pd, result.Items)
+		certs := activeCertificates(reportScopeCertificates(r.Context(), pd, result.Items))
 		records := make([]pqc.CertRecord, 0, len(certs))
 		for _, c := range certs {
 			records = append(records, toPQCCertRecord(c))

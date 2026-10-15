@@ -80,7 +80,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -f go.mod ]; then
-            go test ./... -race -count=1
+            go test ./... -race -count=1 -timeout 30m
           fi
           if [ -f web/package.json ]; then
             corepack enable

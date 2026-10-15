@@ -121,41 +121,46 @@ func newPostgresCertSummaryStore(dsn string) (*postgresCertSummaryStore, error) 
 }
 
 func (s *sqliteCertSummaryStore) LoadSummary(ctx context.Context) (CertSummarySnapshot, error) {
+	// Served-chain intermediates/roots (is_ca) are not leaf inventory.
 	const query = `
 SELECT
-    COUNT(*) AS total,
-    COALESCE(SUM(CASE WHEN julianday(valid_until) < julianday('now') THEN 1 ELSE 0 END), 0) AS expired,
-    COALESCE(SUM(CASE WHEN julianday(valid_until) >= julianday('now') AND julianday(valid_until) < julianday('now', '+30 days') THEN 1 ELSE 0 END), 0) AS expiring_30_days,
-    COALESCE(SUM(CASE WHEN COALESCE(management_state, 'managed') = 'managed' THEN 1 ELSE 0 END), 0) AS managed,
-    COALESCE(SUM(CASE WHEN management_state = 'external' THEN 1 ELSE 0 END), 0) AS external,
-    COALESCE(SUM(CASE WHEN management_state = 'unmanaged' THEN 1 ELSE 0 END), 0) AS unmanaged
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` THEN 1 ELSE 0 END), 0) AS total,
+    COALESCE(SUM(CASE WHEN ` + revokedCertSQL + ` THEN 1 ELSE 0 END), 0) AS revoked,
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND julianday(valid_until) < julianday('now') THEN 1 ELSE 0 END), 0) AS expired,
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND julianday(valid_until) >= julianday('now') AND julianday(valid_until) < julianday('now', '+30 days') THEN 1 ELSE 0 END), 0) AS expiring_30_days,
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND COALESCE(management_state, 'managed') = 'managed' THEN 1 ELSE 0 END), 0) AS managed,
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND management_state = 'external' THEN 1 ELSE 0 END), 0) AS external,
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND management_state = 'unmanaged' THEN 1 ELSE 0 END), 0) AS unmanaged
 FROM certificates
+WHERE COALESCE(is_ca, 0) = 0
 `
 	row := s.db.QueryRowContext(ctx, query)
-	var total, expired, expiring30Days, managed, external, unmanaged int
-	if err := row.Scan(&total, &expired, &expiring30Days, &managed, &external, &unmanaged); err != nil {
+	var total, revoked, expired, expiring30Days, managed, external, unmanaged int
+	if err := row.Scan(&total, &revoked, &expired, &expiring30Days, &managed, &external, &unmanaged); err != nil {
 		return CertSummarySnapshot{}, err
 	}
-	return CertSummarySnapshot{Total: total, Expiring30Days: expiring30Days, Expired: expired, Managed: managed, External: external, Unmanaged: unmanaged, Source: dbCertSummarySQLiteSource}, nil
+	return CertSummarySnapshot{Total: total, Revoked: revoked, Expiring30Days: expiring30Days, Expired: expired, Managed: managed, External: external, Unmanaged: unmanaged, Source: dbCertSummarySQLiteSource}, nil
 }
 
 func (s *postgresCertSummaryStore) LoadSummary(ctx context.Context) (CertSummarySnapshot, error) {
 	const query = `
 SELECT
-    COUNT(*) AS total,
-    COALESCE(SUM(CASE WHEN valid_until < CURRENT_TIMESTAMP THEN 1 ELSE 0 END), 0) AS expired,
-    COALESCE(SUM(CASE WHEN valid_until >= CURRENT_TIMESTAMP AND valid_until < CURRENT_TIMESTAMP + INTERVAL '30 days' THEN 1 ELSE 0 END), 0) AS expiring_30_days,
-    COALESCE(SUM(CASE WHEN COALESCE(management_state, 'managed') = 'managed' THEN 1 ELSE 0 END), 0) AS managed,
-    COALESCE(SUM(CASE WHEN management_state = 'external' THEN 1 ELSE 0 END), 0) AS external,
-    COALESCE(SUM(CASE WHEN management_state = 'unmanaged' THEN 1 ELSE 0 END), 0) AS unmanaged
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` THEN 1 ELSE 0 END), 0) AS total,
+    COALESCE(SUM(CASE WHEN ` + revokedCertSQL + ` THEN 1 ELSE 0 END), 0) AS revoked,
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND valid_until < CURRENT_TIMESTAMP THEN 1 ELSE 0 END), 0) AS expired,
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND valid_until >= CURRENT_TIMESTAMP AND valid_until < CURRENT_TIMESTAMP + INTERVAL '30 days' THEN 1 ELSE 0 END), 0) AS expiring_30_days,
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND COALESCE(management_state, 'managed') = 'managed' THEN 1 ELSE 0 END), 0) AS managed,
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND management_state = 'external' THEN 1 ELSE 0 END), 0) AS external,
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND management_state = 'unmanaged' THEN 1 ELSE 0 END), 0) AS unmanaged
 FROM certificates
+WHERE NOT is_ca
 `
 	row := s.db.QueryRowContext(ctx, query)
-	var total, expired, expiring30Days, managed, external, unmanaged int
-	if err := row.Scan(&total, &expired, &expiring30Days, &managed, &external, &unmanaged); err != nil {
+	var total, revoked, expired, expiring30Days, managed, external, unmanaged int
+	if err := row.Scan(&total, &revoked, &expired, &expiring30Days, &managed, &external, &unmanaged); err != nil {
 		return CertSummarySnapshot{}, err
 	}
-	return CertSummarySnapshot{Total: total, Expiring30Days: expiring30Days, Expired: expired, Managed: managed, External: external, Unmanaged: unmanaged, Source: dbCertSummaryPGSource}, nil
+	return CertSummarySnapshot{Total: total, Revoked: revoked, Expiring30Days: expiring30Days, Expired: expired, Managed: managed, External: external, Unmanaged: unmanaged, Source: dbCertSummaryPGSource}, nil
 }
 
 // certSummaryCacheTTL bounds how stale the dashboard counters may be. The

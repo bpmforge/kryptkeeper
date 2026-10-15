@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -36,6 +37,21 @@ type DiscoveredCert struct {
 	RiskScore          int
 	RiskFlags          []string
 	Raw                []byte
+	// Served: the cert came out of a TLS-presented peer chain, so ApplyTrust
+	// may judge it as a chain. Store enumerations, SSH and mesh sources leave
+	// it false and are never classified.
+	Served bool
+	// ChainCA marks an intermediate/root from a served chain. Set by
+	// ApplyTrust; such certs are kept out of the leaf inventory.
+	ChainCA bool
+	// TrustClass/ChainComplete/ChainTrusted are the ApplyTrust verdict for a
+	// served leaf (see ClassifyChain). Empty class = never classified.
+	// ChainCompleteKnown is false when completeness could not be judged, in
+	// which case ChainComplete is meaningless (stored as NULL).
+	TrustClass         string
+	ChainComplete      bool
+	ChainCompleteKnown bool
+	ChainTrusted       bool
 }
 
 // DiscoveredEndpoint holds a scanned network endpoint.
@@ -47,6 +63,15 @@ type DiscoveredEndpoint struct {
 	Certs      []DiscoveredCert
 	Error      string
 	ScannedAt  time.Time
+	// Reachable: the TCP connection succeeded, so something is listening even
+	// if Error is set. A closed or filtered port is Error with Reachable false
+	// and is never recorded (a range scan would flood the inventory); an open
+	// port that failed the TLS handshake is Reachable and is.
+	Reachable bool `json:",omitempty"`
+	// Findings are endpoint-level findings (FindingNotTLS and friends), each
+	// "CODE" or "CODE: detail". They are persisted with the endpoint so a host
+	// that is up but not serving a usable certificate does not vanish.
+	Findings []string `json:",omitempty"`
 	// W14-03: protocol-aware scan extras. Banner is the SSH server
 	// banner; HostKeyAlgorithms are the SSH server's advertised
 	// host-key algorithms (feeds algorithm-sunset/PQC scoring).
@@ -70,13 +95,19 @@ type DiscoveredEndpoint struct {
 // ScanResult is the output of a scan job.
 type ScanResult struct {
 	JobID        string
-	Status       string // completed, failed
+	Status       string // completed, completed_with_errors, failed
 	Endpoints    []DiscoveredEndpoint
 	TotalScanned int
 	CertsFound   int
 	ErrorCount   int
-	StartedAt    time.Time
-	CompletedAt  time.Time
+	// Reachable counts endpoints something answered on (TLS or not);
+	// ReachableFailed those that answered but failed; Unreachable the ports
+	// that refused or timed out. Reachable == 0 is what makes a scan "failed".
+	Reachable       int
+	ReachableFailed int
+	Unreachable     int
+	StartedAt       time.Time
+	CompletedAt     time.Time
 }
 
 // ScanConfig controls scanner behavior.
@@ -162,6 +193,15 @@ func (s *Scanner) Scan(ctx context.Context, jobID string) *ScanResult {
 			if ep.Error != "" {
 				result.ErrorCount++
 			}
+			switch {
+			case ep.Error == "":
+				result.Reachable++
+			case ep.Reachable:
+				result.Reachable++
+				result.ReachableFailed++
+			default:
+				result.Unreachable++
+			}
 			for range ep.Certs {
 				result.CertsFound++
 			}
@@ -171,14 +211,17 @@ func (s *Scanner) Scan(ctx context.Context, jobID string) *ScanResult {
 
 	wg.Wait()
 	result.CompletedAt = time.Now().UTC()
-	// A scan is FAILED only when nothing was reachable at all (every probed
-	// endpoint errored). Reaching services and finding no certs — routine
-	// for a deep sweep across many non-TLS open ports, or a host that
-	// simply serves nothing cert-bearing — is a COMPLETED scan with no
-	// findings, not a failure. The old "any error + zero certs = failed"
-	// rule wrongly failed those.
-	if result.TotalScanned > 0 && result.ErrorCount == result.TotalScanned {
+	// A scan is FAILED only when nothing answered at all. Reaching services
+	// and finding no certs — routine for a deep sweep across many non-TLS
+	// open ports — is a COMPLETED scan, not a failure. Hosts that answered
+	// but failed (plain HTTP on 443, a handshake error) are recorded as
+	// endpoints, and the job says so: completed_with_errors, not a silent
+	// "completed" that hides them.
+	switch {
+	case result.TotalScanned > 0 && result.Reachable == 0:
 		result.Status = "failed"
+	case result.ReachableFailed > 0:
+		result.Status = "completed_with_errors"
 	}
 	return result
 }
@@ -213,37 +256,121 @@ func (s *Scanner) scanEndpointOnce(ctx context.Context, target string) Discovere
 	case probeSSH:
 		return s.protocol.ScanSSH(ctx, host, port)
 	case probeRDP:
-		return s.protocol.ScanRDP(ctx, host, port)
+		return withHandshakeFinding(s.protocol.ScanRDP(ctx, host, port))
 	case probeSTARTTLS:
-		return s.protocol.ScanSTARTTLS(ctx, host, port, entry.starttls)
+		return withHandshakeFinding(s.protocol.ScanSTARTTLS(ctx, host, port, entry.starttls))
 	default:
 		return s.captureTLS(ctx, host, port, entry)
 	}
 }
 
+// withHandshakeFinding records an STARTTLS/RDP endpoint that answered but
+// never produced a TLS session (no STARTTLS offer, declined security layer,
+// failed handshake) as TLS_HANDSHAKE_FAILED so it is kept rather than dropped.
+func withHandshakeFinding(ep DiscoveredEndpoint) DiscoveredEndpoint {
+	if ep.Error != "" && ep.Reachable && len(ep.Findings) == 0 {
+		ep.Findings = append(ep.Findings, FindingTLSHandshakeFailed+": "+ep.Error)
+	}
+	return ep
+}
+
+// dialTLS opens a TCP connection and runs the handshake as two steps so a
+// refused port (not reachable) is distinguishable from a handshake that failed
+// on an open one (reachable). cfg.ServerName is set from host: tls.Dial did
+// that implicitly, tls.Client does not.
+func (s *Scanner) dialTLS(ctx context.Context, host string, port int, cfg *tls.Config) (conn *tls.Conn, reachable bool, err error) {
+	dialer := &net.Dialer{Timeout: s.config.Timeout}
+	raw, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, fmt.Sprint(port)))
+	if err != nil {
+		return nil, false, err
+	}
+	_ = raw.SetDeadline(time.Now().Add(s.config.Timeout)) // best-effort bound on the handshake; the dialer timeout still applies
+	cfg = cfg.Clone()
+	cfg.ServerName = host
+	c := tls.Client(raw, cfg)
+	if err := c.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, true, err
+	}
+	_ = raw.SetDeadline(time.Time{}) // clear: later reads set their own deadlines
+	return c, true, nil
+}
+
 // captureTLS dials implicit TLS and records the leaf-checked certs. entry
 // carries the service classification (ldaps, imaps, winrm-https, …) so an
 // LDAPS or WinRM endpoint is recorded as what it IS, not a generic "tls".
-func (s *Scanner) captureTLS(_ context.Context, host string, port int, entry protocolEntry) DiscoveredEndpoint {
+//
+// A port that accepts the connection but cannot complete a handshake is
+// still an endpoint: NOT_TLS when the peer is not speaking TLS at all,
+// DEPRECATED_TLS_VERSION when it only offers SSLv3/TLS 1.0/1.1, otherwise
+// TLS_HANDSHAKE_FAILED. Only a refused or silent port is an unrecorded miss.
+func (s *Scanner) captureTLS(ctx context.Context, host string, port int, entry protocolEntry) DiscoveredEndpoint {
 	proto := entry.protocol
 	if proto == "" {
 		proto = "tls"
 	}
 	ep := DiscoveredEndpoint{Host: host, Port: port, Protocol: proto, ScannedAt: time.Now().UTC()}
-	dialer := &net.Dialer{Timeout: s.config.Timeout}
-	conn, err := tls.DialWithDialer(dialer, "tcp", net.JoinHostPort(host, fmt.Sprint(port)), &tls.Config{
+	conn, reachable, err := s.dialTLS(ctx, host, port, &tls.Config{
 		InsecureSkipVerify: true, // we want the cert regardless of chain validity
 	})
-	if err != nil {
+	ep.Reachable = reachable
+	if err != nil && !reachable {
 		ep.Error = fmt.Sprintf("tls dial: %v", err)
 		return ep
 	}
+	if err != nil {
+		return s.classifyHandshakeFailure(ctx, ep, host, port, err)
+	}
 	defer conn.Close()
 	state := conn.ConnectionState()
+	return s.finishTLSCapture(ep, conn, state, host, port, proto)
+}
+
+// classifyHandshakeFailure turns a failed handshake on an open port into a
+// finding. The legacy retry is a separate connection with MinVersion lowered
+// to TLS 1.0 (crypto/tls only offers 1.2+ unless asked); it is reached only
+// after the normal handshake failed, so ordinary verification is untouched and
+// a modern server never sees it. It captures, it does not verify: the certs it
+// returns go through the same trust classification as any other.
+func (s *Scanner) classifyHandshakeFailure(ctx context.Context, ep DiscoveredEndpoint, host string, port int, err error) DiscoveredEndpoint {
+	var rhe tls.RecordHeaderError
+	if errors.As(err, &rhe) {
+		ep.Error = "not a TLS service: " + err.Error()
+		ep.Findings = []string{FindingNotTLS + ": " + rhe.Msg}
+		return ep
+	}
+	conn, _, lerr := s.dialTLS(ctx, host, port, &tls.Config{
+		InsecureSkipVerify: true, // capture only; trust is judged later by ClassifyChain
+		MinVersion:         tls.VersionTLS10,
+		MaxVersion:         tls.VersionTLS11,
+	})
+	if lerr == nil {
+		defer conn.Close()
+		state := conn.ConnectionState()
+		ep.Findings = []string{FindingDeprecatedTLS + ": " + tlsVersionString(state.Version)}
+		return s.finishTLSCapture(ep, conn, state, host, port, ep.Protocol)
+	}
+	// Go may refuse the legacy suites a server insists on; read the version
+	// off the wire instead, no certificate.
+	if v, ok := probeLegacyServerHello(ctx, host, port, s.config.Timeout); ok {
+		ep.TLSVersion = tlsVersionString(v)
+		ep.Findings = []string{FindingDeprecatedTLS + ": " + ep.TLSVersion}
+		return ep
+	}
+	ep.Error = "tls handshake: " + err.Error()
+	ep.Findings = []string{FindingTLSHandshakeFailed + ": " + err.Error()}
+	return ep
+}
+
+// finishTLSCapture records certs, fingerprint and posture from an established
+// handshake.
+func (s *Scanner) finishTLSCapture(ep DiscoveredEndpoint, conn *tls.Conn, state tls.ConnectionState, host string, port int, proto string) DiscoveredEndpoint {
 	ep.TLSVersion = tlsVersionString(state.Version)
 	for i, cert := range state.PeerCertificates {
 		// Only the LEAF (first cert) is bound to this endpoint's hostname.
-		ep.Certs = append(ep.Certs, certToDiscovered(cert, host, i == 0))
+		dc := certToDiscovered(cert, host, i == 0)
+		dc.Served = true
+		ep.Certs = append(ep.Certs, dc)
 	}
 	// Over the SAME established TLS connection, ask for the HTTP Server
 	// header to fingerprint the web technology. HTTPS-family ports only;
@@ -513,24 +640,20 @@ func computeCertRisk(cert *x509.Certificate, scannedHost string, isLeaf bool) (i
 	var flags []string
 	now := time.Now()
 
-	// Self-signed leaf: subject == issuer on a cert that is not a CA is the
-	// classic "someone stood up a service with a throwaway cert" finding —
-	// exactly what a default IIS/localhost cert is. A self-signed ROOT is
-	// normal (that is what a trust anchor is), so only flag non-CA certs.
-	if !cert.IsCA && bytesEqualName(cert.RawSubject, cert.RawIssuer) {
+	// Self-signed leaf: the cert a server presents for its own endpoint that
+	// vouches only for itself -- a default IIS/localhost/`openssl req -x509`
+	// cert. IsCA is deliberately NOT consulted: openssl stamps basicConstraints
+	// CA:TRUE on every self-signed cert it makes, so exempting CAs hid the
+	// commonest throwaway cert there is. A self-signed ROOT further up a served
+	// chain (isLeaf=false) is a trust anchor and stays unflagged.
+	if isLeaf && isSelfSigned(cert) {
 		score += 30
 		flags = append(flags, "SELF_SIGNED")
 	}
 
-	// Hostname mismatch: the leaf does not vouch for the address it was
-	// served on. Only meaningful for the leaf and only when we scanned a
-	// DNS name or IP we can check against (VerifyHostname handles both
-	// SAN DNS names and IP SANs).
-	if isLeaf && scannedHost != "" {
-		if err := cert.VerifyHostname(scannedHost); err != nil {
-			score += 20
-			flags = append(flags, "HOSTNAME_MISMATCH")
-		}
+	if isLeaf && hostnameMismatch(cert, scannedHost) {
+		score += 20
+		flags = append(flags, FlagHostnameMismatch)
 	}
 
 	// Undersized RSA key (< 2048 bits) is a real weakness independent of
@@ -566,6 +689,39 @@ func computeCertRisk(cert *x509.Certificate, scannedHost string, isLeaf bool) (i
 		score = 100
 	}
 	return score, flags
+}
+
+// isSelfSigned reports subject == issuer AND a signature that verifies under
+// the cert's own public key. Matching names alone is only a claim, and
+// CheckSignatureFrom would also demand CA bits and KeyUsage -- the same trap
+// as the old IsCA exemption. An unverifiable algorithm reads as not
+// self-signed: flagging what cannot be proven would be a false finding.
+func isSelfSigned(cert *x509.Certificate) bool {
+	if !bytesEqualName(cert.RawSubject, cert.RawIssuer) {
+		return false
+	}
+	return cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature) == nil
+}
+
+// hostnameMismatch reports whether cert fails to vouch for the address it was
+// scanned at. A cert is immutable but the scan target is not, so the verdict
+// must only reflect what the target can prove: an IP literal says nothing
+// about DNS names, so a DNS-only cert reached by IP (every CIDR/full sweep)
+// is not a mismatch. IP targets are judged only when the cert carries IP SANs,
+// where a miss is a genuine mismatch. This also keeps the shared certificate
+// row's risk from flapping with which kind of scan ran last.
+func hostnameMismatch(cert *x509.Certificate, scannedHost string) bool {
+	host := strings.TrimSpace(scannedHost)
+	if host == "" {
+		return false
+	}
+	if addr, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+		if len(cert.IPAddresses) == 0 {
+			return false
+		}
+		host = addr.Unmap().String()
+	}
+	return cert.VerifyHostname(host) != nil
 }
 
 // bytesEqualName compares two raw DER-encoded distinguished names.
@@ -619,6 +775,8 @@ func incIP(ip net.IP) {
 
 func tlsVersionString(v uint16) string {
 	switch v {
+	case 0x0300:
+		return "SSLv3"
 	case tls.VersionTLS10:
 		return "TLSv1.0"
 	case tls.VersionTLS11:

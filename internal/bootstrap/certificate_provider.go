@@ -46,16 +46,26 @@ type CertificateItem struct {
 	SignatureAlgorithm  string   `json:"signature_algorithm"`
 	ExtendedKeyUsage    []string `json:"extended_key_usage"`
 	KeyUsage            []string `json:"key_usage"`
-	ChainComplete       bool     `json:"chain_complete"`
-	ChainTrusted        bool     `json:"chain_trusted"`
-	PQCVulnerable       bool     `json:"pqc_vulnerable"`
-	PQCReadiness        string   `json:"pqc_readiness"` // not_applicable, vulnerable, migration_ready, quantum_safe
-	RiskScore           int      `json:"risk_score"`
-	RiskFlags           []string `json:"risk_flags"`
-	Grade               string   `json:"grade"`
-	RenewalMethod       string   `json:"renewal_method"`
-	RenewalStatus       string   `json:"renewal_status"`
-	Source              string   `json:"source"`
+	// ChainComplete/ChainTrusted describe the chain the hub itself issued or
+	// ingested. For a discovered certificate they are nil (absent in JSON):
+	// what an endpoint served is an endpoint fact -- the same certificate can
+	// be complete on one endpoint and missing its intermediate on another --
+	// and lives on discovery's mapped_certs. The certificates-table column is a
+	// stale default for those rows, so it must not be presented.
+	ChainComplete *bool `json:"chain_complete,omitempty"`
+	ChainTrusted  *bool `json:"chain_trusted,omitempty"`
+	// TrustClass answers whose certificate this is: managed (this hub's CAs),
+	// public, private_other, self_signed or unknown. Only classified for
+	// discovery-found certs; empty on others. Derived by effectiveTrustClass.
+	TrustClass    string   `json:"trust_class,omitempty"`
+	PQCVulnerable bool     `json:"pqc_vulnerable"`
+	PQCReadiness  string   `json:"pqc_readiness"` // not_applicable, vulnerable, migration_ready, quantum_safe
+	RiskScore     int      `json:"risk_score"`
+	RiskFlags     []string `json:"risk_flags"`
+	Grade         string   `json:"grade"`
+	RenewalMethod string   `json:"renewal_method"`
+	RenewalStatus string   `json:"renewal_status"`
+	Source        string   `json:"source"`
 	// Estate model (W11-01, V5/D-106): where the certificate came from and
 	// who manages it. Values enforced by migration 000043's CHECKs.
 	Origin          string `json:"origin"`           // internal|imported|discovered|synced
@@ -75,6 +85,19 @@ type CertificateItem struct {
 	OwnerTeam   string   `json:"owner_team,omitempty"`
 	ServiceName string   `json:"service_name,omitempty"`
 	Labels      []string `json:"labels,omitempty"`
+}
+
+func boolRef(b bool) *bool { return &b }
+
+func boolVal(p *bool) bool { return p != nil && *p }
+
+// chainFact is the certificate-level chain verdict to present: the stored one,
+// except for discovered certificates, whose chain is judged per endpoint.
+func chainFact(origin string, v bool) *bool {
+	if origin == "discovered" {
+		return nil
+	}
+	return &v
 }
 
 type CertificateEndpoint struct {
@@ -106,6 +129,8 @@ type CertificateListQuery struct {
 	// W11-01 estate filters.
 	Origin          string
 	ManagementState string
+	// TrustClass keeps certificates of one class (see CertificateItem.TrustClass).
+	TrustClass string
 }
 
 type CertificateListResult struct {

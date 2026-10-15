@@ -21,7 +21,11 @@ const (
 )
 
 type CertSummarySnapshot struct {
+	// Total counts active (non-revoked) certificates -- the rule in
+	// certificate_active.go; every other field below is also active-only.
+	// Revoked is the complement, reported separately.
 	Total          int
+	Revoked        int
 	Expiring30Days int
 	Expired        int
 	// Estate split (W11-01, V5/D-106): certificates by management_state.

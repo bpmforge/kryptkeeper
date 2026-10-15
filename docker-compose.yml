@@ -26,7 +26,7 @@ services:
       PORT: "8080"
       # Real crypto mode
       APP_CERTIFICATE_PROVIDER: ${APP_CERTIFICATE_PROVIDER:-ca}
-      APP_DISCOVERY_PROVIDER: ${APP_DISCOVERY_PROVIDER:-scanner}
+      APP_DISCOVERY_PROVIDER: ${APP_DISCOVERY_PROVIDER:-db}
       APP_NOTIFICATION_PROVIDER: ${APP_NOTIFICATION_PROVIDER:-delivery}
       # Required and independent of APP_BOOTSTRAP_TOKEN (IAC-003): the token is
       # a network credential, this passphrase encrypts CA private keys at rest.

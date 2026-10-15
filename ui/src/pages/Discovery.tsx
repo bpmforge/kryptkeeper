@@ -20,6 +20,16 @@ import {
 import { PageHeader } from "../components/PageHeader";
 import { canManageDiscovery, useAuthz } from "../lib/auth";
 import { extractList } from "../lib/models";
+import {
+  observedProtocol,
+  primaryTrustClass,
+  topFindingChips,
+} from "../lib/discoveryDisplay";
+import {
+  TRUST_CLASSES,
+  TRUST_CLASS_LABEL,
+  trustClassLabel,
+} from "../lib/trustClass";
 import type {
   DiscoveryEndpointRecord,
   DiscoveryScanJobRecord,
@@ -47,13 +57,71 @@ type DiscoverySummaryWithFindings = DiscoverySummary & {
   findings?: FindingFunnelSummary;
 };
 
+// Tone for a scan job's status badge. completed_with_errors is a finished
+// scan that found hosts it could not read, so it is a warning, not success.
+function scanJobTone(status: string): "danger" | "warning" | "success" | "info" {
+  switch (status) {
+    case "failed":
+      return "danger";
+    case "running":
+    case "completed_with_errors":
+      return "warning";
+    case "completed":
+      return "success";
+    default:
+      return "info";
+  }
+}
+
+function isRiskyEndpoint(ep: {
+  risky?: boolean;
+  risk_score?: number;
+}): boolean {
+  // Older hubs do not send `risky`; the score is the best they can say.
+  return ep.risky ?? (ep.risk_score ?? 0) >= 70;
+}
+
+// Compact trust-class badge plus the top findings for a row of the endpoint
+// list, so the list answers "whose cert, and what is wrong" without opening
+// every endpoint.
+function EndpointPosture({ ep }: { ep: DiscoveryEndpointRecord }) {
+  const trust = primaryTrustClass(ep);
+  const chips = topFindingChips(ep);
+  if (!trust && chips.shown.length === 0) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {trust ? <Badge tone="neutral">{trustClassLabel(trust)}</Badge> : null}
+      {chips.shown.map((c) => (
+        <span
+          key={c.code}
+          title={c.code}
+          className={
+            c.high
+              ? "rounded bg-state-over/10 px-1.5 py-0.5 text-[10px] font-medium text-state-over"
+              : "rounded bg-state-attn/10 px-1.5 py-0.5 text-[10px] font-medium text-state-attn"
+          }
+        >
+          {c.label}
+        </span>
+      ))}
+      {chips.more > 0 ? (
+        <span className="text-[10px] font-medium text-muted-foreground">
+          +{chips.more}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function FindingFunnelPanel({ findings }: { findings?: FindingFunnelSummary }) {
   // Finding exceptions (risk acceptance) are not available until v0.10, so
   // only the raw count is shown; effective/suppressed would be misleading.
   const raw = findings?.raw ?? 0;
 
   return (
-    <Panel title="Findings" subtitle="Endpoint TLS issues found by discovery scans">
+    <Panel title="Findings" subtitle="Certificate flags (expired, self-signed, weak key...) and endpoint TLS issues">
       <div className="text-center">
         <div className="text-3xl font-bold text-foreground">{raw}</div>
         <div className="mt-1 text-xs uppercase tracking-[0.2em] text-muted-foreground">
@@ -67,6 +135,7 @@ function FindingFunnelPanel({ findings }: { findings?: FindingFunnelSummary }) {
 type DiscoveryFilters = {
   protocol: string;
   riskyOnly: boolean;
+  trustClass: string;
   scanStatus: string;
 };
 
@@ -79,6 +148,7 @@ export default function Discovery() {
   const [filters, setFilters] = useState<DiscoveryFilters>(() => ({
     protocol: searchParams.get("protocol") ?? "",
     riskyOnly: searchParams.get("risky") === "true",
+    trustClass: searchParams.get("trust_class") ?? "",
     scanStatus: searchParams.get("scan_status") ?? "",
   }));
   const [endpointCursor, setEndpointCursor] = useState<number | null>(null);
@@ -91,6 +161,7 @@ export default function Discovery() {
     const next = new URLSearchParams();
     if (filters.protocol) next.set("protocol", filters.protocol);
     if (filters.riskyOnly) next.set("risky", "true");
+    if (filters.trustClass) next.set("trust_class", filters.trustClass);
     if (filters.scanStatus) next.set("scan_status", filters.scanStatus);
     setSearchParams(next, { replace: true });
   }, [filters]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -123,10 +194,11 @@ export default function Discovery() {
     () => ({
       protocol: filters.protocol,
       risky_only: filters.riskyOnly,
+      trust_class: filters.trustClass,
       limit: 50,
       ...(endpointCursor != null ? { cursor: endpointCursor } : {}),
     }),
-    [filters.protocol, filters.riskyOnly, endpointCursor],
+    [filters.protocol, filters.riskyOnly, filters.trustClass, endpointCursor],
   );
 
   const summary = useQuery({
@@ -508,7 +580,24 @@ export default function Discovery() {
                 }
               >
                 <option value="false">All endpoints</option>
-                <option value="true">Risky only</option>
+                <option value="true">
+                  Risky only (expired, self-signed, weak, deprecated TLS...)
+                </option>
+              </Select>
+            </label>
+            <label className="space-y-2 text-sm text-foreground">
+              <span>Issuer</span>
+              <Select
+                aria-label="Filter by trust class"
+                value={filters.trustClass}
+                onChange={(e) => updateFilter({ trustClass: e.target.value })}
+              >
+                <option value="">Any issuer</option>
+                {TRUST_CLASSES.map((cls) => (
+                  <option key={cls} value={cls}>
+                    {TRUST_CLASS_LABEL[cls]}
+                  </option>
+                ))}
               </Select>
             </label>
             <label className="space-y-2 text-sm text-foreground">
@@ -527,6 +616,9 @@ export default function Discovery() {
                 <option value="queued">Queued</option>
                 <option value="running">Running</option>
                 <option value="completed">Complete</option>
+                <option value="completed_with_errors">
+                  Complete with errors
+                </option>
                 <option value="failed">Failed</option>
                 <option value="cancelled">Cancelled</option>
               </Select>
@@ -561,7 +653,7 @@ export default function Discovery() {
                     ? `${selected.ip_address}:`
                     : ""}
                   {selected.port ? `${selected.port}` : ""} ·{" "}
-                  {selected.protocol}
+                  {observedProtocol(selected)}
                 </p>
               </div>
               {selectedKey ? (
@@ -576,7 +668,7 @@ export default function Discovery() {
                   <div className="text-muted-foreground">Risk score</div>
                   <div
                     className={
-                      (selected.risk_score ?? 0) >= 70
+                      isRiskyEndpoint(selected)
                         ? "font-semibold text-state-over"
                         : (selected.risk_score ?? 0) >= 40
                           ? "font-semibold text-state-attn"
@@ -710,6 +802,22 @@ export default function Discovery() {
                 </div>
               ) : null}
 
+              {(selected.issues?.length ?? 0) > 0 ? (
+                <div>
+                  <SectionLabel>Endpoint findings</SectionLabel>
+                  <ul className="mt-2 space-y-1" data-testid="endpoint-findings">
+                    {selected.issues!.map((issue) => (
+                      <li
+                        key={issue}
+                        className="rounded bg-state-over/10 px-2 py-1 text-xs text-state-over"
+                      >
+                        {issue}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+
               {/* Cert-to-endpoint mappings — the scan's real
                   certificate_endpoints join; the text search below is only
                   a fallback for endpoints with no recorded mapping. */}
@@ -733,6 +841,14 @@ export default function Discovery() {
                               : ""}
                             {mc.risk_score >= 40
                               ? ` · risk ${mc.risk_score}`
+                              : ""}
+                            {mc.chain_ca
+                              ? " · CA in served chain"
+                              : mc.trust_class
+                                ? ` · ${trustClassLabel(mc.trust_class)}`
+                                : ""}
+                            {mc.chain_complete === false
+                              ? " · intermediate not served"
                               : ""}
                           </div>
                           {mc.risk_flags && mc.risk_flags.length > 0 ? (
@@ -842,17 +958,7 @@ export default function Discovery() {
                       <li key={job.id} className="relative text-sm">
                         <span className="absolute -left-[18px] top-1.5 h-2 w-2 rounded-full bg-muted" />
                         <div className="flex items-center gap-2">
-                          <Badge
-                            tone={
-                              job.status === "failed"
-                                ? "danger"
-                                : job.status === "running"
-                                  ? "warning"
-                                  : job.status === "completed"
-                                    ? "success"
-                                    : "info"
-                            }
-                          >
+                          <Badge tone={scanJobTone(job.status)}>
                             {job.status}
                           </Badge>
                           <span className="text-foreground">
@@ -864,6 +970,11 @@ export default function Discovery() {
                             ? new Date(job.queued_at).toLocaleString()
                             : "—"}
                         </div>
+                        {job.error ? (
+                          <div className="mt-0.5 text-xs text-state-attn">
+                            {job.error}
+                          </div>
+                        ) : null}
                       </li>
                     ))}
                   </ol>
@@ -948,6 +1059,12 @@ export default function Discovery() {
                 >
                   Risk Score
                 </th>
+                <th
+                  scope="col"
+                  className="px-4 py-3 text-left text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground"
+                >
+                  Posture
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border bg-background/40">
@@ -972,27 +1089,37 @@ export default function Discovery() {
                     {ep.port === 0 ? "secret" : ep.port}
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {ep.protocol}
+                    {observedProtocol(ep)}
                   </td>
                   <td className="px-4 py-3 text-sm">
-                    <Badge
-                      tone={
-                        (ep.risk_score ?? 0) >= 70
-                          ? "danger"
-                          : (ep.risk_score ?? 0) >= 40
-                            ? "warning"
-                            : "success"
-                      }
-                    >
-                      {ep.risk_score ?? 0}
-                    </Badge>
+                    <div className="flex items-center gap-2">
+                      <Badge
+                        tone={
+                          isRiskyEndpoint(ep)
+                            ? "danger"
+                            : (ep.risk_score ?? 0) >= 40
+                              ? "warning"
+                              : "success"
+                        }
+                      >
+                        {ep.risk_score ?? 0}
+                      </Badge>
+                      {isRiskyEndpoint(ep) ? (
+                        <span className="text-xs font-semibold uppercase tracking-wide text-state-over">
+                          risky
+                        </span>
+                      ) : null}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    <EndpointPosture ep={ep} />
                   </td>
                 </tr>
               ))}
               {endpointsData.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={4}
+                    colSpan={5}
                     className="px-4 py-10 text-center text-sm text-muted-foreground"
                   >
                     Nothing discovered yet. Queue a scan (New scan, top right)
@@ -1145,19 +1272,15 @@ export default function Discovery() {
                     {job.target || "—"}
                   </td>
                   <td className="px-4 py-3 text-sm">
-                    <Badge
-                      tone={
-                        job.status === "failed"
-                          ? "danger"
-                          : job.status === "running"
-                            ? "warning"
-                            : job.status === "completed"
-                              ? "success"
-                              : "info"
-                      }
-                    >
-                      {job.status}
-                    </Badge>
+                    <Badge tone={scanJobTone(job.status)}>{job.status}</Badge>
+                    {job.error ? (
+                      <div
+                        className="mt-1 max-w-md text-xs text-muted-foreground"
+                        data-testid="scan-job-error"
+                      >
+                        {job.error}
+                      </div>
+                    ) : null}
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
                     {job.queued_at
@@ -1175,7 +1298,8 @@ export default function Discovery() {
                           onClick={() => openJobAction("cancel", job)}
                           disabled={
                             job.status === "cancelled" ||
-                            job.status === "completed"
+                            job.status === "completed" ||
+                            job.status === "completed_with_errors"
                           }
                         >
                           Cancel

@@ -91,8 +91,21 @@ export function Horizon({
       {horizon.cliff && horizon.cliff.needsHuman > 0 && (
         <p className="rounded-r-md border-l-[3px] border-state-over bg-state-over/10 px-3 py-2 text-sm text-foreground">
           <strong className="font-mono">{horizon.cliff.needsHuman}</strong> of{" "}
-          <strong className="font-mono">{horizon.cliff.total}</strong> certificates expiring on{" "}
-          <strong>{formatDay(horizon.cliff.date)}</strong> will not renew themselves.
+          <strong className="font-mono">{horizon.cliff.total}</strong> certificates{" "}
+          {horizon.cliff.expired === 0 ? (
+            <>
+              expiring on <strong>{formatDay(horizon.cliff.date)}</strong> will not renew
+              themselves.
+            </>
+          ) : horizon.cliff.expired === horizon.cliff.total ? (
+            <>
+              <strong>have already expired</strong> and will not renew themselves.
+            </>
+          ) : (
+            <>
+              <strong>have expired or expire today</strong> and will not renew themselves.
+            </>
+          )}
         </p>
       )}
 

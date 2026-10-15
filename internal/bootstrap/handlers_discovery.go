@@ -53,6 +53,7 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 				RiskyEndpoints      int                  `json:"risky_endpoints"`
 				ActiveScanJobs      int                  `json:"active_scan_jobs"`
 				Findings            FindingFunnelSummary `json:"findings"`
+				TrustClasses        TrustClassCounts     `json:"trust_classes"`
 			} `json:"data"`
 		}{}
 
@@ -63,6 +64,7 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 		resp.Data.RiskyEndpoints = summary.RiskyEndpoints
 		resp.Data.ActiveScanJobs = summary.ActiveScanJobs
 		resp.Data.Findings = summary.Findings
+		resp.Data.TrustClasses = summary.TrustClasses
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -93,6 +95,11 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 			RiskyOnly: strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("risky_only")), "true") || strings.TrimSpace(r.URL.Query().Get("risky_only")) == "1",
 			Limit:     parseLimit(r.URL.Query().Get("limit"), 25, 100),
 			Cursor:    parseCursor(r.URL.Query().Get("cursor"), 0),
+		}
+		query.TrustClass = strings.TrimSpace(r.URL.Query().Get("trust_class"))
+		if query.TrustClass != "" && !scanner.IsTrustClass(query.TrustClass) {
+			writeBadRequest(w, "trust_class must be one of managed, public, private_other, self_signed, unknown")
+			return
 		}
 
 		result, err := discoveryProvider.ListEndpoints(r.Context(), query)
@@ -155,7 +162,7 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 			// Canonical DiscoveryScanJob.Status set (G-87/S-23): all three
 			// providers (db/file/scanner) now emit exactly these five values.
 			switch statusFilter {
-			case "queued", "running", "completed", "failed", "cancelled":
+			case "queued", "running", "completed", "completed_with_errors", "failed", "cancelled":
 			default:
 				writeBadRequest(w, "invalid status value")
 				return

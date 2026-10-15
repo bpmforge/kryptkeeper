@@ -108,6 +108,60 @@ components:
         renewal_status:
           type: string
           enum: [active, renewed, revoked, expired, reissue_required]
+        trust_class:
+          $ref: "#/components/schemas/TrustClass"
+        chain_complete:
+          type: boolean
+          description: >-
+            The chain as this hub issued or ingested it. ABSENT for
+            discovery-found certs (`origin` = discovered): whether a served
+            chain is complete is a fact about an endpoint, so it is reported
+            per endpoint (`mapped_certs[].chain_complete` on
+            /discovery/endpoints) and never as a certificate-level value that
+            could contradict it. A hub-issued cert served without its
+            intermediate is complete here and incomplete on that endpoint.
+        chain_trusted:
+          type: boolean
+          description: >-
+            Same contract as `chain_complete`: the chain as issued/ingested by
+            the hub, absent for discovered certs (see
+            `mapped_certs[].chain_trusted` on /discovery/endpoints).
+        risk_flags:
+          type: array
+          items: { type: string }
+          description: >-
+            Certificate-intrinsic flags only (EXPIRED, WEAK_KEY, SELF_SIGNED,
+            ...). HOSTNAME_MISMATCH, INCOMPLETE_CHAIN and UNTRUSTED_ROOT depend
+            on the endpoint serving the certificate and are reported on
+            `mapped_certs[].risk_flags` of /discovery/endpoints.
+
+    TrustClass:
+      type: string
+      enum: [managed, public, private_other, self_signed, unknown]
+      description: >-
+        Whose certificate this is, from a real x509 verification of the chain
+        the server presented (never the permissive TLS handshake). managed =
+        chains to one of this hub's CAs (also any hub-managed certificate);
+        public = chains to a system root; private_other = neither, issued by
+        some other CA; self_signed = the leaf vouches only for itself;
+        unknown = could not be classified. Empty/absent on certificates that
+        discovery did not find.
+
+    TrustClassCounts:
+      type: object
+      description: >-
+        Distinct leaf certificates seen on the network (at least one active
+        endpoint mapping) per effective trust class, hub-issued certificates
+        included under `managed`. A certificate served on several endpoints
+        counts once; the classes sum to `mapped_certificates`. Intermediates
+        and roots captured from a served chain are not counted.
+      properties:
+        managed: { type: integer }
+        public: { type: integer }
+        private_other: { type: integer }
+        self_signed: { type: integer }
+        unknown: { type: integer }
+      required: [managed, public, private_other, self_signed, unknown]
 
     CAItem:
       type: object
@@ -161,6 +215,30 @@ components:
         created_by: { type: string }
         created_at: { type: string, format: date-time }
 
+    AuditEntry:
+      type: object
+      description: One append-only audit record. resource_name is the only field not stored with the record.
+      properties:
+        id: { type: integer, format: int64 }
+        timestamp: { type: string }
+        action: { type: string }
+        actor_type: { type: string }
+        actor_id: { type: string }
+        resource_type: { type: string }
+        resource_id:
+          type: string
+          description: Authoritative reference to the resource (e.g. a certificate fingerprint). Pre-issue failure and pending-approval certificate.issue rows carry the collection name "certificates" because no certificate exists yet.
+        resource_name:
+          type: string
+          description: Human-readable name resolved at read time (certificate common name, CA/template display name, "<template> for <CN or requester>" for approvals, notification rule name, scan target). Omitted when the resource no longer exists, is not resolvable, or the caller may not read it. Never stored.
+        trace_id: { type: string }
+        outcome: { type: string }
+        source_ip: { type: string }
+        user_agent: { type: string }
+        session_id: { type: string }
+        change_summary: { type: string }
+        tenant: { type: string }
+      required: [id, timestamp, action, actor_type, actor_id, resource_type, resource_id, outcome]
     UserRecord:
       type: object
       properties:
@@ -740,8 +818,20 @@ components:
         id: { type: string }
         scan_type: { type: string }
         target: { type: string }
-        status: { type: string, enum: [queued, running, completed, failed, cancelled] }
+        status:
+          type: string
+          enum: [queued, running, completed, completed_with_errors, failed, cancelled]
+          description: >-
+            `completed_with_errors`: the scan ran and recorded what it found,
+            but some hosts answered and failed (plain HTTP on a TLS port, a
+            failed handshake) -- see `error` for which.
         queued_at: { type: string, format: date-time }
+        error:
+          type: string
+          description: >-
+            Why a job failed, or for `completed_with_errors` which hosts
+            answered but could not be read and how many closed ports were not
+            recorded. Absent for a clean run. Truncated to 500 characters.
 
     OperationEvent:
       type: object
@@ -794,6 +884,8 @@ components:
         active_scan_jobs: { type: integer }
         findings:
           $ref: "#/components/schemas/FindingFunnelSummary"
+        trust_classes:
+          $ref: "#/components/schemas/TrustClassCounts"
 
     DashboardSummary:
       type: object
@@ -808,7 +900,14 @@ components:
         certificates:
           type: object
           properties:
-            total: { type: integer }
+            total:
+              type: integer
+              description: >-
+                Active certificates: not revoked and not superseded by a
+                renewal. Expiring/expired counts use the same rule.
+            revoked:
+              type: integer
+              description: Revoked certificates, reported separately from `total`.
             expiring_30_days: { type: integer }
             expired: { type: integer }
             source: { type: string }
@@ -820,6 +919,8 @@ components:
             active_scan_jobs: { type: integer }
             findings:
               $ref: "#/components/schemas/FindingFunnelSummary"
+            trust_classes:
+              $ref: "#/components/schemas/TrustClassCounts"
         notifications:
           type: object
           properties:
@@ -966,6 +1067,13 @@ paths:
         - name: management_state
           in: query
           schema: { type: string, enum: [managed, external, unmanaged] }
+        - name: trust_class
+          in: query
+          description: >-
+            Keep certificates of one trust class. Served-chain intermediates
+            and roots (discovery) are never listed.
+          schema:
+            $ref: "#/components/schemas/TrustClass"
       responses:
         "200":
           description: >-
@@ -2116,7 +2224,21 @@ paths:
           schema: { type: string }
         - name: risky_only
           in: query
+          description: >-
+            Keep risky endpoints: one with a currently-active certificate that
+            scores 70 or more or carries EXPIRED, SELF_SIGNED, WEAK_KEY,
+            WEAK_SIGNATURE or UNTRUSTED_ROOT, or with a NOT_TLS,
+            TLS_HANDSHAKE_FAILED, POSTGRES_TLS_DISABLED or
+            DEPRECATED_TLS_VERSION finding. `risky_endpoints` in the summaries
+            counts the same set.
           schema: { type: boolean }
+        - name: trust_class
+          in: query
+          description: >-
+            Keep endpoints currently presenting a leaf certificate of this
+            trust class. An unknown value is a 400.
+          schema:
+            $ref: "#/components/schemas/TrustClass"
       responses:
         "200":
           description: Endpoint list
@@ -2182,16 +2304,57 @@ paths:
                                   fingerprint: { type: string }
                                   common_name: { type: string }
                                   valid_until: { type: string }
-                                  risk_score: { type: integer }
+                                  risk_score:
+                                    type: integer
+                                    description: >-
+                                      The certificate's own score plus what
+                                      serving it on THIS endpoint adds.
                                   risk_flags:
                                     type: array
                                     items: { type: string }
+                                    description: >-
+                                      The certificate's own flags plus the
+                                      endpoint-scoped ones observed here
+                                      (HOSTNAME_MISMATCH, INCOMPLETE_CHAIN,
+                                      UNTRUSTED_ROOT).
+                                  trust_class:
+                                    $ref: "#/components/schemas/TrustClass"
+                                  chain_ca:
+                                    type: boolean
+                                    description: >-
+                                      An intermediate/root this endpoint served
+                                      alongside its leaf.
+                                  chain_complete:
+                                    type: boolean
+                                    description: >-
+                                      Absent when completeness could not be
+                                      judged for this endpoint (a private chain
+                                      whose issuer the hub does not hold).
+                                      false only when an intermediate is
+                                      provably missing from what the server
+                                      sent; omitting the root is normal.
+                                  chain_trusted: { type: boolean }
+                            risky:
+                              type: boolean
+                              description: >-
+                                True when the endpoint matches the `risky_only`
+                                rule (score >= 70, a high-severity flag such as
+                                EXPIRED, SELF_SIGNED, WEAK_KEY, WEAK_SIGNATURE,
+                                UNTRUSTED_ROOT or HOSTNAME_MISMATCH, or a
+                                deprecated-TLS, not-TLS, failed-handshake or Postgres-TLS-disabled
+                                finding). An endpoint with such a finding scores
+                                at least 20. The UI badge reads this rather than
+                                re-deriving it from `risk_score`.
                             issues:
                               type: array
                               items: { type: string }
                               description: >-
-                                cipheraudit findings for a real (port != 0)
-                                TLS endpoint, or -- a port-less source (e.g.
+                                Endpoint findings: NOT_TLS, TLS_HANDSHAKE_FAILED,
+                                POSTGRES_TLS_DISABLED (the server declined the
+                                SSLRequest) or DEPRECATED_TLS_VERSION ("CODE: detail") for
+                                a port that answered but could not be read as
+                                modern TLS; otherwise cipheraudit findings for a
+                                real (port != 0) TLS endpoint, or -- a port-less source (e.g.
                                 a mesh/K8s-secret certificate source) -- a
                                 "discovery-error: ..." entry recording a
                                 reachability or permission failure (W19-22).
@@ -2204,7 +2367,7 @@ paths:
       parameters:
         - name: status
           in: query
-          schema: { type: string, enum: [queued, running, completed, failed, cancelled] }
+          schema: { type: string, enum: [queued, running, completed, completed_with_errors, failed, cancelled] }
         - name: q
           in: query
           schema: { type: string, maxLength: 200 }
@@ -3924,6 +4087,23 @@ paths:
       responses:
         "200":
           description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditEntry"
+                  meta:
+                    type: object
+                    properties:
+                      total: { type: integer }
+                      limit: { type: integer }
+                      next_cursor: { type: string, nullable: true }
+                      prev_cursor: { type: string, nullable: true }
+                  principal: { type: string }
         "403":
           description: The caller's role lacks the audit.read permission (pki-admin, auditor, pki-auditor, or a custom role granted it)
 

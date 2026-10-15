@@ -189,3 +189,31 @@ func TestRDPMalformedTPKTDoesNotPanic(t *testing.T) {
 		t.Fatal("malformed X.224 confirm must error, not panic")
 	}
 }
+
+func TestPostgresDeclinedSSLRequestIsTLSDisabledFinding(t *testing.T) {
+	host, port := startListener(t, func(conn net.Conn) {
+		buf := make([]byte, 8)
+		_, _ = readFull(conn, buf)
+		_, _ = conn.Write([]byte("N"))
+		_ = conn.Close()
+	})
+	ep := NewProtocolScanner(3*time.Second).ScanSTARTTLS(context.Background(), host, port, "postgres")
+	if !ep.Reachable || !HasFinding(ep.Findings, FindingPostgresTLSDisabled) {
+		t.Fatalf("want POSTGRES_TLS_DISABLED finding, got reachable=%v findings=%v err=%q", ep.Reachable, ep.Findings, ep.Error)
+	}
+	// withHandshakeFinding must not stack a second, misleading finding on it.
+	if got := withHandshakeFinding(ep); HasFinding(got.Findings, FindingTLSHandshakeFailed) {
+		t.Fatalf("handshake-failed finding added on top: %v", got.Findings)
+	}
+}
+
+func TestEndpointFindingsScore(t *testing.T) {
+	for issues, want := range map[string]int{
+		"NOT_TLS: x": EndpointFindingScore, "TLS_HANDSHAKE_FAILED: x": EndpointFindingScore,
+		"POSTGRES_TLS_DISABLED: x": EndpointFindingScore, "Weak cipher: RC4": 0,
+	} {
+		if got := EndpointFindingsScore([]string{issues}); got != want {
+			t.Errorf("%q = %d, want %d", issues, got, want)
+		}
+	}
+}

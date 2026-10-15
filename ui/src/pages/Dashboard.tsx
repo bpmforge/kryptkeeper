@@ -21,6 +21,7 @@ import { useFirstRun } from "../lib/firstrun";
 import Onboarding from "./Onboarding";
 import { Badge, StateMessage } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
+import { TrustBreakdown } from "../components/TrustBreakdown";
 import { DashboardSkeleton, TableRowsSkeleton } from "../components/Skeletons";
 import { auditOutcomeDotClass } from "../lib/auditOutcome";
 
@@ -214,19 +215,34 @@ function RiskGauge({
 }
 
 // ─── PQC Readiness Bar ───────────────────────────────────────────
+// "Readiness" is the hub-wide definition (internal/pqc/readiness.go):
+// (quantum-safe + leaf-only + migration-ready) / all certificates. The parts
+// are listed beside the percentage; showing only "quantum-safe" and
+// "vulnerable" next to a 14% made it look like the number came from nowhere.
 function PQCBar({
   quantumSafe,
+  leafOnly,
   migrationReady,
   vulnerable,
   total,
+  scorePercent,
 }: {
   quantumSafe: number;
+  leafOnly: number;
   migrationReady: number;
   vulnerable: number;
   total: number;
+  scorePercent?: number;
 }) {
   if (total === 0) return null;
-  const safePct = Math.round(((quantumSafe + migrationReady) / total) * 100);
+  const ready = quantumSafe + leafOnly + migrationReady;
+  const safePct = scorePercent ?? Math.floor((ready * 100) / total);
+  const parts: { label: string; value: number; tone: string }[] = [
+    { label: "quantum-safe", value: quantumSafe, tone: "text-state-auto" },
+    { label: "leaf-only PQC", value: leafOnly, tone: "text-state-auto" },
+    { label: "migration-ready", value: migrationReady, tone: "text-state-attn" },
+    { label: "vulnerable", value: vulnerable, tone: "text-state-over" },
+  ];
   return (
     <div className="space-y-2">
       <div className="flex justify-between items-end">
@@ -245,14 +261,17 @@ function PQCBar({
           style={{ width: `${safePct}%` }}
         />
       </div>
-      <div className="flex justify-between text-xs text-muted-foreground">
-        <span>
-          <span className="text-state-auto">{quantumSafe}</span> quantum-safe
-        </span>
-        <span>
-          <span className="text-state-over">{vulnerable}</span> vulnerable
-        </span>
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        {parts.map((p) => (
+          <span key={p.label}>
+            <span className={p.tone}>{p.value}</span> {p.label}
+          </span>
+        ))}
       </div>
+      <p className="text-[11px] text-muted-foreground">
+        {ready} of {total} certificates are quantum-safe, leaf-only PQC or
+        migration-ready.
+      </p>
     </div>
   );
 }
@@ -330,6 +349,7 @@ export default function Dashboard() {
   const posture = postureQ.data?.data;
 
   const total = s?.certificates?.total ?? 0;
+  const revokedCerts = s?.certificates?.revoked ?? 0;
   const expiring30 = s?.certificates?.expiring_30_days ?? 0;
   const expired = s?.certificates?.expired ?? 0;
   // W11-08 estate split (W11-01 backend); zeros on file-backed summaries.
@@ -391,7 +411,8 @@ export default function Dashboard() {
       {certsQ.data && certsQ.data.items.length < certsQ.data.total ? (
         <p className="text-xs text-muted-foreground -mt-3">
           Horizon shows the first {certsQ.data.items.length} of{" "}
-          {certsQ.data.total} certificates.
+          {certsQ.data.total} certificate records (revoked and superseded
+          records are not plotted).
         </p>
       ) : null}
 
@@ -431,12 +452,21 @@ export default function Dashboard() {
         </button>
       </div>
 
+      {/* Discovered certificates by whose they are (chain verification) */}
+      {s?.discovery?.trust_classes ? (
+        <TrustBreakdown counts={s.discovery.trust_classes} />
+      ) : null}
+
       {/* ── Primary stat tiles ──────────────────────────────── */}
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
         <StatTile
-          label="Total Certs"
+          label="Active Certs"
           value={total}
-          sub="in inventory"
+          sub={
+            revokedCerts > 0
+              ? `${revokedCerts} revoked not counted`
+              : "excludes revoked"
+          }
           icon={ShieldCheck}
           tone="cyan"
           onClick={() => navigate("/certificates")}
@@ -510,9 +540,11 @@ export default function Dashboard() {
             <div className="glass rounded-2xl p-5">
               <PQCBar
                 quantumSafe={posture.pqc_readiness?.quantum_safe ?? 0}
+                leafOnly={posture.pqc_readiness?.quantum_safe_leaf_only ?? 0}
                 migrationReady={posture.pqc_readiness?.migration_ready ?? 0}
                 vulnerable={posture.pqc_readiness?.vulnerable ?? 0}
-                total={total}
+                total={posture.total_certs ?? total}
+                scorePercent={posture.pqc_readiness?.pqc_score_percent}
               />
             </div>
           )}

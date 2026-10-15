@@ -1,3 +1,4 @@
+import type { TrustClassCounts } from "./trustClass";
 export type ListMeta = {
   total?: number;
   limit?: number;
@@ -54,6 +55,12 @@ export type CertificateRecord = {
   management_state?: string;
   revoked_at?: string;
   revocation_reason?: string;
+  // Discovery: whose certificate this is (managed|public|private_other|
+  // self_signed|unknown) and what the served chain looked like.
+  trust_class?: string;
+  chain_complete?: boolean;
+  chain_trusted?: boolean;
+  risk_flags?: string[];
 };
 
 export type CaRecord = {
@@ -95,6 +102,12 @@ export type DiscoveryEndpointRecord = {
   port?: number;
   protocol: string;
   risk_score?: number;
+  // True under the documented risky rule (score >= 70, or a high-severity
+  // flag or finding); the badge and "Risky only" read it so they agree.
+  risky?: boolean;
+  // Endpoint findings: "NOT_TLS: ...", "TLS_HANDSHAKE_FAILED: ...",
+  // "DEPRECATED_TLS_VERSION: TLSv1.0", or cipheraudit text.
+  issues?: string[];
   last_seen_at?: string;
   server_tech?: string;
   recommended_install_mode?: string;
@@ -118,6 +131,13 @@ export type DiscoveryEndpointRecord = {
     valid_until?: string;
     risk_score: number;
     risk_flags?: string[];
+    trust_class?: string;
+    // An intermediate/root the endpoint served alongside its leaf.
+    chain_ca?: boolean;
+    // Absent = could not be judged for this endpoint; false = an intermediate
+    // is provably missing from what the server sent.
+    chain_complete?: boolean;
+    chain_trusted?: boolean;
   }[];
 };
 
@@ -127,6 +147,8 @@ export type DiscoveryScanJobRecord = {
   target: string;
   status: string;
   queued_at?: string;
+  // Why the job failed, or what a completed_with_errors job could not read.
+  error?: string;
 };
 
 export type NotificationDeliveryRecord = {
@@ -155,13 +177,18 @@ export type AuditRow = {
   actor_id: string;
   resource_type: string;
   resource_id: string;
+  // Read-time display name; absent when unresolved. Never part of the stored record.
+  resource_name?: string;
   trace_id?: string;
   outcome: string;
 };
 
 export type DashboardSummary = {
   certificates?: {
+    // Active certificates (not revoked, not superseded); revoked is the
+    // complement, reported separately.
     total?: number;
+    revoked?: number;
     expiring_30_days?: number;
     expired?: number;
     // W11-01 estate split by management_state (zeros on file summaries).
@@ -169,7 +196,11 @@ export type DashboardSummary = {
     external?: number;
     unmanaged?: number;
   };
-  discovery?: { discovered_endpoints?: number; risky_endpoints?: number };
+  discovery?: {
+    discovered_endpoints?: number;
+    risky_endpoints?: number;
+    trust_classes?: TrustClassCounts;
+  };
   notifications?: { pending_notifications?: number };
   protocols?: { status?: string };
 };
@@ -179,6 +210,7 @@ export type DiscoverySummary = {
   mapped_certificates?: number;
   risky_endpoints?: number;
   active_scan_jobs?: number;
+  trust_classes?: TrustClassCounts;
 };
 
 export type NotificationSummary = {

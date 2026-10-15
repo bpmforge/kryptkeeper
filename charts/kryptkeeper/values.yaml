@@ -95,7 +95,7 @@ config:
   authMode: bootstrap
   dbMode: postgres  # sqlite or postgres — this chart does not bundle a PostgreSQL sub-chart; bring your own and set secrets.databaseURL / secrets.existingSecret
   certificateProvider: ca
-  discoveryProvider: scanner
+  discoveryProvider: db  # db (persisted, full-featured) | file (dev stub) | scanner (minimal in-memory: 443 only, nothing persisted)
   notificationProvider: delivery
   bindAddr: "0.0.0.0"
   port: "8080"

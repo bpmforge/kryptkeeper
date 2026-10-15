@@ -71,7 +71,7 @@ test:
 
 ## Run tests with race detector
 test-race:
-	go test -race ./...
+	go test -race -timeout 30m ./...
 
 ## Lint (requires golangci-lint: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest)
 #

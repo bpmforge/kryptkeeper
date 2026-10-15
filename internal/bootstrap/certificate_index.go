@@ -27,14 +27,14 @@ const forEachChunk = 1024
 // ForEachCertificate, so a page and a full pass can never disagree on what
 // a query matches.
 type certFilter struct {
-	caID, templateID, teamID, status, origin, managementState string
-	qLower                                                    string
+	caID, templateID, teamID, status, origin, managementState, trustClass string
+	qLower                                                                string
 }
 
 func newCertFilter(q CertificateListQuery) certFilter {
 	return certFilter{
 		caID: q.CAID, templateID: q.TemplateID, teamID: q.TeamID, status: q.Status,
-		origin: q.Origin, managementState: q.ManagementState,
+		origin: q.Origin, managementState: q.ManagementState, trustClass: q.TrustClass,
 		qLower: strings.ToLower(q.Q),
 	}
 }
@@ -42,7 +42,7 @@ func newCertFilter(q CertificateListQuery) certFilter {
 // matchesAll reports a filter that selects the whole inventory, which lets
 // a page be served from the order index without scanning.
 func (f certFilter) matchesAll() bool {
-	return f.caID == "" && f.templateID == "" && f.teamID == "" && f.origin == "" && f.managementState == "" &&
+	return f.caID == "" && f.templateID == "" && f.teamID == "" && f.origin == "" && f.managementState == "" && f.trustClass == "" &&
 		f.qLower == "" && f.status != "active" && f.status != "revoked"
 }
 
@@ -75,6 +75,9 @@ func (f certFilter) matches(item *CertificateItem) bool {
 	if f.managementState != "" && item.ManagementState != f.managementState {
 		return false
 	}
+	if f.trustClass != "" && item.TrustClass != f.trustClass {
+		return false
+	}
 	return true
 }
 
@@ -87,8 +90,10 @@ func certOrderBefore(a, b *storedCert) bool {
 	return a.item.FingerprintSHA256 < b.item.FingerprintSHA256
 }
 
+// countsAsActive feeds the per-CA "N certs" count; it applies the same rule
+// as every other certificate count (certificate_active.go).
 func countsAsActive(item *CertificateItem) bool {
-	return item.RenewalStatus == string(RenewalStatusActive) && item.CAID != ""
+	return isActiveCertificate(item) && item.CAID != ""
 }
 
 func (p *caCertificateProvider) adjustActiveLocked(item *CertificateItem, delta int) {
@@ -109,6 +114,7 @@ func (p *caCertificateProvider) adjustActiveLocked(item *CertificateItem, delta 
 // where per-row index maintenance would be quadratic.
 func (p *caCertificateProvider) putUnindexedLocked(fp string, sc *storedCert) {
 	sc.item.KeyAlgorithmDisplay = keyAlgorithmDisplay(sc.x509)
+	sc.item.TrustClass = effectiveTrustClass(sc.item)
 	p.certs[fp] = sc
 }
 
@@ -141,6 +147,7 @@ func (p *caCertificateProvider) rebuildIndexLocked() {
 // them (a direct map write, as the package's own tests do). Production writes
 // all go through addLocked, so this is a length comparison in practice.
 func (p *caCertificateProvider) ensureIndex() {
+	p.refreshDiscovered()
 	p.mu.RLock()
 	stale := len(p.order) != len(p.certs)
 	p.mu.RUnlock()
@@ -169,6 +176,7 @@ func (p *caCertificateProvider) addLocked(fp string, sc *storedCert) {
 		sc.spki = spkiHash(sc.x509)
 	}
 	sc.item.KeyAlgorithmDisplay = keyAlgorithmDisplay(sc.x509)
+	sc.item.TrustClass = effectiveTrustClass(sc.item)
 	p.certs[fp] = sc
 	pos := p.orderPosLocked(sc)
 	p.order = slices.Insert(p.order, pos, sc)

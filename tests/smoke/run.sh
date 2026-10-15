@@ -355,11 +355,18 @@ EOF
     # real query already COALESCEs a NULL management_state to 'managed', so
     # the column just needs to exist; leaving every row NULL matches "the
     # common case: an existing cert with no explicit state" and keeps the
-    # total/expiring/expired counts below unchanged.
+    # total/expiring/expired counts below unchanged. revoked_at and
+    # renewal_status back the active-certificate rule (certificate_active.go);
+    # NULL in both means active, so the counts are again unchanged. is_ca
+    # (migration 000077) keeps served-chain intermediates out of the leaf
+    # counts; 0 = a leaf, so the counts are unchanged again.
     sqlite3 "$sqlite_db_file" <<'SQL'
 CREATE TABLE certificates (
   valid_until TEXT NOT NULL,
-  management_state TEXT
+  management_state TEXT,
+  revoked_at TEXT,
+  renewal_status TEXT,
+  is_ca INTEGER NOT NULL DEFAULT 0
 );
 INSERT INTO certificates(valid_until) VALUES
   (datetime('now', '-1 day')),
@@ -583,7 +590,7 @@ PY
   # assert 0 across the board) -- GetSummary derives its defaults from the
   # same seed slices (fileDiscoveryProvider.GetSummary), so turning seeds on
   # without these would change those already-passing assertions too.
-  PORT="$port" AUTH_MODE="bootstrap" APP_BOOTSTRAP_TOKEN="$bootstrap_token" APP_DISCOVERY_DEMO_SEEDS="true" APP_DISCOVERY_DISCOVERED_ENDPOINTS="0" APP_DISCOVERY_MAPPED_CERTIFICATES="0" APP_DISCOVERY_RISKY_ENDPOINTS="0" APP_DISCOVERY_ACTIVE_SCAN_JOBS="0" APP_CERTS_SUMMARY_FILE="$summary_file" APP_AUDIT_FILE="$audit_file" APP_CA_FILE="$ca_file" APP_TEMPLATE_FILE="$template_file" APP_CERTIFICATE_FILE="$certificate_file" APP_AUTH_LOGIN_ENABLED="true" APP_AUTH_LOGIN_EMAIL="admin@example.com" APP_AUTH_LOGIN_PASSWORD_HASH="13eb3cd84e895d9aec00db8145ebbe377915bfa0dfb2be8295b82443aecb332d" APP_AUTH_LOGIN_PASSWORD_PEPPER="smoke-login-pepper" APP_AUTH_LOGIN_SUBJECT="team-1" APP_AUTH_LOGIN_SIGNING_SECRET="smoke-login-signing-secret-0123456789abcdef" APP_API_KEY_AUTH_ENABLED="true" APP_API_KEY_PEPPER="dev-api-key-pepper" APP_API_KEYS_JSON='[{"kid":"smoke","secret_verifier":"e27bf9a5fbc3ffad1c1a9ee77707f9b2d2998f98e89ac3270572aa34565363af","principal_id":"team-1","role":"service-account","scopes":["*"],"active":true}]' KRYPTKEEPER_TLS_DISABLE="true" "$bin_path" >"$app_log" 2>&1 &
+  PORT="$port" AUTH_MODE="bootstrap" APP_BOOTSTRAP_TOKEN="$bootstrap_token" APP_DISCOVERY_PROVIDER="file" APP_DISCOVERY_DEMO_SEEDS="true" APP_DISCOVERY_DISCOVERED_ENDPOINTS="0" APP_DISCOVERY_MAPPED_CERTIFICATES="0" APP_DISCOVERY_RISKY_ENDPOINTS="0" APP_DISCOVERY_ACTIVE_SCAN_JOBS="0" APP_CERTS_SUMMARY_FILE="$summary_file" APP_AUDIT_FILE="$audit_file" APP_CA_FILE="$ca_file" APP_TEMPLATE_FILE="$template_file" APP_CERTIFICATE_FILE="$certificate_file" APP_AUTH_LOGIN_ENABLED="true" APP_AUTH_LOGIN_EMAIL="admin@example.com" APP_AUTH_LOGIN_PASSWORD_HASH="13eb3cd84e895d9aec00db8145ebbe377915bfa0dfb2be8295b82443aecb332d" APP_AUTH_LOGIN_PASSWORD_PEPPER="smoke-login-pepper" APP_AUTH_LOGIN_SUBJECT="team-1" APP_AUTH_LOGIN_SIGNING_SECRET="smoke-login-signing-secret-0123456789abcdef" APP_API_KEY_AUTH_ENABLED="true" APP_API_KEY_PEPPER="dev-api-key-pepper" APP_API_KEYS_JSON='[{"kid":"smoke","secret_verifier":"e27bf9a5fbc3ffad1c1a9ee77707f9b2d2998f98e89ac3270572aa34565363af","principal_id":"team-1","role":"service-account","scopes":["*"],"active":true}]' KRYPTKEEPER_TLS_DISABLE="true" "$bin_path" >"$app_log" 2>&1 &
   pid="$!"
   track_pid "$pid"
   track_port "$port"
@@ -640,9 +647,10 @@ PY
   # fabricated a 201 'queued' job it then discarded ... now refuses with
   # directions, surfaced as 422"). These three assertions still expected the
   # pre-fix 202/201 shape; the local-binary smoke launch above only ever
-  # configures the file provider (no APP_DISCOVERY_PROVIDER=db), so 422 with
-  # the documented message is the correct, permanent expectation here, not
-  # an environment gap.
+  # pins the file provider explicitly (APP_DISCOVERY_PROVIDER=file; the
+  # code default is db since 2026-10), so 422 with the documented message
+  # is the correct, permanent expectation for file mode, not an environment
+  # gap. Without the pin these POSTs would start a real /24 scan.
   curl_expect_200 "POST" "$base_url/api/v1/discovery/scan-jobs/cancel" "discovery scan-job cancel bootstrap mode refuses on file provider (no scan runner)" "422" '"error":"unprocessable_entity","message":"network scans need the database-backed discovery provider' "application/json" "Authorization: Bearer $bootstrap_token" '{"scan_job_id":"scan-1700000000000000001","reason":"smoke cancel"}'
   curl_expect_200 "POST" "$base_url/api/v1/discovery/scan-jobs/requeue" "discovery scan-job requeue bootstrap mode rejects missing bearer token" "401" '{"error":"unauthorized","message":"invalid or missing bearer token"}' "application/json" "" '{"scan_job_id":"scan-1700000000000000001","reason":"smoke requeue"}'
   curl_expect_200 "POST" "$base_url/api/v1/discovery/scan-jobs/requeue" "discovery scan-job requeue bootstrap mode refuses on file provider (no scan runner)" "422" '"error":"unprocessable_entity","message":"network scans need the database-backed discovery provider' "application/json" "Authorization: Bearer $bootstrap_token" '{"scan_job_id":"scan-1700000000000000001","reason":"smoke requeue"}'
@@ -665,7 +673,7 @@ PY
   # unmanaged fields between expired and source in the certificates block
   # (handlers_dashboard.go's response struct field order); this assertion
   # was written before that field order changed and never updated.
-  curl_expect_200 "GET" "$base_url/api/v1/dashboard/summary" "dashboard summary bootstrap mode returns certificate counts" "200" '"certificates":{"total":42,"expiring_30_days":7,"expired":2,"managed":0,"external":0,"unmanaged":0,"source":"file-store"' "application/json" "Authorization: Bearer $bootstrap_token"
+  curl_expect_200 "GET" "$base_url/api/v1/dashboard/summary" "dashboard summary bootstrap mode returns certificate counts" "200" '"certificates":{"total":42,"revoked":0,"expiring_30_days":7,"expired":2,"managed":0,"external":0,"unmanaged":0,"source":"file-store"' "application/json" "Authorization: Bearer $bootstrap_token"
   curl_expect_200 "GET" "$base_url/api/v1/dashboard/summary" "dashboard summary bootstrap mode returns discovery counts" "200" '"discovery":{"discovered_endpoints":0,"risky_endpoints":0,"active_scan_jobs":0' "application/json" "Authorization: Bearer $bootstrap_token"
   curl_expect_200 "GET" "$base_url/api/v1/dashboard/summary" "dashboard summary bootstrap mode returns discovery finding funnel" "200" '"findings":{"raw":0,"effective":0,"suppressed":0' "application/json" "Authorization: Bearer $bootstrap_token"
   curl_expect_200 "GET" "$base_url/api/v1/dashboard/summary" "dashboard summary bootstrap mode returns notification counts" "200" '"notifications":{"pending_notifications":0,"escalations":0' "application/json" "Authorization: Bearer $bootstrap_token"

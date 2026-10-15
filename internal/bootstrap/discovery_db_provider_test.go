@@ -80,6 +80,8 @@ func setupDiscoveryTestDB(t *testing.T) *sql.DB {
 			serial_number        TEXT NOT NULL,
 			subject_dn           TEXT NOT NULL,
 			common_name          TEXT,
+			issuer_cn            TEXT,
+			key_size_bits        INTEGER,
 			subject_alt_names    TEXT,
 			issuer_dn            TEXT NOT NULL,
 			valid_from           TEXT NOT NULL,
@@ -97,6 +99,10 @@ func setupDiscoveryTestDB(t *testing.T) *sql.DB {
 			                     CHECK (origin IN ('internal', 'imported', 'discovered', 'synced')),
 			management_state     TEXT NOT NULL DEFAULT 'managed'
 			                     CHECK (management_state IN ('managed', 'external', 'unmanaged')),
+			chain_complete       INTEGER NOT NULL DEFAULT 0,
+			chain_trusted        INTEGER NOT NULL DEFAULT 0,
+			trust_class          TEXT,
+			is_ca                INTEGER NOT NULL DEFAULT 0,
 			updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		)`,
 		`CREATE TABLE scan_jobs (
@@ -133,6 +139,10 @@ func setupDiscoveryTestDB(t *testing.T) *sql.DB {
 			first_seen TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 			last_seen TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 			currently_active INTEGER NOT NULL DEFAULT 1,
+			endpoint_flags TEXT NOT NULL DEFAULT '[]',
+			endpoint_risk_score INTEGER NOT NULL DEFAULT 0,
+			chain_complete INTEGER,
+			chain_trusted INTEGER,
 			PRIMARY KEY (certificate_fingerprint, endpoint_id)
 		)`,
 	} {

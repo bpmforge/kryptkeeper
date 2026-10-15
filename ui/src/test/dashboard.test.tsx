@@ -83,7 +83,7 @@ describe("Dashboard", () => {
     renderDashboard();
 
     // Stat tile labels from the new dashboard design
-    expect(await screen.findByText(/total certs/i)).toBeInTheDocument();
+    expect(await screen.findByText(/active certs/i)).toBeInTheDocument();
     expect(screen.getByText(/expiring 30d/i)).toBeInTheDocument();
     // "Expired" appears on the stat tile label
     expect(screen.getAllByText(/expired/i).length).toBeGreaterThan(0);
@@ -119,5 +119,34 @@ describe("Dashboard", () => {
       await screen.findByText(/welcome to kryptkeeper/i),
     ).toBeInTheDocument();
     expect(screen.queryByText(/total certs/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("Dashboard PQC readiness card", () => {
+  it("shows the parts that make up the readiness percentage", async () => {
+    vi.mocked(api.dashboardSummary).mockResolvedValue(summary as never);
+    vi.mocked(api.cryptoPosture).mockResolvedValue({
+      data: {
+        total_certs: 7,
+        pqc_readiness: {
+          quantum_safe: 0,
+          quantum_safe_leaf_only: 0,
+          migration_ready: 1,
+          vulnerable: 0,
+          not_applicable: 6,
+          pqc_score_percent: 14,
+          quantum_safe_percent: 0,
+        },
+      },
+    } as never);
+    renderDashboard();
+    // 14% beside "0 quantum-safe / 0 vulnerable" was unexplained: the
+    // migration-ready certificate that makes up the 14% is now listed.
+    expect(await screen.findByText("14%")).toBeInTheDocument();
+    expect(screen.getByText("migration-ready")).toBeInTheDocument();
+    expect(screen.getByText("leaf-only PQC")).toBeInTheDocument();
+    expect(
+      screen.getByText(/1 of 7 certificates are quantum-safe, leaf-only PQC or migration-ready/),
+    ).toBeInTheDocument();
   });
 });

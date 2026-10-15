@@ -15,6 +15,7 @@ import { PageHeader } from "../components/PageHeader";
 import { canReadOperationalSummaries, useAuthz } from "../lib/auth";
 import { AUDIT_OUTCOMES, auditOutcomeTone } from "../lib/auditOutcome";
 import { isReadOnlyAction } from "../lib/auditActions";
+import { shortResourceId } from "../lib/auditResource";
 import type { AuditRow } from "../lib/models";
 
 type AuditFilters = {
@@ -34,6 +35,22 @@ const initialFilters: AuditFilters = {
   after: "",
   before: "",
 };
+
+function ResourceCell({ row }: { row: AuditRow }) {
+  const full = `${row.resource_type}:${row.resource_id}`;
+  const name = row.resource_name?.trim();
+  return (
+    <span title={full}>
+      <span className={name ? "text-foreground" : undefined}>
+        {name || shortResourceId(row.resource_id)}
+      </span>
+      <span className="block text-xs text-muted-foreground">
+        {row.resource_type}
+        {name ? ` · ${shortResourceId(row.resource_id)}` : ""}
+      </span>
+    </span>
+  );
+}
 
 function csvEscape(value: string) {
   return `"${String(value ?? "").replace(/"/g, '""')}"`;
@@ -169,6 +186,7 @@ export default function Audit() {
       "resource_id",
       "trace_id",
       "outcome",
+      "resource_name",
     ];
     const csv = [
       header.join(","),
@@ -183,6 +201,7 @@ export default function Audit() {
           row.resource_id,
           row.trace_id || "",
           row.outcome,
+          row.resource_name || "",
         ]
           .map((value) => csvEscape(String(value ?? "")))
           .join(","),
@@ -377,7 +396,12 @@ export default function Audit() {
               <div>
                 <div className="text-muted-foreground">Resource</div>
                 <div className="text-foreground">
-                  {selected.resource_type}:{selected.resource_id}
+                  {selected.resource_name ? (
+                    <div>{selected.resource_name}</div>
+                  ) : null}
+                  <div className="break-all">
+                    {selected.resource_type}:{selected.resource_id}
+                  </div>
                 </div>
               </div>
               <div>
@@ -466,7 +490,7 @@ export default function Audit() {
                     {row.actor_type}:{row.actor_id}
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {row.resource_type}:{row.resource_id}
+                    <ResourceCell row={row} />
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
                     {row.trace_id || "—"}

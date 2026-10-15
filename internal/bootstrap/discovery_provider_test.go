@@ -60,9 +60,11 @@ func TestResolveDiscoveryMode(t *testing.T) {
 		override string // "" = no override written
 		want     string
 	}{
-		{"nothing set defaults to file", "", "", discoveryProviderFile},
+		{"nothing set defaults to db", "", "", discoveryProviderDB},
+		{"env file selects file", "file", "", discoveryProviderFile},
 		{"env db selects db", "db", "", discoveryProviderDB},
-		{"unknown env falls back to file", "bogus", "", discoveryProviderFile},
+		{"unknown env falls back to db", "bogus", "", discoveryProviderDB},
+		{"scanner is startup-only and not a live mode", "scanner", "", discoveryProviderDB},
 		{"db override wins over env file", "file", "db", discoveryProviderDB},
 		{"file override wins over env db", "db", "file", discoveryProviderFile},
 	}
@@ -101,6 +103,7 @@ func TestResolveDiscoveryMode_NilStoreFallsBackToEnv(t *testing.T) {
 // current() to always select file mode, watching this go red, then
 // reverting.
 func TestConfiguredDiscoveryProvider_DBOverrideSwitchesModeWithoutReconstruction(t *testing.T) {
+	t.Setenv(discoveryProviderEnv, "file") // db is the default; start in file so the override has something to switch
 	store := newFreshConfigStore(t, []byte("test-passphrase"))
 	ctx := context.Background()
 

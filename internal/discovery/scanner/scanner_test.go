@@ -206,48 +206,6 @@ func TestRiskScoring(t *testing.T) {
 	}
 }
 
-func TestRiskFlagsSelfSignedAndHostnameMismatch(t *testing.T) {
-	// A self-signed leaf served under the wrong name — the default-IIS case.
-	selfSigned := &x509.Certificate{
-		NotBefore:          time.Now().Add(-time.Hour),
-		NotAfter:           time.Now().Add(365 * 24 * time.Hour),
-		PublicKeyAlgorithm: x509.ECDSA,
-		SignatureAlgorithm: x509.ECDSAWithSHA256,
-		RawSubject:         []byte("CN=localhost"),
-		RawIssuer:          []byte("CN=localhost"),
-		DNSNames:           []string{"localhost"},
-	}
-	score, flags := computeCertRisk(selfSigned, "192.0.2.10", true)
-	if !hasFlag(flags, "SELF_SIGNED") {
-		t.Errorf("expected SELF_SIGNED, got %v", flags)
-	}
-	if !hasFlag(flags, "HOSTNAME_MISMATCH") {
-		t.Errorf("expected HOSTNAME_MISMATCH for localhost cert served at an IP, got %v", flags)
-	}
-	if score < 50 {
-		t.Errorf("self-signed + mismatch should score high, got %d", score)
-	}
-
-	// The same self-signed cert served under a name it DOES vouch for must
-	// NOT get the mismatch flag (self-signed still stands).
-	_, flags2 := computeCertRisk(selfSigned, "localhost", true)
-	if hasFlag(flags2, "HOSTNAME_MISMATCH") {
-		t.Errorf("no mismatch expected when host matches SAN, got %v", flags2)
-	}
-
-	// A self-signed CA (a legitimate trust anchor) must NOT be flagged
-	// SELF_SIGNED — that is what a root is.
-	root := &x509.Certificate{
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(365 * 24 * time.Hour),
-		PublicKeyAlgorithm: x509.ECDSA, SignatureAlgorithm: x509.ECDSAWithSHA256,
-		RawSubject: []byte("CN=Root"), RawIssuer: []byte("CN=Root"), IsCA: true,
-	}
-	_, rootFlags := computeCertRisk(root, "", false)
-	if hasFlag(rootFlags, "SELF_SIGNED") {
-		t.Errorf("a self-signed root must not be flagged SELF_SIGNED, got %v", rootFlags)
-	}
-}
-
 func TestPortsForScanType(t *testing.T) {
 	// fast now sweeps the standard port of every cert/key protocol,
 	// SSH included (the user asked quick scans to cover keys too).

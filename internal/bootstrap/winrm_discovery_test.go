@@ -163,6 +163,10 @@ func TestDiscoverySchedulerFilesWinRMScansForManagedTargets(t *testing.T) {
 }
 
 func TestSQLiteDiscoveryStoreRunsAndPersistsWinRMScan(t *testing.T) {
+	// Persisting audits the endpoint over TLS; 192.0.2.10 is a blackhole, so
+	// without the stub this test waits out a 10s dial timeout (and a CI
+	// runner would be dialing a documentation address).
+	stubEndpointAudit(t)
 	db := setupDiscoveryTestDB(t)
 	store := &sqliteDiscoveryStore{db: db}
 	done := make(chan struct{})

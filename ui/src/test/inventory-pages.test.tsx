@@ -101,6 +101,27 @@ const certMock = {
 };
 
 describe("Certificates page", () => {
+  // At 1440px the table plus the detail column overflowed the card and
+  // overflow-hidden clipped Risk/Estate. The table must scroll inside its own
+  // container, and the grid tracks must be allowed to shrink (minmax(0, ...)).
+  it("scrolls the inventory table horizontally instead of clipping columns", async () => {
+    vi.mocked(api.certificates).mockResolvedValue({
+      data: { items: [certMock] },
+      meta: { total: 1, limit: 50 },
+    } as unknown as never);
+    renderWithQuery(<Certificates />);
+    await screen.findByRole("button", { name: "api.example.com" });
+    const scroller = screen.getByTestId("certificate-inventory-scroll");
+    expect(scroller.className).toContain("overflow-x-auto");
+    expect(scroller.className).not.toContain("overflow-hidden");
+    let el: HTMLElement | null = scroller;
+    while (el && !el.className.includes?.("minmax(0,1.2fr)")) el = el.parentElement;
+    expect(el).not.toBeNull();
+    for (const col of ["Risk", "Estate", "Status"]) {
+      expect(screen.getByRole("columnheader", { name: col })).toBeInTheDocument();
+    }
+  });
+
   it("renders the estate badge and passes the management_state filter to the API (W11-08)", async () => {
     vi.mocked(api.certificates).mockResolvedValue({
       data: { items: [certMock] },
@@ -142,6 +163,27 @@ describe("Certificates page", () => {
 
     const label = await screen.findByTitle("ca-root");
     await waitFor(() => expect(label).toHaveTextContent("Root CA"));
+  });
+
+  it("detail does not state a chain verdict for a discovered cert, and labels a hub-held one 'as issued'", async () => {
+    vi.mocked(api.certificates).mockResolvedValue({
+      data: { items: [{ ...certMock, origin: "discovered" }] },
+      meta: { total: 1, limit: 50 },
+    } as unknown as never);
+    const first = renderWithQuery(<Certificates />);
+    expect(await screen.findByTestId("certificate-chain")).toHaveTextContent(
+      "judged per endpoint",
+    );
+    first.unmount();
+
+    vi.mocked(api.certificates).mockResolvedValue({
+      data: { items: [{ ...certMock, chain_complete: true }] },
+      meta: { total: 1, limit: 50 },
+    } as unknown as never);
+    renderWithQuery(<Certificates />);
+    expect(await screen.findByTestId("certificate-chain")).toHaveTextContent(
+      "complete as issued",
+    );
   });
 
   it("falls back to the CA ID when no name resolves", async () => {
