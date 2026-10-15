@@ -4286,7 +4286,7 @@ export interface operations {
                     name: string;
                     /** @enum {string} */
                     type: "internal" | "acme";
-                    /** @description No secrets — credentials go in credential_ref (W5-10 store) */
+                    /** @description No secrets — credentials go in credential_ref (W5-10 store). For acme connectors with dns-01: optional dns_propagation (auto|authoritative|resolver|doh|none), dns_resolver, dns_doh_url, dns_propagation_timeout (max 10m), dns_propagation_delay; see docs/ops/ACME_UPSTREAM.md */
                     config_json?: string;
                     credential_ref?: string;
                 };

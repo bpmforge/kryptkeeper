@@ -12,8 +12,10 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -58,7 +60,7 @@ func TestServeChallenge_FileMode(t *testing.T) {
 	token := "test-token-abc123"
 	keyAuth := "test-token-abc123.thumbprint"
 
-	cleanup, err := serveChallenge(context.Background(), token, keyAuth, webRoot)
+	cleanup, err := serveChallenge(context.Background(), token, keyAuth, webRoot, "")
 	if err != nil {
 		t.Fatalf("serveChallenge: %v", err)
 	}
@@ -136,5 +138,41 @@ func TestEncodeECKey_RoundTrip(t *testing.T) {
 	}
 	if block.Type != "EC PRIVATE KEY" {
 		t.Errorf("expected EC PRIVATE KEY, got %q", block.Type)
+	}
+}
+
+// A busy :80 must fail before any ACME traffic, with the cause named. The hub
+// URL is unreachable on purpose: reaching it would mean the check came too late.
+func TestRenew_FailsFastWhenHTTP01PortBusy(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+
+	r := NewAcmeRenewer("http://127.0.0.1:1", nil)
+	r.HTTP01Addr = busy.Addr().String()
+	_, err = r.Renew(context.Background(), []string{"example.test"}, "")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{"port 80 in use or not permitted", "docs/ops/WINDOWS_AGENT.md", busy.Addr().String()} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+}
+
+func TestRenew_WebRootSkipsPortCheck(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Close()
+	r := NewAcmeRenewer("http://127.0.0.1:1", nil)
+	r.HTTP01Addr = busy.Addr().String()
+	_, err = r.Renew(context.Background(), []string{"example.test"}, t.TempDir())
+	if err == nil || strings.Contains(err.Error(), "port 80") {
+		t.Fatalf("web-root renewal must not probe the port, got %v", err)
 	}
 }

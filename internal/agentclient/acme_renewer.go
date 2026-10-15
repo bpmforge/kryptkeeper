@@ -16,6 +16,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -31,7 +32,13 @@ import (
 type AcmeRenewer struct {
 	HubURL     string
 	HTTPClient *http.Client
+
+	// HTTP01Addr is where the temporary HTTP-01 listener binds when no web
+	// root is configured. Empty means ":80", the only port a CA validates.
+	HTTP01Addr string
 }
+
+const defaultHTTP01Addr = ":80"
 
 // NewAcmeRenewer returns an AcmeRenewer targeting the given Hub. rootCAs is
 // the same pool built by HubCACertPoolFromEnv and passed to New -- the ACME
@@ -69,6 +76,18 @@ func (r *AcmeRenewer) Renew(ctx context.Context, identifiers []string, webRoot s
 		return nil, fmt.Errorf("no DNS identifiers to renew")
 	}
 	acmeDir := r.HubURL + "/acme/directory"
+
+	if webRoot == "" {
+		// Fail before any ACME order exists: a blocked :80 otherwise surfaces
+		// only after the order, as an opaque challenge failure.
+		addr := r.http01Addr()
+		log.Printf("acme: http-01 challenge will listen on %s", addr)
+		ln, err := listenHTTP01(addr)
+		if err != nil {
+			return nil, err
+		}
+		_ = ln.Close()
+	}
 
 	accountKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -146,7 +165,7 @@ func (r *AcmeRenewer) satisfyAuthz(ctx context.Context, client *acme.Client, aut
 		return fmt.Errorf("compute key authorization: %w", err)
 	}
 
-	cleanup, err := serveChallenge(ctx, ch.Token, keyAuth, webRoot)
+	cleanup, err := serveChallenge(ctx, ch.Token, keyAuth, webRoot, r.http01Addr())
 	if err != nil {
 		return fmt.Errorf("serve http-01 challenge: %w", err)
 	}
@@ -163,7 +182,7 @@ func (r *AcmeRenewer) satisfyAuthz(ctx context.Context, client *acme.Client, aut
 
 // serveChallenge makes the ACME HTTP-01 token reachable at /.well-known/acme-challenge/<token>.
 // Returns a cleanup function that removes the file or stops the listener.
-func serveChallenge(ctx context.Context, token, keyAuth, webRoot string) (func(), error) {
+func serveChallenge(ctx context.Context, token, keyAuth, webRoot, addr string) (func(), error) {
 	if webRoot != "" {
 		dir := filepath.Join(webRoot, ".well-known", "acme-challenge")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -182,13 +201,32 @@ func serveChallenge(ctx context.Context, token, keyAuth, webRoot string) (func()
 	mux.HandleFunc(challengePath, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, keyAuth) // no recovery path once the challenge response has started
 	})
-	ln, err := net.Listen("tcp", ":80")
+	ln, err := listenHTTP01(addr)
 	if err != nil {
-		return nil, fmt.Errorf("listen :80 for acme challenge: %w", err)
+		return nil, err
 	}
 	srv := &http.Server{Handler: mux}
 	go func() { _ = srv.Serve(ln) }()
 	return func() { _ = srv.Shutdown(ctx) }, nil
+}
+
+func (r *AcmeRenewer) http01Addr() string {
+	if r.HTTP01Addr != "" {
+		return r.HTTP01Addr
+	}
+	return defaultHTTP01Addr
+}
+
+// listenHTTP01 binds the HTTP-01 listener. The usual causes of failure are
+// another web server (IIS, nginx) holding the port, a lack of privilege, or
+// a previous renewal still running; the error names them instead of passing
+// the bare OS message on.
+func listenHTTP01(addr string) (net.Listener, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("cannot listen on %s for the ACME HTTP-01 challenge: port 80 in use or not permitted; see docs/ops/WINDOWS_AGENT.md: %w", addr, err)
+	}
+	return ln, nil
 }
 
 // isACMEConflict returns true when account already exists (registration is idempotent).

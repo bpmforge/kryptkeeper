@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Kryptkeeper agent LaunchDaemon. See docs/ops/MACOS_AGENT.md.
+
+  Install:  sudo install -m 0600 -o root -g wheel com.kryptkeeper.agent.plist \
+              /Library/LaunchDaemons/com.kryptkeeper.agent.plist
+            (edit KRYPTKEEPER_HUB_URL and the enrollment secret first)
+
+  The agent reads settings from its process environment only; it has no
+  general env-file loader on macOS. The only file it reads back is the
+  registration it wrote itself (KRYPTKEEPER_AGENT_CREDENTIALS_FILE, mode 0600).
+  This plist therefore carries the settings, which is why it is 0600.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kryptkeeper.agent</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/kryptkeeper-agent</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>KRYPTKEEPER_HUB_URL</key>
+    <string>https://hub.example.com:8443</string>
+    <!-- One of the hub's KRYPTKEEPER_AGENT_ENROLLMENT_SECRETS. Only needed
+         for the first start; remove it once the agent has registered. -->
+    <key>KRYPTKEEPER_AGENT_ENROLLMENT_SECRET</key>
+    <string></string>
+    <!-- Registration (agent ID and token) is saved here, mode 0600. -->
+    <key>KRYPTKEEPER_AGENT_CREDENTIALS_FILE</key>
+    <string>/Library/Application Support/Kryptkeeper/agent.env</string>
+    <!-- Needed when the hub's certificate is self-issued.
+    <key>KRYPTKEEPER_HUB_CA_CERT_FILE</key>
+    <string>/Library/Application Support/Kryptkeeper/hub-ca.pem</string>
+    -->
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- Back-off between restarts when the agent exits (bad config, hub down
+       at boot) so a crash loop does not spin. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Library/Logs/Kryptkeeper/agent.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Library/Logs/Kryptkeeper/agent.log</string>
+</dict>
+</plist>

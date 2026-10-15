@@ -43,6 +43,34 @@ builds:
       - goos: darwin
         goarch: amd64
 
+  # The Windows agent is its own build so the MSI post hook runs only for it.
+  # wixl (msitools) packs the exe just built into a per-machine MSI; the file
+  # lands in dist/ where checksum.extra_files / release.extra_files pick it up,
+  # so the MSI is covered by the cosign-signed checksums.txt. Needs `wixl` on
+  # PATH (apt-get install msitools in CI; brew install msitools locally).
+  # MSI ProductVersion must be numeric a.b.c, so a prerelease tag maps to its
+  # base version (rc and final of the same x.y.z share a ProductVersion).
+  - id: kryptkeeper-agent-windows
+    main: ./cmd/kryptkeeper-agent
+    binary: kryptkeeper-agent
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    goos: [windows]
+    goarch: [amd64]
+    hooks:
+      post:
+        - cmd: >-
+            wixl -a x64
+            -D Version={{ .Major }}.{{ .Minor }}.{{ .Patch }}
+            -D AgentExe={{ .Path }}
+            -D EnvExample=packaging/windows/agent.env.example
+            -o dist/kryptkeeper-agent_{{ .Version }}_windows_amd64.msi
+            packaging/windows/kryptkeeper-agent.wxs
+
   - id: kryptkeeper-certmanager
     main: ./cmd/kryptkeeper-certmanager
     binary: kryptkeeper-certmanager
@@ -82,6 +110,10 @@ archives:
     ids: [kryptkeeper-agent]
     name_template: "kryptkeeper-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
+  - id: kryptkeeper-agent-windows
+    ids: [kryptkeeper-agent-windows]
+    name_template: "kryptkeeper-agent_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [zip]
   - id: kryptkeeper-certmanager
     ids: [kryptkeeper-certmanager]
     name_template: "kryptkeeper-certmanager_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
@@ -91,8 +123,12 @@ archives:
     name_template: "kryptkeeper-mcp_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     formats: [tar.gz]
 
+# extra_files folds the MSI (built by the kryptkeeper-agent-windows post hook)
+# and the Homebrew formula into checksums.txt, so cosign signs them too.
 checksum:
   name_template: "checksums.txt"
+  extra_files:
+    - glob: ./dist/*.msi
 
 # CycloneDX SBOMs, one per archive -- syft's goreleaser cataloger defaults to
 # SPDX; the ticket wants CycloneDX, so the format is forced via `args`.
@@ -391,6 +427,8 @@ release:
   github:
     owner: bpmforge
     name: kryptkeeper
+  extra_files:
+    - glob: ./dist/*.msi
   prerelease: auto
 
 changelog:

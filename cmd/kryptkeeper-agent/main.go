@@ -31,6 +31,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -172,8 +173,9 @@ func run(ctx context.Context) {
 
 	log.Printf("agent %s starting; hub=%s poll=%s", client.AgentID, hubURL, pollInterval)
 
+	guard := newRenewGuard()
 	for {
-		runCycle(client, scanPaths, configPaths, webRoot, hubRootCAs)
+		runCycle(client, guard, scanPaths, configPaths, webRoot, hubRootCAs)
 		select {
 		case <-ctx.Done():
 			return
@@ -182,7 +184,7 @@ func run(ctx context.Context) {
 	}
 }
 
-func runCycle(client *agentclient.Client, scanPaths, configPaths []string, webRoot string, hubRootCAs *x509.CertPool) {
+func runCycle(client *agentclient.Client, guard *renewGuard, scanPaths, configPaths []string, webRoot string, hubRootCAs *x509.CertPool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -230,29 +232,49 @@ func runCycle(client *agentclient.Client, scanPaths, configPaths []string, webRo
 	for _, task := range tasks {
 		log.Printf("task %s: %s %s (expires %s)", task.TaskID, task.Action, task.Subject,
 			task.NotAfter.Format("2006-01-02"))
-		if task.Action == "renew" {
-			go renewAsync(client, renewer, task, webRoot)
-		}
 	}
+	// A task stays queued at the hub until a result is reported, so the same
+	// one comes back every poll; the guard keeps it to one run at a time.
+	guard.dispatchRenewals(tasks, func(task agentclient.RenewalTask) error {
+		return renewTask(client, renewer, task, webRoot)
+	})
 }
 
-func renewAsync(client *agentclient.Client, renewer *agentclient.AcmeRenewer, task agentclient.RenewalTask, webRoot string) {
+// renewTask runs one renewal and returns its error so the guard can back off.
+// Every failure is also reported to the hub: that clears the queued task and
+// puts the error in the task history, where otherwise the operator sees a
+// task that never completes and no reason.
+func renewTask(client *agentclient.Client, renewer *agentclient.AcmeRenewer, task agentclient.RenewalTask, webRoot string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
+	err := doRenew(ctx, client, renewer, task, webRoot)
+	if err != nil {
+		log.Printf("renew %s: %v", task.Subject, err)
+	}
+	return err
+}
+
+// doRenew renews task and, when it carries install hints, installs the result.
+// An install failure has already been reported by installRenewed with its own
+// outcome, so only the other failures are reported here.
+func doRenew(ctx context.Context, client *agentclient.Client, renewer *agentclient.AcmeRenewer, task agentclient.RenewalTask, webRoot string) error {
+	// Refuse before ordering: issuing a certificate that cannot be installed
+	// only burns an ACME order and leaves the key unused.
+	if err := installUnsupported(runtime.GOOS, task); err != nil {
+		return reportFailure(client, task, err)
+	}
 	identifiers := renewalIdentifiers(task)
 	if len(identifiers) == 0 {
 		// W19-13: a pre-W19-13 hub sent no Identifiers and task.Subject's CN
 		// isn't a hostname either -- there is nothing an ACME order could
 		// validate. Using task.Subject (a full RDN string like
 		// "CN=localhost") here was the original bug (UAT W19-04).
-		log.Printf("renew %s: no usable DNS identifier, skipping", task.Subject)
-		return
+		return reportFailure(client, task, fmt.Errorf("no usable DNS identifier"))
 	}
 	result, err := renewer.Renew(ctx, identifiers, webRoot)
 	if err != nil {
-		log.Printf("renew %s: %v", task.Subject, err)
-		return
+		return reportFailure(client, task, err)
 	}
 	log.Printf("renewed %s: cert %d bytes", task.Subject, len(result.CertPEM))
 
@@ -260,8 +282,38 @@ func renewAsync(client *agentclient.Client, renewer *agentclient.AcmeRenewer, ta
 	// cert where the web server reads it, validate, reload, and verify (with
 	// rollback), then report the outcome to the Hub.
 	if task.CertPath == "" {
-		return
+		return nil
 	}
+	return installRenewed(ctx, client, task, result)
+}
+
+// installUnsupported reports why task's install hints cannot be honoured on
+// goos. The install step shells out through sudo to nginx/apache/haproxy
+// paths, which cannot work on Windows; a Windows cert-store/IIS target is
+// planned for v0.10.
+func installUnsupported(goos string, task agentclient.RenewalTask) error {
+	if goos == "windows" && task.CertPath != "" {
+		return errors.New("install targets not supported on Windows agent in v0.9; use agentless WinRM/IIS")
+	}
+	return nil
+}
+
+// reportFailure posts a failed result for task and returns err unchanged.
+func reportFailure(client *agentclient.Client, task agentclient.RenewalTask, err error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if rerr := client.PostRenewalResult(ctx, agentclient.RenewalResult{
+		TaskID:      task.TaskID,
+		Fingerprint: task.Fingerprint,
+		Outcome:     "failed",
+		Detail:      err.Error(),
+	}); rerr != nil {
+		log.Printf("report failure %s: %v", task.Subject, rerr)
+	}
+	return err
+}
+
+func installRenewed(ctx context.Context, client *agentclient.Client, task agentclient.RenewalTask, result *agentclient.RenewResult) error {
 	newFP := leafFingerprint(result.CertPEM)
 	installer := agentinstall.New(agentinstall.NewSudoExecutor())
 	res, err := installer.Install(ctx, agentinstall.InstallRequest{
@@ -290,6 +342,7 @@ func renewAsync(client *agentclient.Client, renewer *agentclient.AcmeRenewer, ta
 	}); rerr != nil {
 		log.Printf("report result %s: %v", task.Subject, rerr)
 	}
+	return err
 }
 
 // renewalIdentifiers returns the DNS identifiers to use for task's ACME

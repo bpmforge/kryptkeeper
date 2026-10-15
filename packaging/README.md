@@ -1,12 +1,13 @@
 # Distribution packaging (W10-12 / D-101 / FR-P63)
 
-Four install paths for a Kryptkeeper release, all produced by
+Install paths for a Kryptkeeper release, all produced by
 `.github/workflows/release.yml` on a `v*` tag push:
 
 | Format | Built by | Artifact |
 |---|---|---|
 | deb / rpm | `packaging/nfpm/` (nfpm) | `dist/*.deb`, `dist/*.rpm` on the GitHub Release |
-| Homebrew | `packaging/homebrew/` | `kryptkeeper.rb` on the GitHub Release |
+| Homebrew | `packaging/homebrew/` | `kryptkeeper.rb` on the GitHub Release (arm64 only, no tap) |
+| Windows agent | `.goreleaser.yaml` + `packaging/windows/` | `.zip` and `.msi` on the GitHub Release |
 | Helm repo | `charts/kryptkeeper*` published two ways | see below |
 | One-command installer | `packaging/install.sh` | run directly from this path in git, not a release asset |
 
@@ -53,26 +54,69 @@ repo's own gate.
 
 ## Homebrew
 
-`packaging/homebrew/kryptkeeper.rb.tmpl` is a template; `render-formula.sh`
-fills in the version, download URLs, and per-arch SHA256 from the two
-`darwin` release binaries. The `homebrew-formula` job in `release.yml` runs
-it and uploads `kryptkeeper.rb` as a release asset.
+There is no tap repository. Each release attaches a ready-to-install
+`kryptkeeper.rb` formula (plus `kryptkeeper.rb.sig` / `kryptkeeper.rb.pem`,
+a keyless cosign signature) to the GitHub Release. The `homebrew-formula` job
+in `release.yml` produces it after goreleaser finishes: it downloads and
+cosign-verifies the release's `checksums.txt`, and
+`packaging/homebrew/render-formula.sh` fills
+`packaging/homebrew/kryptkeeper.rb.tmpl` with the signed sha256 of
+`kryptkeeper_<version>_darwin_arm64.tar.gz`. (goreleaser's own `brews` pipe
+is deprecated and runs after checksumming, so it cannot do this.)
 
-**Unreachable from this ticket: actually publishing to a tap.** A Homebrew
-formula only becomes `brew install kryptkeeper`-able from a tap repository
-(`kryptkeeper/homebrew-kryptkeeper` or similar) or `homebrew-core` — both are
-separate repositories this environment has no credentials for and this
-ticket's `write_scope` cannot create. What ships here is the correctly
--rendered formula file as a release artifact; wiring a push into a tap repo
-is a follow-up that needs a `HOMEBREW_TAP_TOKEN`-equivalent secret and a
-target repo, named here rather than silently assumed done.
+**Apple Silicon only.** Releases build `darwin/arm64`; there is no
+`darwin/amd64` binary, so the formula has `depends_on arch: :arm64` and
+Intel Macs are unsupported.
 
-Test a rendered formula locally:
+Homebrew 7 refuses to install a formula file that is not in a tap, so create
+a throwaway local tap:
 
 ```bash
-brew install --build-from-source ./kryptkeeper.rb
-brew test kryptkeeper
+gh release download v0.9.4 --repo bpmforge/kryptkeeper --pattern kryptkeeper.rb
+brew tap-new local/kryptkeeper
+cp kryptkeeper.rb "$(brew --repository local/kryptkeeper)/Formula/"
+brew install local/kryptkeeper/kryptkeeper
+brew test local/kryptkeeper/kryptkeeper     # runs `kryptkeeper --version`
+
+# remove
+brew uninstall kryptkeeper && brew untap local/kryptkeeper
 ```
+
+The formula installs only the hub binary (`kryptkeeper`); the agent has its
+own archive.
+
+## Windows agent (zip + MSI)
+
+Each release ships the Windows agent two ways, both built by goreleaser
+(build `kryptkeeper-agent-windows`, `windows/amd64` only) and both listed in
+the cosign-signed `checksums.txt`:
+
+- `kryptkeeper-agent_<version>_windows_amd64.zip` -- `kryptkeeper-agent.exe`
+  plus LICENSE/README/CHANGELOG.
+- `kryptkeeper-agent_<version>_windows_amd64.msi` -- per-machine installer
+  that registers the auto-start `KryptkeeperAgent` service, installs to
+  `C:\Program Files\Kryptkeeper Agent`, and drops `agent.env.example` there.
+  Built from `packaging/windows/kryptkeeper-agent.wxs` by `wixl` (msitools),
+  run from a post-build hook in `.goreleaser.yaml`, so the MSI embeds the exact
+  exe in the zip. Its ProductVersion is the tag's `MAJOR.MINOR.PATCH`
+  (MSI versions are numeric; an `-rc.N` tag maps to its base version).
+
+```powershell
+# elevated PowerShell; silent install, silent uninstall
+msiexec /i kryptkeeper-agent_0.9.4_windows_amd64.msi /qn
+msiexec /x kryptkeeper-agent_0.9.4_windows_amd64.msi /qn
+```
+
+The service does **not** start on first install: it needs
+`%ProgramData%\Kryptkeeper\agent.env` first. Copy `agent.env.example` there,
+set `KRYPTKEEPER_HUB_URL` and `KRYPTKEEPER_AGENT_ENROLLMENT_SECRET`, restrict
+the file's ACL to SYSTEM and Administrators, then `Start-Service
+KryptkeeperAgent` (it auto-starts after reboots from then on). Full runbook:
+`docs/ops/WINDOWS_AGENT.md`. The MSI is not Authenticode-signed (SmartScreen
+warns); the cosign signature on `checksums.txt` is the integrity check.
+
+Local build: `make agent-windows-msi` (single exe) or `make release-snapshot`
+(the whole release set into `dist/`; needs goreleaser v2, syft and wixl).
 
 ## Helm repo
 
@@ -133,11 +177,3 @@ separately in `docs/deployment.md`.
   (`docs/deployment.md`, "Satellite agent systemd unit") and doesn't need a
   package manager to install cleanly; adding a `.deb`/`.rpm` for it is a
   natural follow-up, not required by this ticket's acceptance criteria.
-- **`ldflags` version injection is a pre-existing no-op.** `release.yml`
-  builds with `-ldflags="-X main.version=..."`, but `cmd/kryptkeeper/main.go`
-  has no `var version string` for that flag to target — it's silently
-  discarded. Out of this ticket's `write_scope` (`cmd/` isn't in it); noted
-  here because it means neither the Homebrew formula's `test do` block nor
-  any packaged binary can assert a `--version` output — there isn't one.
-  The formula's test block checks existence/executability only, which is
-  what's actually true of the binary.

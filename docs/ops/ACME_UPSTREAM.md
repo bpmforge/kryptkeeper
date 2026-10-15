@@ -64,8 +64,9 @@ CA.
 
 1. The hub finds the Cloudflare zone holding `_acme-challenge.<name>`
    (wildcards are validated at their base name).
-2. It creates a TXT record (TTL 60) and waits until **every** authoritative
-   nameserver for the zone serves it (up to 3 minutes), so the CA's
+2. It creates a TXT record (TTL 60) and waits until the record is visible
+   by the configured propagation method (see below; by default every
+   authoritative nameserver serves it, up to 3 minutes), so the CA's
    validator does not see a stale answer.
 3. The CA validates; the hub finalizes and downloads the chain.
 4. The TXT record is deleted, also when the order fails.
@@ -74,6 +75,58 @@ CA.
 
 A failed order reports the CA's own problem detail, or names the
 nameserver that never served the record.
+
+## How propagation is checked (`dns_propagation`)
+
+The check only decides when the hub tells the CA to validate; the CA's
+own validator remains the authority. Optional `config_json` fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `dns_propagation` | `auto` | `auto`, `authoritative`, `resolver`, `doh` or `none` |
+| `dns_resolver` | system resolver | `host[:port]` of a recursive resolver (mode `resolver`; port defaults to 53) |
+| `dns_doh_url` | `https://cloudflare-dns.com/dns-query` | DNS-over-HTTPS JSON endpoint (mode `doh`/`auto`); `https://dns.google/resolve` also works |
+| `dns_propagation_timeout` | `3m` | Wait per name; maximum `10m` |
+| `dns_propagation_delay` | `30s` | Mode `none`: fixed wait before the CA validates; maximum `10m` |
+
+- `authoritative`: ask each of the zone's nameservers directly on port 53
+  and require all of them to serve the record. Most precise.
+- `resolver`: ask a recursive resolver (`dns_resolver`, else the system
+  one). A caching resolver can hold a stale "no such record" answer for
+  the zone's negative-cache TTL, so propagation may look slower.
+- `doh`: ask a DNS-over-HTTPS JSON API (`application/dns-json` GET, the
+  Cloudflare and Google form) over port 443.
+- `none`: do not check; wait `dns_propagation_delay`, then validate.
+- `auto` (default): start with `authoritative`. If **no** nameserver
+  answers at all (every query times out or is refused), fall back to
+  `doh`, then `resolver`. A nameserver that answers "no such record" is
+  just propagation lag and does not trigger a fallback. The method used
+  is logged once per renewal (`dns-01 propagation checked via ...`).
+
+### Outbound port 53 blocked
+
+Many enterprise networks block outbound port 53 except to a local
+resolver. The authoritative check then never sees the record and the
+renewal fails with `not visible at <ns> before the deadline`. `auto`
+copes by itself when HTTPS egress works (the hub reaches the CA over
+443 anyway): it falls back to DoH. To be explicit, or to use the local
+resolver instead:
+
+```json
+{"challenge":"dns-01","dns_provider":"cloudflare","dns_propagation":"resolver","dns_resolver":"10.0.0.2"}
+```
+
+The DoH request carries only the record name and type: no credentials,
+and never the DNS-provider token. It goes through the same egress guard
+as `directory_url` (https only; loopback and link-local refused; private
+space refused when `KRYPTKEEPER_EGRESS_DENY_PRIVATE=true`) and, like it,
+does not use proxy environment variables. An internal DoH server on
+private space therefore works by default.
+
+`POST /api/v1/renewal/execute` allows an execution up to 15 minutes (the
+10 minute propagation maximum plus order and install time) and always
+answers with JSON, including when the renewal fails after the global
+15 second server write timeout.
 
 ## Proof
 

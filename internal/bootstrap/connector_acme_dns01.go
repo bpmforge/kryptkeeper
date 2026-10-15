@@ -137,54 +137,26 @@ func (c *cloudflareDNS) Present(ctx context.Context, fqdn, value string) (string
 	return zoneName, cleanup, nil
 }
 
-// txtLookup answers TXT records for name from one nameserver ("" means the
-// system resolver).
+// txtLookup answers TXT records for name from one nameserver, host or
+// host:port ("" means the system resolver).
 type txtLookup func(ctx context.Context, nameserver, name string) ([]string, error)
 
 func lookupTXTAt(ctx context.Context, nameserver, name string) ([]string, error) {
 	if nameserver == "" {
 		return net.DefaultResolver.LookupTXT(ctx, name)
 	}
+	addr := nameserver
+	if _, _, err := net.SplitHostPort(nameserver); err != nil {
+		addr = net.JoinHostPort(nameserver, "53") // bare host or bare IPv6
+	}
 	r := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
-		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, net.JoinHostPort(nameserver, "53"))
+		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
 	}}
 	return r.LookupTXT(ctx, name)
 }
 
-// waitForTXT polls the zone's authoritative nameservers (the ones the CA's
-// validator ends up asking) until each serves value at fqdn. Asking a
-// caching resolver instead could pin a stale negative answer for the
-// zone's negative TTL.
+// waitForTXT polls the zone's authoritative nameservers until each serves
+// value at fqdn.
 func waitForTXT(ctx context.Context, lookupNS func(context.Context, string) ([]*net.NS, error), lookup txtLookup, zone, fqdn, value string, interval time.Duration) error {
-	nss, err := lookupNS(ctx, zone)
-	if err != nil || len(nss) == 0 {
-		return fmt.Errorf("dns-01: nameservers for %s: %v", zone, err)
-	}
-	pending := map[string]bool{}
-	for _, ns := range nss {
-		pending[strings.TrimSuffix(ns.Host, ".")] = true
-	}
-	for {
-		for ns := range pending {
-			txts, _ := lookup(ctx, ns, fqdn)
-			for _, t := range txts {
-				if t == value {
-					delete(pending, ns)
-					break
-				}
-			}
-		}
-		if len(pending) == 0 {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			left := make([]string, 0, len(pending))
-			for ns := range pending {
-				left = append(left, ns)
-			}
-			return fmt.Errorf("dns-01: %s not visible at %s before the deadline", fqdn, strings.Join(left, ", "))
-		case <-time.After(interval):
-		}
-	}
+	return authoritativeMethod(lookupNS, lookup, zone, fqdn, value).poll(ctx, interval, false)
 }

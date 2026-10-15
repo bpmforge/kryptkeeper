@@ -1,4 +1,4 @@
-.PHONY: all build build-agent build-agent-all test lint clean
+.PHONY: all build build-agent build-agent-all test lint clean release-snapshot
 
 BINARY      := kryptkeeper
 AGENT       := kryptkeeper-agent
@@ -64,6 +64,15 @@ agent-windows-msi-check: agent-windows-msi
 		&& echo "msi: no start-on-install event" || { echo "msi: unexpected start event"; exit 1; }
 	@msiinfo export $(OUT_DIR)/$(AGENT)-windows-amd64.msi Registry | grep -q 'EventLog\\Application\\KryptkeeperAgent.*EventMessageFile' \
 		&& echo "msi: registers the KryptkeeperAgent event source" || { echo "msi: event source not registered"; exit 1; }
+
+## Local goreleaser proof (no signing, publishing or docker). Needs goreleaser
+## v2, syft, and wixl (msitools). GORELEASER_CURRENT_TAG defaults to the latest
+## v* tag so the version is not picked up from an unrelated tag. Afterwards
+## `bash packaging/homebrew/render-formula.sh dist/checksums.txt <tag>` renders
+## the Homebrew formula the release workflow attaches.
+release-snapshot:
+	GORELEASER_CURRENT_TAG=$${GORELEASER_CURRENT_TAG:-$$(git describe --tags --abbrev=0 --match 'v*')} \
+		goreleaser release --snapshot --clean --skip=sign,publish,docker
 
 ## Run tests
 test:

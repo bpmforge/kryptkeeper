@@ -48,6 +48,20 @@ type acmeConnectorConfig struct {
 	Challenge string `json:"challenge,omitempty"`
 	// DNSProvider names the dns-01 provider; "cloudflare" is the only one.
 	DNSProvider string `json:"dns_provider,omitempty"`
+	// DNSPropagation picks how the hub checks the TXT record is visible
+	// before telling the CA to validate: auto (default), authoritative,
+	// resolver, doh or none. See connector_acme_dnscheck.go.
+	DNSPropagation string `json:"dns_propagation,omitempty"`
+	// DNSResolver is the recursive resolver (host[:port]) for mode
+	// resolver; empty uses the system resolver.
+	DNSResolver string `json:"dns_resolver,omitempty"`
+	// DNSDoHURL is the application/dns-json endpoint for mode doh
+	// (default Cloudflare; https://dns.google/resolve also works).
+	DNSDoHURL string `json:"dns_doh_url,omitempty"`
+	// DNSPropagationTimeout (default 3m, max 10m) bounds the wait per
+	// identifier; DNSPropagationDelay is mode none's fixed wait (default 30s).
+	DNSPropagationTimeout string `json:"dns_propagation_timeout,omitempty"`
+	DNSPropagationDelay   string `json:"dns_propagation_delay,omitempty"`
 }
 
 // acmeCredentialPayload is the documented plaintext of an ACME connector's
@@ -71,6 +85,7 @@ type acmeIssuerConnector struct {
 	newDNS      func(acmeCredentialPayload) (dnsProvider, error)
 	lookupNS    func(context.Context, string) ([]*net.NS, error)
 	lookupTXT   txtLookup
+	lookupDoH   func(ctx context.Context, endpoint, name string) ([]string, error)
 	dnsInterval time.Duration
 
 	// allowLoopbackForTest permits http and 127.0.0.0/8 upstreams in tests.
@@ -283,6 +298,8 @@ func (c *acmeIssuerConnector) Issue(ctx context.Context, req connectors.IssueReq
 	}
 	var solver *http01Solver
 	var dns dnsProvider
+	var propagation dnsPropagation
+	checkState := &dnsCheckState{}
 	switch challengeType {
 	case "http-01":
 		if solver, err = newHTTP01Solver(c.cfg.HTTP01Listen); err != nil {
@@ -290,6 +307,9 @@ func (c *acmeIssuerConnector) Issue(ctx context.Context, req connectors.IssueReq
 		}
 		defer solver.close()
 	case "dns-01":
+		if propagation, err = c.cfg.propagation(c.allowLoopbackForTest); err != nil {
+			return connectors.IssueResult{}, err
+		}
 		if dns, err = c.dnsProvider(payload); err != nil {
 			return connectors.IssueResult{}, err
 		}
@@ -338,7 +358,7 @@ func (c *acmeIssuerConnector) Issue(ctx context.Context, req connectors.IssueReq
 			}
 			solver.put(client.HTTP01ChallengePath(challenge.Token), keyAuth)
 		} else {
-			cleanup, err := c.presentDNS01(ctx, client, dns, authz.Identifier.Value, challenge.Token)
+			cleanup, err := c.presentDNS01(ctx, client, dns, propagation, checkState, authz.Identifier.Value, challenge.Token)
 			if cleanup != nil {
 				cleanups = append(cleanups, cleanup)
 			}
@@ -424,9 +444,9 @@ func (c *acmeIssuerConnector) dnsProvider(payload acmeCredentialPayload) (dnsPro
 }
 
 // presentDNS01 publishes the TXT record for one identifier and waits until
-// the zone's authoritative nameservers serve it. A wildcard is validated
-// at its base name (RFC 8555 §8.4).
-func (c *acmeIssuerConnector) presentDNS01(ctx context.Context, client *acme.Client, dns dnsProvider, identifier, token string) (func(context.Context) error, error) {
+// it is visible by the configured propagation method. A wildcard is
+// validated at its base name (RFC 8555 §8.4).
+func (c *acmeIssuerConnector) presentDNS01(ctx context.Context, client *acme.Client, dns dnsProvider, p dnsPropagation, st *dnsCheckState, identifier, token string) (func(context.Context) error, error) {
 	value, err := client.DNS01ChallengeRecord(token)
 	if err != nil {
 		return nil, fmt.Errorf("acme dns-01 record: %w", err)
@@ -436,19 +456,11 @@ func (c *acmeIssuerConnector) presentDNS01(ctx context.Context, client *acme.Cli
 	if err != nil {
 		return nil, fmt.Errorf("acme dns-01 for %s: %w", identifier, err)
 	}
-	lookupNS, lookupTXT, interval := c.lookupNS, c.lookupTXT, c.dnsInterval
-	if lookupNS == nil {
-		lookupNS = net.DefaultResolver.LookupNS
-	}
-	if lookupTXT == nil {
-		lookupTXT = lookupTXTAt
-	}
+	interval := c.dnsInterval
 	if interval == 0 {
 		interval = 3 * time.Second
 	}
-	wctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
-	if err := waitForTXT(wctx, lookupNS, lookupTXT, zone, fqdn, value, interval); err != nil {
+	if err := c.waitPropagation(ctx, p, st, zone, fqdn, value, interval); err != nil {
 		return cleanup, err
 	}
 	return cleanup, nil

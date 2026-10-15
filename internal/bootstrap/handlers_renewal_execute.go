@@ -5,6 +5,7 @@
 package bootstrap
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,6 +17,23 @@ import (
 )
 
 const maxRenewalExecuteBodyBytes = 64 * 1024
+
+const (
+	// renewalExecuteBudget bounds one execution. It must exceed the longest
+	// dns-01 propagation wait (an ACME connector allows up to
+	// maxDNSPropagationTimeout) plus the CA's order time and the install
+	// verify-retry window (~135s, k8s push), or the connection is cut and
+	// the caller gets an empty reply instead of the outcome.
+	renewalExecuteBudget = maxDNSPropagationTimeout + 5*time.Minute
+	// renewalResponseWindow is the write window left for the response once
+	// the executor returns, however long that took.
+	renewalResponseWindow = 30 * time.Second
+)
+
+// renewalRunner is the executor seam, so tests can substitute a slow one.
+type renewalRunner interface {
+	ExecuteRenewal(ctx context.Context, fingerprint string, target ManagedTarget, profile RenewalInstallProfile) (RenewalExecuteResult, error)
+}
 
 // renewalExecuteRequest is the wire shape of POST /api/v1/renewal/execute.
 // It lives on its own route rather than under /api/v1/certificates/{fp}/
@@ -67,7 +85,10 @@ func RegisterRenewalExecuteHandler(mux *http.ServeMux, auth *Authenticator, cert
 // delivery plugin manager for install_mode "plugin" targets (W20-20).
 func registerRenewalExecuteHandler(mux *http.ServeMux, auth *Authenticator, certificateProvider CertificateProvider, targetStore ManagedTargetStore, credentialStore OutboundCredentialStore, auditProvider AuditProvider, plugins *DeliveryPluginManager) {
 	executor := NewRenewalExecutor(certificateProvider, credentialStore).WithEnvConnectorRegistry(certificateProvider).WithPluginDeliverer(plugins, auditProvider)
+	registerRenewalExecuteHandlerWithRunner(mux, auth, certificateProvider, targetStore, credentialStore, auditProvider, executor, renewalExecuteBudget)
+}
 
+func registerRenewalExecuteHandlerWithRunner(mux *http.ServeMux, auth *Authenticator, certificateProvider CertificateProvider, targetStore ManagedTargetStore, credentialStore OutboundCredentialStore, auditProvider AuditProvider, executor renewalRunner, budget time.Duration) {
 	mux.HandleFunc("/api/v1/renewal/execute", func(w http.ResponseWriter, r *http.Request) {
 		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
 		if err != nil {
@@ -137,29 +158,30 @@ func registerRenewalExecuteHandler(mux *http.ServeMux, auth *Authenticator, cert
 			return
 		}
 
-		// W19-17 finding: a push installer's bounded verify-retry loop
-		// (agentinstall/k8s.go's up to ~60s kubelet-propagation window)
-		// runs well past server.go's global 15s WriteTimeout, which is
-		// sized for ordinary JSON requests and is NOT reset by writes
-		// after the initial request read -- the connection is silently
-		// closed mid-handler, surfacing as "curl: (52) Empty reply from
-		// server" to the caller even though the renewal itself succeeds
-		// server-side. Reproduced live (W19-03, 2026-09-11) with kubectl
-		// proxy removed from the push transport entirely, which rules out
-		// proxy connection churn (the theory W19-03 shipped with) as the
-		// cause. server.go's global timeouts are outside this endpoint's
-		// write_scope, so a per-connection override is the fix -- the
-		// same seam handlers_sse.go already uses for its own long-lived
-		// connections; SetWriteDeadline's error is ignored exactly as
-		// there, since a ResponseWriter that doesn't support deadlines
-		// (httptest.ResponseRecorder in tests) returns ErrNotSupported
-		// safely.
+		// W19-17 finding: a renewal runs well past server.go's global 15s
+		// WriteTimeout, which is NOT reset by writes after the request read
+		// -- the connection is silently closed mid-handler, surfacing as
+		// "curl: (52) Empty reply from server" even though the renewal
+		// itself may succeed server-side. server.go's timeouts are outside
+		// this endpoint's write_scope, so a per-connection override is the
+		// fix (the seam handlers_sse.go uses). SetWriteDeadline's error is
+		// ignored exactly as there: a ResponseWriter without deadline
+		// support (httptest.ResponseRecorder) keeps the default.
+		//
+		// The window is the whole execution budget plus a response margin,
+		// not a fixed 180s: a dns-01 order alone may wait minutes for TXT
+		// propagation (the 180s here was shorter than that wait, so a slow
+		// failure or success was dropped). The executor's context is
+		// bounded by the same budget, and the deadline is re-armed after it
+		// returns, so an error is always written as JSON.
 		rc := http.NewResponseController(w)
-		renewalDeadline := time.Now().Add(180 * time.Second) // > k8sVerifyRetryAttempts*k8sVerifyRetryDelay's 135s worst case
-		_ = rc.SetWriteDeadline(renewalDeadline)             // unsupported ResponseWriter (tests) just keeps server.go's default
-		_ = rc.SetReadDeadline(renewalDeadline)              // unsupported ResponseWriter (tests) just keeps server.go's default
+		_ = rc.SetWriteDeadline(time.Now().Add(budget + renewalResponseWindow)) // unsupported ResponseWriter (tests) keeps server.go's default
+		_ = rc.SetReadDeadline(time.Now().Add(budget + renewalResponseWindow))  // unsupported ResponseWriter (tests) keeps server.go's default
+		execCtx, cancelExec := context.WithTimeout(r.Context(), budget)
+		defer cancelExec()
 
-		result, err := executor.ExecuteRenewal(r.Context(), req.Fingerprint, target, profile)
+		result, err := executor.ExecuteRenewal(execCtx, req.Fingerprint, target, profile)
+		_ = rc.SetWriteDeadline(time.Now().Add(renewalResponseWindow)) // re-arm so the outcome is written even after a long run; unsupported writers ignore it
 		if err != nil {
 			switch {
 			case errors.Is(err, errApprovalRequired):

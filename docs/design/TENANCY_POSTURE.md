@@ -46,11 +46,20 @@ Verified against the code (`internal/bootstrap`):
 | A01S-6 | The user directory is shared: a tenant admin can list and delete other tenants' users. |
 | A01-007 | Tenant-filtered lists still return the unfiltered `meta.total`. |
 | OWASP-002 | Audit rows take their tenant from the raw `X-Tenant` header, not the caller's identity, so a request can file audit rows under another tenant. |
+| New (2026-10-15) | `POST /certificates/bulk-revoke` ignores tenant: a tenant admin can revoke another tenant's certificates in bulk (single revoke correctly returns 403). |
+| New (2026-10-15) | `POST /cas` accepts a `parent_ca_id` from another tenant (or the default tenant), so a tenant can chain a sub-CA under someone else's root. |
+| New (2026-10-15) | Notification rules, connectors, inventory sources, custom roles and discovery are cross-tenant readable and/or writable; `GET /keys` and the key-custody report list every tenant's keys. |
 
 The single-tenant fixes merged since the audit (FG-2 dual control, FG-3 grant checks, FG-4 SSH policy, FG-5
 bearer roles, FG-7 sessions) do not add tenant isolation: FG-3 bounds the roles a caller may grant by the
 permissions it holds, not by tenant, and the SSH CA key is still one global key. Until FG-6a/6b land in v0.10,
 treat every tenant admin as a platform admin.
+
+The live validation of 2026-10-15 on v0.9.3 (`docs/release/TENANT_ISOLATION_VALIDATION_v0.9.3.md`) found 21
+cross-tenant leaks (14 state-changing, 3 critical: full cross-tenant takeover). It confirms every gap above,
+records which are partially fixed (A01-004, A01-007, A01S-3), and ranks the v0.10 fixes. What does hold:
+single-resource reads and writes, `X-Tenant` spoofing (refused), escalation to global admin (refused), and
+the dashboard and aggregate reports.
 
 ## History
 

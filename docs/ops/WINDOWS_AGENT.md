@@ -37,7 +37,38 @@ MajorUpgrade then refuses to replace a higher version.
 The service is `Start=auto`, so it returns after a reboot. It is not started by
 the installer, because without `agent.env` it would exit immediately.
 
+## Certificate renewal: HTTP-01 needs inbound TCP 80
+The agent renews certificates over ACME HTTP-01: for the duration of one
+renewal it listens on port 80 and the hub's ACME CA connects to it to fetch
+the challenge. Windows Defender Firewall blocks inbound 80 by default and the
+MSI does not open it, so without a rule the order fails at the challenge.
+Add a rule scoped to the agent program (adjust the path to your install):
+```
+New-NetFirewallRule -DisplayName "Kryptkeeper Agent ACME HTTP-01" -Direction Inbound `
+  -Protocol TCP -LocalPort 80 -Program "C:\Program Files\Kryptkeeper Agent\kryptkeeper-agent.exe" `
+  -Action Allow
+```
+Remove it with `Remove-NetFirewallRule -DisplayName "Kryptkeeper Agent ACME HTTP-01"`.
+
+If something else already owns port 80 (IIS above all), the agent cannot bind
+it. It fails the renewal at once with "port 80 in use or not permitted" and
+reports that to the hub, instead of an opaque ACME error. For IIS hosts do not
+use the agent for renewal: use the hub-driven agentless WinRM/IIS path, or
+dns-01 at the hub. Setting `KRYPTKEEPER_WEB_ROOT` to the site's web root
+(challenge file instead of a listener) also works when that site is served
+over plain HTTP on port 80.
+
+A failed renewal is retried with back-off (1 minute doubling to 1 hour, with
+jitter), never concurrently, and its error is recorded in the hub's task
+history.
+
 ## Known limits
+- **No install step on the Windows agent in v0.9.** A task that carries install
+  hints (a cert path for nginx/apache/haproxy) is refused with "install targets
+  not supported on Windows agent in v0.9; use agentless WinRM/IIS", and the
+  refusal is reported to the hub. Installing into the Windows certificate store
+  or an IIS binding from the agent is planned for v0.10; until then use the
+  agentless WinRM/IIS path for that.
 - Runs as LocalSystem (the MSI default). Install-mode "agent" certificate
   installs into the machine store need that; a least-privilege account is a
   follow-up.

@@ -85,7 +85,7 @@ func newDNS01Upstream(t *testing.T, zone *memZone) string {
 }
 
 func newDNS01Connector(upstream string, zone *memZone) *acmeIssuerConnector {
-	cfg, _ := json.Marshal(acmeConnectorConfig{DirectoryURL: upstream + "/acme/directory", Challenge: "dns-01", DNSProvider: "cloudflare"})
+	cfg, _ := json.Marshal(acmeConnectorConfig{DirectoryURL: upstream + "/acme/directory", Challenge: "dns-01", DNSProvider: "cloudflare", DNSPropagation: "authoritative"})
 	c := NewACMEIssuerConnector(ConnectorRecord{ID: "conn-dns01", Type: "acme", ConfigJSON: string(cfg)}, nil, nil).(*acmeIssuerConnector)
 	c.allowLoopbackForTest = true // upstream is http on loopback
 	c.newDNS = func(acmeCredentialPayload) (dnsProvider, error) { return zone, nil }

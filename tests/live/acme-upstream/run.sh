@@ -156,6 +156,13 @@ c=$(CURL_MAX=240 code -X POST "$HUB/api/v1/renewal/execute" -d "{\"fingerprint\"
 OUT="$(jget 'str(d["data"].get("install_outcome"))+" verified="+str(d["data"].get("verified"))' <"$WORK/last.json" 2>/dev/null)"
 NEWFP="$(jget 'd["data"].get("new_fingerprint","")' <"$WORK/last.json" 2>/dev/null | tr -d ':' | tr 'A-F' 'a-f')"
 case "$c:$OUT" in 200:installed_verified\ verified=True) PASS "renewed and installed in $(( $(date +%s) - START ))s: $OUT" ;; *) FAIL "renewal -> $c $(cat "$WORK/last.json")" ;; esac
+# Optional evidence capture (KK_EVIDENCE_DIR): the renewal response, served cert and certificate list.
+if [ -n "${KK_EVIDENCE_DIR:-}" ]; then
+  mkdir -p "$KK_EVIDENCE_DIR"
+  cp "$WORK/last.json" "$KK_EVIDENCE_DIR/renew-execute-response.json"
+  echo | openssl s_client -connect "127.0.0.1:$TLS_PORT" 2>/dev/null | openssl x509 -noout -subject -issuer -dates -fingerprint -sha256 >"$KK_EVIDENCE_DIR/served-cert.txt" 2>&1
+  curl -sS -m 30 -H "Authorization: Bearer $TOKEN" "$HUB/api/v1/certificates?limit=100" >"$KK_EVIDENCE_DIR/certificates.json" 2>&1
+fi
 AFTER="$(tls_fp)"
 [ -n "$NEWFP" ] && [ "$AFTER" = "$NEWFP" ] && PASS "nginx serves the renewed certificate ($AFTER)" || FAIL "nginx serves $AFTER, renewed $NEWFP"
 echo | openssl s_client -connect "127.0.0.1:$TLS_PORT" 2>/dev/null | openssl x509 -noout -issuer -subject -ext subjectAltName >"$WORK/served.txt" 2>/dev/null
@@ -173,6 +180,7 @@ left = get(f"/zones/{zid}/dns_records?type=TXT&name=" + urllib.parse.quote(name)
 sys.exit(1 if left else 0)
 PY
 podman logs "$HUB_CTR" >"$WORK/hub.log" 2>&1
+[ -n "${KK_EVIDENCE_DIR:-}" ] && cp "$WORK/hub.log" "$KK_EVIDENCE_DIR/hub.log"
 # Read the whole trail through the API (works for the DB and file stores) and
 # insist it is non-empty: a scan over zero entries proves nothing.
 if ! python3 - "$HUB" "$TOKEN" "$WORK/audit-dump.json" <<'PY'
@@ -193,6 +201,7 @@ then
   FAIL "could not read a non-empty audit trail through the API"
   : >"$WORK/audit-dump.json"
 fi
+[ -n "${KK_EVIDENCE_DIR:-}" ] && cp "$WORK/audit-dump.json" "$KK_EVIDENCE_DIR/audit.json"
 if python3 -c 'import sys; t=open(sys.argv[1]).read().strip(); sys.exit(0 if any(t in open(f, errors="ignore").read() for f in sys.argv[2:]) else 1)' "$TOKEN_FILE" "$WORK/hub.log" "$WORK/audit-dump.json" 2>/dev/null; then
   FAIL "the Cloudflare token appears in the hub log or audit"
 else

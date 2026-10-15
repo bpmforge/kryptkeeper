@@ -6,6 +6,58 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Releases now ship the Windows agent.** `kryptkeeper-agent_<version>_windows_amd64.zip`
+  and a `.msi` (built with `wixl` from a goreleaser post-build hook, so it
+  embeds the zip's exe) are attached to each release and listed in the
+  cosign-signed `checksums.txt`. See `packaging/README.md`.
+- **Homebrew formula as a release asset.** Each release attaches
+  `kryptkeeper.rb` (darwin/arm64 tarball URL + signed sha256; Intel Macs are
+  unsupported) with a keyless cosign signature. `make release-snapshot` builds
+  the whole release set locally.
+- **macOS agent as a LaunchDaemon.** `packaging/macos/com.kryptkeeper.agent.plist`
+  and `docs/ops/MACOS_AGENT.md` (launchctl bootstrap/bootout, enrollment, logs).
+  Documented; live validation pending.
+- **Windows agent docs: HTTP-01 needs inbound TCP 80.** `docs/ops/WINDOWS_AGENT.md`
+  gives the scoped firewall rule, the IIS/port-80 conflict guidance and the
+  v0.9 no-install limit.
+
+- **ACME dns-01 propagation check is configurable.** New connector
+  `config_json` fields `dns_propagation` (`auto` default, `authoritative`,
+  `resolver`, `doh`, `none`), `dns_resolver`, `dns_doh_url`,
+  `dns_propagation_timeout` (default 3m, max 10m) and
+  `dns_propagation_delay`. `auto` keeps the authoritative check and falls
+  back to DNS-over-HTTPS, then the resolver, when no nameserver answers
+  (outbound port 53 blocked). See `docs/ops/ACME_UPSTREAM.md`.
+
+### Fixed
+
+- **Homebrew packaging was broken.** The formula template expected raw
+  `kryptkeeper-darwin-*` binaries that the goreleaser release never published
+  and the `homebrew-formula` job had been removed; it now renders from the
+  signed `checksums.txt` against the real tarball. `packaging/README.md` no
+  longer describes a tap-less `brew install ./kryptkeeper.rb` (Homebrew 7
+  needs a tap; local-tap steps documented).
+- **Agent re-dispatched a pending renew task on every poll.** A second ACME
+  order raced the first for port 80 ("Only one usage of each socket
+  address"). Renewals now run one at a time, a failing one backs off 1m to 1h
+  with jitter, and failures are reported to the hub with the error.
+- **Agent HTTP-01 failed opaquely when port 80 was unavailable.** It now checks
+  the port before ordering and says "port 80 in use or not permitted".
+- **Windows agent tried `sudo` installs.** Tasks with install hints are
+  refused up front with a reported error; use agentless WinRM/IIS in v0.9.
+- **ACME dns-01 renewals failed on networks that block outbound port 53.**
+  The record was only looked for at the zone's authoritative nameservers,
+  so it was never seen and the renewal failed with "not visible at <ns>
+  before the deadline". `auto` now falls back to DoH or the resolver.
+- **`POST /api/v1/renewal/execute` returned an empty reply on a slow
+  renewal.** Its 180s write deadline was not longer than the dns-01 wait.
+  The deadline now covers the maximum propagation wait plus order and
+  install time, and the error or result is always written as JSON.
+
 ## [0.9.3] - 2026-10-15
 
 ### Behaviour changes

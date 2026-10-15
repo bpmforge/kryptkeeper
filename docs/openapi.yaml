@@ -1245,7 +1245,7 @@ paths:
               properties:
                 name: { type: string }
                 type: { type: string, enum: [internal, acme] }
-                config_json: { type: string, description: "No secrets — credentials go in credential_ref (W5-10 store)" }
+                config_json: { type: string, description: "No secrets — credentials go in credential_ref (W5-10 store). For acme connectors with dns-01: optional dns_propagation (auto|authoritative|resolver|doh|none), dns_resolver, dns_doh_url, dns_propagation_timeout (max 10m), dns_propagation_delay; see docs/ops/ACME_UPSTREAM.md" }
                 credential_ref: { type: string }
       responses:
         "201":
