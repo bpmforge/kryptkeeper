@@ -40,7 +40,7 @@
     <h1 style="margin-top:1rem">Run your own certificate authority, and stop finding out about expiry from an outage.</h1>
     <p class="lede">Kryptkeeper is a self-hosted CA and certificate lifecycle platform. It issues over ACME, EST, SCEP, CMP and Windows autoenrollment, finds the certificates you didn't know about, and renews and installs them without a person in the loop.</p>
     <div class="cta">
-      <a class="btn primary" href="https://github.com/bpmforge/kryptkeeper/releases/tag/v0.9.1">Download v0.9.1</a>
+      <a class="btn primary" href="https://github.com/bpmforge/kryptkeeper/releases/tag/v0.9.3">Download v0.9.3</a>
       <a class="btn" href="https://github.com/bpmforge/kryptkeeper">View on GitHub</a>
       <a class="btn" href="tour.html">See it in action</a>
     </div>
@@ -87,7 +87,7 @@
     </div>
     <div class="cap">
       <h3>Discovery and inventory</h3>
-      <p>Network TLS scanning with ML-KEM detection, Kubernetes and service-mesh discovery, agentless WinRM discovery, CT log monitoring and a cloud key inventory.</p>
+      <p>Scans hosts and subnets for every TLS endpoint, puts the certificates it finds into the inventory, and labels whose each one is: yours, public, another private CA or self-signed. Flags expired, weak, mismatched, untrusted and incomplete chains, old TLS versions and ports that aren't TLS at all. Also Kubernetes, service-mesh, WinRM, CT log and cloud key discovery.</p>
     </div>
     <div class="cap">
       <h3>Windows autoenrollment</h3>
@@ -149,9 +149,9 @@ docker compose up -d</pre>
       <p>Checksums and images are signed keyless with Sigstore cosign, bound to the GitHub release workflow. There is no long-lived signing key to fetch or trust.</p>
       <div class="code">
         <button class="copy" type="button" data-copy="vf">Copy</button>
-<pre id="vf">cosign verify ghcr.io/bpmforge/kryptkeeper:0.9.1 \
+<pre id="vf">cosign verify ghcr.io/bpmforge/kryptkeeper:0.9.3 \
   --certificate-identity \
-  "https://github.com/bpmforge/kryptkeeper/.github/workflows/release.yml@refs/tags/v0.9.1" \
+  "https://github.com/bpmforge/kryptkeeper/.github/workflows/release.yml@refs/tags/v0.9.3" \
   --certificate-oidc-issuer \
   "https://token.actions.githubusercontent.com"</pre>
       </div>
@@ -162,7 +162,7 @@ docker compose up -d</pre>
 
 <section id="maturity">
   <div class="section-head">
-    <span class="label">v0.9.1 status</span>
+    <span class="label">v0.9.3 status</span>
     <h2>What's proven, what's beta</h2>
     <p class="muted">The version number is below 1.0 on purpose. Each area is labelled by how it was tested: validated means run against real clients, not only unit tests.</p>
   </div>
@@ -175,6 +175,7 @@ docker compose up -d</pre>
         <li>SSH certificates with OpenSSH</li>
         <li>Unattended renewal on nginx and Apache, with rollback</li>
         <li>Windows autoenrollment on a Kerberos lab</li>
+        <li>Network discovery and issuer classification on a 17-host lab</li>
         <li>SQLite and PostgreSQL, including upgrades</li>
       </ul>
     </div>
@@ -194,10 +195,11 @@ docker compose up -d</pre>
         <li>HashiCorp Vault and GCP Cloud KMS key stores</li>
         <li>F5 and Citrix plugins on real devices</li>
         <li>SCEP from network devices</li>
+        <li>Missing intermediates from other private CAs (reported as unknown)</li>
       </ul>
     </div>
   </div>
-  <p class="muted" style="margin-top:1.5rem">Full detail is in the <a href="https://github.com/bpmforge/kryptkeeper/releases/tag/v0.9.1">v0.9.1 release notes</a>.</p>
+  <p class="muted" style="margin-top:1.5rem">Full detail is in the <a href="https://github.com/bpmforge/kryptkeeper/releases/tag/v0.9.3">v0.9.3 release notes</a>.</p>
 </section>
 </main>
 

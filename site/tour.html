@@ -37,7 +37,7 @@
 <div class="tour-intro">
   <span class="label">Product tour</span>
   <h1>Kryptkeeper in use</h1>
-  <p>Screens from a Kryptkeeper v0.9.1 hub running a small example estate: a classical and a post-quantum CA chain, templates, and about fifty certificates owned by three teams.</p>
+  <p>Screens from a Kryptkeeper v0.9.3 hub running a small example estate: a classical and a post-quantum CA chain, about fifty certificates owned by three teams, and ten servers found by a network scan.</p>
   <p class="note">All names are examples. Select a screen to open it full size.</p>
 </div>
 <section class="chapter">
@@ -50,7 +50,7 @@
     <figcaption>
       <h3>What needs a human</h3>
       <span class="route">/</span>
-      <p>Expiring, expired and risky certificates and endpoints on one screen, with a 90-day outlook. Anything that will not renew itself is called out at the top.</p>
+      <p>Expiring, expired and risky certificates and endpoints on one screen, with a 90-day outlook and a count of what the network scan found by issuer. Anything that will not renew itself is called out at the top.</p>
     </figcaption>
     <div class="frame">
       <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/</span></div>
@@ -101,7 +101,7 @@
     <figcaption>
       <h3>CA hierarchy</h3>
       <span class="route">/cas</span>
-      <p>Classical and post-quantum roots with their issuing CAs as a trust tree, with status and how many live certificates each has issued.</p>
+      <p>Classical and post-quantum roots with their issuing CAs as a trust tree, with status and how many active certificates each has issued.</p>
     </figcaption>
     <div class="frame">
       <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/cas</span></div>
@@ -119,15 +119,44 @@
       <a href="screens/05-templates.webp"><img src="screens/05-templates.webp" width="2880" height="1800" loading="lazy" decoding="async" alt="Kryptkeeper Certificate templates screen"></a>
     </div>
   </figure>
+</section>
+<section class="chapter">
+  <header>
+    <span class="label">Discovery</span>
+    <h2>Find the certificates you didn't know about</h2>
+    <p class="muted">Scan hosts and subnets. Every certificate found goes into the inventory, labelled by who issued it and what is wrong with it.</p>
+  </header>
   <figure class="shot">
     <figcaption>
-      <h3>Discovery</h3>
+      <h3>Endpoints and posture</h3>
       <span class="route">/discovery</span>
-      <p>Network scans find TLS endpoints by hostname and score their risk. Here an expired, RSA-1024, TLS 1.2-only host stands out at 80.</p>
+      <p>Every endpoint with its issuer and the findings that make it risky: an untrusted root, a hostname mismatch, an expired or weak certificate, an old TLS version, or a port that isn't TLS at all.</p>
     </figcaption>
     <div class="frame">
       <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/discovery</span></div>
-      <a href="screens/07-discovery.webp"><img src="screens/07-discovery.webp" width="2880" height="1800" loading="lazy" decoding="async" alt="Kryptkeeper Discovery screen"></a>
+      <a href="screens/07-discovery.webp"><img src="screens/07-discovery.webp" width="2880" height="1800" loading="lazy" decoding="async" alt="Kryptkeeper Endpoints and posture screen"></a>
+    </div>
+  </figure>
+  <figure class="shot">
+    <figcaption>
+      <h3>A risky endpoint</h3>
+      <span class="route">/discovery</span>
+      <p>Open an endpoint to see the negotiated protocol, the findings and the certificate behind it. This one only offers TLS 1.1 with a CBC cipher.</p>
+    </figcaption>
+    <div class="frame">
+      <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/discovery</span></div>
+      <a href="screens/07b-discovery-detail.webp"><img src="screens/07b-discovery-detail.webp" width="2880" height="1800" loading="lazy" decoding="async" alt="Kryptkeeper A risky endpoint screen"></a>
+    </div>
+  </figure>
+  <figure class="shot">
+    <figcaption>
+      <h3>Inventory by issuer</h3>
+      <span class="route">/certificates</span>
+      <p>Certificates found on the network sit in the inventory next to the ones you manage. Filter by issuer to see everything another private CA has issued.</p>
+    </figcaption>
+    <div class="frame">
+      <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/certificates</span></div>
+      <a href="screens/07c-inventory-by-issuer.webp"><img src="screens/07c-inventory-by-issuer.webp" width="2880" height="1800" loading="lazy" decoding="async" alt="Kryptkeeper Inventory by issuer screen"></a>
     </div>
   </figure>
 </section>
@@ -217,6 +246,17 @@
       <a href="screens/11-compliance-evidence.webp"><img src="screens/11-compliance-evidence.webp" width="2880" height="1800" loading="lazy" decoding="async" alt="Kryptkeeper Compliance evidence screen"></a>
     </div>
   </figure>
+  <figure class="shot">
+    <figcaption>
+      <h3>Audit log</h3>
+      <span class="route">/audit</span>
+      <p>An append-only record of every issue, revoke and approval decision, named by certificate and template, with read-only noise hidden.</p>
+    </figcaption>
+    <div class="frame">
+      <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/audit</span></div>
+      <a href="screens/10-audit-log.webp"><img src="screens/10-audit-log.webp" width="2880" height="1800" loading="lazy" decoding="async" alt="Kryptkeeper Audit log screen"></a>
+    </div>
+  </figure>
 </section>
 <section class="chapter">
   <header>
@@ -226,7 +266,7 @@
   </header>
   <div class="cta" style="margin-top:0">
     <a class="btn primary" href="/#install">Quick start</a>
-    <a class="btn" href="https://github.com/bpmforge/kryptkeeper/releases/tag/v0.9.1">Download v0.9.1</a>
+    <a class="btn" href="https://github.com/bpmforge/kryptkeeper/releases/tag/v0.9.3">Download v0.9.3</a>
   </div>
 </section>
 </main>
