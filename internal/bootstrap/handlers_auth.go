@@ -9,10 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // registerAuthHandlers wires the hub's auth API surface. Its signature is
@@ -48,6 +49,7 @@ func registerAuthHandlers(mux *http.ServeMux, auth *Authenticator, auditProvider
 		userProvider = NewUserProviderFromEnv()
 	}
 	registerAuthHandlersWithUsers(mux, auth, userProvider, auditProvider)
+	registerRoleMapPreviewHandler(mux, auth, auditProvider)
 }
 
 func registerAuthHandlersWithUsers(mux *http.ServeMux, auth *Authenticator, userProvider UserProvider, auditProvider AuditProvider) {
@@ -124,7 +126,7 @@ func registerAuthHandlersWithUsers(mux *http.ServeMux, auth *Authenticator, user
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/auth/login response: %v", err)
+			logging.Warnf("failed to encode /api/v1/auth/login response: %v", err)
 		}
 	})
 
@@ -222,7 +224,7 @@ func registerAuthHandlersWithUsers(mux *http.ServeMux, auth *Authenticator, user
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/auth/refresh response: %v", err)
+			logging.Warnf("failed to encode /api/v1/auth/refresh response: %v", err)
 		}
 	})
 
@@ -283,7 +285,7 @@ func registerAuthHandlersWithUsers(mux *http.ServeMux, auth *Authenticator, user
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/authz-check response: %v", err)
+			logging.Warnf("failed to encode /api/v1/authz-check response: %v", err)
 		}
 	})
 
@@ -300,6 +302,9 @@ func registerAuthHandlersWithUsers(mux *http.ServeMux, auth *Authenticator, user
 			items := auth.ListAPIKeys()
 			filtered := make([]apiKeyRecord, 0, len(items))
 			for _, item := range items {
+				if !apiKeyTenantVisible(principal, item) {
+					continue
+				}
 				if isAdminRole(principal.Role) || strings.TrimSpace(item.PrincipalID) == principal.ID {
 					filtered = append(filtered, item)
 				}
@@ -317,6 +322,7 @@ func registerAuthHandlersWithUsers(mux *http.ServeMux, auth *Authenticator, user
 					Active      bool     `json:"active"`
 					ExpiresAt   string   `json:"expires_at,omitempty"`
 					CreatedAt   string   `json:"created_at,omitempty"`
+					LastUsedAt  string   `json:"last_used_at,omitempty"`
 				} `json:"data"`
 			}{Data: make([]struct {
 				Name        string   `json:"name,omitempty"`
@@ -328,6 +334,7 @@ func registerAuthHandlersWithUsers(mux *http.ServeMux, auth *Authenticator, user
 				Active      bool     `json:"active"`
 				ExpiresAt   string   `json:"expires_at,omitempty"`
 				CreatedAt   string   `json:"created_at,omitempty"`
+				LastUsedAt  string   `json:"last_used_at,omitempty"`
 			}, 0, len(filtered))}
 			for _, item := range filtered {
 				resp.Data = append(resp.Data, struct {
@@ -340,6 +347,7 @@ func registerAuthHandlersWithUsers(mux *http.ServeMux, auth *Authenticator, user
 					Active      bool     `json:"active"`
 					ExpiresAt   string   `json:"expires_at,omitempty"`
 					CreatedAt   string   `json:"created_at,omitempty"`
+					LastUsedAt  string   `json:"last_used_at,omitempty"`
 				}{
 					Name:        item.Name,
 					Kid:         item.Kid,
@@ -350,12 +358,13 @@ func registerAuthHandlersWithUsers(mux *http.ServeMux, auth *Authenticator, user
 					Active:      item.Active,
 					ExpiresAt:   item.ExpiresAt,
 					CreatedAt:   item.CreatedAt,
+					LastUsedAt:  item.LastUsedAt,
 				})
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/api-keys response: %v", err)
+				logging.Warnf("failed to encode /api/v1/api-keys response: %v", err)
 			}
 			return
 		case http.MethodPost:
@@ -390,11 +399,27 @@ func registerAuthHandlersWithUsers(mux *http.ServeMux, auth *Authenticator, user
 				writeBadRequest(w, "principal_id names an existing person or built-in identity; choose a service name")
 				return
 			}
-			record, token, err := auth.CreateAPIKeyAs(auth.canonicalHuman(principal), req.Name, req.PrincipalID, req.Role, req.Scopes, req.ExpiresAt, req.Tenant, time.Now())
+			mintTenant, refusal := resolveAPIKeyMintTenant(r.Context(), activeTenantStore, principal, req.Role, req.Tenant)
+			if refusal != nil {
+				emitAuditEvent(r, auditProvider, principal.ID, "api-key.create", "api-key", "api-keys", refusal.outcome)
+				if refusal.status == http.StatusForbidden {
+					writeForbidden(w, refusal.message)
+				} else if refusal.status == http.StatusServiceUnavailable {
+					writeServiceUnavailable(w, refusal.message)
+				} else {
+					writeBadRequest(w, refusal.message)
+				}
+				return
+			}
+			record, token, err := auth.CreateAPIKeyAs(auth.canonicalHuman(principal), req.Name, req.PrincipalID, req.Role, req.Scopes, req.ExpiresAt, mintTenant, time.Now())
 			if err != nil {
 				emitAuditEvent(r, auditProvider, principal.ID, "api-key.create", "api-key", "api-keys", AuditOutcomeFailure)
 				if errors.Is(err, errAPIKeyPersist) {
 					writeServiceUnavailable(w, "api key could not be saved; try again")
+					return
+				}
+				if errors.Is(err, errAPIKeyMintingOff) {
+					writeServiceUnavailable(w, "api key minting is off: set APP_API_KEY_PEPPER and APP_API_KEY_AUTH_ENABLED on the hub")
 					return
 				}
 				writeBadRequest(w, "invalid request body")
@@ -430,7 +455,7 @@ func registerAuthHandlersWithUsers(mux *http.ServeMux, auth *Authenticator, user
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/api-keys create response: %v", err)
+				logging.Warnf("failed to encode /api/v1/api-keys create response: %v", err)
 			}
 			return
 		default:
@@ -460,6 +485,14 @@ func registerAuthHandlersWithUsers(mux *http.ServeMux, auth *Authenticator, user
 			emitAuditEvent(r, auditProvider, principal.ID, "api-key.delete", "api-key", kid, AuditOutcomeFailure)
 			writeNotFound(w, "api key not found")
 			return
+		}
+		// 404 rather than 403 so a tenant admin cannot probe which kids exist elsewhere.
+		for _, item := range auth.ListAPIKeys() {
+			if item.Kid == kid && !apiKeyTenantVisible(principal, item) {
+				emitAuditEvent(r, auditProvider, principal.ID, "api-key.delete", "api-key", kid, AuditOutcomeDenied)
+				writeNotFound(w, "api key not found")
+				return
+			}
 		}
 		found, persistErr := auth.RevokeAPIKey(kid)
 		if !found {
@@ -513,17 +546,62 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, accessToken string
 // (auth.go's userProvider field) -- treated as "nothing to enforce" rather
 // than a nil-interface panic, since those tests aren't exercising SCIM.
 func principalIsDeprovisioned(ctx context.Context, userProvider UserProvider, principalID string) (bool, error) {
-	if userProvider == nil || strings.TrimSpace(principalID) == "" {
-		return false, nil
-	}
-	users, err := userProvider.ListUsers(ctx)
-	if err != nil {
+	u, found, err := lookupPrincipalUser(ctx, userProvider, principalID)
+	if err != nil || !found {
 		return false, err
 	}
-	for _, u := range users {
-		if u.ID == principalID {
-			return isDeprovisionedStatus(u.Status), nil
-		}
+	return isDeprovisionedStatus(u.Status), nil
+}
+
+// apiKeyTenantVisible reports whether an API key belongs to the principal's
+// tenant view. A key with no tenant belongs to DefaultTenant.
+func apiKeyTenantVisible(pd AuthPrincipal, k apiKeyRecord) bool {
+	t := strings.TrimSpace(k.Tenant)
+	if t == "" {
+		t = DefaultTenant
 	}
-	return false, nil
+	return tenantVisible(pd, t)
+}
+
+type apiKeyMintRefusal struct {
+	status  int
+	outcome AuditOutcome
+	message string
+}
+
+// resolveAPIKeyMintTenant picks the tenant a new API key is bound to. The body's
+// tenant is only honoured for super-admins (and then only for an existing
+// tenant); tenant principals can mint solely into their own tenant, because a
+// key's tenant is its identity and minting elsewhere is a cross-tenant takeover.
+func resolveAPIKeyMintTenant(ctx context.Context, store TenantStore, pd AuthPrincipal, role, reqTenant string) (string, *apiKeyMintRefusal) {
+	reqTenant = strings.TrimSpace(reqTenant)
+	if !multiTenancyEnabled() {
+		return reqTenant, nil
+	}
+	if !pd.SuperAdmin {
+		if strings.TrimSpace(role) == "bootstrap" {
+			return "", &apiKeyMintRefusal{http.StatusForbidden, AuditOutcomeDenied, "only a super-admin may mint a bootstrap-role key"}
+		}
+		if reqTenant == "" {
+			return pd.Tenant, nil
+		}
+		if reqTenant != pd.Tenant {
+			return "", &apiKeyMintRefusal{http.StatusForbidden, AuditOutcomeDenied, "api keys can only be created in the caller's tenant"}
+		}
+		return pd.Tenant, nil
+	}
+	if reqTenant == "" && pd.TenantScoped {
+		reqTenant = pd.Tenant
+	}
+	if reqTenant == "" || store == nil {
+		return reqTenant, nil
+	}
+	exists, err := store.TenantExists(ctx, reqTenant)
+	if err != nil {
+		return "", &apiKeyMintRefusal{http.StatusServiceUnavailable, AuditOutcomeFailure, "tenant lookup failed"}
+	}
+	if !exists {
+		return "", &apiKeyMintRefusal{http.StatusBadRequest, AuditOutcomeDenied, "unknown tenant"}
+	}
+	return reqTenant, nil
 }

@@ -318,10 +318,11 @@ func TestComputePQCReadiness_MultiTierChainClassicalRootDemotesLeaf(t *testing.T
 }
 
 // TestResolveChainClassical_UnresolvableCAFallsBackToSingleHop proves the
-// error-handling half of G-73's fix: an unresolvable CA chain (unknown
-// caID, matching e.g. a CA left inconsistent by an interrupted rotation --
-// S-16/G-78) falls back to the single-hop leaf check rather than crashing
-// or silently guessing either way.
+// error-handling half of G-73's fix as amended by W31-02: an unresolvable CA
+// chain for a NON-EMPTY caID (matching e.g. a CA left inconsistent by an
+// interrupted rotation -- S-16/G-78) degrades to the weaker label (true)
+// instead of vouching for full quantum_safe. An empty caID still falls back
+// to the single-hop check.
 func TestResolveChainClassical_UnresolvableCAFallsBackToSingleHop(t *testing.T) {
 	dir := t.TempDir()
 	keys, err := keystore.NewSoftwareStore(dir, []byte("test-passphrase-for-ca-provider!"))
@@ -345,8 +346,11 @@ func TestResolveChainClassical_UnresolvableCAFallsBackToSingleHop(t *testing.T) 
 		t.Fatalf("issue leaf: %v", err)
 	}
 
-	if got := resolveChainClassical(engine, "does-not-exist", leaf.Certificate); got != isChainClassical(leaf.Certificate) {
-		t.Errorf("resolveChainClassical with an unresolvable caID = %v, want the single-hop fallback %v", got, isChainClassical(leaf.Certificate))
+	if got := resolveChainClassical(engine, "does-not-exist", leaf.Certificate); !got {
+		t.Errorf("resolveChainClassical with an unresolvable non-empty caID = %v, want true (weaker label)", got)
+	}
+	if got := resolveChainClassical(engine, "", leaf.Certificate); got != isChainClassical(leaf.Certificate) {
+		t.Errorf("resolveChainClassical with an empty caID = %v, want the single-hop result %v", got, isChainClassical(leaf.Certificate))
 	}
 }
 

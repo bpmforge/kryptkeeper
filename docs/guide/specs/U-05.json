@@ -1,0 +1,258 @@
+{
+  "task": "U-05",
+  "title": "Create an intermediate (issuing) CA under a root",
+  "sourceStory": "STORIES.md#u-05",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/cas"
+      },
+      "caption": "Open /cas",
+      "slug": "cas-list",
+      "expect": {
+        "role": "button",
+        "name": "New CA"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-05/01-cas-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New CA"
+      },
+      "caption": "Click **New CA**",
+      "slug": "new-ca-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "New Certificate Authority"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-05/02-new-ca-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Type",
+        "within": "[role=dialog]"
+      },
+      "value": "Intermediate",
+      "caption": "Select \"Intermediate\" in **Type**",
+      "slug": "type-intermediate",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-05/03-type-intermediate.png",
+        "annotated": "docs/guide/screenshots/U-05/03-type-intermediate-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 279,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Subject CN",
+        "within": "[role=dialog]"
+      },
+      "value": "Lab Issuing CA",
+      "caption": "Fill **Subject CN** with \"Lab Issuing CA\"",
+      "slug": "Subject CN",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-05/04-subject-cn.png",
+        "annotated": "docs/guide/screenshots/U-05/04-subject-cn-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 349,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "css": "select",
+        "nth": 2,
+        "within": "[role=dialog]"
+      },
+      "value": "Lab Root CA (Root)",
+      "caption": "Choose the parent CA (here Lab Root CA)",
+      "slug": "parent-ca",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-05/05-parent-ca.png",
+        "annotated": "docs/guide/screenshots/U-05/05-parent-ca-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 629,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "screenshot",
+      "caption": "Choosing **Intermediate** reveals the **Parent CA** picker",
+      "slug": "intermediate-fields",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-05/06-intermediate-fields.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Create CA",
+        "exact": true
+      },
+      "caption": "Click **Create CA**",
+      "slug": "ca-created",
+      "expect": {
+        "text": "Lab Issuing CA"
+      },
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-05/07-ca-created.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:39:03.777Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-05",
+    "steps": 7,
+    "shots": 7,
+    "annotated": 3,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/cas"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-05/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-05/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

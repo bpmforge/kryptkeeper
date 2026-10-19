@@ -28,7 +28,7 @@ func WalkWindowsCerts(storeNames []string) ([]agentclient.DiscoveredCert, error)
 		if err != nil {
 			continue
 		}
-		store, err := windows.CertOpenSystemStore(0, namePtr)
+		store, err := windows.CertOpenStore(windows.CERT_STORE_PROV_SYSTEM, 0, 0, machineStoreFlags(), uintptr(unsafe.Pointer(namePtr)))
 		if err != nil {
 			continue
 		}
@@ -50,7 +50,7 @@ func WalkWindowsCerts(storeNames []string) ([]agentclient.DiscoveredCert, error)
 			if err != nil {
 				continue
 			}
-			dc := certToDiscovered(cert, "windows-store:"+name)
+			dc := certToDiscovered(cert, windowsStoreSource(name))
 			if _, dup := seen[dc.Fingerprint]; !dup {
 				seen[dc.Fingerprint] = struct{}{}
 				out = append(out, dc)

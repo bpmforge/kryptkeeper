@@ -6,9 +6,10 @@ package bootstrap
 
 import (
 	"context"
-	"log"
 	"os"
 	"strings"
+
+	"kryptkeeper/internal/logging"
 )
 
 const dashboardActionProviderEnv = "APP_DASHBOARD_ACTION_PROVIDER"
@@ -18,7 +19,7 @@ const (
 	dashboardActionProviderDB   = "db"
 )
 
-var dashboardActionProviderWarnf = log.Printf
+var dashboardActionProviderWarnf = logging.Warnf
 
 type DashboardActionHistoryRecord struct {
 	ActionID  string `json:"action_id"`

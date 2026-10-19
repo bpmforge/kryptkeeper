@@ -17,15 +17,13 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"kryptkeeper/internal/ca"
+	"kryptkeeper/internal/logging"
+	"kryptkeeper/internal/metrics"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
-
-	"log"
-
-	"kryptkeeper/internal/ca"
-	"kryptkeeper/internal/metrics"
 )
 
 type caCertificateProvider struct {
@@ -56,12 +54,13 @@ type caCertificateProvider struct {
 	// RevokeCertificate still updates revStore, it just can't clear OCSP's
 	// cache for the serial.
 	ocspInvalidator ca.RevocationCacheInvalidator
-	// Lazy pickup of rows other writers (discovery) add to the certificates
-	// table after startup; see certificate_discovery_refresh.go.
+	// Lazy pickup of rows other writers (discovery, peer hub replicas) add or
+	// change in the certificates table after startup; see
+	// certificate_discovery_refresh.go.
 	discoveryRefreshEvery time.Duration
 	refreshMu             sync.Mutex // serialises refreshes; never held with mu
-	discoveryWatermark    string     // newest updated_at already merged
-	lastDiscoveryRefresh  time.Time
+	tableWatermark        time.Time  // newest updated_at already merged
+	lastTableRefresh      time.Time
 }
 
 type storedCert struct {
@@ -91,7 +90,7 @@ func NewCACertificateProvider(engine ca.Service, revStore ca.RevocationStore, db
 		// ListCertificates reports a failure instead of an empty inventory.
 		if err := p.loadCertsFromDB(); err != nil {
 			p.hydrateErr = err
-			log.Printf("certificate provider: failed to load certificates from DB, "+
+			logging.Warnf("certificate provider: failed to load certificates from DB, "+
 				"inventory will report an error rather than an empty list: %v", err)
 		}
 	}
@@ -116,7 +115,7 @@ func (p *caCertificateProvider) loadCertsFromDB() error {
 	p.rebuildIndexLocked()
 	p.flagAllKeyReuseLocked()
 	p.mu.Unlock()
-	p.noteDiscoveryWatermark(loaded)
+	p.noteTableWatermark(loaded)
 	return nil
 }
 
@@ -142,9 +141,10 @@ func (p *caCertificateProvider) queryCerts(where string, args ...any) ([]*stored
 		       risk_score, risk_flags, grade, renewal_method, renewal_status,
 		       source, raw_cert_b64, revoked_at, revocation_reason,
 		       created_at, updated_at,
-		       COALESCE(owner_email,''), COALESCE(owner_team,''), COALESCE(service_name,''), COALESCE(labels,'[]'),
+		       COALESCE(owner_email,''), COALESCE(owner_team,''), COALESCE(service_name,''), COALESCE(labels,'[]'), COALESCE(ownership_source,''),
 		       COALESCE(origin,''), COALESCE(management_state,''), COALESCE(renewal_connector_id,''),
-		       COALESCE(trust_class,'')
+		       COALESCE(trust_class,''), COALESCE(template_revision,0),
+		       COALESCE(predecessor_fingerprint,''), COALESCE(successor_fingerprint,'')
 		FROM certificates`
 	notChainCA := " COALESCE(is_ca,0) = 0"
 	if p.postgres {
@@ -157,9 +157,10 @@ func (p *caCertificateProvider) queryCerts(where string, args ...any) ([]*stored
 		       risk_score, COALESCE(array_to_json(risk_flags)::text, '[]'), grade, renewal_method, renewal_status,
 		       source, raw_cert_b64, revoked_at, revocation_reason,
 		       created_at, updated_at,
-		       COALESCE(owner_email,''), COALESCE(owner_team,''), COALESCE(service_name,''), COALESCE(labels,'[]'),
+		       COALESCE(owner_email,''), COALESCE(owner_team,''), COALESCE(service_name,''), COALESCE(labels,'[]'), COALESCE(ownership_source,''),
 		       COALESCE(origin,''), COALESCE(management_state,''), COALESCE(renewal_connector_id,''),
-		       COALESCE(trust_class,'')
+		       COALESCE(trust_class,''), COALESCE(template_revision,0),
+		       COALESCE(predecessor_fingerprint,''), COALESCE(successor_fingerprint,'')
 		FROM certificates`
 		notChainCA = " NOT COALESCE(is_ca, FALSE)"
 	}
@@ -197,10 +198,13 @@ func (p *caCertificateProvider) queryCerts(where string, args ...any) ([]*stored
 			revocationReason                     sql.NullInt64
 			createdAt, updatedAt                 string
 			ownerEmail, ownerTeam, serviceName   string
+			ownershipSource                      string
 			labelsJSON                           string
 			origin, managementState              string
 			renewalConnectorID                   string
 			trustClass                           string
+			predecessorFP, successorFP           string
+			templateRevision                     int
 		)
 
 		if err := rows.Scan(
@@ -212,12 +216,13 @@ func (p *caCertificateProvider) queryCerts(where string, args ...any) ([]*stored
 			&riskScore, &riskFlagsJSON, &grade, &renewalMethod, &renewalStatus,
 			&source, &rawCertB64, &revokedAt, &revocationReason,
 			&createdAt, &updatedAt,
-			&ownerEmail, &ownerTeam, &serviceName, &labelsJSON,
-			&origin, &managementState, &renewalConnectorID, &trustClass,
+			&ownerEmail, &ownerTeam, &serviceName, &labelsJSON, &ownershipSource,
+			&origin, &managementState, &renewalConnectorID, &trustClass, &templateRevision,
+			&predecessorFP, &successorFP,
 		); err != nil {
 			// S-50: skipping is right — one unreadable row should not cost
 			// the whole inventory — but it must not be silent.
-			log.Printf("certificate row skipped during load (it will be missing from the inventory): %v", err)
+			logging.Infof("certificate row skipped during load (it will be missing from the inventory): %v", err)
 			continue
 		}
 
@@ -239,6 +244,7 @@ func (p *caCertificateProvider) queryCerts(where string, args ...any) ([]*stored
 			IssuerDN:           issuerDN,
 			CAID:               caID.String,
 			TemplateID:         templateID.String,
+			TemplateRevision:   templateRevision,
 			TeamID:             teamID.String,
 			ValidFrom:          validFrom,
 			ValidUntil:         validUntil,
@@ -261,12 +267,21 @@ func (p *caCertificateProvider) queryCerts(where string, args ...any) ([]*stored
 			UpdatedAt:          updatedAt,
 			OwnerEmail:         ownerEmail,
 			OwnerTeam:          ownerTeam,
+			OwnershipSource:    ownershipSource,
 			ServiceName:        serviceName,
 			Labels:             labels,
 			Origin:             origin,
 			ManagementState:    managementState,
 			RenewalConnectorID: renewalConnectorID,
 			TrustClass:         trustClass,
+		}
+		// The renewal chain is row state a peer replica wrote; without it
+		// this replica would accept a second renewal of a superseded cert.
+		if predecessorFP != "" {
+			item.PredecessorFP = &predecessorFP
+		}
+		if successorFP != "" {
+			item.SuccessorFP = &successorFP
 		}
 		// Discovery never writes a grade (the column defaults to 'A'), so a
 		// risky discovered cert would read as grade A. Derive it from the
@@ -356,6 +371,7 @@ func (p *caCertificateProvider) IssueCertificate(ctx context.Context, req Certif
 		return CertificateIssueResult{}, err
 	}
 
+	var templateRevision int
 	if req.TemplateID != "" && p.templates != nil {
 		tpl, found, terr := p.templates.GetTemplate(ctx, req.TemplateID)
 		if terr != nil {
@@ -367,94 +383,144 @@ func (p *caCertificateProvider) IssueCertificate(ctx context.Context, req Certif
 		if !tpl.Active {
 			return CertificateIssueResult{}, fmt.Errorf("%w: template %q is inactive", ca.ErrPolicyViolation, req.TemplateID)
 		}
-		if tpl.RequireApproval && ctx.Value(approvalBypassKey{}) == nil {
-			return CertificateIssueResult{}, errApprovalRequired
+		// W23-42: before the approval branch so a denied role never queues a
+		// request. The approval re-entry already passed this check for the
+		// requester; the approver's role is not an enrollment role.
+		if ctx.Value(approvalBypassKey{}) == nil {
+			if err := ca.CheckEnrollment(ctx, tpl.ID, tpl.EnrollRoles()); err != nil {
+				return CertificateIssueResult{}, err
+			}
+		}
+		// W26-23: refuse an unattested code-signing CSR before anything is queued.
+		if ctx.Value(approvalBypassKey{}) == nil {
+			if err := codesignPreIssueCheck(ctx, tpl, req); err != nil {
+				return CertificateIssueResult{}, err
+			}
+		}
+		// W26-32: checked after the policy gates above and before the approval
+		// queue, so a repeat POST on an approval template returns the issued cert.
+		if res, ok := p.reuseIssued(ctx, req, issuanceReq.CSR, tpl.Revision); ok {
+			return res, nil
 		}
 		if err := applyTemplateToIssuance(&issuanceReq, tpl); err != nil {
 			return CertificateIssueResult{}, err
 		}
-	} else if req.TemplateID == "" {
-		// SUP-A04-3: issuance without a template is allowed (existing
-		// behaviour) but has no name policy; leave a trail of it.
-		log.Printf("certificate issuance without a template: no name policy applied (ca=%s)", req.CAID)
+		if templateNeedsApproval(tpl) && ctx.Value(approvalBypassKey{}) == nil {
+			// Dry-run the checks the post-approval issuance will run, so a
+			// request the engine would refuse is never queued.
+			if err := p.dryPolicyCheck(req.CAID, issuanceReq); err != nil {
+				return CertificateIssueResult{}, err
+			}
+			return CertificateIssueResult{}, errApprovalRequired
+		}
+		templateRevision = tpl.Revision
+	} else {
+		if req.TemplateID == "" {
+			// SUP-A04-3: issuance without a template is allowed (existing
+			// behaviour) but has no name policy; leave a trail of it.
+			logging.Infof("certificate issuance without a template: no name policy applied (ca=%s)", req.CAID)
+		}
+		if res, ok := p.reuseIssued(ctx, req, issuanceReq.CSR, 0); ok {
+			return res, nil
+		}
 	}
 
-	t0 := time.Now()
-	issued, err := p.engine.IssueCertificate(req.CAID, issuanceReq)
-	metrics.CertIssueDuration.Observe(time.Since(t0).Seconds())
-	if err != nil {
-		metrics.CertIssueErrors.Inc()
-		return CertificateIssueResult{}, wrapEngineIssueError("ca issuance failed", err)
-	}
-	metrics.CertIssueTotal.Inc()
+	// W23-25: a (CA, serial) clash is rejected by idx_cert_serial_ca; the
+	// engine is called again so the retry signs with a fresh serial. Nothing
+	// stays stored from a failed attempt (removeLocked above).
+	var (
+		issued *ca.IssuedCertificate
+		item   CertificateItem
+	)
+	err := ca.RetryOnSerialCollision(5, func(int) error {
+		var err error
+		issued = nil
+		t0 := time.Now()
+		issued, err = p.engine.IssueCertificate(req.CAID, issuanceReq)
+		metrics.CertIssueDuration.Observe(time.Since(t0).Seconds())
+		if err != nil {
+			metrics.CertIssueErrors.Inc()
+			err = classifyKeystoreFailure(req.CAID, err)
+			return wrapEngineIssueError("ca issuance failed", err)
+		}
+		metrics.CertIssueTotal.Inc()
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	chainClassical := resolveChainClassical(p.engine, req.CAID, issued.Certificate)
-	item := CertificateItem{
-		FingerprintSHA256:  issued.Fingerprint,
-		SerialNumber:       issued.SerialNumber.String(),
-		CommonName:         issued.Certificate.Subject.CommonName,
-		SubjectDN:          issued.Certificate.Subject.String(),
-		SubjectAltNames:    ca.SubjectAltNameStrings(issued.Certificate),
-		URISANs:            uriStrings(issued.Certificate.URIs),
-		IssuerCN:           issued.Certificate.Issuer.CommonName,
-		IssuerDN:           issued.Certificate.Issuer.String(),
-		CAID:               req.CAID,
-		TemplateID:         req.TemplateID,
-		TeamID:             req.TeamID,
-		ValidFrom:          issued.Certificate.NotBefore.UTC().Format(time.RFC3339),
-		ValidUntil:         issued.Certificate.NotAfter.UTC().Format(time.RFC3339),
-		PublicKeyAlgorithm: ca.StoredPublicKeyAlgorithm(issued.Certificate),
-		KeySizeBits:        publicKeyBits(issued.Certificate),
-		SignatureAlgorithm: issued.Certificate.SignatureAlgorithm.String(),
-		ExtendedKeyUsage:   ekuStrings(issued.Certificate.ExtKeyUsage),
-		KeyUsage:           kuStrings(issued.Certificate.KeyUsage),
-		ChainComplete:      boolRef(true),
-		ChainTrusted:       boolRef(true),
-		PQCVulnerable:      isPQCVulnerable(issued.Certificate),
-		PQCReadiness:       computePQCReadiness(issued.Certificate, chainClassical),
-		RiskScore:          adjustRiskForChain(computeRiskScore(issued.Certificate, time.Now()), true),
-		RiskFlags:          adjustFlagsForChain(computeRiskFlags(issued.Certificate, chainClassical, time.Now()), true),
-		Grade:              computeGrade(adjustRiskForChain(computeRiskScore(issued.Certificate, time.Now()), true)),
-		RenewalMethod:      "manual",
-		RenewalStatus:      string(RenewalStatusActive),
-		Source:             "api",
-		Origin:             "internal",
-		ManagementState:    "managed",
-		ETag:               1,
-		CreatedAt:          now,
-		UpdatedAt:          now,
-	}
-	// addLocked derives this on the stored copy only; the response item is a
-	// separate value and would otherwise omit it.
-	item.KeyAlgorithmDisplay = keyAlgorithmDisplay(issued.Certificate)
+		now := time.Now().UTC().Format(time.RFC3339)
+		chainClassical := resolveChainClassical(p.engine, req.CAID, issued.Certificate)
+		item = CertificateItem{
+			FingerprintSHA256:  issued.Fingerprint,
+			SerialNumber:       issued.SerialNumber.String(),
+			CommonName:         issued.Certificate.Subject.CommonName,
+			SubjectDN:          issued.Certificate.Subject.String(),
+			SubjectAltNames:    ca.SubjectAltNameStrings(issued.Certificate),
+			URISANs:            uriStrings(issued.Certificate.URIs),
+			IssuerCN:           issued.Certificate.Issuer.CommonName,
+			IssuerDN:           issued.Certificate.Issuer.String(),
+			CAID:               req.CAID,
+			TemplateID:         req.TemplateID,
+			TemplateRevision:   templateRevision,
+			TeamID:             req.TeamID,
+			ValidFrom:          issued.Certificate.NotBefore.UTC().Format(time.RFC3339),
+			ValidUntil:         issued.Certificate.NotAfter.UTC().Format(time.RFC3339),
+			PublicKeyAlgorithm: ca.StoredPublicKeyAlgorithm(issued.Certificate),
+			KeySizeBits:        publicKeyBits(issued.Certificate),
+			SignatureAlgorithm: issued.Certificate.SignatureAlgorithm.String(),
+			ExtendedKeyUsage:   ekuStrings(issued.Certificate.ExtKeyUsage),
+			KeyUsage:           kuStrings(issued.Certificate.KeyUsage),
+			ChainComplete:      boolRef(true),
+			ChainTrusted:       boolRef(true),
+			PQCVulnerable:      isPQCVulnerable(issued.Certificate),
+			PQCReadiness:       computePQCReadiness(issued.Certificate, chainClassical),
+			RiskScore:          adjustRiskForChain(computeRiskScore(issued.Certificate, time.Now()), true),
+			RiskFlags:          adjustFlagsForChain(computeRiskFlags(issued.Certificate, chainClassical, time.Now()), true),
+			Grade:              computeGrade(adjustRiskForChain(computeRiskScore(issued.Certificate, time.Now()), true)),
+			RenewalMethod:      "manual",
+			RenewalStatus:      string(RenewalStatusActive),
+			Source:             "api",
+			Origin:             "internal",
+			ManagementState:    "managed",
+			ETag:               1,
+			CreatedAt:          now,
+			UpdatedAt:          now,
+		}
+		// addLocked derives this on the stored copy only; the response item is a
+		// separate value and would otherwise omit it.
+		item.KeyAlgorithmDisplay = keyAlgorithmDisplay(issued.Certificate)
 
-	p.mu.Lock()
-	p.addLocked(issued.Fingerprint, &storedCert{
-		item:    item,
-		certPEM: issued.CertPEM,
-		x509:    issued.Certificate,
+		p.mu.Lock()
+		p.addLocked(issued.Fingerprint, &storedCert{
+			item:    item,
+			certPEM: issued.CertPEM,
+			x509:    issued.Certificate,
+		})
+		p.mu.Unlock()
+
+		// S-50: persist BEFORE reporting success, and fail the request if the
+		// record cannot be written. This used to be `_ = p.writeCertToDB(...)`:
+		// the API returned 200, the UI listed the cert — and after a restart it
+		// was gone with nothing logged (observed live: 3 certificates served by
+		// the API while the table held none). Failing is the safe side: the
+		// signed leaf never leaves this process, so the only residue is a
+		// consumed serial; success would hand out a credential this system can
+		// never inventory, renew, expire or revoke.
+		if p.db != nil {
+			if err := p.writeCertToDB(item, issued.CertPEM); err != nil {
+				p.mu.Lock()
+				p.removeLocked(issued.Fingerprint)
+				p.mu.Unlock()
+				return err
+			}
+		}
+		return nil
 	})
-	p.mu.Unlock()
-
-	// S-50: persist BEFORE reporting success, and fail the request if the
-	// record cannot be written. This used to be `_ = p.writeCertToDB(...)`:
-	// the API returned 200, the UI listed the cert — and after a restart it
-	// was gone with nothing logged (observed live: 3 certificates served by
-	// the API while the table held none). Failing is the safe side: the
-	// signed leaf never leaves this process, so the only residue is a
-	// consumed serial; success would hand out a credential this system can
-	// never inventory, renew, expire or revoke.
-	if p.db != nil {
-		if err := p.writeCertToDB(item, issued.CertPEM); err != nil {
-			p.mu.Lock()
-			p.removeLocked(issued.Fingerprint)
-			p.mu.Unlock()
-			log.Printf("ISSUANCE NOT RECORDED: signed but failed to persist — fingerprint=%s serial=%s ca=%s: %v",
+	if err != nil {
+		if issued != nil {
+			logging.Warnf("ISSUANCE NOT RECORDED: signed but failed to persist — fingerprint=%s serial=%s ca=%s: %v",
 				issued.Fingerprint, item.SerialNumber, item.CAID, err)
 			return CertificateIssueResult{}, fmt.Errorf(
 				"certificate was signed but could not be recorded (fingerprint %s): %w", issued.Fingerprint, err)
 		}
+		return CertificateIssueResult{}, err
 	}
 
 	p.flagKeyReuse(issued.Fingerprint)
@@ -462,7 +528,42 @@ func (p *caCertificateProvider) IssueCertificate(ctx context.Context, req Certif
 	return CertificateIssueResult{CertificateItem: item}, nil
 }
 
+// dryPolicyCheck runs the template-policy and engine-policy gates exactly as
+// the signing path does, without signing or consuming a serial. A CSR the
+// engine cannot dry-check (non-classical, no policy engine) passes; the
+// signing path remains the authority.
+func (p *caCertificateProvider) dryPolicyCheck(caID string, req ca.IssuanceRequest) error {
+	if req.CSR == nil {
+		return nil
+	}
+	if req.Policy != nil {
+		if err := ca.ValidateAgainstTemplate(req, *req.Policy); err != nil {
+			return err
+		}
+	}
+	if pe, ok := p.engine.(interface{ PolicyEngine() *ca.PolicyEngine }); ok {
+		if eng := pe.PolicyEngine(); eng != nil {
+			return eng.Check(caID, req)
+		}
+	}
+	return nil
+}
+
+// reuseIssued answers an idempotent repeat (W26-32). The approval re-entry
+// never reuses: an approver completing a request always signs.
+func (p *caCertificateProvider) reuseIssued(ctx context.Context, req CertificateIssueRequest, csr *x509.CertificateRequest, templateRevision int) (CertificateIssueResult, bool) {
+	if ctx.Value(approvalBypassKey{}) != nil {
+		return CertificateIssueResult{}, false
+	}
+	item, ok := p.findReusableCertificate(req, csr, templateRevision, time.Now())
+	if !ok {
+		return CertificateIssueResult{}, false
+	}
+	return CertificateIssueResult{CertificateItem: item, Reused: true}, true
+}
+
 func (p *caCertificateProvider) RevokeCertificate(_ context.Context, fingerprint string, req CertificateRevokeRequest) (CertificateRevokeResult, error) {
+	p.ensureCertLoaded(fingerprint)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -478,9 +579,24 @@ func (p *caCertificateProvider) RevokeCertificate(_ context.Context, fingerprint
 
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339)
+	scope := RevocationScopeCA
 
-	// Persist revocation to DB so OCSP and CRL reflect it immediately.
-	if p.revStore != nil && stored.x509 != nil {
+	// A certificate with no issuing CA in this hub (imported, discovered,
+	// synced) has no CRL or OCSP responder to publish to, and revStore keys
+	// rows by (serial, ca_id) so it can never match one. Record the
+	// revocation in the inventory row by fingerprint instead of failing the
+	// request with a misleading 503; revoking at the real issuer stays the
+	// operator's job.
+	if stored.item.CAID == "" {
+		scope = RevocationScopeInventoryOnly
+		if p.db != nil {
+			if err := p.persistInventoryRevocation(fingerprint, req.ReasonCode, nowStr); err != nil {
+				metrics.CertRevokeErrors.Inc()
+				return CertificateRevokeResult{}, fmt.Errorf("persist revocation: %w", err)
+			}
+		}
+	} else if p.revStore != nil && stored.x509 != nil {
+		// Persist revocation to DB so OCSP and CRL reflect it immediately.
 		if err := p.revStore.Revoke(stored.x509.SerialNumber, stored.item.CAID, req.ReasonCode, now); err != nil {
 			metrics.CertRevokeErrors.Inc()
 			return CertificateRevokeResult{}, fmt.Errorf("persist revocation: %w", err)
@@ -508,7 +624,23 @@ func (p *caCertificateProvider) RevokeCertificate(_ context.Context, fingerprint
 		RenewalStatus:     string(RenewalStatusRevoked),
 		RevokedAt:         nowStr,
 		RevocationReason:  req.ReasonCode,
+		RevocationScope:   scope,
 	}, nil
+}
+
+func (p *caCertificateProvider) persistInventoryRevocation(fingerprint string, reason int, at string) error {
+	q := `UPDATE certificates SET revoked_at = ?, revocation_reason = ?, renewal_status = 'revoked', updated_at = ? WHERE fingerprint_sha256 = ?`
+	if p.postgres {
+		q = rebindPostgres(q)
+	}
+	res, err := p.db.Exec(q, at, reason, at, fingerprint)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return errors.New("no certificates row for fingerprint")
+	}
+	return nil
 }
 
 // applyTemplateToIssuance copies a template's policy and issuance defaults
@@ -528,6 +660,7 @@ func applyTemplateToIssuance(req *ca.IssuanceRequest, tpl TemplateItem) error {
 }
 
 func (p *caCertificateProvider) RenewCertificate(ctx context.Context, fingerprint string, req CertificateRenewRequest) (CertificateIssueResult, error) {
+	p.ensureCertLoaded(fingerprint)
 	p.mu.RLock()
 	predecessor, ok := p.certs[fingerprint]
 	p.mu.RUnlock()
@@ -559,10 +692,14 @@ func (p *caCertificateProvider) RenewCertificate(ctx context.Context, fingerprin
 	// validity or EKU policy (PQC migration waves renew a classical-template
 	// certificate onto ML-DSA). A template that no longer exists leaves no
 	// policy to apply; a lookup error fails closed.
+	var templateRevision int
 	if renewReq.TemplateID != "" && p.templates != nil {
 		tpl, found, terr := p.templates.GetTemplate(ctx, renewReq.TemplateID)
 		if terr != nil {
 			return CertificateIssueResult{}, fmt.Errorf("template lookup: %w", terr)
+		}
+		if found {
+			templateRevision = tpl.Revision
 		}
 		if found && tpl.NamePolicy != nil {
 			renewReq.Policy = &ca.TemplatePolicy{ID: tpl.ID, Names: tpl.NamePolicy}
@@ -579,65 +716,94 @@ func (p *caCertificateProvider) RenewCertificate(ctx context.Context, fingerprin
 		}
 	}
 
-	issued, err := p.engine.IssueCertificate(predecessor.item.CAID, renewReq)
+	// W23-25: re-sign with a fresh serial when (CA, serial) collides.
+	var (
+		issued *ca.IssuedCertificate
+		item   CertificateItem
+		now    string
+	)
+	err := ca.RetryOnSerialCollision(5, func(int) error {
+		var err error
+		issued = nil
+		issued, err = p.engine.IssueCertificate(predecessor.item.CAID, renewReq)
+		if err != nil {
+			return wrapEngineIssueError("ca renewal failed", err)
+		}
+
+		now = time.Now().UTC().Format(time.RFC3339)
+		chainClassical := resolveChainClassical(p.engine, predecessor.item.CAID, issued.Certificate)
+		item = CertificateItem{
+			FingerprintSHA256:  issued.Fingerprint,
+			SerialNumber:       issued.SerialNumber.String(),
+			CommonName:         issued.Certificate.Subject.CommonName,
+			SubjectDN:          issued.Certificate.Subject.String(),
+			SubjectAltNames:    ca.SubjectAltNameStrings(issued.Certificate),
+			URISANs:            uriStrings(issued.Certificate.URIs),
+			IssuerCN:           issued.Certificate.Issuer.CommonName,
+			IssuerDN:           issued.Certificate.Issuer.String(),
+			CAID:               predecessor.item.CAID,
+			TemplateID:         predecessor.item.TemplateID,
+			TemplateRevision:   templateRevision,
+			TeamID:             predecessor.item.TeamID,
+			ValidFrom:          issued.Certificate.NotBefore.UTC().Format(time.RFC3339),
+			ValidUntil:         issued.Certificate.NotAfter.UTC().Format(time.RFC3339),
+			PublicKeyAlgorithm: ca.StoredPublicKeyAlgorithm(issued.Certificate),
+			KeySizeBits:        publicKeyBits(issued.Certificate),
+			SignatureAlgorithm: issued.Certificate.SignatureAlgorithm.String(),
+			ExtendedKeyUsage:   ekuStrings(issued.Certificate.ExtKeyUsage),
+			KeyUsage:           kuStrings(issued.Certificate.KeyUsage),
+			ChainComplete:      boolRef(true),
+			ChainTrusted:       boolRef(true),
+			PQCVulnerable:      isPQCVulnerable(issued.Certificate),
+			PQCReadiness:       computePQCReadiness(issued.Certificate, chainClassical),
+			RiskScore:          adjustRiskForChain(computeRiskScore(issued.Certificate, time.Now()), true),
+			RiskFlags:          adjustFlagsForChain(computeRiskFlags(issued.Certificate, chainClassical, time.Now()), true),
+			Grade:              computeGrade(adjustRiskForChain(computeRiskScore(issued.Certificate, time.Now()), true)),
+			// "renewal" is not a renewal METHOD — it named the event, not how
+			// this successor gets renewed next — and it is not in
+			// certificates.renewal_method's CHECK (acme|est|scep|api|manual),
+			// so INSERT OR IGNORE silently discarded every renewed row.
+			RenewalMethod:   "api",
+			RenewalStatus:   string(RenewalStatusActive),
+			Source:          "api",
+			Origin:          "internal",
+			ManagementState: "managed",
+			PredecessorFP:   &fingerprint,
+			ETag:            1,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		}
+		item.KeyAlgorithmDisplay = keyAlgorithmDisplay(issued.Certificate)
+
+		// S-50 (found while landing it): renewed certificates were never
+		// persisted AT ALL — memory-only, gone on restart, same family as the
+		// issuance discard. Persist before mutating shared state so a failure
+		// leaves nothing to unwind.
+		if p.db != nil {
+			return p.writeCertToDB(item, issued.CertPEM)
+		}
+		return nil
+	})
 	if err != nil {
-		return CertificateIssueResult{}, wrapEngineIssueError("ca renewal failed", err)
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	chainClassical := resolveChainClassical(p.engine, predecessor.item.CAID, issued.Certificate)
-	item := CertificateItem{
-		FingerprintSHA256:  issued.Fingerprint,
-		SerialNumber:       issued.SerialNumber.String(),
-		CommonName:         issued.Certificate.Subject.CommonName,
-		SubjectDN:          issued.Certificate.Subject.String(),
-		SubjectAltNames:    ca.SubjectAltNameStrings(issued.Certificate),
-		URISANs:            uriStrings(issued.Certificate.URIs),
-		IssuerCN:           issued.Certificate.Issuer.CommonName,
-		IssuerDN:           issued.Certificate.Issuer.String(),
-		CAID:               predecessor.item.CAID,
-		TemplateID:         predecessor.item.TemplateID,
-		TeamID:             predecessor.item.TeamID,
-		ValidFrom:          issued.Certificate.NotBefore.UTC().Format(time.RFC3339),
-		ValidUntil:         issued.Certificate.NotAfter.UTC().Format(time.RFC3339),
-		PublicKeyAlgorithm: ca.StoredPublicKeyAlgorithm(issued.Certificate),
-		KeySizeBits:        publicKeyBits(issued.Certificate),
-		SignatureAlgorithm: issued.Certificate.SignatureAlgorithm.String(),
-		ExtendedKeyUsage:   ekuStrings(issued.Certificate.ExtKeyUsage),
-		KeyUsage:           kuStrings(issued.Certificate.KeyUsage),
-		ChainComplete:      boolRef(true),
-		ChainTrusted:       boolRef(true),
-		PQCVulnerable:      isPQCVulnerable(issued.Certificate),
-		PQCReadiness:       computePQCReadiness(issued.Certificate, chainClassical),
-		RiskScore:          adjustRiskForChain(computeRiskScore(issued.Certificate, time.Now()), true),
-		RiskFlags:          adjustFlagsForChain(computeRiskFlags(issued.Certificate, chainClassical, time.Now()), true),
-		Grade:              computeGrade(adjustRiskForChain(computeRiskScore(issued.Certificate, time.Now()), true)),
-		// "renewal" is not a renewal METHOD — it named the event, not how
-		// this successor gets renewed next — and it is not in
-		// certificates.renewal_method's CHECK (acme|est|scep|api|manual),
-		// so INSERT OR IGNORE silently discarded every renewed row.
-		RenewalMethod:   "api",
-		RenewalStatus:   string(RenewalStatusActive),
-		Source:          "api",
-		Origin:          "internal",
-		ManagementState: "managed",
-		PredecessorFP:   &fingerprint,
-		ETag:            1,
-		CreatedAt:       now,
-		UpdatedAt:       now,
-	}
-	item.KeyAlgorithmDisplay = keyAlgorithmDisplay(issued.Certificate)
-
-	// S-50 (found while landing it): renewed certificates were never
-	// persisted AT ALL — memory-only, gone on restart, same family as the
-	// issuance discard. Persist before mutating shared state so a failure
-	// leaves nothing to unwind.
-	if p.db != nil {
-		if err := p.writeCertToDB(item, issued.CertPEM); err != nil {
-			log.Printf("RENEWAL NOT RECORDED: signed but failed to persist — fingerprint=%s predecessor=%s: %v",
+		if issued != nil {
+			logging.Warnf("RENEWAL NOT RECORDED: signed but failed to persist — fingerprint=%s predecessor=%s: %v",
 				issued.Fingerprint, fingerprint, err)
 			return CertificateIssueResult{}, fmt.Errorf(
 				"renewal was signed but could not be recorded (fingerprint %s): %w", issued.Fingerprint, err)
+		}
+		return CertificateIssueResult{}, err
+	}
+
+	// The link is row state too: only the renewing replica knows the
+	// predecessor is superseded, and a peer's renewal-reminder run would
+	// otherwise keep paging for a certificate that has already been renewed.
+	p.mu.RLock()
+	linkStamp := nextRowStamp(predecessor.item.UpdatedAt)
+	p.mu.RUnlock()
+	if p.db != nil {
+		if err := p.persistRenewalLink(fingerprint, issued.Fingerprint, linkStamp); err != nil {
+			logging.Infof("RENEWAL LINK NOT RECORDED: successor %s is stored but predecessor %s is not marked renewed for peer replicas: %v",
+				issued.Fingerprint, fingerprint, err)
 		}
 	}
 
@@ -650,13 +816,36 @@ func (p *caCertificateProvider) RenewCertificate(ctx context.Context, fingerprin
 	// Link predecessor → successor.
 	predecessor.item.SuccessorFP = &issued.Fingerprint
 	p.setRenewalStatusLocked(predecessor, string(RenewalStatusRenewed))
-	predecessor.item.UpdatedAt = now
+	predecessor.item.UpdatedAt = linkStamp
 	predecessor.item.ETag++
 	p.mu.Unlock()
 
 	p.flagKeyReuse(issued.Fingerprint)
 
 	return CertificateIssueResult{CertificateItem: item}, nil
+}
+
+// persistRenewalLink records predecessor -> successor in both rows, bumping
+// the predecessor's updated_at so peers' incremental refresh picks it up.
+func (p *caCertificateProvider) persistRenewalLink(predecessorFP, successorFP, now string) error {
+	predQ := `UPDATE certificates SET renewal_status=?, successor_fingerprint=?, updated_at=? WHERE fingerprint_sha256=?`
+	succQ := `UPDATE certificates SET predecessor_fingerprint=? WHERE fingerprint_sha256=?`
+	if p.postgres {
+		predQ = `UPDATE certificates SET renewal_status=$1, successor_fingerprint=$2, updated_at=$3 WHERE fingerprint_sha256=$4`
+		succQ = `UPDATE certificates SET predecessor_fingerprint=$1 WHERE fingerprint_sha256=$2`
+	}
+	tx, err := p.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(predQ, string(RenewalStatusRenewed), successorFP, now, predecessorFP); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(succQ, predecessorFP, successorFP); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (p *caCertificateProvider) ListCertificates(_ context.Context, query CertificateListQuery) (CertificateListResult, error) {
@@ -750,7 +939,17 @@ func (p *caCertificateProvider) RecordIssuedCertificate(ctx context.Context, caI
 // RecordIssuedCertificateWithTemplate implements
 // ca.TemplateIssuedCertificateRecorder (W20-15): the row carries the template
 // that governed issuance, as an API-issued row does.
-func (p *caCertificateProvider) RecordIssuedCertificateWithTemplate(_ context.Context, caID string, cert *x509.Certificate, chainPEM []byte, source, templateID string) error {
+func (p *caCertificateProvider) RecordIssuedCertificateWithTemplate(ctx context.Context, caID string, cert *x509.Certificate, chainPEM []byte, source, templateID string) error {
+	var templateRevision int
+	if templateID != "" && p.templates != nil {
+		// Best effort: the certificate is already signed, so a lookup failure
+		// leaves the revision unrecorded rather than losing the row.
+		if tpl, found, terr := p.templates.GetTemplate(ctx, templateID); terr != nil {
+			logging.Warnf("template revision lookup for %s failed: %v", templateID, terr)
+		} else if found {
+			templateRevision = tpl.Revision
+		}
+	}
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256(cert.Raw))
 	now := time.Now().UTC().Format(time.RFC3339)
 	chainClassical := resolveChainClassical(p.engine, caID, cert)
@@ -765,6 +964,7 @@ func (p *caCertificateProvider) RecordIssuedCertificateWithTemplate(_ context.Co
 		IssuerDN:           cert.Issuer.String(),
 		CAID:               caID,
 		TemplateID:         templateID,
+		TemplateRevision:   templateRevision,
 		ValidFrom:          cert.NotBefore.UTC().Format(time.RFC3339),
 		ValidUntil:         cert.NotAfter.UTC().Format(time.RFC3339),
 		PublicKeyAlgorithm: ca.StoredPublicKeyAlgorithm(cert),
@@ -815,7 +1015,7 @@ func (p *caCertificateProvider) RecordIssuedCertificateWithTemplate(_ context.Co
 }
 
 func (p *caCertificateProvider) GetCertificate(_ context.Context, fingerprint string) (CertificateDetail, bool, error) {
-	p.refreshDiscovered()
+	p.ensureCertLoaded(fingerprint)
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -827,7 +1027,7 @@ func (p *caCertificateProvider) GetCertificate(_ context.Context, fingerprint st
 }
 
 func (p *caCertificateProvider) GetCertificateChain(_ context.Context, fingerprint string) (CertificateChainResult, bool, error) {
-	p.refreshDiscovered()
+	p.ensureCertLoaded(fingerprint)
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -859,6 +1059,7 @@ func (p *caCertificateProvider) GetCertificateChain(_ context.Context, fingerpri
 // certificate; the root itself comes from GET /api/v1/cas/{id}/chain?format=pem.
 // DER is a single-certificate encoding and ignores includeChain.
 func (p *caCertificateProvider) DownloadCertificate(_ context.Context, fingerprint string, format string, includeChain bool) (CertificateDownloadResult, error) {
+	p.ensureCertLoaded(fingerprint)
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -899,7 +1100,7 @@ func (p *caCertificateProvider) appendIntermediatesPEM(leafPEM []byte, caID stri
 	}
 	chain, err := p.engine.GetCAChain(caID)
 	if err != nil {
-		log.Printf("certificate download: CA chain for %s unavailable, serving leaf only: %v", caID, err)
+		logging.Warnf("certificate download: CA chain for %s unavailable, serving leaf only: %v", caID, err)
 		return leafPEM
 	}
 	// Clone: stored.certPEM is shared state and append must not write into it.
@@ -985,7 +1186,7 @@ func (p *caCertificateProvider) ImportCertificate(_ context.Context, req Certifi
 			p.mu.Lock()
 			p.removeLocked(fingerprint)
 			p.mu.Unlock()
-			log.Printf("IMPORT NOT RECORDED: failed to persist — fingerprint=%s: %v", fingerprint, err)
+			logging.Warnf("IMPORT NOT RECORDED: failed to persist — fingerprint=%s: %v", fingerprint, err)
 			return CertificateIssueResult{}, fmt.Errorf(
 				"certificate import could not be recorded (fingerprint %s): %w", fingerprint, err)
 		}
@@ -1002,6 +1203,7 @@ func (p *caCertificateProvider) ImportCertificate(_ context.Context, req Certifi
 }
 
 func (p *caCertificateProvider) UpdateOwnership(_ context.Context, fingerprint string, req CertificateOwnershipRequest) (CertificateItem, error) {
+	p.ensureCertLoaded(fingerprint)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -1012,22 +1214,27 @@ func (p *caCertificateProvider) UpdateOwnership(_ context.Context, fingerprint s
 
 	// Work on a copy and commit it only once the row is written, so a failed
 	// persist leaves memory matching the database.
+	src, err := resolveOwnershipSource(req)
+	if err != nil {
+		return CertificateItem{}, err
+	}
 	item := stored.item
+	item.OwnershipSource = src
 	item.OwnerEmail = strings.TrimSpace(req.OwnerEmail)
 	item.OwnerTeam = strings.TrimSpace(req.OwnerTeam)
 	item.ServiceName = strings.TrimSpace(req.ServiceName)
 	if req.Labels != nil {
 		item.Labels = req.Labels
 	}
-	item.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	item.UpdatedAt = nextRowStamp(stored.item.UpdatedAt)
 
 	if p.db != nil {
 		labelsJSON, _ := json.Marshal(item.Labels)
 		var q string
 		if p.postgres {
-			q = `UPDATE certificates SET owner_email=$1, owner_team=$2, service_name=$3, labels=$4, updated_at=$5 WHERE fingerprint_sha256=$6`
+			q = `UPDATE certificates SET owner_email=$1, owner_team=$2, service_name=$3, labels=$4, ownership_source=$5, updated_at=$6 WHERE fingerprint_sha256=$7`
 		} else {
-			q = `UPDATE certificates SET owner_email=?, owner_team=?, service_name=?, labels=?, updated_at=? WHERE fingerprint_sha256=?`
+			q = `UPDATE certificates SET owner_email=?, owner_team=?, service_name=?, labels=?, ownership_source=?, updated_at=? WHERE fingerprint_sha256=?`
 		}
 		// S-50: an ownership change that only lands in memory is reverted by
 		// the next restart while the operator is told it succeeded.
@@ -1036,10 +1243,11 @@ func (p *caCertificateProvider) UpdateOwnership(_ context.Context, fingerprint s
 			nullableString(item.OwnerTeam),
 			nullableString(item.ServiceName),
 			string(labelsJSON),
+			item.OwnershipSource,
 			item.UpdatedAt,
 			fingerprint,
 		); err != nil {
-			log.Printf("ownership change not persisted for %s: %v", fingerprint, err)
+			logging.Infof("ownership change not persisted for %s: %v", fingerprint, err)
 			return CertificateItem{}, fmt.Errorf("ownership change could not be recorded: %w", err)
 		}
 	}
@@ -1052,6 +1260,7 @@ func (p *caCertificateProvider) UpdateOwnership(_ context.Context, fingerprint s
 // state and the chosen renewal path. Persisted in memory and, when a DB is
 // configured, on the row — mirroring UpdateOwnership's shape.
 func (p *caCertificateProvider) UpdateEstate(_ context.Context, fingerprint string, req EstateUpdate) (CertificateItem, error) {
+	p.ensureCertLoaded(fingerprint)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -1079,6 +1288,8 @@ func (p *caCertificateProvider) UpdateEstate(_ context.Context, fingerprint stri
 	}
 	if req.RenewalConnectorID != "" {
 		item.RenewalConnectorID = req.RenewalConnectorID
+	} else if req.ClearRenewalConnector {
+		item.RenewalConnectorID = ""
 	}
 	if req.RenewalStatus != "" {
 		if !validRenewalStatus(req.RenewalStatus) {
@@ -1089,7 +1300,7 @@ func (p *caCertificateProvider) UpdateEstate(_ context.Context, fingerprint stri
 	if req.RenewalMethod != "" {
 		item.RenewalMethod = req.RenewalMethod
 	}
-	item.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	item.UpdatedAt = nextRowStamp(stored.item.UpdatedAt)
 
 	if p.db != nil {
 		var q string
@@ -1276,9 +1487,9 @@ func isChainClassical(cert *x509.Certificate) bool {
 // engine.GetCAChain walks ParentCAID from caID to the root (cycle-detected)
 // -- this reuses that existing primitive rather than adding new CA-store
 // traversal logic. On any error (CA not found, a circular chain, or a CA
-// left inconsistent by an interrupted rotation -- see S-16/G-78) this falls
-// back to the single-hop leaf check rather than crashing or guessing: an
-// unresolvable chain is a coverage gap, not evidence one way or the other.
+// left inconsistent by an interrupted rotation -- see S-16/G-78) with a
+// non-empty caID this returns true (classical): an unverifiable chain must
+// degrade to the weaker quantum_safe_leaf_only label, never claim full PQC.
 //
 // Deliberately resolved ONCE per certificate at the caller (issuance,
 // renewal, import) and passed in as a bool, rather than threading engine/
@@ -1298,7 +1509,9 @@ func resolveChainClassical(engine ca.Service, caID string, cert *x509.Certificat
 	}
 	chain, err := engine.GetCAChain(caID)
 	if err != nil {
-		return false
+		// W31-02/D-104: a known issuer whose chain cannot be walked cannot be
+		// proven PQC all the way up, so take the weaker label (leaf-only).
+		return true
 	}
 	for _, c := range chain {
 		if c.Certificate != nil && isChainClassical(c.Certificate) {
@@ -1320,7 +1533,15 @@ func resolveChainClassical(engine ca.Service, caID string, cert *x509.Certificat
 //   - vulnerable: long-lived classical algorithm requiring active migration planning
 //   - not_applicable: non-signing use (unlikely but defensive)
 func computePQCReadiness(cert *x509.Certificate, chainClassical bool) string {
-	if !isPQCVulnerable(cert) {
+	// W31-01: a key whose algorithm Go cannot name and that is not ML-DSA is
+	// unclassifiable, so it is not_applicable rather than falling through
+	// isPQCVulnerable's default as quantum_safe. Ed25519 is classical, so it
+	// takes the vulnerable/migration_ready path below; isPQCVulnerable and the
+	// PQC_VULNERABLE risk flag deliberately stay unchanged (US-032).
+	if cert.PublicKeyAlgorithm == x509.UnknownPublicKeyAlgorithm && ca.StoredPublicKeyAlgorithm(cert) != "ML-DSA" {
+		return "not_applicable"
+	}
+	if !isPQCVulnerable(cert) && cert.PublicKeyAlgorithm != x509.Ed25519 {
 		if chainClassical {
 			return pqcReadinessLeafOnly
 		}
@@ -1408,7 +1629,8 @@ func computeRiskFlags(cert *x509.Certificate, chainClassical bool, now time.Time
 		flags = append(flags, "PQC_VULNERABLE")
 	}
 
-	if cert.SignatureAlgorithm == x509.SHA1WithRSA || cert.SignatureAlgorithm == x509.MD5WithRSA {
+	switch cert.SignatureAlgorithm {
+	case x509.MD2WithRSA, x509.MD5WithRSA, x509.SHA1WithRSA, x509.DSAWithSHA1, x509.ECDSAWithSHA1:
 		flags = append(flags, "WEAK_SIGNATURE")
 	}
 
@@ -1528,8 +1750,8 @@ INSERT INTO certificates
      signature_algorithm, extended_key_usage, key_usage,
      chain_complete, chain_trusted, pqc_vulnerable, pqc_readiness,
      risk_score, risk_flags, grade, renewal_method, renewal_status,
-     source, raw_cert_b64, created_at, updated_at, origin, management_state)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+     source, raw_cert_b64, created_at, updated_at, origin, management_state, template_revision)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
 ON CONFLICT (fingerprint_sha256) DO NOTHING`
 	} else {
 		query = `
@@ -1540,8 +1762,8 @@ INSERT OR IGNORE INTO certificates
      signature_algorithm, extended_key_usage, key_usage,
      chain_complete, chain_trusted, pqc_vulnerable, pqc_readiness,
      risk_score, risk_flags, grade, renewal_method, renewal_status,
-     source, raw_cert_b64, created_at, updated_at, origin, management_state)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+     source, raw_cert_b64, created_at, updated_at, origin, management_state, template_revision)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 	}
 
 	teamID := sql.NullString{String: item.TeamID, Valid: item.TeamID != ""}
@@ -1549,6 +1771,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 	caID := sql.NullString{String: item.CAID, Valid: item.CAID != ""}
 	renewalMethod := sql.NullString{String: item.RenewalMethod, Valid: item.RenewalMethod != ""}
 	rawCertB64 := sql.NullString{String: string(certPEM), Valid: len(certPEM) > 0}
+	templateRevisionArg := sql.NullInt64{Int64: int64(item.TemplateRevision), Valid: item.TemplateRevision > 0}
 
 	// Postgres's schema types these columns BOOLEAN and TEXT[]; sqlite has
 	// neither type, so its columns hold the same data as 0/1 integers and
@@ -1596,6 +1819,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 		item.RiskScore, riskFlagsArg, item.Grade, renewalMethod, item.RenewalStatus,
 		item.Source, rawCertB64, now, now,
 		estateOrigin(item), estateManagementState(item),
+		templateRevisionArg,
 	)
 	if err != nil {
 		return err
@@ -1614,6 +1838,18 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 			q = `SELECT 1 FROM certificates WHERE fingerprint_sha256 = $1`
 		}
 		if scanErr := p.db.QueryRow(q, item.FingerprintSHA256).Scan(&exists); scanErr != nil {
+			// sqlite's INSERT OR IGNORE also swallows the (CA, serial) unique
+			// violation (W23-25); surface it so the issuance path re-signs
+			// with a fresh serial instead of reporting an opaque rejection.
+			if item.CAID != "" {
+				sq := `SELECT 1 FROM certificates WHERE serial_number = ? AND ca_id = ?`
+				if p.postgres {
+					sq = `SELECT 1 FROM certificates WHERE serial_number = $1 AND ca_id = $2`
+				}
+				if p.db.QueryRow(sq, item.SerialNumber, item.CAID).Scan(&exists) == nil {
+					return fmt.Errorf("%w: ca %s serial %s", ca.ErrSerialCollision, item.CAID, item.SerialNumber)
+				}
+			}
 			return fmt.Errorf(
 				"certificate %s (source %q) not persisted: rejected by a table constraint",
 				item.FingerprintSHA256, item.Source)
@@ -1633,6 +1869,7 @@ func templateItemToPolicy(tpl TemplateItem) ca.TemplatePolicy {
 		AllowedAlgorithms: tpl.AllowedAlgorithms,
 		AllowedEKUs:       parseEKUPolicy(tpl.ExtendedKeyUsage),
 		Names:             tpl.NamePolicy,
+		EnrollRoles:       tpl.EnrollRoles(),
 	}
 	minKeySize := tpl.MinKeySize
 	if tpl.MsPKIMinimalKeySize > minKeySize {
@@ -1761,9 +1998,55 @@ func csrParseError(err error) error {
 
 // wrapEngineIssueError keeps a bad-CSR engine failure classified as a client
 // error (errCertificateInvalid) instead of an opaque backend failure.
+// errKeystoreBackendUnavailable marks an issuance that failed because the
+// signing backend (HSM/KMS) could not sign, as opposed to a bad request.
+// Issuance fails closed: nothing is recorded and the API answers 503.
+var errKeystoreBackendUnavailable = errors.New("keystore backend unavailable")
+
+// keystoreAlertHook receives ("keystore.backend_unavailable", caID, err) once
+// per failed issuance. No notification fan-out exists in bootstrap yet; the
+// default logs, and tests swap it.
+var keystoreAlertHook = func(code, caID string, err error) {
+	logging.Infof("ALERT %s ca=%s: %v", code, caID, err)
+}
+
+// classifyKeystoreFailure wraps err with errKeystoreBackendUnavailable unless
+// it is a request/CA-state problem. The allow-list is load-bearing: a client
+// error must never be reported as a backend outage (503).
+func classifyKeystoreFailure(caID string, err error) error {
+	for _, client := range []error{
+		ca.ErrInvalidCSR, ca.ErrPolicyViolation, ca.ErrCANotFound, ca.ErrCANotActive,
+		ca.ErrCANoSigningKey, ca.ErrSerialCollision, ca.ErrAlgorithmUnsupportedByBackend,
+	} {
+		if errors.Is(err, client) {
+			return err
+		}
+	}
+	keystoreAlertHook("keystore.backend_unavailable", caID, err)
+	return fmt.Errorf("%w: %w", errKeystoreBackendUnavailable, err)
+}
+
 func wrapEngineIssueError(prefix string, err error) error {
 	if errors.Is(err, ca.ErrInvalidCSR) {
 		return fmt.Errorf("%s: %w: %w", prefix, errCertificateInvalid, err)
 	}
 	return fmt.Errorf("%s: %w", prefix, err)
+}
+
+// nextRowStamp is the updated_at for a local write to a certificate row: the
+// wall clock at millisecond resolution, forced strictly past prev. Two things
+// make a plain second-resolution time.Now() wrong here. The row trigger
+// trg_certificates_set_updated_at rewrites a same-value updated_at to a
+// millisecond stamp, so a second write inside one second leaves the row newer
+// than the memory copy; and refreshFromTable fetches full rows before it takes
+// p.mu, so a row read before this write but merged after it carries an
+// updated_at that must not beat the write. A strictly increasing stamp makes
+// the DB value and the memory value identical (an echo is a tie) and any
+// older row lose rowSupersedes.
+func nextRowStamp(prev string) string {
+	t := time.Now().UTC().Truncate(time.Millisecond)
+	if p, ok := parseRowTime(prev); ok && !t.After(p) {
+		t = p.UTC().Truncate(time.Millisecond).Add(time.Millisecond)
+	}
+	return t.Format("2006-01-02T15:04:05.000Z")
 }

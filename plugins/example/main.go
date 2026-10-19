@@ -9,6 +9,8 @@
 //	POST /api/certs             {name, cert_pem, key_pem} upload
 //	GET  /api/binding?listener= {cert} currently served
 //	PUT  /api/binding           {listener, cert} serve another certificate
+//	GET  /api/certs?name=       {cert_pem} stored object (only for the
+//	                            "readback" verify op, see Verify below)
 //
 // Build: GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o plugin.wasm .
 package main
@@ -77,6 +79,23 @@ func (device) Push(h *delivery.Host, req abi.PushRequest) (abi.PushResult, error
 	}
 	h.Logf("bound %s to %s (was %s)", req.Name, listener, prior.Cert)
 	return abi.PushResult{Installed: true, Reloaded: true, Outcome: abi.OutcomeInstalled, RollbackHandle: prior.Cert}, nil
+}
+
+// Verify makes the example usable as a "verification":"readback" plugin: it
+// returns the certificate the device stores under the name Push used. The hub
+// parses and fingerprints it; the plugin never reports "verified".
+func (device) Verify(h *delivery.Host, req abi.VerifyRequest) (abi.VerifyResult, error) {
+	resp, err := call(h, req.Invocation, "GET", "/api/certs?name="+url.QueryEscape(req.Name), nil)
+	if err != nil {
+		return abi.VerifyResult{}, err
+	}
+	var got struct {
+		CertPEM string `json:"cert_pem"`
+	}
+	if err := json.Unmarshal(resp.Body, &got); err != nil {
+		return abi.VerifyResult{}, fmt.Errorf("stored certificate unreadable")
+	}
+	return abi.VerifyResult{CertPEM: got.CertPEM}, nil
 }
 
 func (device) Rollback(h *delivery.Host, req abi.RollbackRequest) (abi.RollbackResult, error) {

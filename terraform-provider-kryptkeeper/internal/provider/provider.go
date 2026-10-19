@@ -101,7 +101,10 @@ func (p *KryptKeeperProvider) Resources(_ context.Context) []func() resource.Res
 }
 
 func (p *KryptKeeperProvider) DataSources(_ context.Context) []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		NewCADataSource,
+		NewTemplateDataSource,
+	}
 }
 
 func (p *KryptKeeperProvider) Functions(_ context.Context) []func() function.Function {
@@ -155,7 +158,7 @@ func (c *HubClient) Get(ctx context.Context, path string) ([]byte, error) {
 		return nil, nil
 	}
 	if status < 200 || status >= 300 {
-		return nil, fmt.Errorf("GET %s: %d: %s", path, status, strings.TrimSpace(string(body)))
+		return nil, formatAPIError("GET", path, status, body)
 	}
 	return body, nil
 }
@@ -165,8 +168,11 @@ func (c *HubClient) Post(ctx context.Context, path string, body any) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
+	if status == http.StatusAccepted {
+		return nil, pendingApprovalError("POST", path, respBody)
+	}
 	if status < 200 || status >= 300 {
-		return nil, fmt.Errorf("POST %s: %d: %s", path, status, strings.TrimSpace(string(respBody)))
+		return nil, formatAPIError("POST", path, status, respBody)
 	}
 	return respBody, nil
 }
@@ -176,19 +182,39 @@ func (c *HubClient) Put(ctx context.Context, path string, body any) ([]byte, err
 	if err != nil {
 		return nil, err
 	}
+	if status == http.StatusAccepted {
+		return nil, pendingApprovalError("PUT", path, respBody)
+	}
 	if status < 200 || status >= 300 {
-		return nil, fmt.Errorf("PUT %s: %d: %s", path, status, strings.TrimSpace(string(respBody)))
+		return nil, formatAPIError("PUT", path, status, respBody)
+	}
+	return respBody, nil
+}
+
+func (c *HubClient) Patch(ctx context.Context, path string, body any) ([]byte, error) {
+	respBody, status, err := c.do(ctx, http.MethodPatch, path, body)
+	if err != nil {
+		return nil, err
+	}
+	if status == http.StatusAccepted {
+		return nil, pendingApprovalError("PATCH", path, respBody)
+	}
+	if status < 200 || status >= 300 {
+		return nil, formatAPIError("PATCH", path, status, respBody)
 	}
 	return respBody, nil
 }
 
 func (c *HubClient) Delete(ctx context.Context, path string) error {
-	_, status, err := c.do(ctx, http.MethodDelete, path, nil)
+	respBody, status, err := c.do(ctx, http.MethodDelete, path, nil)
 	if err != nil {
 		return err
+	}
+	if status == http.StatusAccepted {
+		return pendingApprovalError("DELETE", path, respBody)
 	}
 	if status == http.StatusNotFound || status == http.StatusNoContent || status == http.StatusOK {
 		return nil
 	}
-	return fmt.Errorf("DELETE %s: unexpected status %d", path, status)
+	return formatAPIError("DELETE", path, status, respBody)
 }

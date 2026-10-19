@@ -6,10 +6,11 @@ package bootstrap
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 func registerProtocolHandlers(mux *http.ServeMux, auth *Authenticator, protocolProvider ProtocolProvider, auditProvider AuditProvider) {
@@ -33,7 +34,7 @@ func registerProtocolHandlers(mux *http.ServeMux, auth *Authenticator, protocolP
 		status, err := protocolProvider.GetStatus(r.Context())
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "protocol.status", "protocol", "status", AuditOutcomeFailure)
-			log.Printf("protocol status unavailable: %v", err)
+			logging.Warnf("protocol status unavailable: %v", err)
 			writeServiceUnavailable(w, "protocol status unavailable")
 			return
 		}
@@ -53,7 +54,7 @@ func registerProtocolHandlers(mux *http.ServeMux, auth *Authenticator, protocolP
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/protocols/status response: %v", err)
+			logging.Warnf("failed to encode /api/v1/protocols/status response: %v", err)
 		}
 	})
 
@@ -77,7 +78,7 @@ func registerProtocolHandlers(mux *http.ServeMux, auth *Authenticator, protocolP
 		readiness, err := protocolProvider.GetReadiness(r.Context())
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "protocol.readiness", "protocol", "readiness", AuditOutcomeFailure)
-			log.Printf("protocol readiness unavailable: %v", err)
+			logging.Warnf("protocol readiness unavailable: %v", err)
 			writeServiceUnavailable(w, "protocol readiness unavailable")
 			return
 		}
@@ -97,7 +98,7 @@ func registerProtocolHandlers(mux *http.ServeMux, auth *Authenticator, protocolP
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/protocols/readiness response: %v", err)
+			logging.Warnf("failed to encode /api/v1/protocols/readiness response: %v", err)
 		}
 	})
 
@@ -121,7 +122,7 @@ func registerProtocolHandlers(mux *http.ServeMux, auth *Authenticator, protocolP
 		conformance, err := protocolProvider.GetConformance(r.Context())
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "protocol.conformance", "protocol", "conformance", AuditOutcomeFailure)
-			log.Printf("protocol conformance unavailable: %v", err)
+			logging.Warnf("protocol conformance unavailable: %v", err)
 			writeServiceUnavailable(w, "protocol conformance unavailable")
 			return
 		}
@@ -141,7 +142,7 @@ func registerProtocolHandlers(mux *http.ServeMux, auth *Authenticator, protocolP
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/protocols/conformance response: %v", err)
+			logging.Warnf("failed to encode /api/v1/protocols/conformance response: %v", err)
 		}
 	})
 
@@ -193,7 +194,7 @@ func registerProtocolHandlers(mux *http.ServeMux, auth *Authenticator, protocolP
 		result, err := protocolProvider.TriggerConformanceRecheck(r.Context(), req.Suite, req.Reason)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "protocol.conformance.recheck", "protocol", "conformance-recheck", AuditOutcomeFailure)
-			log.Printf("protocol conformance recheck failed: %v", err)
+			logging.Warnf("protocol conformance recheck failed: %v", err)
 			writeServiceUnavailable(w, "protocol conformance recheck unavailable")
 			return
 		}
@@ -221,7 +222,7 @@ func registerProtocolHandlers(mux *http.ServeMux, auth *Authenticator, protocolP
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/protocols/conformance/recheck response: %v", err)
+			logging.Warnf("failed to encode /api/v1/protocols/conformance/recheck response: %v", err)
 		}
 	})
 }

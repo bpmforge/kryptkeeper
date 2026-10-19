@@ -29,6 +29,15 @@ type Plugin interface {
 	Rollback(h *Host, req abi.RollbackRequest) (abi.RollbackResult, error)
 }
 
+// Verifier is implemented by plugins whose manifest declares verification
+// "readback". Verify returns the certificate PEM the store holds for the
+// version Push wrote (req.Handle); the hub fingerprints it. A plugin that
+// declares readback without implementing Verifier fails closed: the op errors
+// and the hub treats the delivery as unverified.
+type Verifier interface {
+	Verify(h *Host, req abi.VerifyRequest) (abi.VerifyResult, error)
+}
+
 var registered Plugin
 
 // Register sets the plugin this module serves. Call it from init.
@@ -153,6 +162,20 @@ func dispatch(p Plugin, h *Host, op string, in []byte) (json.RawMessage, error) 
 		}
 		if err != nil && res.Detail == "" {
 			res.Detail = err.Error()
+		}
+		return json.Marshal(res)
+	case abi.OpVerify:
+		v, ok := p.(Verifier)
+		if !ok {
+			return nil, errors.New("plugin does not implement verify")
+		}
+		var req abi.VerifyRequest
+		if err := json.Unmarshal(in, &req); err != nil {
+			return nil, err
+		}
+		res, err := v.Verify(h, req)
+		if err != nil {
+			return nil, err
 		}
 		return json.Marshal(res)
 	case abi.OpRollback:

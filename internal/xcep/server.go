@@ -10,10 +10,12 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"kryptkeeper/internal/wstep"
 )
@@ -25,7 +27,10 @@ type Template struct {
 	DisplayName   string
 	SchemaVersion int
 	MinKeySize    int
-	KeyUsage      []string
+	// AllowedAlgorithms is the template's own allow-list (empty: any); the
+	// advertised key size must be one of its RSA entries.
+	AllowedAlgorithms []string
+	KeyUsage          []string
 	// ValiditySeconds and RenewalSeconds become certificateValidity; the
 	// client starts renewal when less than RenewalSeconds remain. Zero
 	// means one year and six weeks, the ADCS defaults.
@@ -36,10 +41,40 @@ type Template struct {
 	// Enrollee is wstep.EnrolleeMachine or wstep.EnrolleeUser; empty is
 	// machine. A caller is offered only templates of its own kind (W20-17).
 	Enrollee string
+	// EnrollRoles is the template's enroll list; a caller is offered the
+	// template only when wstep.EnrollPermitted allows it (B5).
+	EnrollRoles []string
 }
 
 // TemplateListFunc returns available templates for XCEP policy responses.
 type TemplateListFunc func() ([]Template, error)
+
+// KeyPolicyFunc resolves the RSA modulus a template can be enrolled with
+// under the hub's issuance policy: the smallest size of at least atLeast bits
+// (and within templateAlgos when non-empty) that issuance will accept. ok is
+// false, with reason, when none is. An error fails the request closed.
+type KeyPolicyFunc func(atLeast int, templateAlgos []string) (bits int, ok bool, reason string, err error)
+
+// KeyPolicyLoader snapshots the issuance policy for one GetPolicies request
+// and returns the KeyPolicyFunc that answers every template of that request
+// from the snapshot, so the policy store is read once per request, not once
+// per template and candidate size.
+type KeyPolicyLoader func() (KeyPolicyFunc, error)
+
+// policyAuditWindow bounds xcep.policy success rows to one per principal per
+// window: Windows polls every few hours and on every GPO refresh, and a row
+// per poll would bury the enrollment trail.
+const policyAuditWindow = 15 * time.Minute
+
+// defaultMinRSABits is the minimum a template advertises and enforces when it
+// sets none. internal/ca keeps the matching ladder floor (rsaKeyLadder[0]).
+const defaultMinRSABits = 2048
+
+// auditSeenMax bounds the dedupe map. An expired entry is already ignored by
+// the check, so pruning only reclaims memory: it runs at most once per window,
+// or earlier when the map reaches this size. If it is still full of live
+// entries a new principal is audited on every poll rather than remembered.
+const auditSeenMax = 50000
 
 // Server implements the MS-XCEP Certificate Enrollment Policy Protocol.
 // XCEP uses SOAP over HTTPS with a single GetPolicies operation.
@@ -50,6 +85,12 @@ type Server struct {
 	audit        wstep.AuditFunc
 	caCertDER    []byte
 	enrollURL    string
+	keyPolicy    KeyPolicyLoader
+	now          func() time.Time
+
+	auditMu        sync.Mutex
+	auditSeen      map[string]time.Time
+	auditLastPrune time.Time
 }
 
 // NewServer creates an XCEP server.
@@ -57,7 +98,7 @@ func NewServer(templateFunc TemplateListFunc, policyID string) *Server {
 	if policyID == "" {
 		policyID = "kryptkeeper-default-policy"
 	}
-	return &Server{templateFunc: templateFunc, policyID: policyID}
+	return &Server{templateFunc: templateFunc, policyID: policyID, now: time.Now, auditSeen: map[string]time.Time{}}
 }
 
 // WithAuthenticator sets how policy requests are authenticated; it is the
@@ -71,6 +112,14 @@ func (s *Server) WithAuthenticator(a wstep.AuthWrapper) *Server {
 // WithAuditFunc records rejected credentials as "xcep.policy" denials.
 func (s *Server) WithAuditFunc(fn wstep.AuditFunc) *Server {
 	s.audit = fn
+	return s
+}
+
+// WithKeyPolicy makes GetPolicies advertise only key sizes the issuance
+// policy accepts, so a client generates a key WSTEP will not then refuse.
+// Without it the template's own minimum is advertised.
+func (s *Server) WithKeyPolicy(fn KeyPolicyLoader) *Server {
+	s.keyPolicy = fn
 	return s
 }
 
@@ -121,14 +170,21 @@ func (s *Server) servePolicies(w http.ResponseWriter, r *http.Request, id wstep.
 		return
 	}
 	if len(s.caCertDER) == 0 {
-		log.Print("xcep: no issuing CA configured")
+		logging.Info("xcep: no issuing CA configured")
 		s.writeSoapFault(w, "s:Server", "No issuing CA configured")
 		return
 	}
 
 	templates, err := s.templateFunc()
 	if err != nil {
-		log.Printf("xcep: template list error: %v", err)
+		logging.Infof("xcep: template list error: %v", err)
+		s.writeSoapFault(w, "s:Server", "Internal error retrieving policies")
+		return
+	}
+
+	templates, err = s.applyKeyPolicy(templates, id)
+	if err != nil {
+		logging.Warnf("xcep: issuance policy unavailable, refusing to advertise templates: %v", err)
 		s.writeSoapFault(w, "s:Server", "Internal error retrieving policies")
 		return
 	}
@@ -142,8 +198,105 @@ func (s *Server) servePolicies(w http.ResponseWriter, r *http.Request, id wstep.
 	w.Header().Set("Content-Type", "application/soap+xml; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	if _, err := io.WriteString(w, resp); err != nil {
-		log.Printf("xcep: writing response: %v", err)
+		logging.Infof("xcep: writing response: %v", err)
+		return
 	}
+	s.auditServed(r, id, templates)
+}
+
+// auditServed records a successful policy fetch, at most once per principal
+// per policyAuditWindow.
+func (s *Server) auditServed(r *http.Request, id wstep.Identity, templates []Template) {
+	if s.audit == nil {
+		return
+	}
+	now := s.now()
+	s.auditMu.Lock()
+	if last, ok := s.auditSeen[id.Principal]; ok && now.Sub(last) < policyAuditWindow {
+		s.auditMu.Unlock()
+		return
+	}
+	if now.Sub(s.auditLastPrune) >= policyAuditWindow || len(s.auditSeen) >= auditSeenMax {
+		s.pruneAuditSeen(now)
+	}
+	if len(s.auditSeen) < auditSeenMax {
+		s.auditSeen[id.Principal] = now
+	}
+	s.auditMu.Unlock()
+
+	machine := id.IsMachine()
+	var offered []string
+	for _, t := range templates {
+		if s.offeredTo(t, id, machine) {
+			offered = append(offered, fmt.Sprintf("%s(min_key=%d)", t.Name, max(t.MinKeySize, defaultMinRSABits)))
+		}
+	}
+	wstep.EmitAudit(s.audit, r, wstep.AuditEvent{Action: "xcep.policy", Actor: id.Principal, Outcome: "success",
+		Detail: fmt.Sprintf("method=%s offered=[%s]", id.Method, strings.Join(offered, " "))})
+}
+
+// pruneAuditSeen drops expired dedupe entries; the caller holds auditMu.
+func (s *Server) pruneAuditSeen(now time.Time) {
+	s.auditLastPrune = now
+	for k, t := range s.auditSeen {
+		if now.Sub(t) >= policyAuditWindow {
+			delete(s.auditSeen, k)
+		}
+	}
+}
+
+// offeredTo reports whether t is a template the caller may be offered. A
+// template whose OID does not parse cannot be named in the certificate, so
+// autoenrollment could never match it: it is left out. Only templates of the
+// caller's kind are offered (W20-17), and never one the caller may not enroll
+// (B5): WSTEP would refuse it and autoenrollment would retry it every pulse.
+func (s *Server) offeredTo(t Template, id wstep.Identity, machine bool) bool {
+	if (t.Enrollee == wstep.EnrolleeUser) == machine {
+		return false
+	}
+	if !wstep.EnrollPermitted(t.EnrollRoles, id) {
+		return false
+	}
+	return t.Name != "" && templateExtensionValue(t.OID, 1) != nil
+}
+
+// applyKeyPolicy raises each offered template's minimum key size to one the
+// issuance policy accepts and drops a template no key size satisfies,
+// logging why: an offer WSTEP is certain to refuse would only be retried
+// every pulse. The template's own minimum is a floor, never lowered.
+func (s *Server) applyKeyPolicy(templates []Template, id wstep.Identity) ([]Template, error) {
+	if s.keyPolicy == nil {
+		return templates, nil
+	}
+	machine := id.IsMachine()
+	out := make([]Template, 0, len(templates))
+	var probe KeyPolicyFunc // loaded on the first offered template
+	for _, t := range templates {
+		if !s.offeredTo(t, id, machine) {
+			out = append(out, t)
+			continue
+		}
+		if probe == nil {
+			var err error
+			if probe, err = s.keyPolicy(); err != nil {
+				return nil, err
+			}
+		}
+		bits, ok, reason, err := probe(max(t.MinKeySize, defaultMinRSABits), t.AllowedAlgorithms)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			// Windows enrolls over XCEP with RSA only; an ECDSA-only policy
+			// cannot be advertised in a schema-2 policy, so the template is
+			// withheld rather than offered into a certain refusal.
+			logging.Warnf("xcep: template %s not offered to %s: no RSA key size is accepted: %s", t.Name, id.Principal, reason)
+			continue
+		}
+		t.MinKeySize = bits
+		out = append(out, t)
+	}
+	return out, nil
 }
 
 type soapEnvelope struct {
@@ -203,14 +356,7 @@ func (s *Server) buildGetPoliciesResponse(templates []Template, id wstep.Identit
 	var oids []string
 	usable := make([]Template, 0, len(templates))
 	for _, t := range templates {
-		// A template whose OID does not parse cannot be named in the
-		// certificate, so autoenrollment could never match it: leave it out.
-		// Only templates of the caller's kind: a user is never offered a
-		// machine template, nor a machine a user one (W20-17).
-		if (t.Enrollee == wstep.EnrolleeUser) == machine {
-			continue
-		}
-		if t.Name != "" && templateExtensionValue(t.OID, 1) != nil {
+		if s.offeredTo(t, id, machine) {
 			usable = append(usable, t)
 		}
 	}
@@ -261,7 +407,7 @@ func (s *Server) writePolicy(b *strings.Builder, t Template, oidRef, templateExt
 	}
 	minKey, revision := t.MinKeySize, t.Revision
 	if minKey <= 0 {
-		minKey = 2048
+		minKey = defaultMinRSABits
 	}
 	if revision <= 0 {
 		revision = 1

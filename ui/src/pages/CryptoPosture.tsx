@@ -1,10 +1,15 @@
 import { useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Download, Layers, RefreshCw, Send } from "lucide-react";
 import { toast } from "sonner";
 import { api, downloadAuthedFile } from "../lib/api";
-import type { CryptoPostureReport } from "../lib/models";
+import type { CryptoPostureReport, PostureSnapshot } from "../lib/models";
 import type { components } from "../generated/api-types";
 import {
   NOTIFY_CHANNELS,
@@ -14,6 +19,7 @@ import {
   expiredCertificatesPath,
   type NotifyChannel,
 } from "../lib/actions";
+import { GradeLabel } from "../components/StatusCue";
 import {
   Badge,
   Button,
@@ -27,6 +33,10 @@ import {
   StateMessage,
 } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
+import { AcceptRiskDialog } from "../components/AcceptRiskDialog";
+import { FindingFunnelPanel } from "../components/FindingFunnel";
+import { POSTURE_FINDING_CODES } from "../lib/exceptionsApi";
+import { canManageCertificates, useAuthz } from "../lib/auth";
 
 // ui/src/lib/models.ts is a hand-written mirror of the OpenAPI spec and is
 // out of write_scope for this ticket (W3-02); CryptoPostureReport there
@@ -36,6 +46,38 @@ type FindingFunnelSummary = components["schemas"]["FindingFunnelSummary"];
 type CryptoPostureReportWithFindings = CryptoPostureReport & {
   findings?: FindingFunnelSummary;
 };
+
+type SnapshotWithFindings = PostureSnapshot["report"] & {
+  findings?: FindingFunnelSummary;
+};
+
+export const RISK_SCORING_DOC_URL =
+  "https://github.com/bpmforge/kryptkeeper/blob/main/docs/guides/RISK_SCORING.md";
+const RANGE_OPTIONS = [30, 90, 365] as const;
+type RangeDays = (typeof RANGE_OPTIONS)[number];
+const DAY_MS = 86_400_000;
+
+function snapshotRows(s: PostureSnapshot): [string, string | number][] {
+  const f = (s.report as SnapshotWithFindings).findings;
+  const dash = (n: number | undefined) => (n === undefined ? "—" : n);
+  return [
+    ["Total certificates", s.total_certs],
+    ["PQC readiness %", s.pqc_score_percent],
+    ["Automation %", s.automation_percent],
+    ["Risk critical", s.risk_critical],
+    ["Risk high", s.risk_high],
+    ["Risk medium", s.risk_medium],
+    ["Risk low", s.risk_low],
+    ["Expired", s.expired],
+    ["Expiring ≤47 days", s.expiring_47d],
+    ["Findings (raw)", dash(f?.raw)],
+    ["Findings (effective)", dash(f?.effective)],
+    ...["A", "B", "C", "D", "F"].map((g): [string, number] => [
+      `Grade ${g}`,
+      s.report.grade_distribution?.[g] ?? 0,
+    ]),
+  ];
+}
 
 // ---------------------------------------------------------------------------
 // Mini SVG donut chart — no external dependency
@@ -47,13 +89,13 @@ function DonutChart({ slices }: { slices: DonutSlice[] }) {
   const total = slices.reduce((s, d) => s + d.value, 0);
   if (total === 0) {
     return (
-      <svg viewBox="0 0 64 64" className="w-32 h-32">
+      <svg viewBox="0 0 64 64" className="w-32 h-32" aria-hidden="true">
         <circle
           cx="32"
           cy="32"
           r="22"
           fill="none"
-          stroke="#334155"
+          stroke="var(--border)"
           strokeWidth="12"
         />
       </svg>
@@ -73,7 +115,11 @@ function DonutChart({ slices }: { slices: DonutSlice[] }) {
   }, []);
 
   return (
-    <svg viewBox="0 0 64 64" className="w-32 h-32 -rotate-90">
+    <svg
+      viewBox="0 0 64 64"
+      className="w-32 h-32 -rotate-90"
+      aria-hidden="true"
+    >
       {segments.map((s) => (
         <circle
           key={s.label}
@@ -120,17 +166,17 @@ function ProgressBar({
 // ---------------------------------------------------------------------------
 
 const ALGO_COLORS: Record<string, string> = {
-  ECDSA: "#06b6d4",
-  RSA: "#f59e0b",
-  "ML-DSA-44": "#10b981",
-  "ML-DSA-65": "#10b981",
-  "ML-DSA-87": "#10b981",
-  Ed25519: "#8b5cf6",
-  Unknown: "#475569",
+  ECDSA: "var(--chart-4)",
+  RSA: "var(--chart-2)",
+  "ML-DSA-44": "var(--chart-1)",
+  "ML-DSA-65": "var(--chart-1)",
+  "ML-DSA-87": "var(--chart-1)",
+  Ed25519: "var(--chart-5)",
+  Unknown: "var(--chart-5)",
 };
 
 function algoColor(algo: string): string {
-  return ALGO_COLORS[algo] ?? "#94a3b8";
+  return ALGO_COLORS[algo] ?? "var(--chart-5)";
 }
 
 // ---------------------------------------------------------------------------
@@ -171,7 +217,7 @@ function TrendChart({
         preserveAspectRatio="none"
         className="w-full h-40"
         role="img"
-        aria-label="Posture trend over time"
+        aria-label={`Posture trend over time, line chart: ${series.map((s) => `${s.label} ${s.values[0]}% to ${s.values[n - 1]}%`).join(", ")} across ${n} daily snapshots. A table with the same data follows.`}
       >
         {/* gridlines at 25/50/75% */}
         {[25, 50, 75].map((g) => (
@@ -181,7 +227,7 @@ function TrendChart({
             x2="100"
             y1={y(g)}
             y2={y(g)}
-            stroke="#1e293b"
+            stroke="var(--border)"
             strokeWidth="0.5"
           />
         ))}
@@ -196,6 +242,31 @@ function TrendChart({
           />
         ))}
       </svg>
+      <div className="sr-only">
+        <table>
+          <caption>Daily snapshots of each plotted percentage.</caption>
+          <thead>
+            <tr>
+              <th scope="col">Captured</th>
+              {series.map((s) => (
+                <th key={s.label} scope="col">
+                  {s.label}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {labels.map((l, i) => (
+              <tr key={l}>
+                <td>{l}</td>
+                {series.map((s) => (
+                  <td key={s.label}>{s.values[i]}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       <div className="mt-2 flex flex-wrap items-center gap-4 text-xs">
         {series.map((s) => (
           <span key={s.label} className="flex items-center gap-1.5">
@@ -212,43 +283,50 @@ function TrendChart({
 }
 
 // ---------------------------------------------------------------------------
-// Findings summary (raw count; exceptions/suppression planned for v0.10)
-// ---------------------------------------------------------------------------
-
-function FindingFunnelPanel({ findings }: { findings?: FindingFunnelSummary }) {
-  // Finding exceptions (risk acceptance) are not available until v0.10, so
-  // only the raw count is shown; effective/suppressed would be misleading.
-  const raw = findings?.raw ?? 0;
-
-  return (
-    <Panel title="Findings" subtitle="Risk findings computed across the certificate inventory">
-      <div className="text-center">
-        <div className="text-3xl font-bold text-foreground">{raw}</div>
-        <div className="mt-1 text-xs uppercase tracking-[0.2em] text-muted-foreground">
-          Total findings
-        </div>
-      </div>
-    </Panel>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
 export default function CryptoPosture() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const authz = useAuthz();
+  const canAcceptRisk = canManageCertificates(
+    authz.data?.role,
+    authz.data?.scopes,
+  );
+  const [acceptRiskOpen, setAcceptRiskOpen] = useState(false);
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ["crypto-posture"],
     queryFn: api.cryptoPosture,
     staleTime: 60_000,
   });
 
-  const trendQuery = useQuery({
-    queryKey: ["crypto-posture-trend"],
-    queryFn: () => api.cryptoPostureTrend(),
-    staleTime: 60_000,
+  // D-102: the trend is fleet-wide, super-admin only. On tenant-context error
+  // we allow the request (the server enforces 403); the request waits for the
+  // context to settle so a scoped principal never fires it.
+  const ctxQuery = useQuery({
+    queryKey: ["tenant-context"],
+    queryFn: () => api.tenantContext(),
+    staleTime: 30_000,
   });
+  const ctx = ctxQuery.data?.data;
+  const trendAllowed = !ctx?.scoped;
+  const ctxSettled = !ctxQuery.isPending;
+  const [rangeDays, setRangeDays] = useState<RangeDays>(90);
+  const trendQuery = useQuery({
+    queryKey: ["crypto-posture-trend", rangeDays],
+    queryFn: () =>
+      api.cryptoPostureTrend({
+        since: new Date(Date.now() - rangeDays * DAY_MS).toISOString(),
+        limit: rangeDays,
+      }),
+    enabled: trendAllowed && ctxSettled,
+    staleTime: 60_000,
+    // keep the panel (and its range picker) mounted while a new range loads
+    placeholderData: keepPreviousData,
+  });
+  const [compareFromId, setCompareFromId] = useState<string | null>(null);
+  const [compareToId, setCompareToId] = useState<string | null>(null);
 
   const [banner, setBanner] = useState<string | null>(null);
 
@@ -292,6 +370,11 @@ export default function CryptoPosture() {
 
   const report: CryptoPostureReportWithFindings | undefined = data?.data;
   const snapshots = trendQuery.data?.data?.snapshots ?? [];
+  const compareFrom =
+    snapshots.find((s) => s.id === compareFromId) ?? snapshots[0];
+  const compareTo =
+    snapshots.find((s) => s.id === compareToId) ??
+    snapshots[snapshots.length - 1];
 
   if (isLoading) {
     return (
@@ -372,7 +455,7 @@ export default function CryptoPosture() {
         title="Crypto Posture"
         description={`Generated ${formatDateTime(report.generated_at)} · ${report.total_certs} certificates`}
         actions={
-          <div className="flex gap-2 shrink-0">
+          <div className="flex flex-wrap gap-2">
             <Button
               tone="secondary"
               onClick={() => {
@@ -425,18 +508,18 @@ export default function CryptoPosture() {
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <MetricCard label="Total certificates" value={report.total_certs} />
         <MetricCard
-          label="Quantum-safe today"
-          // Full-chain PQC only; the broader readiness figure is the same
-          // pqc_score_percent the PQC Readiness panel shows. Both numbers
-          // or "ready to migrate" reads as "done". Tone follows the honest one.
-          value={`${(report.pqc_readiness.quantum_safe_percent ?? 0)}%`}
-          hint={`${report.pqc_readiness.pqc_score_percent}% PQC readiness (incl. leaf-only and migration-ready)`}
+          label="PQC readiness"
+          // Headline is the broader readiness figure (same pqc_score_percent
+          // the PQC Readiness panel shows); full-chain quantum-safe is the
+          // stricter secondary figure and stays neutral when nothing is there yet.
+          value={`${report.pqc_readiness.pqc_score_percent}%`}
+          hint={`Quantum-safe today: ${report.pqc_readiness.quantum_safe} of ${report.total_certs} ${report.total_certs === 1 ? "certificate" : "certificates"}`}
           tone={
-            (report.pqc_readiness.quantum_safe_percent ?? 0) >= 80
+            report.pqc_readiness.pqc_score_percent >= 80
               ? "success"
-              : (report.pqc_readiness.quantum_safe_percent ?? 0) >= 40
+              : report.pqc_readiness.pqc_score_percent >= 40
                 ? "warning"
-                : "danger"
+                : "neutral"
           }
         />
         <MetricCard
@@ -448,7 +531,7 @@ export default function CryptoPosture() {
               ? "success"
               : report.automation_coverage.automation_percent >= 40
                 ? "warning"
-                : "danger"
+                : "neutral"
           }
         />
         <MetricCard
@@ -456,7 +539,7 @@ export default function CryptoPosture() {
           value={
             report.expiry_buckets.expired + report.expiry_buckets.expiring_47d
           }
-          hint={`${report.expiry_buckets.expired} already expired`}
+          hint={`incl. ${report.expiry_buckets.expired} already expired`}
           tone={
             report.expiry_buckets.expired + report.expiry_buckets.expiring_47d >
             0
@@ -467,34 +550,117 @@ export default function CryptoPosture() {
       </div>
 
       {/* Posture trend */}
-      {snapshots.length >= 2 && (
+      {!trendAllowed && (
+        <Panel title="Posture Trend">
+          <p className="text-sm text-muted-foreground">
+            Posture trend is fleet-wide and available to super-admins only.
+          </p>
+        </Panel>
+      )}
+      {trendAllowed && trendQuery.isSuccess && (
         <Panel
           title="Posture Trend"
           subtitle={`Daily snapshots · ${snapshots.length} captured`}
         >
-          <TrendChart
-            labels={snapshots.map((s) => s.captured_at)}
-            series={[
-              {
-                label: "PQC score %",
-                color: "#22d3ee",
-                values: snapshots.map((s) => s.pqc_score_percent),
-              },
-              {
-                label: "Automation %",
-                color: "#34d399",
-                values: snapshots.map((s) => s.automation_percent),
-              },
-            ]}
-          />
+          <div className="mb-3">
+            <Select
+              aria-label="Trend range"
+              value={String(rangeDays)}
+              onChange={(e) =>
+                setRangeDays(Number(e.target.value) as RangeDays)
+              }
+            >
+              {RANGE_OPTIONS.map((d) => (
+                <option key={d} value={String(d)}>
+                  Last {d} days
+                </option>
+              ))}
+            </Select>
+          </div>
+          {snapshots.length >= 2 ? (
+            <TrendChart
+              labels={snapshots.map((s) => s.captured_at)}
+              series={[
+                {
+                  label: "PQC score %",
+                  color: "var(--chart-1)",
+                  values: snapshots.map((s) => s.pqc_score_percent),
+                },
+                {
+                  label: "Automation %",
+                  color: "var(--chart-2)",
+                  values: snapshots.map((s) => s.automation_percent),
+                },
+              ]}
+            />
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Trend data is accumulating. A snapshot is captured daily — the
+              chart appears once at least two days are recorded.
+            </p>
+          )}
         </Panel>
       )}
-      {trendQuery.isSuccess && snapshots.length < 2 && (
-        <Panel title="Posture Trend">
-          <p className="text-sm text-muted-foreground">
-            Trend data is accumulating. A snapshot is captured daily — the chart
-            appears once at least two days are recorded.
-          </p>
+      {trendAllowed && snapshots.length >= 2 && compareFrom && compareTo && (
+        <Panel title="Compare two dates">
+          <div className="flex flex-wrap gap-4 text-sm text-foreground">
+            <label className="flex items-center gap-2">
+              <span>From</span>
+              <Select
+                aria-label="Compare from"
+                value={compareFrom.id}
+                onChange={(e) => setCompareFromId(e.target.value)}
+              >
+                {snapshots.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.captured_at.slice(0, 10)}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <label className="flex items-center gap-2">
+              <span>To</span>
+              <Select
+                aria-label="Compare to"
+                value={compareTo.id}
+                onChange={(e) => setCompareToId(e.target.value)}
+              >
+                {snapshots.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.captured_at.slice(0, 10)}
+                  </option>
+                ))}
+              </Select>
+            </label>
+          </div>
+          <table className="mt-3 w-full text-sm">
+            <thead>
+              <tr className="text-left text-muted-foreground">
+                <th scope="col" className="py-2 font-medium">
+                  Metric
+                </th>
+                <th scope="col" className="py-2 text-right font-medium">
+                  {compareFrom.captured_at.slice(0, 10)}
+                </th>
+                <th scope="col" className="py-2 text-right font-medium">
+                  {compareTo.captured_at.slice(0, 10)}
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {snapshotRows(compareFrom).map(([label, fromVal], i) => (
+                <tr key={label}>
+                  <th scope="row" className="py-2 text-left font-normal">
+                    {label}
+                  </th>
+                  <td className="py-2 text-right">{fromVal}</td>
+                  <td className="py-2 text-right">
+                    {snapshotRows(compareTo)[i][1]}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </Panel>
       )}
 
@@ -531,7 +697,7 @@ export default function CryptoPosture() {
         {/* PQC Readiness */}
         <Panel title="PQC Readiness">
           <div className="space-y-4">
-            <div className="flex items-baseline justify-between">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
               <span className="text-4xl font-bold text-primary">
                 {report.pqc_readiness.pqc_score_percent}%
               </span>
@@ -669,7 +835,19 @@ export default function CryptoPosture() {
 
         {/* Grade distribution */}
         <Panel title="Grade Distribution">
-          <SectionLabel>Certificate quality grades</SectionLabel>
+          <div className="flex items-center justify-between gap-2">
+            <SectionLabel>Certificate quality grades</SectionLabel>
+            <a
+              href={RISK_SCORING_DOC_URL}
+              target="_blank"
+              rel="noreferrer"
+              aria-label="How risk scores are computed"
+              title="Score = sum of risk-flag weights, capped at 100. A: 0-10, B: 11-30, C: 31-50, D: 51-70, F: 71-100. Click for the full formula."
+              className="text-xs text-primary underline"
+            >
+              How is this scored?
+            </a>
+          </div>
           {gradeEntries.length === 0 ? (
             <p className="mt-3 text-sm text-muted-foreground">
               No certificates in inventory yet. Grades appear once certificates
@@ -682,7 +860,7 @@ export default function CryptoPosture() {
                   <div className="flex items-center justify-between text-sm">
                     <div className="flex items-center gap-2">
                       <Badge tone={GRADE_TONE[grade] ?? "neutral"}>
-                        {grade}
+                        <GradeLabel grade={grade} />
                       </Badge>
                     </div>
                     <span className="text-foreground">
@@ -715,7 +893,29 @@ export default function CryptoPosture() {
       </div>
 
       {/* Row 4 */}
-      <FindingFunnelPanel findings={report.findings} />
+      <FindingFunnelPanel
+        title="Findings"
+        subtitle="Risk findings computed across the certificate inventory"
+        findings={report.findings}
+        actions={
+          canAcceptRisk ? (
+            <Button tone="secondary" onClick={() => setAcceptRiskOpen(true)}>
+              Accept risk…
+            </Button>
+          ) : null
+        }
+      />
+      <AcceptRiskDialog
+        open={acceptRiskOpen}
+        editableTarget
+        target={{ type: "certificate", id: "" }}
+        findingCodes={POSTURE_FINDING_CODES}
+        onClose={() => setAcceptRiskOpen(false)}
+        onProposed={() => {
+          void queryClient.invalidateQueries({ queryKey: ["exceptions"] });
+          void queryClient.invalidateQueries({ queryKey: ["crypto-posture"] });
+        }}
+      />
 
       <Dialog
         open={notifyOpen}

@@ -6,14 +6,15 @@ package bootstrap
 
 import (
 	"context"
-	"log"
 	"os"
 	"strings"
+
+	"kryptkeeper/internal/logging"
 )
 
 const certSummaryProviderEnv = "APP_CERTS_SUMMARY_PROVIDER"
 
-var certSummaryProviderWarnf = log.Printf
+var certSummaryProviderWarnf = logging.Warnf
 
 const (
 	certSummaryProviderFile = "file"
@@ -33,7 +34,10 @@ type CertSummarySnapshot struct {
 	Managed   int
 	External  int
 	Unmanaged int
-	Source    string
+	// Unowned counts active certificates with no owner team (W22-24);
+	// file-backed summaries report it only when the summary file carries it.
+	Unowned int
+	Source  string
 }
 
 type CertSummaryProvider interface {

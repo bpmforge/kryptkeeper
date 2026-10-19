@@ -16,27 +16,26 @@ builds:
   - id: kryptkeeper
     main: ./cmd/kryptkeeper
     binary: kryptkeeper
+    mod_timestamp: "{{ .CommitTimestamp }}"
     env:
       - CGO_ENABLED=0
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.CommitDate}}
     goos: [linux, darwin]
     goarch: [amd64, arm64]
-    ignore:
-      - goos: darwin
-        goarch: amd64
 
   - id: kryptkeeper-agent
     main: ./cmd/kryptkeeper-agent
     binary: kryptkeeper-agent
+    mod_timestamp: "{{ .CommitTimestamp }}"
     env:
       - CGO_ENABLED=0
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.CommitDate}}
     goos: [linux, darwin]
     goarch: [amd64, arm64]
     ignore:
@@ -53,12 +52,13 @@ builds:
   - id: kryptkeeper-agent-windows
     main: ./cmd/kryptkeeper-agent
     binary: kryptkeeper-agent
+    mod_timestamp: "{{ .CommitTimestamp }}"
     env:
       - CGO_ENABLED=0
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.CommitDate}}
     goos: [windows]
     goarch: [amd64]
     hooks:
@@ -74,12 +74,13 @@ builds:
   - id: kryptkeeper-certmanager
     main: ./cmd/kryptkeeper-certmanager
     binary: kryptkeeper-certmanager
+    mod_timestamp: "{{ .CommitTimestamp }}"
     env:
       - CGO_ENABLED=0
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.CommitDate}}
     goos: [linux, darwin]
     goarch: [amd64, arm64]
     ignore:
@@ -89,12 +90,13 @@ builds:
   - id: kryptkeeper-mcp
     main: ./cmd/kryptkeeper-mcp
     binary: kryptkeeper-mcp
+    mod_timestamp: "{{ .CommitTimestamp }}"
     env:
       - CGO_ENABLED=0
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.CommitDate}}
     goos: [linux, darwin]
     goarch: [amd64, arm64]
     ignore:
@@ -124,11 +126,15 @@ archives:
     formats: [tar.gz]
 
 # extra_files folds the MSI (built by the kryptkeeper-agent-windows post hook)
-# and the Homebrew formula into checksums.txt, so cosign signs them too.
+# and packaging/install.sh into checksums.txt, so cosign signs them too (the
+# signed checksums.txt is install.sh's signature; there is no install.sh.sig).
+# The Homebrew formula is rendered afterwards by release.yml and signed alone.
 checksum:
   name_template: "checksums.txt"
   extra_files:
     - glob: ./dist/*.msi
+    - glob: ./packaging/install.sh
+      name_template: install.sh
 
 # CycloneDX SBOMs, one per archive -- syft's goreleaser cataloger defaults to
 # SPDX; the ticket wants CycloneDX, so the format is forced via `args`.
@@ -352,20 +358,12 @@ docker_manifests:
     image_templates:
       - "ghcr.io/bpmforge/kryptkeeper:{{ .Version }}-amd64"
       - "ghcr.io/bpmforge/kryptkeeper:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/bpmforge/kryptkeeper:latest"
-    image_templates:
-      - "ghcr.io/bpmforge/kryptkeeper:{{ .Version }}-amd64"
-      - "ghcr.io/bpmforge/kryptkeeper:{{ .Version }}-arm64"
 
   - name_template: "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}"
     image_templates:
       - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-amd64"
       - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-arm64"
   - name_template: "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Major }}.{{ .Minor }}"
-    image_templates:
-      - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-amd64"
-      - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/bpmforge/kryptkeeper-agent:latest"
     image_templates:
       - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-amd64"
       - "ghcr.io/bpmforge/kryptkeeper-agent:{{ .Version }}-arm64"
@@ -378,20 +376,12 @@ docker_manifests:
     image_templates:
       - "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Version }}-amd64"
       - "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/bpmforge/kryptkeeper-certmanager:latest"
-    image_templates:
-      - "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Version }}-amd64"
-      - "ghcr.io/bpmforge/kryptkeeper-certmanager:{{ .Version }}-arm64"
 
   - name_template: "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}"
     image_templates:
       - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-amd64"
       - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-arm64"
   - name_template: "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Major }}.{{ .Minor }}"
-    image_templates:
-      - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-amd64"
-      - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-arm64"
-  - name_template: "ghcr.io/bpmforge/kryptkeeper-mcp:latest"
     image_templates:
       - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-amd64"
       - "ghcr.io/bpmforge/kryptkeeper-mcp:{{ .Version }}-arm64"
@@ -429,6 +419,8 @@ release:
     name: kryptkeeper
   extra_files:
     - glob: ./dist/*.msi
+    - glob: ./packaging/install.sh
+      name_template: install.sh
   prerelease: auto
 
 changelog:

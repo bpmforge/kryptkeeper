@@ -7,14 +7,13 @@
 package agentdiscovery
 
 import (
-	"crypto/ecdsa"
-	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
-	"fmt"
+	"errors"
 	"io/fs"
+	"kryptkeeper/internal/logging"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,51 +37,115 @@ var DefaultLinuxPaths = []string{
 }
 
 // WalkLinuxCerts scans the given directory paths for PEM-encoded certificate
-// files and returns one DiscoveredCert per unique certificate found.
-// Errors opening individual files are silently skipped.
+// files and returns one DiscoveredCert per unique certificate found. Paths it
+// cannot open are logged, not silently dropped; WalkLinuxCertsDetailed hands
+// them back so the inventory push can report them (W34-09).
 func WalkLinuxCerts(paths []string) ([]agentclient.DiscoveredCert, error) {
+	certs, unreadable, err := WalkLinuxCertsDetailed(paths)
+	if len(unreadable) > 0 {
+		logging.Infof("discovery: %d path(s) unreadable (first: %s: %s)", len(unreadable), unreadable[0].Path, unreadable[0].Error)
+	}
+	return certs, err
+}
+
+// WalkLinuxCertsDetailed is WalkLinuxCerts plus every path the walk could not
+// open or read for lack of permission. Other failures (a file that is not a
+// certificate) are not unreadable paths.
+func WalkLinuxCertsDetailed(paths []string) ([]agentclient.DiscoveredCert, []agentclient.UnreadablePath, error) {
 	seen := make(map[string]struct{})
 	var out []agentclient.DiscoveredCert
+	var unreadable []agentclient.UnreadablePath
+	note := func(path string, err error) {
+		if errors.Is(err, fs.ErrPermission) {
+			unreadable = append(unreadable, agentclient.UnreadablePath{Path: path, Error: err.Error()})
+		}
+	}
+	add := func(certs []agentclient.DiscoveredCert) {
+		for _, c := range certs {
+			if _, dup := seen[c.Fingerprint]; !dup {
+				seen[c.Fingerprint] = struct{}{}
+				out = append(out, c)
+			}
+		}
+	}
 
 	for _, root := range paths {
 		info, err := os.Stat(root)
 		if err != nil {
-			continue // path doesn't exist on this host
+			note(root, err)
+			continue // absent on this host, or not searchable
 		}
 		if !info.IsDir() {
-			if certs, err := certsFromFile(root); err == nil {
-				for _, c := range certs {
-					if _, dup := seen[c.Fingerprint]; !dup {
-						seen[c.Fingerprint] = struct{}{}
-						out = append(out, c)
-					}
-				}
+			certs, err := certsFromFile(root)
+			if err != nil {
+				note(root, err)
+				continue
 			}
+			add(certs)
 			continue
 		}
 
-		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error { // partial results are used as-is; walk errors are non-fatal here
-			if err != nil || d.IsDir() {
-				return nil
-			}
-			if !isCertFile(path) {
-				return nil
-			}
-			certs, err := certsFromFile(path)
+		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error { // partial results are used as-is; walk errors are recorded, not fatal
 			if err != nil {
+				note(path, err)
 				return nil
 			}
-			for _, c := range certs {
-				if _, dup := seen[c.Fingerprint]; !dup {
-					seen[c.Fingerprint] = struct{}{}
-					out = append(out, c)
-				}
+			if d.IsDir() {
+				return nil
+			}
+			switch {
+			case keystoreCandidate(path):
+				certs, err := keystoreCertsFromFile(path)
+				note(path, err)
+				add(certs)
+			case isCertFile(path):
+				certs, err := certsFromFile(path)
+				note(path, err)
+				add(certs)
 			}
 			return nil
 		})
 	}
 
-	return out, nil
+	return out, unreadable, nil
+}
+
+// maxKeystoreFileSize bounds what the walker reads into memory per keystore.
+const maxKeystoreFileSize = 16 << 20
+
+// keystoreCandidate reports whether path looks like a keystore or kubeconfig
+// that ScanKeystoreFile can read: Java/PKCS#12 stores by extension, kubeconfig
+// by name. A bare "config" only counts inside a .kube directory, so the walk
+// does not slurp every unrelated config file.
+func keystoreCandidate(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jks", ".keystore", ".jceks", ".bcfks", ".p12", ".pfx":
+		return true
+	}
+	if base == "kubeconfig" || strings.HasSuffix(base, ".kubeconfig") {
+		return true
+	}
+	return base == "config" && filepath.Base(filepath.Dir(path)) == ".kube"
+}
+
+// keystoreCertsFromFile extracts the certificates (never keys) from a keystore
+// file. Unreadable stores are logged with their reason and yield no certs.
+func keystoreCertsFromFile(path string) ([]agentclient.DiscoveredCert, error) {
+	info, err := os.Stat(path)
+	if err != nil || info.Size() > maxKeystoreFileSize {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var res KeystoreScanResult
+	ScanKeystoreFile(path, data, nil, &res)
+	for _, u := range res.UnreadableStores {
+		logging.Infof("keystore: %s", u)
+	}
+	return res.Certs, nil
 }
 
 // isCertFile returns true for files with common certificate extensions.
@@ -127,7 +190,7 @@ func certToDiscovered(cert *x509.Certificate, source string) agentclient.Discove
 	fp := sha256.Sum256(cert.Raw)
 	fingerprint := colonHex(fp[:])
 
-	autoRenewable := cert.NotAfter.Sub(time.Now()) < 90*24*time.Hour &&
+	autoRenewable := time.Until(cert.NotAfter) < 90*24*time.Hour &&
 		cert.NotAfter.After(time.Now())
 
 	return agentclient.DiscoveredCert{
@@ -152,33 +215,4 @@ func colonHex(b []byte) string {
 		parts[i] = h[i*2 : i*2+2]
 	}
 	return strings.Join(parts, ":")
-}
-
-// KeySize returns the public key size in bits for display purposes.
-func KeySize(cert *x509.Certificate) int {
-	switch k := cert.PublicKey.(type) {
-	case *rsa.PublicKey:
-		return k.N.BitLen()
-	case *ecdsa.PublicKey:
-		return k.Curve.Params().BitSize
-	default:
-		return 0
-	}
-}
-
-// IsExpired reports whether the certificate is past its NotAfter date.
-func IsExpired(cert *x509.Certificate) bool {
-	return time.Now().After(cert.NotAfter)
-}
-
-// DaysUntilExpiry returns the number of days until the certificate expires.
-// Negative values mean the certificate is already expired.
-func DaysUntilExpiry(cert *x509.Certificate) int {
-	return int(time.Until(cert.NotAfter).Hours() / 24)
-}
-
-// FormatFingerprint produces a colon-separated SHA-256 fingerprint string.
-func FormatFingerprint(cert *x509.Certificate) string {
-	fp := sha256.Sum256(cert.Raw)
-	return fmt.Sprintf("%x", fp)
 }

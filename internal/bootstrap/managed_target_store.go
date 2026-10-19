@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/agentinstall"
 )
 
 var errManagedTargetNotFound = errors.New("managed target not found")
@@ -79,14 +81,35 @@ type ManagedTarget struct {
 	// scheduler will not push to an auto_renew target where it is empty
 	// (RC1-A-01).
 	AutoRenewSetBy string `json:"auto_renew_set_by,omitempty"`
+	// SSHHostKey is the operator-confirmed SSH host key pin in authorized_keys
+	// format (W24-09). Empty = legacy: fall back to the credential's
+	// host_public_key. SSHHostKeyFingerprint is derived on read, never stored.
+	SSHHostKey            string `json:"ssh_host_key,omitempty"`
+	SSHHostKeyFingerprint string `json:"ssh_host_key_fingerprint,omitempty"`
 	// PluginID names the delivery plugin for install_mode "plugin"
 	// (W20-20); PluginSettings are its target_schema values. Secrets never
 	// go here: they live in the credential named by CredentialRef.
 	PluginID       string            `json:"plugin_id,omitempty"`
 	PluginSettings map[string]string `json:"plugin_settings,omitempty"`
-	Tenant         string            `json:"tenant"`
-	CreatedAt      string            `json:"created_at"`
-	UpdatedAt      string            `json:"updated_at"`
+	// KeyHandlingMode (W23-46) declares where the private key lives; empty =
+	// derived from install_mode. EffectiveKeyHandlingMode is response-only,
+	// never persisted and never accepted from a request body.
+	KeyHandlingMode          string `json:"key_handling_mode,omitempty"`
+	EffectiveKeyHandlingMode string `json:"effective_key_handling_mode,omitempty"`
+	// CredentialPrivileged is response-only: the target's credential carries
+	// the W34-11 privileged flag. Never persisted, never read from a request.
+	CredentialPrivileged bool `json:"credential_privileged,omitempty"`
+	// Response-only scan state and Blocked verdict (W34-10); see
+	// target_state_store.go. Never persisted through Create/Update and never
+	// read from a request body.
+	RenewalPrivilegeRequired bool         `json:"renewal_privilege_required"`
+	LastPrivilegeMode        string       `json:"last_privilege_mode,omitempty"`
+	UnreadableCount          int          `json:"unreadable_count"`
+	LastScannedAt            string       `json:"last_scanned_at,omitempty"`
+	Blocked                  *TargetBlock `json:"blocked,omitempty"`
+	Tenant                   string       `json:"tenant"`
+	CreatedAt                string       `json:"created_at"`
+	UpdatedAt                string       `json:"updated_at"`
 }
 
 // ManagedTargetUpdate is a partial PATCH — nil fields are left unchanged.
@@ -111,7 +134,9 @@ type ManagedTargetUpdate struct {
 	PluginID             *string
 	PluginSettings       *map[string]string
 	// AutoRenewSetBy is stamped by the handler after its authorization check.
-	AutoRenewSetBy *string
+	AutoRenewSetBy  *string
+	KeyHandlingMode *string
+	SSHHostKey      *string
 }
 
 // ManagedTargetEndpointMatch is one endpoint (scanned or agent-reported)
@@ -282,6 +307,8 @@ CREATE TABLE IF NOT EXISTS managed_targets (
     plugin_id      TEXT,
     plugin_settings TEXT NOT NULL DEFAULT '{}',
     auto_renew_set_by TEXT,
+    key_handling_mode TEXT,
+    ssh_host_key TEXT,
     tenant         TEXT NOT NULL DEFAULT 'default',
     created_at     TEXT NOT NULL,
     updated_at     TEXT NOT NULL
@@ -317,6 +344,20 @@ func (s *sqliteManagedTargetStore) EnsureSchema(ctx context.Context) error {
 		"ALTER TABLE managed_targets ADD COLUMN plugin_settings TEXT NOT NULL DEFAULT '{}'",
 		// RC1-A-01 (migration 000072).
 		"ALTER TABLE managed_targets ADD COLUMN auto_renew_set_by TEXT",
+		// W23-46 (migration 000128).
+		"ALTER TABLE managed_targets ADD COLUMN key_handling_mode TEXT",
+		// W24-09 (migration 000141).
+		"ALTER TABLE managed_targets ADD COLUMN ssh_host_key TEXT",
+		// W34-15 (migration 000344).
+		"ALTER TABLE managed_targets ADD COLUMN last_preflight TEXT",
+		// W34-10 (migrations 000342, 000345).
+		"ALTER TABLE managed_targets ADD COLUMN renewal_privilege_required INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE managed_targets ADD COLUMN last_privilege_mode TEXT",
+		"ALTER TABLE managed_targets ADD COLUMN unreadable_count INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE managed_targets ADD COLUMN last_scanned_at TEXT",
+		"ALTER TABLE managed_targets ADD COLUMN blocked_kind TEXT",
+		"ALTER TABLE managed_targets ADD COLUMN blocked_reason TEXT",
+		"ALTER TABLE managed_targets ADD COLUMN blocked_at TEXT",
 	} {
 		_, _ = s.db.ExecContext(ctx, ddl) // best-effort upgrade: duplicate-column error = already migrated
 	}
@@ -326,12 +367,12 @@ func (s *sqliteManagedTargetStore) EnsureSchema(ctx context.Context) error {
 func (s *sqliteManagedTargetStore) Create(ctx context.Context, t ManagedTarget) (ManagedTarget, error) {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO managed_targets
-		  (id, name, host, discovery_mode, install_mode, renewal_method, renewal_threshold_days, credential_ref, schedule, install_server_type, install_cert_path, install_key_path, install_reload_method, verify_host_port, auto_renew, plugin_id, plugin_settings, auto_renew_set_by, tenant, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  (id, name, host, discovery_mode, install_mode, renewal_method, renewal_threshold_days, credential_ref, schedule, install_server_type, install_cert_path, install_key_path, install_reload_method, verify_host_port, auto_renew, plugin_id, plugin_settings, auto_renew_set_by, key_handling_mode, ssh_host_key, tenant, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, t.Host, t.DiscoveryMode, t.InstallMode, t.RenewalMethod,
 		nullInt(t.RenewalThresholdDays), nullString(t.CredentialRef), nullString(t.Schedule),
 		nullString(t.InstallServerType), nullString(t.InstallCertPath), nullString(t.InstallKeyPath), nullString(t.InstallReloadMethod), nullString(t.VerifyHostPort), boolToInt(t.AutoRenew),
-		nullString(t.PluginID), pluginSettingsJSON(t.PluginSettings), nullString(t.AutoRenewSetBy),
+		nullString(t.PluginID), pluginSettingsJSON(t.PluginSettings), nullString(t.AutoRenewSetBy), nullString(t.KeyHandlingMode), nullString(t.SSHHostKey),
 		t.Tenant, t.CreatedAt, t.UpdatedAt)
 	if err != nil {
 		return ManagedTarget{}, err
@@ -341,13 +382,13 @@ func (s *sqliteManagedTargetStore) Create(ctx context.Context, t ManagedTarget) 
 
 func (s *sqliteManagedTargetStore) Get(ctx context.Context, id string) (ManagedTarget, error) {
 	return scanManagedTarget(s.db.QueryRowContext(ctx, `
-		SELECT id, name, host, discovery_mode, install_mode, renewal_method, renewal_threshold_days, credential_ref, schedule, install_server_type, install_cert_path, install_key_path, install_reload_method, verify_host_port, auto_renew, plugin_id, plugin_settings, auto_renew_set_by, tenant, created_at, updated_at
+		SELECT id, name, host, discovery_mode, install_mode, renewal_method, renewal_threshold_days, credential_ref, schedule, install_server_type, install_cert_path, install_key_path, install_reload_method, verify_host_port, auto_renew, plugin_id, plugin_settings, auto_renew_set_by, key_handling_mode, ssh_host_key, tenant, created_at, updated_at
 		FROM managed_targets WHERE id = ?`, id))
 }
 
 func (s *sqliteManagedTargetStore) List(ctx context.Context) ([]ManagedTarget, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, host, discovery_mode, install_mode, renewal_method, renewal_threshold_days, credential_ref, schedule, install_server_type, install_cert_path, install_key_path, install_reload_method, verify_host_port, auto_renew, plugin_id, plugin_settings, auto_renew_set_by, tenant, created_at, updated_at
+		SELECT id, name, host, discovery_mode, install_mode, renewal_method, renewal_threshold_days, credential_ref, schedule, install_server_type, install_cert_path, install_key_path, install_reload_method, verify_host_port, auto_renew, plugin_id, plugin_settings, auto_renew_set_by, key_handling_mode, ssh_host_key, tenant, created_at, updated_at
 		FROM managed_targets ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -364,7 +405,7 @@ func (s *sqliteManagedTargetStore) Delete(ctx context.Context, id string) error 
 }
 
 func (s *sqliteManagedTargetStore) MatchEndpoints(ctx context.Context, host string) ([]ManagedTargetEndpointMatch, error) {
-	return matchManagedTargetEndpoints(ctx, s.db, host, "?", "?")
+	return matchManagedTargetEndpoints(ctx, s.db, host, "?", "?", "?")
 }
 
 // --- Postgres implementation ---
@@ -394,6 +435,20 @@ func (s *postgresManagedTargetStore) EnsureSchema(ctx context.Context) error {
 		"ALTER TABLE managed_targets ADD COLUMN plugin_settings TEXT NOT NULL DEFAULT '{}'",
 		// RC1-A-01 (migration 000072).
 		"ALTER TABLE managed_targets ADD COLUMN auto_renew_set_by TEXT",
+		// W23-46 (migration 000128).
+		"ALTER TABLE managed_targets ADD COLUMN key_handling_mode TEXT",
+		// W24-09 (migration 000141).
+		"ALTER TABLE managed_targets ADD COLUMN ssh_host_key TEXT",
+		// W34-15 (migration 000344).
+		"ALTER TABLE managed_targets ADD COLUMN last_preflight TEXT",
+		// W34-10 (migrations 000342, 000345).
+		"ALTER TABLE managed_targets ADD COLUMN renewal_privilege_required BOOLEAN NOT NULL DEFAULT FALSE",
+		"ALTER TABLE managed_targets ADD COLUMN last_privilege_mode TEXT",
+		"ALTER TABLE managed_targets ADD COLUMN unreadable_count INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE managed_targets ADD COLUMN last_scanned_at TEXT",
+		"ALTER TABLE managed_targets ADD COLUMN blocked_kind TEXT",
+		"ALTER TABLE managed_targets ADD COLUMN blocked_reason TEXT",
+		"ALTER TABLE managed_targets ADD COLUMN blocked_at TEXT",
 	} {
 		_, _ = s.db.ExecContext(ctx, ddl) // best-effort upgrade: duplicate-column error = already migrated
 	}
@@ -403,12 +458,12 @@ func (s *postgresManagedTargetStore) EnsureSchema(ctx context.Context) error {
 func (s *postgresManagedTargetStore) Create(ctx context.Context, t ManagedTarget) (ManagedTarget, error) {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO managed_targets
-		  (id, name, host, discovery_mode, install_mode, renewal_method, renewal_threshold_days, credential_ref, schedule, install_server_type, install_cert_path, install_key_path, install_reload_method, verify_host_port, auto_renew, plugin_id, plugin_settings, auto_renew_set_by, tenant, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
+		  (id, name, host, discovery_mode, install_mode, renewal_method, renewal_threshold_days, credential_ref, schedule, install_server_type, install_cert_path, install_key_path, install_reload_method, verify_host_port, auto_renew, plugin_id, plugin_settings, auto_renew_set_by, key_handling_mode, ssh_host_key, tenant, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`,
 		t.ID, t.Name, t.Host, t.DiscoveryMode, t.InstallMode, t.RenewalMethod,
 		nullInt(t.RenewalThresholdDays), nullString(t.CredentialRef), nullString(t.Schedule),
 		nullString(t.InstallServerType), nullString(t.InstallCertPath), nullString(t.InstallKeyPath), nullString(t.InstallReloadMethod), nullString(t.VerifyHostPort), boolToInt(t.AutoRenew),
-		nullString(t.PluginID), pluginSettingsJSON(t.PluginSettings), nullString(t.AutoRenewSetBy),
+		nullString(t.PluginID), pluginSettingsJSON(t.PluginSettings), nullString(t.AutoRenewSetBy), nullString(t.KeyHandlingMode), nullString(t.SSHHostKey),
 		t.Tenant, t.CreatedAt, t.UpdatedAt)
 	if err != nil {
 		return ManagedTarget{}, err
@@ -418,13 +473,13 @@ func (s *postgresManagedTargetStore) Create(ctx context.Context, t ManagedTarget
 
 func (s *postgresManagedTargetStore) Get(ctx context.Context, id string) (ManagedTarget, error) {
 	return scanManagedTarget(s.db.QueryRowContext(ctx, `
-		SELECT id, name, host, discovery_mode, install_mode, renewal_method, renewal_threshold_days, credential_ref, schedule, install_server_type, install_cert_path, install_key_path, install_reload_method, verify_host_port, auto_renew, plugin_id, plugin_settings, auto_renew_set_by, tenant, created_at, updated_at
+		SELECT id, name, host, discovery_mode, install_mode, renewal_method, renewal_threshold_days, credential_ref, schedule, install_server_type, install_cert_path, install_key_path, install_reload_method, verify_host_port, auto_renew, plugin_id, plugin_settings, auto_renew_set_by, key_handling_mode, ssh_host_key, tenant, created_at, updated_at
 		FROM managed_targets WHERE id = $1`, id))
 }
 
 func (s *postgresManagedTargetStore) List(ctx context.Context) ([]ManagedTarget, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, host, discovery_mode, install_mode, renewal_method, renewal_threshold_days, credential_ref, schedule, install_server_type, install_cert_path, install_key_path, install_reload_method, verify_host_port, auto_renew, plugin_id, plugin_settings, auto_renew_set_by, tenant, created_at, updated_at
+		SELECT id, name, host, discovery_mode, install_mode, renewal_method, renewal_threshold_days, credential_ref, schedule, install_server_type, install_cert_path, install_key_path, install_reload_method, verify_host_port, auto_renew, plugin_id, plugin_settings, auto_renew_set_by, key_handling_mode, ssh_host_key, tenant, created_at, updated_at
 		FROM managed_targets ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -441,7 +496,7 @@ func (s *postgresManagedTargetStore) Delete(ctx context.Context, id string) erro
 }
 
 func (s *postgresManagedTargetStore) MatchEndpoints(ctx context.Context, host string) ([]ManagedTargetEndpointMatch, error) {
-	return matchManagedTargetEndpoints(ctx, s.db, host, "$1", "$2")
+	return matchManagedTargetEndpoints(ctx, s.db, host, "$1", "$2", "$3")
 }
 
 // --- shared helpers ---
@@ -449,9 +504,9 @@ func (s *postgresManagedTargetStore) MatchEndpoints(ctx context.Context, host st
 func scanManagedTarget(row *sql.Row) (ManagedTarget, error) {
 	var t ManagedTarget
 	var thresholdDays, autoRenew sql.NullInt64
-	var credRef, schedule, instType, instCert, instKey, instReload, verifyHP, pluginID, pluginSettings, setBy sql.NullString
+	var credRef, schedule, instType, instCert, instKey, instReload, verifyHP, pluginID, pluginSettings, setBy, keyMode, sshHostKey sql.NullString
 	err := row.Scan(&t.ID, &t.Name, &t.Host, &t.DiscoveryMode, &t.InstallMode, &t.RenewalMethod,
-		&thresholdDays, &credRef, &schedule, &instType, &instCert, &instKey, &instReload, &verifyHP, &autoRenew, &pluginID, &pluginSettings, &setBy, &t.Tenant, &t.CreatedAt, &t.UpdatedAt)
+		&thresholdDays, &credRef, &schedule, &instType, &instCert, &instKey, &instReload, &verifyHP, &autoRenew, &pluginID, &pluginSettings, &setBy, &keyMode, &sshHostKey, &t.Tenant, &t.CreatedAt, &t.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ManagedTarget{}, errManagedTargetNotFound
 	}
@@ -470,6 +525,9 @@ func scanManagedTarget(row *sql.Row) (ManagedTarget, error) {
 	t.PluginID = pluginID.String
 	t.PluginSettings = parsePluginSettings(pluginSettings.String)
 	t.AutoRenewSetBy = setBy.String
+	t.KeyHandlingMode = keyMode.String
+	t.SSHHostKey = sshHostKey.String
+	t.SSHHostKeyFingerprint = agentinstall.FingerprintOfLine(t.SSHHostKey)
 	return t, nil
 }
 
@@ -479,9 +537,9 @@ func scanManagedTargetRows(rows *sql.Rows) ([]ManagedTarget, error) {
 	for rows.Next() {
 		var t ManagedTarget
 		var thresholdDays, autoRenew sql.NullInt64
-		var credRef, schedule, instType, instCert, instKey, instReload, verifyHP, pluginID, pluginSettings, setBy sql.NullString
+		var credRef, schedule, instType, instCert, instKey, instReload, verifyHP, pluginID, pluginSettings, setBy, keyMode, sshHostKey sql.NullString
 		if err := rows.Scan(&t.ID, &t.Name, &t.Host, &t.DiscoveryMode, &t.InstallMode, &t.RenewalMethod,
-			&thresholdDays, &credRef, &schedule, &instType, &instCert, &instKey, &instReload, &verifyHP, &autoRenew, &pluginID, &pluginSettings, &setBy, &t.Tenant, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			&thresholdDays, &credRef, &schedule, &instType, &instCert, &instKey, &instReload, &verifyHP, &autoRenew, &pluginID, &pluginSettings, &setBy, &keyMode, &sshHostKey, &t.Tenant, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, err
 		}
 		t.RenewalThresholdDays = int(thresholdDays.Int64)
@@ -496,6 +554,9 @@ func scanManagedTargetRows(rows *sql.Rows) ([]ManagedTarget, error) {
 		t.PluginID = pluginID.String
 		t.PluginSettings = parsePluginSettings(pluginSettings.String)
 		t.AutoRenewSetBy = setBy.String
+		t.KeyHandlingMode = keyMode.String
+		t.SSHHostKey = sshHostKey.String
+		t.SSHHostKeyFingerprint = agentinstall.FingerprintOfLine(t.SSHHostKey)
 		items = append(items, t)
 	}
 	return items, rows.Err()
@@ -579,6 +640,13 @@ func mergeManagedTargetUpdate(current *ManagedTarget, u ManagedTargetUpdate) {
 	if u.AutoRenewSetBy != nil {
 		current.AutoRenewSetBy = *u.AutoRenewSetBy
 	}
+	if u.SSHHostKey != nil {
+		current.SSHHostKey = strings.TrimSpace(*u.SSHHostKey)
+		current.SSHHostKeyFingerprint = agentinstall.FingerprintOfLine(current.SSHHostKey)
+	}
+	if u.KeyHandlingMode != nil {
+		current.KeyHandlingMode = strings.TrimSpace(*u.KeyHandlingMode)
+	}
 }
 
 // applyManagedTargetUpdate is the engine-agnostic PATCH tail: fetch the
@@ -602,6 +670,9 @@ func applyManagedTargetUpdate(ctx context.Context, store ManagedTargetStore, id 
 	if err := validateManagedTargetModes(current.DiscoveryMode, current.InstallMode, current.RenewalMethod); err != nil {
 		return ManagedTarget{}, err
 	}
+	if err := validateKeyHandlingMode(current.KeyHandlingMode, current.InstallMode); err != nil {
+		return ManagedTarget{}, err
+	}
 	if err := validateRenewalThresholdDays(current.RenewalThresholdDays); err != nil {
 		return ManagedTarget{}, err
 	}
@@ -615,10 +686,10 @@ func applyManagedTargetUpdate(ctx context.Context, store ManagedTargetStore, id 
 	switch s := store.(type) {
 	case *sqliteManagedTargetStore:
 		db = s.db
-		query = `UPDATE managed_targets SET name=?, host=?, discovery_mode=?, install_mode=?, renewal_method=?, renewal_threshold_days=?, credential_ref=?, schedule=?, install_server_type=?, install_cert_path=?, install_key_path=?, install_reload_method=?, verify_host_port=?, auto_renew=?, plugin_id=?, plugin_settings=?, auto_renew_set_by=?, updated_at=? WHERE id=?`
+		query = `UPDATE managed_targets SET name=?, host=?, discovery_mode=?, install_mode=?, renewal_method=?, renewal_threshold_days=?, credential_ref=?, schedule=?, install_server_type=?, install_cert_path=?, install_key_path=?, install_reload_method=?, verify_host_port=?, auto_renew=?, plugin_id=?, plugin_settings=?, auto_renew_set_by=?, key_handling_mode=?, ssh_host_key=?, updated_at=? WHERE id=?`
 	case *postgresManagedTargetStore:
 		db = s.db
-		query = `UPDATE managed_targets SET name=$1, host=$2, discovery_mode=$3, install_mode=$4, renewal_method=$5, renewal_threshold_days=$6, credential_ref=$7, schedule=$8, install_server_type=$9, install_cert_path=$10, install_key_path=$11, install_reload_method=$12, verify_host_port=$13, auto_renew=$14, plugin_id=$15, plugin_settings=$16, auto_renew_set_by=$17, updated_at=$18 WHERE id=$19`
+		query = `UPDATE managed_targets SET name=$1, host=$2, discovery_mode=$3, install_mode=$4, renewal_method=$5, renewal_threshold_days=$6, credential_ref=$7, schedule=$8, install_server_type=$9, install_cert_path=$10, install_key_path=$11, install_reload_method=$12, verify_host_port=$13, auto_renew=$14, plugin_id=$15, plugin_settings=$16, auto_renew_set_by=$17, key_handling_mode=$18, ssh_host_key=$19, updated_at=$20 WHERE id=$21`
 	default:
 		return ManagedTarget{}, fmt.Errorf("unsupported managed target store implementation %T", store)
 	}
@@ -626,7 +697,7 @@ func applyManagedTargetUpdate(ctx context.Context, store ManagedTargetStore, id 
 		current.Name, current.Host, current.DiscoveryMode, current.InstallMode, current.RenewalMethod,
 		nullInt(current.RenewalThresholdDays), nullString(current.CredentialRef), nullString(current.Schedule),
 		nullString(current.InstallServerType), nullString(current.InstallCertPath), nullString(current.InstallKeyPath), nullString(current.InstallReloadMethod), nullString(current.VerifyHostPort), boolToInt(current.AutoRenew),
-		nullString(current.PluginID), pluginSettingsJSON(current.PluginSettings), nullString(current.AutoRenewSetBy),
+		nullString(current.PluginID), pluginSettingsJSON(current.PluginSettings), nullString(current.AutoRenewSetBy), nullString(current.KeyHandlingMode), nullString(current.SSHHostKey),
 		current.UpdatedAt, id); err != nil {
 		return ManagedTarget{}, err
 	}
@@ -647,11 +718,19 @@ func applyManagedTargetUpdate(ctx context.Context, store ManagedTargetStore, id 
 // statement requires 1"). Caught by advisor review before close; sqlite's
 // leniency here is exactly why this bug was invisible to every sqlite-only
 // test in this package.
-func matchManagedTargetEndpoints(ctx context.Context, db *sql.DB, host, ph1, ph2 string) ([]ManagedTargetEndpointMatch, error) {
+func matchManagedTargetEndpoints(ctx context.Context, db *sql.DB, host, ph1, ph2, ph3 string) ([]ManagedTargetEndpointMatch, error) {
 	out := []ManagedTargetEndpointMatch{}
 
-	scannedQuery := fmt.Sprintf(`SELECT id, hostname, ip_address, port FROM endpoints WHERE hostname = %s OR ip_address = %s`, ph1, ph2)
-	scannedRows, err := db.QueryContext(ctx, scannedQuery, host, host)
+	// Scanned endpoints carry a tenant (L-11); a scoped ctx restricts the
+	// match to the target's own tenant so two tenants naming the same host
+	// never see each other's scan results.
+	scannedQuery := fmt.Sprintf(`SELECT id, hostname, ip_address, port FROM endpoints WHERE (hostname = %s OR ip_address = %s)`, ph1, ph2)
+	args := []any{host, host}
+	if tenant, filter := discoveryFilterTenant(ctx); filter {
+		scannedQuery += fmt.Sprintf(" AND tenant = %s", ph3)
+		args = append(args, tenant)
+	}
+	scannedRows, err := db.QueryContext(ctx, scannedQuery, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -726,4 +805,47 @@ func newManagedTargetStoreFromEnv() ManagedTargetStore {
 		return nil
 	}
 	return state.store
+}
+
+// targetPreflightStore persists the latest privilege preflight report (JSON,
+// secret-free) per target (W34-15, migration 000344). It is a separate
+// interface so existing ManagedTargetStore implementations are unaffected.
+type targetPreflightStore interface {
+	SetLastPreflight(ctx context.Context, id, reportJSON string) error
+	GetLastPreflight(ctx context.Context, id string) (string, error)
+}
+
+func setLastPreflight(ctx context.Context, db *sql.DB, query, id, reportJSON string) error {
+	res, err := db.ExecContext(ctx, query, reportJSON, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func getLastPreflight(ctx context.Context, db *sql.DB, query, id string) (string, error) {
+	var v sql.NullString
+	if err := db.QueryRowContext(ctx, query, id).Scan(&v); err != nil {
+		return "", err
+	}
+	return v.String, nil
+}
+
+func (s *sqliteManagedTargetStore) SetLastPreflight(ctx context.Context, id, reportJSON string) error {
+	return setLastPreflight(ctx, s.db, "UPDATE managed_targets SET last_preflight = ? WHERE id = ?", id, reportJSON)
+}
+
+func (s *sqliteManagedTargetStore) GetLastPreflight(ctx context.Context, id string) (string, error) {
+	return getLastPreflight(ctx, s.db, "SELECT last_preflight FROM managed_targets WHERE id = ?", id)
+}
+
+func (s *postgresManagedTargetStore) SetLastPreflight(ctx context.Context, id, reportJSON string) error {
+	return setLastPreflight(ctx, s.db, "UPDATE managed_targets SET last_preflight = $1 WHERE id = $2", id, reportJSON)
+}
+
+func (s *postgresManagedTargetStore) GetLastPreflight(ctx context.Context, id string) (string, error) {
+	return getLastPreflight(ctx, s.db, "SELECT last_preflight FROM managed_targets WHERE id = $1", id)
 }

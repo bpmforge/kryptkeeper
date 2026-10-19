@@ -6,7 +6,7 @@ package wstep
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -16,6 +16,8 @@ import (
 	"github.com/jcmturner/gokrb5/v8/service"
 	"github.com/jcmturner/gokrb5/v8/spnego"
 	"github.com/jcmturner/gokrb5/v8/types"
+
+	"kryptkeeper/internal/logging"
 )
 
 const (
@@ -36,7 +38,7 @@ func KerberosFromEnv() (AuthWrapper, error) {
 		return nil, fmt.Errorf("%s and %s must both be set", EnvKeytabFile, EnvSPN)
 	}
 	if fi, err := os.Stat(path); err == nil && fi.Mode().Perm()&0o077 != 0 {
-		log.Printf("wstep: keytab %s is readable by group/other (mode %v); it is as sensitive as a private key, restrict it to 0600", path, fi.Mode().Perm())
+		logging.Infof("wstep: keytab %s is readable by group/other (mode %v); it is as sensitive as a private key, restrict it to 0600", path, fi.Mode().Perm())
 	}
 	kt, err := keytab.Load(path)
 	if err != nil {
@@ -60,7 +62,8 @@ func Kerberos(kt *keytab.Keytab, spn string) (AuthWrapper, error) {
 	if !keytabHasSPN(kt, spn) {
 		return nil, fmt.Errorf("keytab has no entry for %s", spn)
 	}
-	logger := log.New(log.Writer(), "wstep: ", log.Flags())
+	// gokrb5 wants a *log.Logger; bridge it into slog so its lines are JSON too.
+	logger := slog.NewLogLogger(slog.Default().With("component", "wstep").Handler(), slog.LevelWarn)
 	return func(inner http.Handler) http.Handler {
 		bind := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id := goidentity.FromHTTPRequestContext(r)

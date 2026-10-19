@@ -1,0 +1,173 @@
+name: ui-e2e
+
+# Needs a runner whose job container can reach a Docker-compatible engine
+# (docker.sock or a podman socket) to run `docker compose`. The the self-hosted forge runner
+# (the self-hosted runner) does not expose one to jobs today, so this runs on demand
+# and nightly instead of on every PR; the "Check container engine" step fails
+# loudly rather than silently skipping. Locally: see ui/e2e/*/README.md.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "40 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ui-e2e:
+    name: UI E2E (compose hub)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Check container engine
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::no Docker-compatible engine reachable from this job (docker.sock / DOCKER_HOST); the compose E2E suite cannot run here"; exit 1; }
+          docker compose version
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: ui/.nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Generate per-run secrets
+        run: |
+          # Generated in-job and masked; nothing is committed. The passphrase must differ from the token.
+          token="$(openssl rand -hex 32)"
+          pass="$(openssl rand -hex 32)"
+          pepper="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          echo "::add-mask::$pass"
+          echo "::add-mask::$pepper"
+          {
+            echo "APP_BOOTSTRAP_TOKEN=$token"
+            echo "KRYPTKEEPER_KEYSTORE_PASSPHRASE=$pass"
+            echo "APP_API_KEY_PEPPER=$pepper"
+          } >> "$GITHUB_ENV"
+      - name: Compose override (API-key auth for non-admin roles, first root CA)
+        # Per-run isolation: the runner is a shared machine with capacity > 1, so the
+        # project name, host ports (engine-assigned, loopback only) and subnet are
+        # unique per run instead of the base file's fixed 8080/3000 and 172.29.231.0/24.
+        run: |
+          octet=$(( 150 + GITHUB_RUN_ID % 50 ))
+          {
+            echo "COMPOSE_PROJECT_NAME=kke2e-${GITHUB_RUN_ID}"
+            echo "KK_E2E_NET=172.29.${octet}"
+          } >> "$GITHUB_ENV"
+          cat > docker-compose.e2e.yml <<'EOF'
+          services:
+            kryptkeeper:
+              ports: !reset []
+              environment:
+                APP_API_KEY_AUTH_ENABLED: "true"
+                APP_API_KEY_PEPPER: ${APP_API_KEY_PEPPER}
+                # The zero-CA onboarding spec (W33-02) runs in the separate
+                # ui-e2e-onboarding job; this stack lets the hub create its first root.
+                KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT: "true"
+                APP_TRUSTED_PROXY_CIDRS: ${KK_E2E_NET}.10/32
+            dashboard:
+              ports: !override
+                - "127.0.0.1::8080"
+              networks:
+                default:
+                  ipv4_address: ${KK_E2E_NET}.10
+          networks:
+            default:
+              ipam:
+                config: !override
+                  - subnet: ${KK_E2E_NET}.0/24
+          EOF
+      - name: Start the hub
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --build --wait
+          port="$(docker compose -f docker-compose.yml -f docker-compose.e2e.yml port dashboard 8080 | awk -F: '{print $NF}')"
+          echo "KK_E2E_BASE_URL=http://127.0.0.1:${port}" >> "$GITHUB_ENV"
+      - name: Install UI dependencies
+        run: npm --prefix ui ci
+      - name: Install Playwright browser
+        run: npm --prefix ui run e2e:install
+      - name: Run E2E specs
+        # Onboarding (zero-CA) specs need the separate first-run stack below.
+        run: npm --prefix ui run e2e -- e2e/fixtures e2e/roles
+      - name: Keyboard, target-size and mobile navigation specs (W33-13, W33-34)
+        # keyboard-journeys skips its login/approve legs with a named reason when
+        # KK_E2E_LOGIN_EMAIL/PASSWORD are unset; target-size and mobile-nav always run.
+        run: npm --prefix ui run e2e -- e2e/a11y/keyboard-journeys.spec.ts e2e/a11y/target-size.spec.ts e2e/a11y/mobile-nav.spec.ts
+      - name: Axe sweep (every route x light/dark x 375/768/1440, W33-12)
+        # Read-only against the same hub; parallel workers keep it inside the job budget.
+        # Fails on any serious/critical violation. The first-run wizard sweep runs in
+        # the ui-e2e-onboarding job (it needs a zero-CA hub).
+        run: npm --prefix ui run test:a11y -- --workers=4
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report
+          path: ui/playwright-report
+          retention-days: 7
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml down -v
+
+  ui-e2e-onboarding:
+    name: UI E2E onboarding (first-run hub, zero CAs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Check container engine
+        run: |
+          docker info >/dev/null 2>&1 || { echo "::error::no Docker-compatible engine reachable from this job (docker.sock / DOCKER_HOST); the compose E2E suite cannot run here"; exit 1; }
+          docker compose version
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: ui/.nvmrc
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Generate per-run secrets
+        run: |
+          token="$(openssl rand -hex 32)"
+          pass="$(openssl rand -hex 32)"
+          pepper="$(openssl rand -hex 32)"
+          echo "::add-mask::$token"
+          echo "::add-mask::$pass"
+          echo "::add-mask::$pepper"
+          {
+            echo "APP_BOOTSTRAP_TOKEN=$token"
+            echo "KRYPTKEEPER_KEYSTORE_PASSPHRASE=$pass"
+            echo "APP_API_KEY_PEPPER=$pepper"
+          } >> "$GITHUB_ENV"
+      - name: Start the first-run hub (no CREATE_ROOT, fresh volumes)
+        run: |
+          octet=$(( 200 + GITHUB_RUN_ID % 50 ))
+          export KK_E2E_NET="172.29.${octet}"
+          {
+            echo "COMPOSE_PROJECT_NAME=kkfr-${GITHUB_RUN_ID}"
+            echo "KK_E2E_NET=${KK_E2E_NET}"
+          } >> "$GITHUB_ENV"
+          docker compose -p "kkfr-${GITHUB_RUN_ID}" -f docker-compose.yml \
+            -f ui/e2e/onboarding/docker-compose.firstrun.yml up -d --build --wait
+          port="$(docker compose -p "kkfr-${GITHUB_RUN_ID}" -f docker-compose.yml \
+            -f ui/e2e/onboarding/docker-compose.firstrun.yml port dashboard 8080 | awk -F: '{print $NF}')"
+          echo "KK_E2E_BASE_URL=http://127.0.0.1:${port}" >> "$GITHUB_ENV"
+      - name: Install UI dependencies
+        run: npm --prefix ui ci
+      - name: Install Playwright browser
+        run: npm --prefix ui run e2e:install
+      - name: Run onboarding specs
+        run: npm --prefix ui run e2e -- e2e/onboarding
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: playwright-report-onboarding
+          path: ui/playwright-report
+          retention-days: 7
+      - name: Tear down
+        if: always()
+        run: docker compose -p "kkfr-${GITHUB_RUN_ID}" -f docker-compose.yml -f ui/e2e/onboarding/docker-compose.firstrun.yml down -v

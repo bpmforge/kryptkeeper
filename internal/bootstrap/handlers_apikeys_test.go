@@ -250,3 +250,20 @@ func TestAPIKeyHandlerDeleteKey(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateAPIKeyWithoutPepperIs503NotBadRequest(t *testing.T) {
+	t.Setenv("AUTH_MODE", "bootstrap")
+	t.Setenv("APP_BOOTSTRAP_TOKEN", "admin-token")
+	t.Setenv("APP_API_KEY_PEPPER", "")
+	mux := http.NewServeMux()
+	registerAuthHandlers(mux, NewAuthenticatorFromEnv(), stubAuditProvider{})
+	body := `{"name":"ci-deploy-bot","principal_id":"svc-ci","role":"service-account","scopes":["certificate.read"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/api-keys", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "APP_API_KEY_PEPPER") {
+		t.Fatalf("got %d %s", rec.Code, rec.Body.String())
+	}
+}

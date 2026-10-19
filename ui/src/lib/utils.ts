@@ -36,3 +36,25 @@ export function formatValidityPeriod(raw: string | undefined | null): string {
   ].filter(Boolean);
   return parts.length ? parts.join(" ") : raw;
 }
+
+// Enum and machine values (pending_ceremony, WEAK_KEY, adcs_export,
+// codesign.oidc_trust_rule) shown to people: "Pending ceremony", "Weak key".
+// Known acronyms keep their case.
+const ACRONYMS: Record<string, string> = {
+  adcs: "AD CS", acme: "ACME", est: "EST", scep: "SCEP", cmp: "CMP", ca: "CA",
+  cas: "CAs", oidc: "OIDC", ssh: "SSH", tls: "TLS", pqc: "PQC", eku: "EKU",
+  api: "API", nhi: "NHI", ct: "CT", kms: "KMS", hsm: "HSM", url: "URL",
+  id: "ID", ip: "IP", rsa: "RSA", ecdsa: "ECDSA", sha1: "SHA-1", cbom: "CBOM",
+  siem: "SIEM", itsm: "ITSM", spiffe: "SPIFFE", svid: "SVID", byok: "BYOK",
+};
+export function humanizeEnum(value: string | null | undefined): string {
+  if (!value) return "";
+  const words = value.trim().split(/[_.\s-]+/).filter(Boolean);
+  return words
+    .map((w, i) => {
+      const lower = w.toLowerCase();
+      if (ACRONYMS[lower]) return ACRONYMS[lower];
+      return i === 0 ? lower.charAt(0).toUpperCase() + lower.slice(1) : lower;
+    })
+    .join(" ");
+}

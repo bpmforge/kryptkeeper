@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -27,6 +26,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/acme"
+
+	"kryptkeeper/internal/logging"
 )
 
 // AcmeRenewer uses the ACME protocol (RFC 8555) to renew certificates
@@ -83,7 +84,7 @@ func (r *AcmeRenewer) Renew(ctx context.Context, identifiers []string, webRoot s
 		// Fail before any ACME order exists: a blocked :80 otherwise surfaces
 		// only after the order, as an opaque challenge failure.
 		addr := r.http01Addr()
-		log.Printf("acme: http-01 challenge will listen on %s", addr)
+		logging.Infof("acme: http-01 challenge will listen on %s", addr)
 		lns, err := listenHTTP01(addr)
 		if err != nil {
 			return nil, err
@@ -185,6 +186,12 @@ func (r *AcmeRenewer) satisfyAuthz(ctx context.Context, client *acme.Client, aut
 // serveChallenge makes the ACME HTTP-01 token reachable at /.well-known/acme-challenge/<token>.
 // Returns a cleanup function that removes the file or stops the listener.
 func serveChallenge(ctx context.Context, token, keyAuth, webRoot, addr string) (func(), error) {
+	// The token comes from the ACME server and becomes a file name and a URL
+	// path; RFC 8555 §8.1 limits it to base64url, and enforcing that keeps a
+	// hostile or compromised CA from writing outside the webroot.
+	if !validACMEToken(token) {
+		return nil, fmt.Errorf("acme challenge token is not base64url")
+	}
 	if webRoot != "" {
 		dir := filepath.Join(webRoot, ".well-known", "acme-challenge")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -207,7 +214,15 @@ func serveChallenge(ctx context.Context, token, keyAuth, webRoot, addr string) (
 	if err != nil {
 		return nil, err
 	}
-	srv := &http.Server{Handler: mux}
+	// The listener faces the open internet for the life of the challenge, so
+	// bound how long a client may dribble headers or hold a connection.
+	srv := &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       30 * time.Second,
+	}
 	for _, ln := range lns {
 		go func() { _ = srv.Serve(ln) }()
 	}
@@ -333,4 +348,21 @@ func encodeECKey(key *ecdsa.PrivateKey) ([]byte, error) {
 		return nil, err
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), nil
+}
+
+// validACMEToken reports whether token is a non-empty base64url string
+// (RFC 8555 §8.1: "MUST NOT contain any characters outside the base64url
+// alphabet").
+func validACMEToken(token string) bool {
+	if token == "" || len(token) > 256 {
+		return false
+	}
+	for _, c := range token {
+		switch {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }

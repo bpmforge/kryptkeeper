@@ -5,12 +5,14 @@
 package bootstrap
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"kryptkeeper/internal/logging"
 )
 
 func currentDBMode() string {
@@ -26,13 +28,22 @@ func unsupportedDBMode(mode string) error {
 }
 
 func openConfiguredDB(driverName, dsn string, maxOpenConns, maxIdleConns int) (*sql.DB, error) {
+	return openPool(driverName, dsn, dbPoolConfig{maxOpen: maxOpenConns, maxIdle: maxIdleConns})
+}
+
+func openPool(driverName, dsn string, cfg dbPoolConfig) (*sql.DB, error) {
 	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(maxOpenConns)
-	db.SetMaxIdleConns(maxIdleConns)
-	if err := db.Ping(); err != nil {
+	db.SetMaxOpenConns(cfg.maxOpen)
+	db.SetMaxIdleConns(cfg.maxIdle)
+	if cfg.maxIdleTime > 0 {
+		db.SetConnMaxIdleTime(cfg.maxIdleTime)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), pgPingTimeout)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -45,11 +56,23 @@ type dbProviderState[Store any] struct {
 	openErr error
 }
 
+// releaseFailedOpenDB closes the pool a store open made for itself when the
+// store is then not used (EnsureSchema failed). The lazy stores (D-290-A)
+// retry their open every storeRetryInterval, so without this each failed
+// attempt leaked one held SQLite connection. A shared Postgres pool is left
+// open: other holders use it and openSharedPostgresDB reuses it on retry.
+func releaseFailedOpenDB(service string, db *sql.DB) {
+	if db == nil || (currentDBMode() == dbModePostgres && !pgUnsharedServices[service]) {
+		return
+	}
+	_ = db.Close()
+}
+
 func dbProviderUnavailable(service string, openErr error) error {
 	if openErr == nil {
 		return nil
 	}
-	log.Printf("%s db mode unavailable: %v", service, openErr)
+	logging.Warnf("%s db mode unavailable: %v", service, openErr)
 	return openErr
 }
 
@@ -79,7 +102,7 @@ func newDBProviderState[Store any](
 		if dsn == "" {
 			return dbProviderState[Store]{service: service, openErr: postgresMissingErr}
 		}
-		db, err := openConfiguredDB("pgx", dsn, 5, 2)
+		db, err := openSharedPostgresDB(service, dsn)
 		if err != nil {
 			return dbProviderState[Store]{service: service, openErr: err}
 		}

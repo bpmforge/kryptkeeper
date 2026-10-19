@@ -135,10 +135,29 @@ secrets):
    - a deadline.
 3. **Verify:** the hub itself dials `verify_host_port` (default `host:443`)
    and compares fingerprints.
+   A secret-store plugin has nothing to dial, so its manifest declares
+   `"verification": "readback"` (default and `"tls"` mean the dial; any other
+   value refuses the manifest). The hub then calls the plugin's `verify` op
+   (`abi.VerifyRequest{name, handle}`, handle = the push's `rollback_handle`,
+   so the plugin reads the exact version it wrote), parses the returned PEM
+   and compares the leaf SHA-256 itself. The plugin only fetches; a
+   mismatch, parse failure or op error is `verify_failed` and rolls back like
+   a TLS mismatch. An explicit `verify_host_port` on the target profile
+   always forces the TLS dial. Plugins implement `delivery.Verifier`.
+   CDN-style targets take minutes to serve a new certificate, so a manifest
+   may declare `"verify_propagation_seconds": N` (0..1800, default 0; anything
+   else refuses the manifest). Both verify paths make the 6 quick attempts,
+   then poll every 15 s until the fingerprint matches or N seconds pass or the
+   context ends. The comparison is unchanged; on expiry the usual
+   `verify_failed` + rollback runs. Shipped: `aws` 1200, `azure` 1200,
+   `cloudflare` 600. The `delivery_plugin.push` audit detail records
+   `verify_window=Ns`.
 4. **Roll back on a mismatch:** the hub asks the plugin to roll back.
    `rolled_back` is reported true only if the plugin confirms it.
 
 ## First-party plugins: F5 and Citrix (W20-22)
+
+The full list of first-party plugins (F5, Citrix, Vault, Azure Key Vault, GCP Secret Manager, AWS ACM/ALB/CloudFront, AWS Secrets Manager, Azure Application Gateway/Front Door, Cloudflare), with capabilities, verification mode and the submission checklist, is in [PLUGIN_CATALOGUE.md](PLUGIN_CATALOGUE.md). For syncing a delivered Kubernetes Secret into workload namespaces with External Secrets Operator, see [EXTERNAL_SECRETS.md](EXTERNAL_SECRETS.md).
 
 `plugins/f5` (`kryptkeeper.f5-bigip`) and `plugins/citrix`
 (`kryptkeeper.citrix-adc`) are the built-in F5 and Citrix pushers, ported
@@ -176,7 +195,7 @@ Every step is recorded:
 |---|---|
 | `delivery_plugin.install`, `.enable_requested`, `.enable`, `.disable`, `.remove` | With version, sha256 and tiers. |
 | `action.approve` | The second admin's decision. |
-| `delivery_plugin.push` | Per renewal: target, version, sha256, outcome, verified, rolled back, refused-call count. |
+| `delivery_plugin.push` | Per renewal: target, version, sha256, verification (`tls` or `readback`), verify window, outcome, verified, rolled back, refused-call count. |
 | `delivery_plugin.refused` | Per host call the sandbox refused. |
 
 The plugin's own log lines go to the hub log, capped and with secrets

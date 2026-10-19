@@ -1,0 +1,202 @@
+{
+  "task": "U-52",
+  "title": "Migrate templates from another CA product",
+  "sourceStory": "STORIES.md#u-52",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/migration"
+      },
+      "caption": "Open /migration",
+      "slug": "migration-form",
+      "expect": {
+        "role": "button",
+        "name": "Dry run"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-52/01-migration-form.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Source system"
+      },
+      "value": "Adcs",
+      "caption": "Select \"Adcs\" in **Source system**",
+      "slug": "source-adcs",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-52/02-source-adcs.png",
+        "annotated": "docs/guide/screenshots/U-52/02-source-adcs-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 243,
+          "w": 559,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "upload",
+      "target": {
+        "label": "Export file"
+      },
+      "value": "~/Code/kk-v1-final/internal/migration/adcs/testdata/templates_20.json",
+      "caption": "Choose the file for **Export file**",
+      "slug": "export-chosen",
+      "noAnnotate": true,
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-52/03-export-chosen.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Dry run"
+      },
+      "caption": "Click **Dry run**",
+      "slug": "dry-run-report",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-52/04-dry-run-report.png",
+        "annotated": "docs/guide/screenshots/U-52/04-dry-run-report-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 612,
+          "w": 77,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Submit for approval"
+      },
+      "caption": "Click **Submit for approval**",
+      "slug": "submitted-for-approval",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-52/05-submitted-for-approval.png",
+        "annotated": "docs/guide/screenshots/U-52/05-submitted-for-approval-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 350,
+          "y": 612,
+          "w": 159,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "flags": "EXTERNAL EXPORT FILE (the repo's AD CS test fixture stands in for a real export)",
+  "lastRun": {
+    "at": "2026-10-18T12:46:33.894Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-52",
+    "steps": 5,
+    "shots": 5,
+    "annotated": 3,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/migration"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-52/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-52/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

@@ -10,24 +10,20 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"slices"
 	"strings"
 	"time"
-)
 
-const defaultCertificateFilePath = "./var/bootstrap-certificates.json"
+	"kryptkeeper/internal/logging"
+)
 
 type fileCertificateProvider struct {
 	filePath string
 }
 
 func NewFileCertificateProviderFromEnv() CertificateProvider {
-	path := strings.TrimSpace(os.Getenv("APP_CERTIFICATE_FILE"))
-	if path == "" {
-		path = defaultCertificateFilePath
-	}
+	path := resolveStateFilePath(os.Getenv, "APP_CERTIFICATE_FILE", "bootstrap-certificates.json")
 	initStateDir(path)
 	return &fileCertificateProvider{filePath: path}
 }
@@ -102,6 +98,12 @@ func filterFileCertificates(items []CertificateItem, query CertificateListQuery)
 			continue
 		}
 		if query.TrustClass != "" && item.TrustClass != query.TrustClass {
+			continue
+		}
+		if query.Owner == ownerFilterUnassigned && !isUnownedCertificate(&item) {
+			continue
+		}
+		if query.SunsetGroup != "" && !inSunsetGroup(&item, query.SunsetGroup) {
 			continue
 		}
 		if query.TemplateID != "" && item.TemplateID != query.TemplateID {
@@ -312,7 +314,7 @@ func (p *fileCertificateProvider) RevokeCertificate(_ context.Context, fingerpri
 		if err := p.saveItems(items); err != nil {
 			return CertificateRevokeResult{}, err
 		}
-		return CertificateRevokeResult{FingerprintSHA256: fingerprint, RenewalStatus: string(RenewalStatusRevoked), RevokedAt: now, RevocationReason: reason}, nil
+		return CertificateRevokeResult{FingerprintSHA256: fingerprint, RenewalStatus: string(RenewalStatusRevoked), RevokedAt: now, RevocationReason: reason, RevocationScope: RevocationScopeInventoryOnly}, nil
 	}
 
 	return CertificateRevokeResult{}, errCertificateNotFound
@@ -413,6 +415,11 @@ func (p *fileCertificateProvider) UpdateOwnership(_ context.Context, fingerprint
 	if idx < 0 {
 		return CertificateItem{}, errCertificateNotFound
 	}
+	src, err := resolveOwnershipSource(req)
+	if err != nil {
+		return CertificateItem{}, err
+	}
+	items[idx].OwnershipSource = src
 	items[idx].OwnerEmail = strings.TrimSpace(req.OwnerEmail)
 	items[idx].OwnerTeam = strings.TrimSpace(req.OwnerTeam)
 	items[idx].ServiceName = strings.TrimSpace(req.ServiceName)
@@ -429,13 +436,13 @@ func (p *fileCertificateProvider) UpdateOwnership(_ context.Context, fingerprint
 func (p *fileCertificateProvider) loadItems() ([]CertificateItem, error) {
 	body, err := os.ReadFile(p.filePath)
 	if err != nil {
-		log.Printf("certificate file unavailable: unreadable %q: %v", p.filePath, err)
+		logging.Warnf("certificate file unavailable: unreadable %q: %v", p.filePath, err)
 		return nil, err
 	}
 
 	var items []CertificateItem
 	if err := json.Unmarshal(body, &items); err != nil {
-		log.Printf("certificate file unavailable: invalid JSON in %q", p.filePath)
+		logging.Warnf("certificate file unavailable: invalid JSON in %q", p.filePath)
 		return nil, err
 	}
 	// W11-01: pre-estate files lack origin/management_state — derive from
@@ -525,6 +532,8 @@ func (p *fileCertificateProvider) UpdateEstate(_ context.Context, fingerprint st
 		}
 		if req.RenewalConnectorID != "" {
 			items[i].RenewalConnectorID = req.RenewalConnectorID
+		} else if req.ClearRenewalConnector {
+			items[i].RenewalConnectorID = ""
 		}
 		if req.RenewalStatus != "" {
 			if !validRenewalStatus(req.RenewalStatus) {

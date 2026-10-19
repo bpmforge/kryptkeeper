@@ -100,6 +100,7 @@ func TestSuperAdminViewAsStillAllowed(t *testing.T) {
 func TestJWTPrincipalTenantClaimEndToEndDeniedOnMismatch(t *testing.T) {
 	t.Setenv("AUTH_MODE", "jwt")
 	t.Setenv("APP_JWT_HS256_SECRET", "test-jwt-secret")
+	t.Setenv("APP_AUTH_UNMAPPED_ROLE", "read-only") // tenant claim test, not role mapping
 	t.Setenv("MULTI_TENANCY", "on")
 
 	auth := NewAuthenticatorFromEnv()

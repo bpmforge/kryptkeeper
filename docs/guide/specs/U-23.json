@@ -1,0 +1,436 @@
+{
+  "task": "U-23",
+  "title": "Revoke a certificate (single and bulk)",
+  "sourceStory": "STORIES.md#u-23",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/certificates"
+      },
+      "caption": "Open /certificates",
+      "slug": "certificates-list",
+      "expect": {
+        "role": "button",
+        "name": "Issue certificate"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-23/01-certificates-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Search certificates"
+      },
+      "value": "svc.acme.test",
+      "caption": "Fill **Search certificates** with \"svc.acme.test\"",
+      "slug": "Search certificates",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-23/02-search-certificates.png",
+        "annotated": "docs/guide/screenshots/U-23/02-search-certificates-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 265,
+          "w": 178,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "checkout-v2.svc.acme.test"
+      },
+      "caption": "Click **checkout-v2.svc.acme.test**",
+      "slug": "disposable-certificate",
+      "expect": {
+        "role": "button",
+        "name": "Revoke"
+      },
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-23/03-disposable-certificate.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Revoke",
+        "exact": true
+      },
+      "caption": "Click **Revoke**",
+      "slug": "revoke-confirm-dialog",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-23/04-revoke-confirm-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "css": "select",
+        "within": "[role=dialog]"
+      },
+      "value": {
+        "index": 5
+      },
+      "caption": "Select \"[object Object]\" in **select**",
+      "slug": "reason-code",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-23/05-reason-code.png",
+        "annotated": "docs/guide/screenshots/U-23/05-reason-code-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 353,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "placeholder": "Optional explanation"
+      },
+      "value": "Disposable test certificate",
+      "caption": "Fill **Optional explanation** with \"Disposable test certificate\"",
+      "slug": "reason-text",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-23/06-reason-text.png",
+        "annotated": "docs/guide/screenshots/U-23/06-reason-text-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 427,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "placeholder": "REVOKE"
+      },
+      "value": "REVOKE",
+      "caption": "Fill **REVOKE** with \"REVOKE\"",
+      "slug": "type-revoke",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-23/07-type-revoke.png",
+        "annotated": "docs/guide/screenshots/U-23/07-type-revoke-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 559,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Confirm revoke"
+      },
+      "caption": "Click **Confirm revoke**",
+      "slug": "certificate-revoked",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-23/08-certificate-revoked.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/certificates"
+      },
+      "caption": "Open /certificates",
+      "slug": "certificates-list-again",
+      "expect": {
+        "role": "button",
+        "name": "Bulk revoke"
+      },
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-23/09-certificates-list-again.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Search certificates"
+      },
+      "value": "svc.acme.test",
+      "caption": "Fill **Search certificates** with \"svc.acme.test\"",
+      "slug": "Search certificates",
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-23/10-search-certificates.png",
+        "annotated": "docs/guide/screenshots/U-23/10-search-certificates-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 265,
+          "w": 178,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "label": "Select vpn-gateway.svc.acme.test"
+      },
+      "caption": "Tick **Select vpn-gateway.svc.acme.test**",
+      "slug": "select-for-bulk-revoke",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-23/11-select-for-bulk-revoke.png",
+        "annotated": "docs/guide/screenshots/U-23/11-select-for-bulk-revoke-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 569,
+          "w": 16,
+          "h": 16
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Bulk revoke"
+      },
+      "caption": "Click **Bulk revoke**",
+      "slug": "bulk-revoke-confirm",
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-23/12-bulk-revoke-confirm.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "press",
+      "value": "Escape",
+      "caption": "press",
+      "slug": "press",
+      "capture": false,
+      "n": 13
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/revocation-activity"
+      },
+      "caption": "Open /reports/revocation-activity",
+      "slug": "revocation-activity",
+      "n": 14,
+      "capture": {
+        "file": "docs/guide/screenshots/U-23/14-revocation-activity.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "flags": "DESTRUCTIVE (run on a throwaway hub; disposable seeded service certificates)",
+  "lastRun": {
+    "at": "2026-10-18T12:50:20.685Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-23",
+    "steps": 14,
+    "shots": 13,
+    "annotated": 6,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/reports/revocation-activity"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-23/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-23/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

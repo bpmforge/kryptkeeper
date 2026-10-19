@@ -6,10 +6,11 @@ package bootstrap
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSummaryProvider CertSummaryProvider, discoveryProvider DiscoveryProvider, notificationProvider NotificationProvider, dashboardActionProvider DashboardActionProvider, auditProvider AuditProvider) {
@@ -40,7 +41,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		certSummary, err := certSummaryProvider.LoadSummary(r.Context())
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "dashboard.summary", "dashboard", "summary", AuditOutcomeFailure)
-			log.Printf("dashboard summary unavailable: %v", err)
+			logging.Warnf("dashboard summary unavailable: %v", err)
 			writeServiceUnavailable(w, "dashboard summary unavailable")
 			return
 		}
@@ -48,7 +49,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		discoverySummary, err := discoveryProvider.GetSummary(r.Context())
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "dashboard.summary", "dashboard", "summary", AuditOutcomeFailure)
-			log.Printf("dashboard discovery summary unavailable: %v", err)
+			logging.Warnf("dashboard discovery summary unavailable: %v", err)
 			writeServiceUnavailable(w, "dashboard summary unavailable")
 			return
 		}
@@ -56,7 +57,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		notifSummary, err := notificationProvider.GetSummary(r.Context())
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "dashboard.summary", "dashboard", "summary", AuditOutcomeFailure)
-			log.Printf("dashboard notification summary unavailable: %v", err)
+			logging.Warnf("dashboard notification summary unavailable: %v", err)
 			writeServiceUnavailable(w, "dashboard summary unavailable")
 			return
 		}
@@ -77,6 +78,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 					Managed   int    `json:"managed"`
 					External  int    `json:"external"`
 					Unmanaged int    `json:"unmanaged"`
+					Unowned   int    `json:"unowned"`
 					Source    string `json:"source"`
 				} `json:"certificates"`
 				Discovery struct {
@@ -103,6 +105,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		resp.Data.Certificates.Managed = certSummary.Managed
 		resp.Data.Certificates.External = certSummary.External
 		resp.Data.Certificates.Unmanaged = certSummary.Unmanaged
+		resp.Data.Certificates.Unowned = certSummary.Unowned
 		resp.Data.Certificates.Source = certSummary.Source
 		resp.Data.Discovery.DiscoveredEndpoints = discoverySummary.DiscoveredEndpoints
 		resp.Data.Discovery.RiskyEndpoints = discoverySummary.RiskyEndpoints
@@ -115,7 +118,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/dashboard/summary response: %v", err)
+			logging.Warnf("failed to encode /api/v1/dashboard/summary response: %v", err)
 		}
 	})
 
@@ -143,7 +146,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		certSummary, err := certSummaryProvider.LoadSummary(r.Context())
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "dashboard.actions", "dashboard", "actions", AuditOutcomeFailure)
-			log.Printf("dashboard actions unavailable: %v", err)
+			logging.Warnf("dashboard actions unavailable: %v", err)
 			writeServiceUnavailable(w, "dashboard actions unavailable")
 			return
 		}
@@ -151,7 +154,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		discoverySummary, err := discoveryProvider.GetSummary(r.Context())
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "dashboard.actions", "dashboard", "actions", AuditOutcomeFailure)
-			log.Printf("dashboard actions discovery unavailable: %v", err)
+			logging.Warnf("dashboard actions discovery unavailable: %v", err)
 			writeServiceUnavailable(w, "dashboard actions unavailable")
 			return
 		}
@@ -159,7 +162,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		notifSummary, err := notificationProvider.GetSummary(r.Context())
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "dashboard.actions", "dashboard", "actions", AuditOutcomeFailure)
-			log.Printf("dashboard actions notifications unavailable: %v", err)
+			logging.Warnf("dashboard actions notifications unavailable: %v", err)
 			writeServiceUnavailable(w, "dashboard actions unavailable")
 			return
 		}
@@ -217,7 +220,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/dashboard/actions response: %v", err)
+			logging.Warnf("failed to encode /api/v1/dashboard/actions response: %v", err)
 		}
 	})
 
@@ -270,7 +273,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		result, err := dashboardActionProvider.ListHistory(r.Context(), query)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "dashboard.actions.history", "dashboard", "actions-history", AuditOutcomeFailure)
-			log.Printf("dashboard actions history unavailable: %v", err)
+			logging.Warnf("dashboard actions history unavailable: %v", err)
 			writeServiceUnavailable(w, "dashboard actions history unavailable")
 			return
 		}
@@ -300,7 +303,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/dashboard/actions/history response: %v", err)
+			logging.Warnf("failed to encode /api/v1/dashboard/actions/history response: %v", err)
 		}
 	})
 
@@ -347,7 +350,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		result, err := dashboardActionProvider.AckAction(r.Context(), req.ActionID, req.Note)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "dashboard.action.ack", "dashboard", "actions", AuditOutcomeFailure)
-			log.Printf("dashboard action ack failed: %v", err)
+			logging.Warnf("dashboard action ack failed: %v", err)
 			writeServiceUnavailable(w, "dashboard action ack unavailable")
 			return
 		}
@@ -373,7 +376,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/dashboard/actions/ack response: %v", err)
+			logging.Warnf("failed to encode /api/v1/dashboard/actions/ack response: %v", err)
 		}
 	})
 
@@ -420,7 +423,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		result, err := dashboardActionProvider.ResolveAction(r.Context(), req.ActionID, req.Note)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "dashboard.action.resolve", "dashboard", "actions", AuditOutcomeFailure)
-			log.Printf("dashboard action resolve failed: %v", err)
+			logging.Warnf("dashboard action resolve failed: %v", err)
 			writeServiceUnavailable(w, "dashboard action resolve unavailable")
 			return
 		}
@@ -446,7 +449,7 @@ func registerDashboardHandlers(mux *http.ServeMux, auth *Authenticator, certSumm
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/dashboard/actions/resolve response: %v", err)
+			logging.Warnf("failed to encode /api/v1/dashboard/actions/resolve response: %v", err)
 		}
 	})
 }

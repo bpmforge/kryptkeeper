@@ -6,9 +6,14 @@ package bootstrap
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -524,4 +529,398 @@ func TestAgentRenewalResult_UnauthorizedRejects(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", w.Code)
 	}
+}
+
+// agentAuditLog records every audit entry (capturingAuditProvider keeps only
+// the last one).
+type agentAuditLog struct {
+	mu      sync.Mutex
+	entries []AuditEntry
+}
+
+func (p *agentAuditLog) ListEntries(context.Context, AuditListQuery) (AuditListResult, error) {
+	return AuditListResult{}, nil
+}
+
+func (p *agentAuditLog) AppendEntry(_ context.Context, e AuditEntry) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.entries = append(p.entries, e)
+	return nil
+}
+
+func (p *agentAuditLog) has(action, resourceID string, outcome AuditOutcome) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, e := range p.entries {
+		if e.Action == action && e.ResourceID == resourceID && e.Outcome == outcome {
+			return true
+		}
+	}
+	return false
+}
+
+func newAgentAdminMux(t *testing.T) (*http.ServeMux, AgentStore, *agentAuditLog, *Authenticator) {
+	t.Helper()
+	t.Setenv("KRYPTKEEPER_AGENT_OPEN_REGISTRATION", "true")
+	t.Setenv("APP_API_KEY_PEPPER", "test-pepper-32-chars-minimum!!!!")
+	t.Setenv("APP_API_KEY_AUTH_ENABLED", "true")
+	store := NewAgentStore()
+	audit := &agentAuditLog{}
+	auth := newAgentTestAuth(t)
+	mux := http.NewServeMux()
+	registerAgentHandlers(mux, auth, store, audit)
+	return mux, store, audit, auth
+}
+
+func agentCall(mux *http.ServeMux, method, path, bearer string, hdr map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, nil)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	return w
+}
+
+func agentHeartbeat(mux *http.ServeMux, id, token, version string) *httptest.ResponseRecorder {
+	h := map[string]string{"X-Agent-ID": id, "X-Agent-Token": token}
+	if version != "" {
+		h["X-Agent-Version"] = version
+	}
+	return agentCall(mux, http.MethodPost, "/api/v1/agent/heartbeat", "", h)
+}
+
+func listAgentsVia(t *testing.T, mux *http.ServeMux) map[string]AgentInfo {
+	t.Helper()
+	w := agentCall(mux, http.MethodGet, "/api/v1/agents", agentTestToken, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list agents: %d %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Agents []AgentInfo `json:"agents"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	out := map[string]AgentInfo{}
+	for _, a := range resp.Agents {
+		out[a.ID] = a
+	}
+	return out
+}
+
+func TestAgentList_ReturnsVersion(t *testing.T) {
+	mux, _, _, _ := newAgentAdminMux(t)
+	withID, withTok := registerTestAgent(t, mux, "versioned", AgentTypeLinux)
+	noID, noTok := registerTestAgent(t, mux, "silent-version", AgentTypeLinux)
+
+	if w := agentHeartbeat(mux, withID, withTok, "1.2.3"); w.Code != http.StatusOK {
+		t.Fatalf("heartbeat: %d", w.Code)
+	}
+	if w := agentHeartbeat(mux, noID, noTok, ""); w.Code != http.StatusOK {
+		t.Fatalf("heartbeat: %d", w.Code)
+	}
+	got := listAgentsVia(t, mux)
+	if got[withID].Version != "1.2.3" {
+		t.Errorf("version = %q, want 1.2.3", got[withID].Version)
+	}
+	if got[noID].Version != "" {
+		t.Errorf("version = %q, want empty for agent that never reported", got[noID].Version)
+	}
+	w := agentCall(mux, http.MethodGet, "/api/v1/agents", agentTestToken, nil)
+	if !strings.Contains(w.Body.String(), `"version":"1.2.3"`) || !strings.Contains(w.Body.String(), `"version":""`) {
+		t.Errorf("wire JSON lacks version field: %s", w.Body.String())
+	}
+}
+
+func TestAgentVersion_RejectedTokenDoesNotSetVersionAndIsCapped(t *testing.T) {
+	mux, _, _, _ := newAgentAdminMux(t)
+	id, tok := registerTestAgent(t, mux, "v", AgentTypeLinux)
+	if w := agentHeartbeat(mux, id, "wrong-token", "6.6.6"); w.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", w.Code)
+	}
+	if v := listAgentsVia(t, mux)[id].Version; v != "" {
+		t.Fatalf("unauthenticated heartbeat set version %q", v)
+	}
+	agentHeartbeat(mux, id, tok, strings.Repeat("v", 200))
+	if v := listAgentsVia(t, mux)[id].Version; len(v) != maxAgentVersionLen {
+		t.Fatalf("version length = %d, want capped at %d", len(v), maxAgentVersionLen)
+	}
+}
+
+func TestAgentStatusAt_FakeClock(t *testing.T) {
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		now  time.Time
+		want AgentStatus
+	}{
+		{"4m59s", t0.Add(4*time.Minute + 59*time.Second), AgentStatusActive},
+		{"5m", t0.Add(5 * time.Minute), AgentStatusStale},
+		{"29m59s", t0.Add(29*time.Minute + 59*time.Second), AgentStatusStale},
+		{"30m", t0.Add(30 * time.Minute), AgentStatusOffline},
+	}
+	for _, c := range cases {
+		if got := computeAgentStatusAt(&t0, c.now); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+	if got := computeAgentStatusAt(nil, t0); got != AgentStatusOffline {
+		t.Errorf("nil lastSeen: got %q, want offline", got)
+	}
+}
+
+func TestAgentDelete_RevokesToken(t *testing.T) {
+	mux, _, audit, _ := newAgentAdminMux(t)
+	id, tok := registerTestAgent(t, mux, "doomed", AgentTypeLinux)
+	if w := agentHeartbeat(mux, id, tok, ""); w.Code != http.StatusOK {
+		t.Fatalf("heartbeat before delete: %d", w.Code)
+	}
+	if w := agentCall(mux, http.MethodDelete, "/api/v1/agents/"+id, agentTestToken, nil); w.Code != http.StatusNoContent {
+		t.Fatalf("delete: want 204, got %d %s", w.Code, w.Body.String())
+	}
+	if w := agentHeartbeat(mux, id, tok, ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("heartbeat after delete: want 401, got %d", w.Code)
+	}
+	if !audit.has("agent.remove", id, AuditOutcomeSuccess) {
+		t.Error("missing agent.remove audit entry")
+	}
+	if _, ok := listAgentsVia(t, mux)[id]; ok {
+		t.Error("removed agent still listed")
+	}
+}
+
+func TestAgentDelete_RequiresAdmin(t *testing.T) {
+	mux, store, audit, auth := newAgentAdminMux(t)
+	id, tok := registerTestAgent(t, mux, "kept", AgentTypeLinux)
+	_, viewer, err := auth.CreateAPIKey("viewer-key", "viewer-1", "pki-viewer", []string{"*"}, "", "", time.Now())
+	if err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+	if w := agentCall(mux, http.MethodDelete, "/api/v1/agents/"+id, viewer, nil); w.Code != http.StatusForbidden {
+		t.Fatalf("non-admin delete: want 403, got %d", w.Code)
+	}
+	if w := agentHeartbeat(mux, id, tok, ""); w.Code != http.StatusOK {
+		t.Fatalf("agent must survive a denied delete, heartbeat = %d", w.Code)
+	}
+	if len(store.list()) != 1 {
+		t.Fatal("agent was removed by non-admin")
+	}
+	if !audit.has("agent.remove", id, AuditOutcomeDenied) {
+		t.Error("missing denied audit entry")
+	}
+}
+
+func TestAgentDelete_UnknownIs404(t *testing.T) {
+	mux, _, audit, _ := newAgentAdminMux(t)
+	if w := agentCall(mux, http.MethodDelete, "/api/v1/agents/nope", agentTestToken, nil); w.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d", w.Code)
+	}
+	if !audit.has("agent.remove", "nope", AuditOutcomeFailure) {
+		t.Error("404 must leave a failure audit row")
+	}
+}
+
+func TestAgentDelete_Unauthenticated401(t *testing.T) {
+	mux, store, _, _ := newAgentAdminMux(t)
+	id, _ := registerTestAgent(t, mux, "x", AgentTypeLinux)
+	if w := agentCall(mux, http.MethodDelete, "/api/v1/agents/"+id, "", nil); w.Code != http.StatusUnauthorized {
+		t.Fatalf("want 401, got %d", w.Code)
+	}
+	if len(store.list()) != 1 {
+		t.Fatal("unauthenticated delete removed the agent")
+	}
+}
+
+func TestAgentPruneSilent(t *testing.T) {
+	store := NewAgentStore()
+	oldID, oldTok, _ := store.register("old", AgentTypeLinux)
+	newID, newTok, _ := store.register("new", AgentTypeLinux)
+	neverID, _, _ := store.register("never-seen-old", AgentTypeLinux)
+	_ = store.heartbeat(oldID, oldTok)
+	_ = store.heartbeat(newID, newTok)
+
+	mem := store.(*memAgentStore)
+	mem.mu.Lock()
+	old := time.Now().UTC().Add(-48 * time.Hour)
+	mem.records[oldID].info.LastSeen = &old
+	mem.records[oldID].info.RegisteredAt = old
+	mem.records[neverID].info.RegisteredAt = old
+	mem.mu.Unlock()
+
+	removed := store.pruneSilent(time.Now().Add(-24 * time.Hour))
+	sort.Strings(removed)
+	want := []string{oldID, neverID}
+	sort.Strings(want)
+	if strings.Join(removed, ",") != strings.Join(want, ",") {
+		t.Fatalf("removed %v, want %v", removed, want)
+	}
+	if l := store.list(); len(l) != 1 || l[0].ID != newID {
+		t.Fatalf("survivors = %+v, want only %s", l, newID)
+	}
+}
+
+func TestAgentList_PrunesOnlyWhenEnabled(t *testing.T) {
+	mux, store, audit, _ := newAgentAdminMux(t)
+	id, tok := registerTestAgent(t, mux, "stale-one", AgentTypeLinux)
+	agentHeartbeat(mux, id, tok, "")
+	old := time.Now().UTC().Add(-72 * time.Hour)
+	store.(*memAgentStore).mu.Lock()
+	store.(*memAgentStore).records[id].info.LastSeen = &old
+	store.(*memAgentStore).records[id].info.RegisteredAt = old
+	store.(*memAgentStore).mu.Unlock()
+
+	if _, ok := listAgentsVia(t, mux)[id]; !ok {
+		t.Fatal("agent pruned although KRYPTKEEPER_AGENT_PRUNE_AFTER is unset")
+	}
+	t.Setenv("KRYPTKEEPER_AGENT_PRUNE_AFTER", "24h")
+	if _, ok := listAgentsVia(t, mux)[id]; ok {
+		t.Fatal("silent agent not pruned with prune enabled")
+	}
+	if !audit.has("agent.prune", id, AuditOutcomeSuccess) {
+		t.Error("missing agent.prune audit entry")
+	}
+}
+
+func TestAgentPruneAfterFromEnv(t *testing.T) {
+	cases := map[string]time.Duration{
+		"": 0, "garbage": 0, "-5h": 0, "0": 0,
+		"10m": time.Hour, "1h": time.Hour, "72h": 72 * time.Hour,
+	}
+	for in, want := range cases {
+		t.Setenv("KRYPTKEEPER_AGENT_PRUNE_AFTER", in)
+		if got := agentPruneAfterFromEnv(); got != want {
+			t.Errorf("%q: got %v, want %v", in, got, want)
+		}
+	}
+}
+
+func pushInventory(t *testing.T, mux *http.ServeMux, id, token string, body map[string]any) {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/agent/inventory", bytes.NewReader(b))
+	req.Header.Set("X-Agent-ID", id)
+	req.Header.Set("X-Agent-Token", token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("inventory: %d %s", w.Code, w.Body)
+	}
+}
+
+func hostPushFixture() map[string]any {
+	return map[string]any{
+		"certs":            []any{},
+		"host_scanned":     true,
+		"privilege_mode":   "none",
+		"scan_user":        "kryptkeeper-agent",
+		"unreadable_paths": []map[string]string{{"path": "/opt/tomcat/conf/keystore.jks", "error": "permission denied"}},
+		"unreadable_total": 1,
+		"files": []map[string]any{
+			{"path": "/opt/tomcat/conf/keystore.jks", "kind": "jks", "owner": "root", "group": "root", "mode": "600", "uid": 0, "gid": 0},
+			{"path": "/etc/nginx/ssl/a.key", "kind": "key", "owner": "root", "group": "root", "mode": "644", "uid": 0, "gid": 0},
+		},
+		"listeners": []map[string]any{
+			{"port": 8443, "pid": 9, "uid": 1001, "gid": 1001, "comm": "java", "tech": "tomcat", "app_dirs": []string{"/opt/tomcat"}},
+		},
+	}
+}
+
+func TestAgentInventoryHostPassComputesPostureAndRecordsInsufficientPrivilege(t *testing.T) {
+	mux, store := newAgentMux(t)
+	id, token := registerTestAgent(t, mux, "host-agent", AgentTypeLinux)
+	pushInventory(t, mux, id, token, hostPushFixture())
+
+	hr := store.list()[0].HostReport
+	if hr == nil || !hr.PostureKnown || hr.PrivilegeMode != "none" || hr.UnreadableCount != 1 || len(hr.UnreadablePaths) != 1 {
+		t.Fatalf("report: %+v", hr)
+	}
+	joined := strings.Join(hr.Findings, "\n")
+	for _, want := range []string{"INSUFFICIENT_PRIVILEGE: uid=unknown; user=kryptkeeper-agent; mode=none; unreadable=1", "KEY_WORLD_READABLE:", "PRIVILEGED_INSTALL_PATH:"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("findings lack %q:\n%s", want, joined)
+		}
+	}
+	byPath := map[string]AgentHostFile{}
+	for _, f := range hr.Files {
+		byPath[f.Path] = f
+	}
+	if byPath["/opt/tomcat/conf/keystore.jks"].Posture != "privileged" || byPath["/opt/tomcat/conf/keystore.jks"].ServiceTech != "tomcat" {
+		t.Fatalf("the same posture as an SSH target: %+v", byPath)
+	}
+	if hr.ListenerCount != 1 || hr.PostureCounts["privileged"] != 1 {
+		t.Fatalf("%+v", hr)
+	}
+	// The API's agent list carries it for the detail page.
+	list := doAgentList(t, mux)
+	if !strings.Contains(list, `"host_report"`) || !strings.Contains(list, `"unreadable_count":1`) {
+		t.Fatalf("list lacks the report: %s", list)
+	}
+
+	// After the helper rule is added the agent reports nothing unreadable.
+	ok := hostPushFixture()
+	ok["unreadable_paths"], ok["unreadable_total"], ok["privilege_mode"] = []any{}, 0, "helper"
+	pushInventory(t, mux, id, token, ok)
+	hr = store.list()[0].HostReport
+	if hr.UnreadableCount != 0 || strings.Contains(strings.Join(hr.Findings, "\n"), "INSUFFICIENT_PRIVILEGE") || hr.PrivilegeMode != "helper" {
+		t.Fatalf("%+v", hr)
+	}
+}
+
+func TestAgentInventoryPreW34AgentIsUnknownPostureNotStandard(t *testing.T) {
+	mux, store := newAgentMux(t)
+	id, token := registerTestAgent(t, mux, "old-agent", AgentTypeLinux)
+	pushInventory(t, mux, id, token, map[string]any{"certs": []any{}, "endpoints": []any{}})
+	hr := store.list()[0].HostReport
+	if hr == nil || hr.PostureKnown || len(hr.Files) != 0 || len(hr.PostureCounts) != 0 || len(hr.Findings) != 0 {
+		t.Fatalf("a pre-W34 agent must read as unknown posture: %+v", hr)
+	}
+}
+
+func TestBuildAgentHostReportCapsAndHiddenListeners(t *testing.T) {
+	var paths []AgentUnreadablePath
+	for i := 0; i < 80; i++ {
+		paths = append(paths, AgentUnreadablePath{Path: fmt.Sprintf("/srv/k/%d.jks", i), Error: "permission denied"})
+	}
+	minus := -1
+	rep := buildAgentHostReport(agentHostPush{HostScanned: true, PrivilegeMode: "nopasswd", ScanUser: "a", UnreadablePaths: paths, UnreadableTotal: 120,
+		Listeners: []agentPushListener{{Port: 25, UID: &minus}, {Port: 80, PID: 1, Comm: "nginx", Tech: "nginx"}}}, time.Now())
+	if rep.UnreadableCount != 120 || len(rep.UnreadablePaths) != maxAgentReportPaths {
+		t.Fatalf("count/cap: %d %d", rep.UnreadableCount, len(rep.UnreadablePaths))
+	}
+	if !strings.Contains(rep.Findings[0], "unreadable=120") || !strings.Contains(rep.Findings[0], "(+110 more)") {
+		t.Fatalf("%s", rep.Findings[0])
+	}
+	if rep.ListenersHidden != 2 {
+		// A listener sent without a uid reads as unknown; an explicit -1 as well.
+		t.Fatalf("hidden = %d", rep.ListenersHidden)
+	}
+}
+
+func TestDBAgentStoreKeepsHostReport(t *testing.T) {
+	s := newTestDBAgentStore(t)
+	id, token, err := s.register("n", AgentTypeLinux)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = token
+	s.setHostReport(id, AgentHostReport{PostureKnown: true, UnreadableCount: 3, PrivilegeMode: "helper"})
+	got := s.list()[0].HostReport
+	if got == nil || !got.PostureKnown || got.UnreadableCount != 3 || got.PrivilegeMode != "helper" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func doAgentList(t *testing.T, mux *http.ServeMux) string {
+	t.Helper()
+	w := agentCall(mux, http.MethodGet, "/api/v1/agents", agentTestToken, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", w.Code, w.Body)
+	}
+	return w.Body.String()
 }

@@ -5,18 +5,19 @@
 package est
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"go.mozilla.org/pkcs7"
+	"kryptkeeper/internal/logging"
 
 	"kryptkeeper/internal/ca"
 )
@@ -30,6 +31,7 @@ type Server struct {
 	// existing caller and test that builds a Server without
 	// WithIssuedRecorder keeps working unchanged.
 	issuedRecorder ca.IssuedCertificateRecorder
+	enrollGate     EnrollmentGate
 	// Authentication (auth.go). Enrollment is refused until at least one
 	// credential type is configured (W20-14, D-112).
 	users       map[string]User
@@ -37,12 +39,19 @@ type Server struct {
 	revocation  ca.RevocationChecker
 	audit       AuditFunc
 	now         func() time.Time
+	// W26-07: Basic users beyond the users file, and the failed-attempt alert.
+	userSource UserSource
+	alert      AlertFunc
+	failures   failureWindow
+	// W26-06: named endpoints bound to templates (labels.go).
+	labels    LabelStore
+	labelGate func(templateID string) EnrollmentGate
 }
 
 // NewServer creates an EST server. Enrollment is refused until a credential
-// type is configured (WithBasicUsers, WithClientCertAnchors); cacerts and
-// csrattrs, which issue nothing and are anonymous by design (RFC 7030 4.1,
-// 4.5), are always served.
+// type is configured (WithBasicUsers, WithClientCertAnchors); cacerts,
+// which issues nothing, is always served anonymously (RFC 7030 4.1.1); every
+// other route answers 401 without credentials.
 func NewServer(caEngine ca.Service, caID string) *Server {
 	return &Server{caEngine: caEngine, caID: caID, now: time.Now}
 }
@@ -55,6 +64,20 @@ func (s *Server) WithIssuedRecorder(r ca.IssuedCertificateRecorder) *Server {
 	return s
 }
 
+// EnrollmentGate decides whether this protocol may issue from its configured
+// template (W23-43). It is a function value because protocol packages must not
+// import internal/bootstrap. An error wrapping ca.ErrEnrollmentDenied is a
+// policy denial; any other error is a failure to evaluate, which also blocks
+// issuance (fail closed). Nil means no gate is configured.
+type EnrollmentGate func(ctx context.Context, actor string) error
+
+// WithEnrollmentGate wires the template enrollment gate and returns the server
+// for chaining.
+func (s *Server) WithEnrollmentGate(g EnrollmentGate) *Server {
+	s.enrollGate = g
+	return s
+}
+
 // Handler returns an http.Handler for EST endpoints.
 // EST endpoints are under /.well-known/est/ per RFC 7030 §3.2.2.
 func (s *Server) Handler() http.Handler {
@@ -63,6 +86,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/.well-known/est/simpleenroll", s.handleSimpleEnroll)
 	mux.HandleFunc("/.well-known/est/simplereenroll", s.handleSimpleReenroll)
 	mux.HandleFunc("/.well-known/est/csrattrs", s.handleCSRAttrs)
+	mux.HandleFunc("/.well-known/est/", s.handleLabelPath) // exact patterns above win
 	return mux
 }
 
@@ -79,9 +103,13 @@ func (s *Server) handleCACerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chain, err := s.caEngine.GetCAChain(s.caID)
+	if _, rerr := ca.ResolveCAID(s.caEngine, s.caID); errors.Is(rerr, ca.ErrNoCAConfigured) {
+		http.Error(w, rerr.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	chain, err := s.caEngine.GetCAChain(s.activeCAID())
 	if err != nil {
-		log.Printf("est cacerts: %v", err)
+		logging.Infof("est cacerts: %v", err)
 		http.Error(w, "CA chain unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -93,7 +121,7 @@ func (s *Server) handleCACerts(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := writePKCS7CertsOnly(w, certs); err != nil {
-		log.Printf("est cacerts: %v", err)
+		logging.Infof("est cacerts: %v", err)
 		http.Error(w, "CA chain unavailable", http.StatusServiceUnavailable)
 	}
 }
@@ -162,21 +190,25 @@ func (s *Server) handleSimpleReenroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "EST requires TLS", http.StatusForbidden)
 		return
 	}
-	if s.revocation == nil || len(r.TLS.PeerCertificates) == 0 {
-		http.Error(w, "re-enrollment requires the client certificate this hub issued", http.StatusForbidden)
+	if s.revocation == nil {
+		http.Error(w, "re-enrollment is not enabled", http.StatusForbidden)
 		return
 	}
-	issuer, err := s.caEngine.GetCA(s.caID)
+	if len(r.TLS.PeerCertificates) == 0 {
+		http.Error(w, "re-enrollment requires the client certificate this hub issued", http.StatusUnauthorized)
+		return
+	}
+	issuer, err := s.caEngine.GetCA(s.activeCAID())
 	if err != nil || issuer.Certificate == nil {
 		http.Error(w, "CA unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	cert := r.TLS.PeerCertificates[0]
 	actor := cert.Subject.String()
-	if err := ca.CheckHubClientCertificate(cert, issuer.Certificate, s.caID, s.now(), s.revocation); err != nil {
+	if err := ca.CheckHubClientCertificate(cert, issuer.Certificate, s.activeCAID(), s.now(), s.revocation); err != nil {
 		var refused *ca.CredentialRefusedError
 		if errors.As(err, &refused) && refused.Err != nil {
-			log.Printf("est simplereenroll: credential for %s: %v", actor, refused.Err)
+			logging.Infof("est simplereenroll: credential for %s: %v", actor, refused.Err)
 		}
 		s.emit(r, AuditEvent{Action: "est.reenroll", Actor: actor, Outcome: "denied", Detail: err.Error()})
 		http.Error(w, "re-enrollment refused: "+err.Error(), http.StatusForbidden)
@@ -194,7 +226,40 @@ func (s *Server) handleSimpleReenroll(w http.ResponseWriter, r *http.Request) {
 // authenticated identity, never verbatim from the CSR.
 func (s *Server) issue(w http.ResponseWriter, r *http.Request, csr *x509.CertificateRequest, id identity, action string) {
 	subject := id.subject
-	issued, err := s.caEngine.IssueCertificate(s.caID, ca.IssuanceRequest{
+	gate := s.enrollGate
+	label := labelFrom(r.Context())
+	labelDetail := ""
+	if label != nil {
+		labelDetail = "label=" + label.Label + " "
+		gate = func(context.Context, string) error { return errors.New("no enrollment gate for labels") } // fail closed
+		if s.labelGate != nil {
+			gate = s.labelGate(label.TemplateID)
+		}
+	}
+	if gate != nil {
+		if gerr := gate(r.Context(), id.actor); gerr != nil {
+			s.emit(r, AuditEvent{Action: action, Actor: id.actor, Outcome: "denied", Detail: labelDetail + gerr.Error()})
+			if errors.Is(gerr, ca.ErrEnrollmentDenied) {
+				http.Error(w, "enrollment not permitted for this template", http.StatusForbidden)
+				return
+			}
+			logging.Warnf("est %s: enrollment gate failed: %v", action, gerr)
+			http.Error(w, "certificate issuance failed", http.StatusInternalServerError)
+			return
+		}
+	}
+	issuerID, rerr := ca.ResolveCAID(s.caEngine, s.caID)
+	if rerr != nil {
+		logging.Warnf("est %s: %v", action, rerr)
+		s.emit(r, AuditEvent{Action: action, Actor: id.actor, Outcome: "failure", Detail: rerr.Error()})
+		msg := "CA unavailable"
+		if errors.Is(rerr, ca.ErrNoCAConfigured) {
+			msg = rerr.Error()
+		}
+		http.Error(w, msg, http.StatusServiceUnavailable)
+		return
+	}
+	issued, err := s.caEngine.IssueCertificate(issuerID, ca.IssuanceRequest{
 		CSR:             csr,
 		Subject:         &subject,
 		DNSNames:        id.dnsNames,
@@ -204,7 +269,21 @@ func (s *Server) issue(w http.ResponseWriter, r *http.Request, csr *x509.Certifi
 		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})
 	if err != nil {
-		log.Printf("est %s: issuance failed: %v", action, err)
+		logging.Warnf("est %s: issuance failed: %v", action, err)
+		if errors.Is(err, ca.ErrCARevoked) {
+			s.emit(r, AuditEvent{Action: action, Actor: id.actor, Outcome: "denied", Detail: "ca revoked"})
+			http.Error(w, "issuing CA revoked", http.StatusForbidden)
+			return
+		}
+		// W22-14: surface an issuance-policy refusal (policy + rule) to the
+		// enrolling client as 403 rather than a generic 500. Only the status
+		// and text change; nothing was signed.
+		var pv *ca.PolicyViolationError
+		if errors.As(err, &pv) {
+			s.emit(r, AuditEvent{Action: action, Actor: id.actor, Outcome: "denied", Detail: pv.Error()})
+			http.Error(w, pv.Error(), http.StatusForbidden)
+			return
+		}
 		http.Error(w, "certificate issuance failed", http.StatusInternalServerError)
 		return
 	}
@@ -214,17 +293,23 @@ func (s *Server) issue(w http.ResponseWriter, r *http.Request, csr *x509.Certifi
 	// enrollment response; it would hand the client a credential this system
 	// then can't undo. Best-effort, logged only (W18-18).
 	if s.issuedRecorder != nil {
-		if err := s.issuedRecorder.RecordIssuedCertificate(r.Context(), s.caID, issued.Certificate, issued.CertPEM, "est"); err != nil {
-			log.Printf("est: issued certificate %s not recorded: %v", issued.Fingerprint, err)
+		var err error
+		if tr, ok := s.issuedRecorder.(ca.TemplateIssuedCertificateRecorder); ok && label != nil {
+			err = tr.RecordIssuedCertificateWithTemplate(r.Context(), s.activeCAID(), issued.Certificate, issued.CertPEM, "est", label.TemplateID)
+		} else {
+			err = s.issuedRecorder.RecordIssuedCertificate(r.Context(), s.activeCAID(), issued.Certificate, issued.CertPEM, "est")
+		}
+		if err != nil {
+			logging.Infof("est: issued certificate %s not recorded: %v", issued.Fingerprint, err)
 		}
 	}
 	s.emit(r, AuditEvent{Action: action, Actor: id.actor, Outcome: "success",
-		Detail: fmt.Sprintf("method=%s serial=%s subject=%q", id.method, issued.Certificate.SerialNumber.Text(16), issued.Certificate.Subject.String())})
+		Detail: fmt.Sprintf(labelDetail+"method=%s serial=%s subject=%q", id.method, issued.Certificate.SerialNumber.Text(16), issued.Certificate.Subject.String())})
 
 	// RFC 7030 4.2.3: same degenerate PKCS#7 certs-only structure as
 	// cacerts, carrying just the issued certificate (see writePKCS7CertsOnly).
 	if err := writePKCS7CertsOnly(w, []*x509.Certificate{issued.Certificate}); err != nil {
-		log.Printf("est %s: %v", action, err)
+		logging.Infof("est %s: %v", action, err)
 		http.Error(w, "response encoding failed", http.StatusInternalServerError)
 	}
 }
@@ -234,6 +319,15 @@ func (s *Server) handleCSRAttrs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Anonymous callers get 401 like every other route but cacerts.
+	if r.TLS != nil && !s.EnrollmentConfigured() {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	if _, ok := s.authenticateEnroll(w, r, nil); !ok {
 		return
 	}
 
@@ -265,4 +359,14 @@ func (s *Server) parseCSRFromRequest(r *http.Request) (*x509.CertificateRequest,
 
 	// Try raw DER.
 	return x509.ParseCertificateRequest(body)
+}
+
+// activeCAID returns the CA this server issues from: the configured id, else
+// the first stored CA resolved at request time so a root created after
+// startup (first-run onboarding) becomes the default without a restart. It
+// returns "" while no CA exists or the CA list cannot be read; callers that
+// issue check ca.ResolveCAID for the specific error.
+func (s *Server) activeCAID() string {
+	id, _ := ca.ResolveCAID(s.caEngine, s.caID)
+	return id
 }

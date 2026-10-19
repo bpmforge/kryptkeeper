@@ -13,7 +13,8 @@ import (
 	"encoding/asn1"
 	"fmt"
 	"hash"
-	"log"
+
+	"kryptkeeper/internal/logging"
 )
 
 // oidPasswordBasedMac is RFC 4210 §5.1.3.1's id-PasswordBasedMac
@@ -146,7 +147,7 @@ func verifyPBMProtection(hdr *parsedHeader, protection asn1.RawValue, bodyFullBy
 		return fmt.Errorf("badMessageCheck: %w", err)
 	}
 	if usedSHA1 {
-		log.Print("cmp: peer used SHA-1 in PBM owf/mac — tolerated for interop, prefer SHA-256")
+		logging.Info("cmp: peer used SHA-1 in PBM owf/mac — tolerated for interop, prefer SHA-256")
 	}
 
 	if !hmac.Equal(expected, received.RightAlign()) {

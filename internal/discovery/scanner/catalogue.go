@@ -14,6 +14,7 @@ const (
 	probeSTARTTLS                  // line/binary protocol that upgrades to TLS
 	probeSSH                       // SSH: banner + host-key algorithms, no cert
 	probeRDP                       // RDP: X.224 negotiation, then TLS
+	probeTDS                       // MSSQL: TDS PRELOGIN, then TLS framed in TDS packets
 )
 
 // scanTier bounds which breadths include a port. fast ⊂ targeted ⊂ full.
@@ -55,6 +56,8 @@ var certProtocolCatalogue = []protocolEntry{
 	{22, "ssh", probeSSH, "", tierFast},
 
 	// Directory.
+	{389, "ldap", probeSTARTTLS, "ldap", tierTargeted},
+	{3268, "ldap-gc", probeSTARTTLS, "ldap", tierFull},
 	{636, "ldaps", probeTLS, "", tierFast},
 	{3269, "ldaps-gc", probeTLS, "", tierFull},
 
@@ -69,6 +72,11 @@ var certProtocolCatalogue = []protocolEntry{
 
 	// Databases with a STARTTLS-style upgrade.
 	{5432, "postgres", probeSTARTTLS, "postgres", tierTargeted},
+	// MSSQL and MySQL upgrade inside their own protocol framing. Full and deep
+	// tiers only (D-206): these are active probes, not a connection the fast
+	// sweep already makes.
+	{1433, "mssql", probeTDS, "", tierFull},
+	{3306, "mysql", probeSTARTTLS, "mysql", tierFull},
 
 	// Remote access and management.
 	{3389, "rdp", probeRDP, "", tierFast},
@@ -79,6 +87,18 @@ var certProtocolCatalogue = []protocolEntry{
 	{2380, "etcd-peer", probeTLS, "", tierFull},
 	{5671, "amqps", probeTLS, "", tierFull},
 	{8883, "mqtts", probeTLS, "", tierFull},
+
+	// Data-plane and platform services that speak TLS from byte one. Tags in
+	// the endpoints.protocol CHECK (oracle, redis, mongodb, kafka) are stored
+	// as such; the rest are recorded as 'other' with the fingerprint naming them.
+	{2484, "oracle", probeTLS, "", tierFull},
+	{6380, "redis", probeTLS, "", tierFull},
+	{27017, "mongodb", probeTLS, "", tierFull},
+	{9093, "kafka", probeTLS, "", tierFull},
+	{9200, "elasticsearch", probeTLS, "", tierFull},
+	{8200, "vault", probeTLS, "", tierFull},
+	{8501, "consul", probeTLS, "", tierFull},
+	{8140, "puppet", probeTLS, "", tierFull},
 }
 
 // catalogueByPort indexes the catalogue for O(1) classification.

@@ -34,7 +34,7 @@ private key — there was no backup or restore path at all. This runbook documen
 ## Prerequisites
 
 - `pg_dump` / `psql` matching your Postgres server's major version, on the machine running `backup.sh`/`restore.sh`.
-- `jq`, `curl`, `sha256sum`.
+- `jq`, `curl`, `sha256sum` (or `shasum` on macOS); `sqlite3` for SQLite mode.
 - A `pki-admin`-role bearer token for the hub's `/api/v1/admin/backup` and `/restore` endpoints
   (same admin gating as every other `/api/v1/keys/*` endpoint).
 - A **backup passphrase** — a secret separate from the keystore's own store passphrase, used only to
@@ -97,10 +97,51 @@ no migration errors after the dump restore).
 4. **Manually verify** at least one CA can still issue a certificate (see the drill output below for
    the exact request shape) before considering the restore complete.
 
-**Sqlite-mode deployments have no DB-backup path today** — `backup.sh` hard-requires `DATABASE_URL`
-and `pg_dump`. A sqlite-mode instance's keystore can still be backed up/restored via the same
-`/api/v1/admin/backup`/`restore` endpoints; the database file itself would need a separate, ad hoc
-file-copy backup (not scripted here) until sqlite gets its own DR path.
+## SQLite-mode procedure
+
+`backup.sh` and `restore.sh` support a SQLite hub with `KRYPTKEEPER_DB_MODE=sqlite`
+(default stays `postgres`). Needs `sqlite3` >= 3.27 on PATH; `DATABASE_URL`, `pg_dump`
+and `psql` are not used. Checksums use `sha256sum` or, on macOS, `shasum -a 256`.
+
+```bash
+export KRYPTKEEPER_DB_MODE=sqlite
+export SQLITE_DB_PATH=/var/kryptkeeper/data/kryptkeeper.db   # plain file path, not a DSN; default ${KRYPTKEEPER_DATA_DIR:-./var}/kryptkeeper.db
+export KRYPTKEEPER_API="https://kryptkeeper.internal" API_TOKEN="<pki-admin token>" BACKUP_PASSPHRASE="<separate secret>"
+
+scripts/deploy/backup.sh /var/backups/kryptkeeper/$(date -u +%Y%m%d)
+```
+
+- The database is snapshotted with SQLite's online `.backup` (safe while the hub runs in
+  WAL mode; never `cp` the live file, it misses the `-wal`), checked with
+  `PRAGMA integrity_check`, gzipped to `db-<ts>.sqlite.gz`, and listed in `manifest.json`
+  with `db_engine: sqlite` and `db_schema_version`.
+- The compose hub is `read_only: true` with the database at `/var/kryptkeeper/data` in the
+  `appdata` volume. Run the script through `docker compose exec` inside the container, or from
+  the host against the volume's path.
+- `BACKUP_DB_ONLY=1` skips the key export (no hub, token or passphrase needed). It is what
+  `scripts/deploy/backup_sqlite_test.sh` uses for its row-count round trip.
+
+Restore, with the hub **stopped** (same ordering rule as Postgres: restore the DB, then boot
+the hub, then the script imports keys):
+
+```bash
+scripts/deploy/restore.sh /var/backups/kryptkeeper/20261015
+```
+
+- The script refuses a non-empty target (exit 3, `target exists; take a backup of it first or
+  pass --force`). With `--force` the old file is moved to `<target>.pre-restore-<ts>` (and its
+  `-wal`/`-shm`) and the rollback command is printed.
+- A manifest `db_engine` that disagrees with `KRYPTKEEPER_DB_MODE` exits 2. A manifest without
+  `db_engine` is treated as Postgres.
+- Two behaviours of the hub that the restore sequence must account for (both seen in drill 3):
+  1. With dual control on (`KRYPTKEEPER_KEY_DUAL_CONTROL`, default on, D-122) the key export
+     returns HTTP 202 `proposed` and needs a second approver; `backup.sh` does not drive that
+     approval flow and fails on it. Approval time is human time and is **not** in the RTO below.
+  2. The restored database references CA keys that a fresh keystore does not hold yet, so the
+     hub refuses to start (`startup: refusing to start: N active CA(s) have no usable key`)
+     unless `KRYPTKEEPER_ALLOW_MISSING_CA_KEYS=true`. Boot the replacement hub with that set,
+     let `restore.sh` import the keys, then restart the hub without it so the consistency check
+     runs for real.
 
 ## Human-paired production drill
 
@@ -281,3 +322,27 @@ hit any already-created table. Found via advisor review, not by drill 1 (whose s
 sidestepped the DB-restore path entirely) — confirmed as a real, reproducible failure by drill 2 above,
 which hit exactly this class of error (the version-skew "relation already exists"-adjacent abort) and
 is now fixed by restoring into a genuinely empty database before any hub ever boots against it.
+
+## Recovery time (RTO)
+
+Measured by drill 3 (`docs/ops/RESTORE_DRILL.md`, `## EXECUTED DRILL 3 (SQLite)`), not estimated.
+RTO = T4 - T0: T0 hub stopped and its data and keystore directories deleted; T4 a new certificate
+issued from the restored issuing CA and `openssl verify` against the pre-disaster root succeeds.
+Whole-second timestamps (`date +%s`).
+
+| Run | DB restored (T1-T0) | Hub ready, recovery mode (T2-T1) | Keys imported (T3-T2) | Hub restarted normally (to ready) | Issue + verify (T4) | RTO |
+|-----|----|----|----|----|----|----|
+| 1 | 1 s | 0 s | 8 s | 1 s | 0 s | 10 s |
+| 2 | 0 s | 1 s | 6 s | 1 s | 0 s | 8 s |
+| 3 | 1 s | 0 s | 5 s | 1 s | 0 s | 7 s |
+
+RTO min 7 s, median 8 s, max 10 s. Dataset: SQLite database 1,093,632 bytes (about 64 KB gzipped),
+1 root CA + 1 issuing CA (2 exported keys), 50 certificates. The key-import phase includes
+`restore.sh`'s fixed 5 s readiness poll interval.
+
+Caveats: this is a single node, local disk, small dataset, run on one developer machine by the
+implementing agent, with the backup already on local disk and an operator-free path. It excludes
+detection time, provisioning a replacement host, fetching the backup from off-instance storage,
+dual-control approval time (the drill hub ran with `KRYPTKEEPER_KEY_DUAL_CONTROL=false`; see above)
+and entering the backup passphrase from a secrets manager. Postgres RTO is not measured here. The
+committed RPO/RTO targets live in UC-M12.

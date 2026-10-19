@@ -13,24 +13,29 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/ssh"
+	"kryptkeeper/internal/logging"
 
 	"kryptkeeper/internal/agentdiscovery"
 	"kryptkeeper/internal/agentinstall"
 	"kryptkeeper/internal/certmanager"
 	"kryptkeeper/internal/connectors"
 	"kryptkeeper/internal/metrics"
+	"kryptkeeper/internal/privexec"
 )
 
 // W5-13: the hub-side renewal execution engine. W5-09 stored what to manage,
@@ -58,6 +63,68 @@ type sshCredentialPayload struct {
 	HostPublicKey string `json:"host_public_key"` // authorized_keys format
 	User          string `json:"user"`
 	Port          int    `json:"port,omitempty"` // 0 → 22
+	// KeystorePassword/KeystoreFormat are only read for server_type tomcat
+	// (W27-07). The credential is encrypted at rest and never returned by the
+	// API; the password must never reach a log, error or audit detail.
+	KeystorePassword string `json:"keystore_password,omitempty"`
+	KeystoreFormat   string `json:"keystore_format,omitempty"` // pkcs12 (default) | pkcs12-legacy | jks
+
+	// W34-14: how the SSH account is elevated on the target (D-209). Empty
+	// sudo_mode means none, the pre-W34 behaviour. SudoPassword is stored
+	// encrypted with the rest of the payload and must never reach a log,
+	// error, audit detail or API response.
+	SudoMode     string `json:"sudo_mode,omitempty"`     // none (default) | nopasswd | password | helper
+	SudoPassword string `json:"sudo_password,omitempty"` // password mode only
+	HelperSHA256 string `json:"helper_sha256,omitempty"` // helper mode only
+}
+
+var errSSHPrivilege = errors.New("invalid ssh_key privilege settings")
+
+// validatePrivilege enforces the sudo_* combination: a password exactly when
+// the mode is password, a helper hash exactly when it is helper. Messages name
+// fields, never values.
+func (p sshCredentialPayload) validatePrivilege() error {
+	mode, err := privexec.ParseMode(p.SudoMode)
+	if err != nil {
+		return fmt.Errorf("%w: sudo_mode must be one of none, nopasswd, password, helper", errSSHPrivilege)
+	}
+	if (mode == privexec.ModePassword) != (p.SudoPassword != "") {
+		return fmt.Errorf("%w: sudo_password is required for, and only allowed with, sudo_mode password", errSSHPrivilege)
+	}
+	if (mode == privexec.ModeHelper) != (p.HelperSHA256 != "") {
+		return fmt.Errorf("%w: helper_sha256 is required for, and only allowed with, sudo_mode helper", errSSHPrivilege)
+	}
+	if mode == privexec.ModeHelper && !isHexSHA256(p.HelperSHA256) {
+		return fmt.Errorf("%w: helper_sha256 must be 64 hex characters", errSSHPrivilege)
+	}
+	return nil
+}
+
+func isHexSHA256(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil
+}
+
+// elevate wraps exec per the payload's sudo mode. The returned func zeroizes
+// the password copy handed to privexec; call it when the executor is done.
+func (p sshCredentialPayload) elevate(exec agentinstall.Executor) (agentinstall.Executor, func(), error) {
+	if err := p.validatePrivilege(); err != nil {
+		return nil, func() {}, err
+	}
+	mode, _ := privexec.ParseMode(p.SudoMode)
+	if mode == privexec.ModeNone {
+		return exec, func() {}, nil
+	}
+	pw := []byte(p.SudoPassword)
+	wrapped, err := privexec.Wrap(exec, privexec.Config{Mode: mode, Password: pw, HelperSHA: p.HelperSHA256, ElevateExists: true})
+	if err != nil {
+		zeroize(pw)
+		return nil, func() {}, err
+	}
+	return wrapped, func() { zeroize(pw) }, nil
 }
 
 // RenewalInstallProfile says where the renewed material lands on the target.
@@ -113,6 +180,61 @@ type RenewalExecutor struct {
 	// plugins runs install_mode "plugin" targets (W20-20); nil = plugins off.
 	plugins     *DeliveryPluginManager
 	pluginAudit AuditProvider
+	// keyWipeSpy is test-only (nil in production): called with the SAME slice
+	// after it is zeroized so a test can assert every byte is 0.
+	keyWipeSpy func(wiped []byte)
+	// blocker, when set, is told to mark a target Blocked after a rollback
+	// that itself failed (W34-18, W34-10's Blocked state).
+	blocker targetBlocker
+}
+
+// targetBlocker marks a target Blocked so scheduled runs stop pushing to it
+// until an operator looks.
+type targetBlocker interface {
+	BlockTarget(ctx context.Context, targetID, reason string) error
+}
+
+// WithTargetBlocker arms the Blocked marking after a failed rollback.
+func (e *RenewalExecutor) WithTargetBlocker(b targetBlocker) *RenewalExecutor {
+	e.blocker = b
+	return e
+}
+
+// reportPrivilegedInstall audits every elevated push (the mode, never the
+// password) and, when the rollback itself failed, raises the alarm and blocks
+// the target instead of leaving it to be retried.
+func (e *RenewalExecutor) reportPrivilegedInstall(ctx context.Context, target ManagedTarget, mode string, res *RenewalExecuteResult) {
+	if mode != "" && mode != string(privexec.ModeNone) && e.pluginAudit != nil {
+		outcome := AuditOutcomeSuccess
+		if !installSucceeded(res.InstallOutcome) {
+			outcome = AuditOutcomeFailure
+		}
+		e.appendTargetAudit(ctx, "target.renewal.privileged", target.ID, outcome,
+			fmt.Sprintf("mode=%s install=%s cert=%s", mode, res.InstallOutcome, res.NewFingerprint))
+	}
+	if res.InstallOutcome != agentinstall.OutcomeRollbackFailed {
+		return
+	}
+	logging.Warnf("ALERT renewal.rollback_failed target=%s cert=%s: the host may hold a half-installed state", target.ID, res.NewFingerprint)
+	e.appendTargetAudit(ctx, "target.renewal.rollback_failed", target.ID, AuditOutcomeFailure,
+		"rollback after a failed install failed; target blocked until an operator checks the host")
+	if e.blocker != nil {
+		if err := e.blocker.BlockTarget(ctx, target.ID, "renewal rollback failed"); err != nil {
+			logging.Warnf("renewal: block target %s: %v", target.ID, err)
+		}
+	}
+}
+
+func (e *RenewalExecutor) appendTargetAudit(ctx context.Context, action, targetID string, outcome AuditOutcome, detail string) {
+	if e.pluginAudit == nil {
+		return
+	}
+	if err := e.pluginAudit.AppendEntry(context.WithoutCancel(ctx), AuditEntry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339), Action: action, ActorType: "system", ActorID: "renewal",
+		ResourceType: "target", ResourceID: targetID, Outcome: outcome, ChangeSummary: detail,
+	}); err != nil {
+		logging.Warnf("audit append failed action=%s: %v", action, err)
+	}
 }
 
 func NewRenewalExecutor(certs CertificateProvider, creds OutboundCredentialStore) *RenewalExecutor {
@@ -175,7 +297,11 @@ type issuerChainProvider interface {
 // (S-17). The store fails closed to nil without a passphrase; ExecuteRenewal
 // then returns a clean configuration error instead of panicking.
 func NewRenewalExecutorFromEnv(certs CertificateProvider) *RenewalExecutor {
-	return NewRenewalExecutor(certs, newOutboundCredentialStoreFromEnv()).WithEnvConnectorRegistry(certs)
+	e := NewRenewalExecutor(certs, newOutboundCredentialStoreFromEnv()).WithEnvConnectorRegistry(certs)
+	if ts := newManagedTargetStoreFromEnv(); ts != nil {
+		e = e.WithTargetBlocker(targetStateBlocker{ts})
+	}
+	return e
 }
 
 // WithEnvConnectorRegistry arms the upstream (connector) renewal path from
@@ -206,6 +332,7 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 	defer func() {
 		if err == nil && result.Renewed {
 			metrics.CertRenewalSuccess.Inc()
+			notifyRenewalVerified(ctx, result) // W32-26: auto-resolve ITSM tickets
 		} else if err != nil {
 			metrics.CertRenewalFailure.Inc()
 		}
@@ -223,6 +350,9 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 		// needs no server type or paths.
 	default:
 		return result, errRenewalTargetNotSSH
+	}
+	if mode, _ := effectiveKeyHandlingMode(target); mode == KeyModeClientCSR {
+		return result, errRenewalKeyModeMismatch
 	}
 	if target.InstallMode == "ssh" && (profile.ServerType == "" || profile.CertPath == "" || profile.KeyPath == "") {
 		return result, errRenewalInstallProfile
@@ -248,6 +378,7 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 	if err != nil {
 		return result, err
 	}
+	payload = payload.withJIT(jitSudoFrom(ctx))
 	signer, hostKey, err := payload.parse()
 	if err != nil {
 		return result, err
@@ -259,7 +390,12 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 	if err != nil {
 		return result, fmt.Errorf("generate key/csr: %w", err)
 	}
-	defer zeroize(keyPEM)
+	e.appendKeyAudit(ctx, "key.generate_for_renewal", fingerprint, AuditOutcomeSuccess, "target="+target.ID+" mode=hub_generated")
+	defer func() {
+		e.wipeKey(keyPEM)
+		e.appendKeyAudit(ctx, "key.zeroize", fingerprint, AuditOutcomeSuccess,
+			"target="+target.ID+" installed="+strconv.FormatBool(result.Renewed && installSucceeded(result.InstallOutcome)))
+	}()
 
 	newFP, chainPEM, err := e.renewMaterial(ctx, fingerprint, detail, reg, regErr, key, csrPEM)
 	if err != nil {
@@ -297,25 +433,40 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 	if port == 0 {
 		port = 22
 	}
+	// The operator-confirmed pin on the target wins over the credential's
+	// embedded key (W24-09); a mismatch refuses the install.
+	pinned := pinnedHostKeyFor(target, hostKey)
 	executor, closeConn, err := e.dial(ctx, agentinstall.SSHTarget{
 		Host:            target.Host,
 		Port:            port,
 		User:            payload.User,
 		Signer:          signer,
-		HostKeyCallback: ssh.FixedHostKey(hostKey),
+		HostKeyCallback: agentinstall.PinnedHostKeyCallback(pinned),
 		// Pin negotiation to the SAME algorithm as the pinned key. A real
 		// sshd commonly serves rsa+ecdsa+ed25519 host keys at once; without
 		// this, the client can negotiate a different key type than the one
-		// FixedHostKey holds and a correctly-pinned host fails to connect
+		// the callback holds and a correctly-pinned host fails to connect
 		// (found live against a real multi-hostkey sshd, W19-02).
-		HostKeyAlgorithms: hostKeyAlgorithmsFor(hostKey),
+		HostKeyAlgorithms: hostKeyAlgorithmsFor(pinned),
 	})
 	if err != nil {
+		var mm *agentinstall.HostKeyMismatchError
+		if errors.As(err, &mm) {
+			recordHostKeyMismatch(ctx, e.pluginAudit, target.ID, mm)
+		}
 		result.InstallOutcome = "connect_failed"
-		result.InstallDetail = err.Error()
+		result.InstallDetail = boundInstallDetail(err.Error())
 		return result, nil
 	}
 	defer func() { _ = closeConn() }()
+
+	executor, endPrivilege, err := payload.elevate(executor)
+	if err != nil {
+		result.InstallOutcome = "connect_failed"
+		result.InstallDetail = boundInstallDetail(err.Error(), payload.SudoPassword)
+		return result, nil
+	}
+	defer endPrivilege()
 
 	if target.InstallMode == "keychain" {
 		// The keychain must trust the issuing root, and the renewed
@@ -325,7 +476,7 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 			if issuer, err := ic.IssuerChainPEM(ctx, detail.CAID); err == nil {
 				chainPEM = append(append([]byte(nil), chainPEM...), issuer...)
 			} else {
-				log.Printf("renewal: issuer chain for CA %s unavailable, keychain trust will fail: %v", detail.CAID, err)
+				logging.Warnf("renewal: issuer chain for CA %s unavailable, keychain trust will fail: %v", detail.CAID, err)
 			}
 		}
 		// Verify-after-install only when the operator named a TLS endpoint:
@@ -341,10 +492,10 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 		}
 		installRes, err := kc.Install(ctx, kreq)
 		result.InstallOutcome = installRes.Outcome
-		result.InstallDetail = installRes.Detail
+		result.InstallDetail = boundInstallDetail(installRes.Detail)
 		result.Verified = installRes.Verified
 		if err != nil && result.InstallDetail == "" {
-			result.InstallDetail = err.Error()
+			result.InstallDetail = boundInstallDetail(err.Error())
 		}
 		return result, nil
 	}
@@ -353,6 +504,14 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 	if e.verifier != nil {
 		installer = installer.WithVerifier(e.verifier)
 	}
+	// The installer's rollback restores only files that pre-existed, so a key
+	// file this install newly created would survive a failed install. Remember
+	// whether one was there so cleanup never removes a predecessor's key.
+	keyPath := profile.KeyPath
+	if profile.ServerType == "haproxy" || profile.ServerType == "tomcat" {
+		keyPath = profile.CertPath // HAProxy uses one combined chain+key file; Tomcat one keystore
+	}
+	keyExisted := executor.Exists(keyPath)
 	installRes, err := installer.Install(ctx, agentinstall.InstallRequest{
 		ServerType:          profile.ServerType,
 		CertPath:            profile.CertPath,
@@ -360,16 +519,62 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 		CertPEM:             chainPEM,
 		KeyPEM:              keyPEM,
 		ReloadMethod:        profile.ReloadMethod,
+		KeystorePassword:    payload.KeystorePassword,
+		KeystoreFormat:      payload.KeystoreFormat,
 		VerifyHostPort:      verifyHostPort,
 		ExpectedFingerprint: leafFP,
 	})
 	result.InstallOutcome = installRes.Outcome
-	result.InstallDetail = installRes.Detail
+	result.InstallDetail = boundInstallDetail(installRes.Detail, payload.KeystorePassword, payload.SudoPassword)
 	result.Verified = installRes.Verified
 	if err != nil && result.InstallDetail == "" {
-		result.InstallDetail = err.Error()
+		result.InstallDetail = boundInstallDetail(err.Error(), payload.KeystorePassword, payload.SudoPassword)
 	}
+	if (err != nil || !installSucceeded(installRes.Outcome)) && !keyExisted {
+		e.cleanupFailedInstallKey(ctx, executor, target, keyPath, &result)
+	}
+	e.reportPrivilegedInstall(ctx, target, payload.SudoMode, &result)
 	return result, nil
+}
+
+// cleanupFailedInstallKey removes the key file a failed first install left on
+// the target (W23-48). A removal failure is reported in the result, never
+// returned: partial state is visible, not an opaque error (the S-50 rule).
+func (e *RenewalExecutor) cleanupFailedInstallKey(ctx context.Context, executor agentinstall.Executor, target ManagedTarget, keyPath string, result *RenewalExecuteResult) {
+	removed := true
+	if _, rmErr := executor.Run(context.WithoutCancel(ctx), "rm", "-f", "--", keyPath); rmErr != nil {
+		removed = false
+		result.InstallDetail = boundInstallDetail(strings.TrimSpace(result.InstallDetail + "; key cleanup failed: " + rmErr.Error()))
+	}
+	logging.Warnf("ALERT renewal.install_failed_key_cleanup target=%s cert=%s path=%s removed=%t", target.ID, result.NewFingerprint, keyPath, removed)
+	e.appendKeyAudit(ctx, "renewal.install_failed_key_cleanup", result.NewFingerprint, AuditOutcomeFailure,
+		fmt.Sprintf("target=%s; removed=%t", target.ID, removed))
+}
+
+// wipeKey zeroizes the hub's transient key buffer and lets a test observe it.
+func (e *RenewalExecutor) wipeKey(keyPEM []byte) {
+	zeroize(keyPEM)
+	if e.keyWipeSpy != nil {
+		e.keyWipeSpy(keyPEM)
+	}
+}
+
+// appendKeyAudit records hub-generated renewal key lifecycle events. Details
+// must never carry key bytes, hashes of them, or their length.
+func (e *RenewalExecutor) appendKeyAudit(ctx context.Context, action, certFP string, outcome AuditOutcome, detail string) {
+	if e.pluginAudit == nil {
+		return
+	}
+	if err := e.pluginAudit.AppendEntry(context.WithoutCancel(ctx), AuditEntry{
+		Timestamp: time.Now().UTC().Format(time.RFC3339), Action: action, ActorType: "system", ActorID: "renewal",
+		ResourceType: "certificate", ResourceID: certFP, Outcome: outcome, ChangeSummary: detail,
+	}); err != nil {
+		logging.Warnf("audit append failed action=%s: %v", action, err)
+	}
+}
+
+func installSucceeded(outcome string) bool {
+	return outcome == agentinstall.OutcomeInstalled || outcome == agentinstall.OutcomeInstalledVerified
 }
 
 func (e *RenewalExecutor) resolveSSHCredential(ctx context.Context, ref string) (sshCredentialPayload, error) {
@@ -570,6 +775,12 @@ func (e *RenewalExecutor) renewMaterial(ctx context.Context, fingerprint string,
 				req.Decrypter = dec
 			}
 		}
+		if c, err := registry.Get(detail.RenewalConnectorID); err == nil && c.Type() == "acme" && e.certs != nil {
+			// RFC 9773: tell the CA which certificate this order replaces.
+			if old, derr := e.certs.DownloadCertificate(ctx, fingerprint, "pem", false); derr == nil {
+				ctx = WithACMEReplaces(ctx, string(old.Body))
+			}
+		}
 		issued, err := registry.Issue(ctx, detail.RenewalConnectorID, req)
 		if err != nil {
 			return "", nil, fmt.Errorf("upstream renewal via connector %s: %w", detail.RenewalConnectorID, err)
@@ -619,6 +830,31 @@ func resolveK8sCACert(credentialCACert string) ([]byte, error) {
 	return certmanager.CACertPEMFromEnv()
 }
 
+// requireHTTPSPushURL rejects a push base_url that is not an absolute https
+// URL without embedded credentials. The egressAllowLoopback test seam also
+// admits plain http, matching the client policy.
+func requireHTTPSPushURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return errors.New("must be an absolute https URL")
+	}
+	if u.User != nil {
+		return errors.New("must not embed credentials")
+	}
+	if u.Scheme != "https" && !(egressAllowLoopback && u.Scheme == "http") {
+		return errors.New("must use https")
+	}
+	return nil
+}
+
+// devicePushClient is the explicit test client, else the guarded default.
+func (e *RenewalExecutor) devicePushClient() *http.Client {
+	if e.pushClient != nil {
+		return e.pushClient
+	}
+	return pushDeviceHTTPClient(nil)
+}
+
 func (e *RenewalExecutor) resolvePushCredential(ctx context.Context, ref, installMode string) (pushCredentialPayload, error) {
 	meta, err := e.creds.Get(ctx, ref)
 	if err != nil {
@@ -649,6 +885,16 @@ func (e *RenewalExecutor) resolvePushCredential(ctx context.Context, ref, instal
 	if payload.BaseURL == "" {
 		return pushCredentialPayload{}, fmt.Errorf("%w: base_url is required", errRenewalBadCredential)
 	}
+	// The F5/Citrix/Kubernetes push sends device credentials and the renewed
+	// private key to base_url, so plain http would put them on the wire in
+	// clear. (IIS is a WinRM endpoint with its own transport message
+	// encryption and is validated by its own client.) The egress client
+	// enforces the same rule at dial time; this fails early with a clear error.
+	if installMode != "iis" {
+		if err := requireHTTPSPushURL(payload.BaseURL); err != nil {
+			return pushCredentialPayload{}, fmt.Errorf("%w: base_url: %v", errRenewalBadCredential, err)
+		}
+	}
 	return payload, nil
 }
 
@@ -657,6 +903,9 @@ func (e *RenewalExecutor) resolvePushCredential(ctx context.Context, ref, instal
 // IN the result (the S-50 rule) — the successor exists either way.
 func (e *RenewalExecutor) executePushRenewal(ctx context.Context, fingerprint string, target ManagedTarget, profile RenewalInstallProfile) (result RenewalExecuteResult, err error) {
 	result = RenewalExecuteResult{PredecessorFingerprint: fingerprint}
+	if mode, _ := effectiveKeyHandlingMode(target); mode == KeyModeClientCSR {
+		return result, errRenewalKeyModeMismatch
+	}
 	if strings.TrimSpace(target.CredentialRef) == "" {
 		return result, errRenewalNoCredential
 	}
@@ -686,7 +935,12 @@ func (e *RenewalExecutor) executePushRenewal(ctx context.Context, fingerprint st
 	if err != nil {
 		return result, fmt.Errorf("generate key/csr: %w", err)
 	}
-	defer zeroize(keyPEM)
+	e.appendKeyAudit(ctx, "key.generate_for_renewal", fingerprint, AuditOutcomeSuccess, "target="+target.ID+" mode=hub_generated")
+	defer func() {
+		e.wipeKey(keyPEM)
+		e.appendKeyAudit(ctx, "key.zeroize", fingerprint, AuditOutcomeSuccess,
+			"target="+target.ID+" installed="+strconv.FormatBool(result.Renewed && installSucceeded(result.InstallOutcome)))
+	}()
 
 	newFP, chainPEM, err := e.renewMaterial(ctx, fingerprint, detail, reg, regErr, key, csrPEM)
 	if err != nil {
@@ -712,10 +966,10 @@ func (e *RenewalExecutor) executePushRenewal(ctx context.Context, fingerprint st
 	}
 	installRes, pushErr := e.pushMaterialToTarget(ctx, target, profile, chainPEM, keyPEM, leafFP)
 	result.InstallOutcome = installRes.Outcome
-	result.InstallDetail = installRes.Detail
+	result.InstallDetail = boundInstallDetail(installRes.Detail)
 	result.Verified = installRes.Verified
 	if pushErr != nil && result.InstallDetail == "" {
-		result.InstallDetail = pushErr.Error()
+		result.InstallDetail = boundInstallDetail(pushErr.Error())
 	}
 	return result, nil
 }
@@ -754,7 +1008,7 @@ func (e *RenewalExecutor) pushMaterialToTarget(ctx context.Context, target Manag
 		p := agentinstall.NewF5Pusher(agentinstall.F5Config{
 			BaseURL: payload.BaseURL, Username: payload.Username, Password: payload.Password,
 			ClientSSLProfile: payload.ClientSSLProfile,
-		}, e.pushClient)
+		}, e.devicePushClient())
 		if e.verifier != nil {
 			p = p.WithVerifier(e.verifier)
 		}
@@ -763,7 +1017,7 @@ func (e *RenewalExecutor) pushMaterialToTarget(ctx context.Context, target Manag
 		p := agentinstall.NewCitrixPusher(agentinstall.CitrixConfig{
 			BaseURL: payload.BaseURL, Username: payload.Username, Password: payload.Password,
 			CertKeyName: payload.CertKeyName,
-		}, e.pushClient)
+		}, e.devicePushClient())
 		if e.verifier != nil {
 			p = p.WithVerifier(e.verifier)
 		}
@@ -896,4 +1150,31 @@ func (e *RenewalExecutor) renewPushMaterial(ctx context.Context, fingerprint str
 		return out, fmt.Errorf("renewed but certificate bytes unparseable: %w", err)
 	}
 	return renewedPushMaterial{NewFingerprint: newFP, LeafFingerprint: leafFP, ChainPEM: chainPEM, KeyPEM: keyPEM}, nil
+}
+
+// maxInstallDetailBytes bounds install_detail: a Tomcat configtest failure
+// dumps a ~4 KB stack trace into a field that is stored in the audit trail
+// and returned on every renewal response.
+const maxInstallDetailBytes = 1024
+
+const installDetailTruncMarker = "...[truncated]"
+
+// boundInstallDetail redacts the named secrets FIRST and truncates after, so a
+// cut can never expose a secret's prefix, and never lands inside a
+// "[redacted]" token (which would leave a dangling fragment that reads as if
+// a different value had been masked).
+func boundInstallDetail(detail string, secrets ...string) string {
+	detail = redact(detail, secrets...)
+	if len(detail) <= maxInstallDetailBytes {
+		return detail
+	}
+	cut := maxInstallDetailBytes - len(installDetailTruncMarker)
+	for cut > 0 && !utf8.RuneStart(detail[cut]) {
+		cut--
+	}
+	const tok = "[redacted]"
+	if i := strings.LastIndex(detail[:cut], "["); i >= 0 && strings.HasPrefix(detail[i:], tok) && i+len(tok) > cut {
+		cut = i
+	}
+	return detail[:cut] + installDetailTruncMarker
 }

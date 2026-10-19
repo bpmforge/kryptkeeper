@@ -8,10 +8,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"os"
 	"strconv"
 	"strings"
+
+	"kryptkeeper/internal/logging"
 )
 
 const certificateProviderEnv = "APP_CERTIFICATE_PROVIDER"
@@ -21,24 +22,27 @@ const (
 	certificateProviderCA   = "ca"
 )
 
-var certificateProviderWarnf = log.Printf
+var certificateProviderWarnf = logging.Warnf
 
 type CertificateItem struct {
-	FingerprintSHA256  string   `json:"fingerprint_sha256"`
-	SerialNumber       string   `json:"serial_number"`
-	CommonName         string   `json:"common_name"`
-	SubjectDN          string   `json:"subject_dn"`
-	SubjectAltNames    []string `json:"subject_alt_names"`
-	URISANs            []string `json:"uri_sans,omitempty"` // URI SANs (e.g. SPIFFE IDs)
-	IssuerCN           string   `json:"issuer_cn"`
-	IssuerDN           string   `json:"issuer_dn"`
-	CAID               string   `json:"ca_id"`
-	TemplateID         string   `json:"template_id"`
-	TeamID             string   `json:"team_id"`
-	ValidFrom          string   `json:"valid_from"`
-	ValidUntil         string   `json:"valid_until"`
-	PublicKeyAlgorithm string   `json:"public_key_algorithm"`
-	KeySizeBits        int      `json:"key_size_bits"`
+	FingerprintSHA256 string   `json:"fingerprint_sha256"`
+	SerialNumber      string   `json:"serial_number"`
+	CommonName        string   `json:"common_name"`
+	SubjectDN         string   `json:"subject_dn"`
+	SubjectAltNames   []string `json:"subject_alt_names"`
+	URISANs           []string `json:"uri_sans,omitempty"` // URI SANs (e.g. SPIFFE IDs)
+	IssuerCN          string   `json:"issuer_cn"`
+	IssuerDN          string   `json:"issuer_dn"`
+	CAID              string   `json:"ca_id"`
+	TemplateID        string   `json:"template_id"`
+	// TemplateRevision is the revision of the template in force when this
+	// certificate was issued (W23-44); 0 = none recorded.
+	TemplateRevision   int    `json:"template_revision,omitempty"`
+	TeamID             string `json:"team_id"`
+	ValidFrom          string `json:"valid_from"`
+	ValidUntil         string `json:"valid_until"`
+	PublicKeyAlgorithm string `json:"public_key_algorithm"`
+	KeySizeBits        int    `json:"key_size_bits"`
 	// KeyAlgorithmDisplay is the ML-DSA parameter set (e.g. "ML-DSA-65")
 	// derived from the certificate; empty for other keys. Display only --
 	// public_key_algorithm keeps the stored "ML-DSA" family value.
@@ -85,6 +89,8 @@ type CertificateItem struct {
 	OwnerTeam   string   `json:"owner_team,omitempty"`
 	ServiceName string   `json:"service_name,omitempty"`
 	Labels      []string `json:"labels,omitempty"`
+	// OwnershipSource records who assigned OwnerTeam (W22-24); "" = unowned.
+	OwnershipSource string `json:"ownership_source,omitempty"`
 }
 
 func boolRef(b bool) *bool { return &b }
@@ -129,8 +135,14 @@ type CertificateListQuery struct {
 	// W11-01 estate filters.
 	Origin          string
 	ManagementState string
+	// Owner "unassigned" keeps active certificates with no owner team
+	// (W22-24); the dashboard unowned count uses the same predicate.
+	Owner string
 	// TrustClass keeps certificates of one class (see CertificateItem.TrustClass).
 	TrustClass string
+	// SunsetGroup keeps the active certificates of one Algorithm Sunset group
+	// (sunsetRules ids), the set that group's report count is taken over.
+	SunsetGroup string
 }
 
 type CertificateListResult struct {
@@ -163,7 +175,18 @@ type CertificateRevokeResult struct {
 	RenewalStatus     string `json:"renewal_status"`
 	RevokedAt         string `json:"revoked_at"`
 	RevocationReason  int    `json:"revocation_reason"`
+	// RevocationScope says whether the revocation reached a CRL/OCSP
+	// responder ("ca") or only the hub inventory ("inventory_only": a
+	// certificate with no issuing CA in this hub, so revoking at the real
+	// issuer is still the operator's job).
+	RevocationScope string `json:"revocation_scope"`
 }
+
+// Revocation scopes reported by CertificateRevokeResult.
+const (
+	RevocationScopeCA            = "ca"
+	RevocationScopeInventoryOnly = "inventory_only"
+)
 
 type CertificateIssueRequest struct {
 	CAID       string                 `json:"ca_id"`
@@ -175,6 +198,9 @@ type CertificateIssueRequest struct {
 
 type CertificateIssueResult struct {
 	CertificateItem
+	// Reused is set when an existing certificate answered the request
+	// (W26-32); the handler returns 200 instead of 201.
+	Reused bool `json:"-"`
 }
 
 type CertificateRenewRequest struct {
@@ -207,6 +233,41 @@ type CertificateOwnershipRequest struct {
 	OwnerTeam   string   `json:"owner_team"`
 	ServiceName string   `json:"service_name"`
 	Labels      []string `json:"labels"`
+	// Source is set by the server, never by a client: a PATCH body must not
+	// be able to claim a cmdb/agent provenance it did not have.
+	Source string `json:"-"`
+}
+
+// Ownership sources (W22-24). Must match the ownership_source column values.
+const (
+	OwnershipSourceManual = "manual"
+	OwnershipSourceCMDB   = "cmdb"
+	OwnershipSourceImport = "import"
+	OwnershipSourceAgent  = "agent"
+)
+
+func validOwnershipSource(s string) bool {
+	switch s {
+	case OwnershipSourceManual, OwnershipSourceCMDB, OwnershipSourceImport, OwnershipSourceAgent:
+		return true
+	}
+	return false
+}
+
+// resolveOwnershipSource validates the request's source and returns the value
+// to store: "" when the assignment clears the owner (the cert is unowned again).
+func resolveOwnershipSource(req CertificateOwnershipRequest) (string, error) {
+	src := req.Source
+	if src == "" {
+		src = OwnershipSourceManual
+	}
+	if !validOwnershipSource(src) {
+		return "", errCertificateInvalid
+	}
+	if strings.TrimSpace(req.OwnerTeam) == "" {
+		return "", nil
+	}
+	return src, nil
 }
 
 type CertificateProvider interface {
@@ -231,6 +292,9 @@ type EstateUpdate struct {
 	ManagementState    string `json:"management_state,omitempty"`
 	RenewalMethod      string `json:"renewal_method,omitempty"`
 	RenewalConnectorID string `json:"renewal_connector_id,omitempty"`
+	// ClearRenewalConnector empties RenewalConnectorID (an empty string above
+	// means "leave alone"); estate revert uses it to undo a takeover's connector.
+	ClearRenewalConnector bool `json:"-"`
 	// RenewalStatus propagates upstream lifecycle (W11-05 sync): a cert the
 	// original CA revoked is revoked here too, without touching our own
 	// revocation machinery.

@@ -5,6 +5,7 @@
 package bootstrap
 
 import (
+	"crypto/x509"
 	"net/http"
 	"time"
 
@@ -28,5 +29,45 @@ func inventoryHTTPClient(timeout time.Duration) *http.Client {
 		MaxRedirects:          3,
 		SameHostRedirectsOnly: true,
 		Timeout:               timeout,
+	}))
+}
+
+// upstreamConnectorHTTPClient is the client for the DigiCert, SCEP, EST and
+// WSTEP issuer connectors (W27-35). Same redirect policy as
+// inventoryHTTPClient: the credential rides on every request, so a cross-host
+// redirect would replay it elsewhere and is refused. A credentialed connector
+// (DigiCert API key, EST/WSTEP Basic auth) also refuses plain http, which
+// would put the secret on the wire in clear; SCEP carries no credential and
+// is commonly served over http (RFC 8894), so it may use either.
+func upstreamConnectorHTTPClient(timeout time.Duration, credentialed bool) *http.Client {
+	return egress.NewClient(egress.PolicyFromEnv(egress.Policy{
+		AllowPrivate:          true,
+		AllowLoopback:         egressAllowLoopback,
+		RequireHTTPS:          credentialed && !upstreamAllowPlainHTTP,
+		MaxRedirects:          3,
+		SameHostRedirectsOnly: true,
+		Timeout:               timeout,
+	}))
+}
+
+// upstreamAllowPlainHTTP is a test seam (httptest stubs are plain http);
+// production never sets it.
+var upstreamAllowPlainHTTP bool
+
+// pushDeviceHTTPClient is the default client for hub-side pushes to F5,
+// Citrix, Kubernetes and plugin-delivery devices. base_url comes from an
+// admin-authored credential, so the push must not be able to reach cloud
+// metadata or send the credential and private key over plain http: https is
+// required (relaxed only by the egressAllowLoopback test seam), proxies are
+// ignored, and redirects are refused. roots, when non-nil, replaces the
+// system roots (management planes behind an internal CA).
+func pushDeviceHTTPClient(roots *x509.CertPool) *http.Client {
+	return egress.NewClient(egress.PolicyFromEnv(egress.Policy{
+		AllowPrivate:  true, // management planes live on private space
+		AllowLoopback: egressAllowLoopback,
+		RequireHTTPS:  !egressAllowLoopback,
+		MaxRedirects:  0,
+		Timeout:       60 * time.Second,
+		RootCAs:       roots,
 	}))
 }

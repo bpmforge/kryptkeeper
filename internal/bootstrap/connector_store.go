@@ -21,8 +21,8 @@ import (
 
 var (
 	errConnectorNotFound = errors.New("connector not found")
-	errConnectorInvalid  = errors.New("connector name and a type of internal|acme are required")
-	validConnectorTypes  = map[string]bool{"internal": true, "acme": true}
+	errConnectorInvalid  = errors.New("connector name and a type of internal|acme|digicert|scep|est|wstep are required")
+	validConnectorTypes  = map[string]bool{"internal": true, "acme": true, "digicert": true, "scep": true, "est": true, "wstep": true}
 )
 
 type ConnectorRecord struct {
@@ -44,13 +44,13 @@ type ConnectorStore interface {
 	Delete(ctx context.Context, id string) error
 }
 
-// connectorSchema mirrors migration 000044 — every DB-backed store
+// connectorSchema mirrors migration 000044 as widened by 000205 — every DB-backed store
 // self-heals its schema (G-33 discipline).
 const connectorSchema = `
 CREATE TABLE IF NOT EXISTS connectors (
     id             TEXT PRIMARY KEY,
     name           TEXT NOT NULL,
-    type           TEXT NOT NULL CHECK (type IN ('internal', 'acme')),
+    type           TEXT NOT NULL CHECK (type IN ('internal', 'acme', 'digicert', 'scep', 'est', 'wstep')),
     config_json    TEXT NOT NULL DEFAULT '{}',
     credential_ref TEXT,
     tenant         TEXT NOT NULL DEFAULT 'default',
@@ -70,6 +70,12 @@ func newConnectorID() (string, error) {
 func validateConnectorRecord(rec ConnectorRecord) error {
 	if strings.TrimSpace(rec.Name) == "" || !validConnectorTypes[rec.Type] {
 		return errConnectorInvalid
+	}
+	if rec.Type == "acme" {
+		return validateACMEConnectorConfig(rec.ConfigJSON)
+	}
+	if upstreamConnectorTypes[rec.Type] {
+		return validateUpstreamConnector(rec)
 	}
 	return nil
 }

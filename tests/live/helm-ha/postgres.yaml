@@ -1,0 +1,48 @@
+# Throwaway Postgres for the UAT. The password comes from Secret kk-pg, created
+# by run.sh at run time; nothing credential-like is committed.
+# Pinned to the control-plane so draining the worker never takes the database
+# down: the drain step tests hub PDB behaviour, not database availability.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kk-pg
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: kk-pg}
+  template:
+    metadata:
+      labels: {app: kk-pg}
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - {name: POSTGRES_USER, value: kk}
+            - {name: POSTGRES_DB, value: kk}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: kk-pg, key: password}}
+          ports:
+            - {name: pg, containerPort: 5432}
+          readinessProbe:
+            exec: {command: [pg_isready, -U, kk, -d, kk]}
+            periodSeconds: 3
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql/data}
+      volumes:
+        - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kk-pg
+spec:
+  selector: {app: kk-pg}
+  ports:
+    - {name: pg, port: 5432, targetPort: pg}

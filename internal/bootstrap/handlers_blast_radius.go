@@ -7,7 +7,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"strconv"
 	"strings"
@@ -55,6 +55,7 @@ func buildBlastRadiusGraph(items []CertificateItem) *blastradius.Graph {
 		if fp == "" {
 			continue
 		}
+		g.AddNode(blastradius.KindCert, fp)
 		if caID := strings.TrimSpace(cert.CAID); caID != "" {
 			g.AddDependency(blastradius.KindCert, fp, blastradius.KindCA, caID)
 		}
@@ -78,6 +79,27 @@ func buildBlastRadiusGraph(items []CertificateItem) *blastradius.Graph {
 	return g
 }
 
+// blastRadiusEdgeBasis states what the service edges are made of, so a clean
+// result is never read as "nothing else depends on this".
+const blastRadiusEdgeBasis = "services are derived from certificate SANs and common names; discovered endpoints are not joined"
+
+// addCAEdges makes a child CA depend on its parent, so retiring the parent
+// reaches the child CA, its certs and their services (the chain).
+func addCAEdges(g *blastradius.Graph, cas []CAListItem) {
+	for _, c := range cas {
+		if c.ParentCAID == nil || strings.TrimSpace(*c.ParentCAID) == "" || c.ID == "" {
+			continue
+		}
+		g.AddDependency(blastradius.KindCA, c.ID, blastradius.KindCA, strings.TrimSpace(*c.ParentCAID))
+	}
+}
+
+func buildBlastRadiusGraphWithCAs(items []CertificateItem, cas []CAListItem) *blastradius.Graph {
+	g := buildBlastRadiusGraph(items)
+	addCAEdges(g, cas)
+	return g
+}
+
 func blastRadiusInventory(ctx context.Context, certProvider CertificateProvider) ([]CertificateItem, error) {
 	result, err := listAllCertificates(ctx, certProvider, CertificateListQuery{})
 	if err != nil {
@@ -86,19 +108,33 @@ func blastRadiusInventory(ctx context.Context, certProvider CertificateProvider)
 	return result.Items, nil
 }
 
-// registerBlastRadiusHandler mounts the what-breaks-if simulation.
-func registerBlastRadiusHandler(mux *http.ServeMux, auth *Authenticator, certProvider CertificateProvider, auditProvider AuditProvider) {
+func blastRadiusNodeKind(action string) (blastradius.NodeKind, bool) {
+	switch action {
+	case "revoke":
+		return blastradius.KindCert, true
+	case "retire_ca":
+		return blastradius.KindCA, true
+	case "deprecate_algorithm":
+		return blastradius.KindAlgorithm, true
+	}
+	return "", false
+}
+
+// registerBlastRadiusHandler mounts the what-breaks-if simulation. caProvider
+// may be nil (cert-only edges).
+func registerBlastRadiusHandler(mux *http.ServeMux, auth *Authenticator, certProvider CertificateProvider, caProvider CAProvider, auditProvider AuditProvider) {
 	mux.HandleFunc("/api/v1/blast-radius", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w, http.MethodGet)
 			return
 		}
-		principal, err := auth.AuthenticatePrincipal(r, time.Now())
+		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
 		if err != nil {
 			emitAuditEvent(r, auditProvider, "", "blast_radius.simulate", "simulation", "blast-radius", AuditOutcomeDenied)
 			writeUnauthorized(w)
 			return
 		}
+		principal := pd.ID
 
 		action := strings.TrimSpace(r.URL.Query().Get("action"))
 		target := strings.TrimSpace(r.URL.Query().Get("target"))
@@ -106,36 +142,110 @@ func registerBlastRadiusHandler(mux *http.ServeMux, auth *Authenticator, certPro
 			writeBadRequest(w, "target is required")
 			return
 		}
+		kind, ok := blastRadiusNodeKind(action)
+		if !ok {
+			writeBadRequest(w, "action must be revoke, retire_ca or deprecate_algorithm")
+			return
+		}
+
+		fail := func(outcome AuditOutcome) {
+			emitAuditEvent(r, auditProvider, principal, "blast_radius.simulate", "simulation", "blast-radius", outcome)
+		}
 
 		items, err := blastRadiusInventory(r.Context(), certProvider)
 		if err != nil {
-			emitAuditEvent(r, auditProvider, principal, "blast_radius.simulate", "simulation", "blast-radius", AuditOutcomeFailure)
-			log.Printf("blast radius: list certs: %v", err)
+			fail(AuditOutcomeFailure)
+			logging.Infof("blast radius: list certs: %v", err)
 			writeServiceUnavailable(w, "inventory unavailable")
 			return
 		}
-		graph := buildBlastRadiusGraph(items)
+		var cas []CAListItem
+		if caProvider != nil {
+			list, lerr := caProvider.ListCAs(r.Context(), CAListQuery{Limit: 1000})
+			if lerr != nil {
+				// Degrade to cert-only edges rather than refuse a pre-flight.
+				logging.Infof("blast radius: list CAs, falling back to cert-only edges: %v", lerr)
+			} else {
+				cas = list.Items
+			}
+		}
+		bypass := tenantBypass(pd)
+		full := buildBlastRadiusGraphWithCAs(items, cas)
+
+		// 404 for targets absent everywhere; a target that exists in another
+		// tenant is 403 (decided on the unfiltered graph). Algorithms carry no
+		// tenant, so for scoped principals their existence is judged on the
+		// filtered graph below.
+		exists := full.HasNode(kind, target)
+		if !exists && kind == blastradius.KindCA && caProvider != nil {
+			// A real CA with no certs is a valid, zero-impact simulation.
+			_, found, gerr := caProvider.GetCA(r.Context(), target)
+			if gerr != nil {
+				fail(AuditOutcomeFailure)
+				logging.Infof("blast radius: get CA: %v", gerr)
+				writeServiceUnavailable(w, "ca unavailable")
+				return
+			}
+			exists = found
+		}
+		if !exists {
+			fail(AuditOutcomeFailure)
+			writeNotFound(w, "target not found")
+			return
+		}
+
+		if !bypass {
+			switch kind {
+			case blastradius.KindCert:
+				for _, it := range items {
+					if it.FingerprintSHA256 == target && !caVisibleToTenant(r.Context(), activeTenantStore, pd, it.CAID) {
+						fail(AuditOutcomeDenied)
+						writeForbidden(w, "forbidden")
+						return
+					}
+				}
+			case blastradius.KindCA:
+				if !caVisibleToTenant(r.Context(), activeTenantStore, pd, target) {
+					fail(AuditOutcomeDenied)
+					writeForbidden(w, "forbidden")
+					return
+				}
+			}
+		}
+
+		graph := full
+		if !bypass {
+			// A tenant must not learn another tenant's certs/services through a
+			// shared algorithm or parent CA.
+			scopedItems := filterCertificatesByTenant(r.Context(), activeTenantStore, pd, items)
+			scopedCAs := filterCAsByTenant(r.Context(), activeTenantStore, pd, cas)
+			graph = buildBlastRadiusGraphWithCAs(scopedItems, scopedCAs)
+			items = scopedItems
+			if kind == blastradius.KindAlgorithm && !graph.HasNode(kind, target) {
+				fail(AuditOutcomeFailure)
+				writeNotFound(w, "target not found")
+				return
+			}
+		}
 
 		var impact blastradius.Impact
-		switch action {
-		case "revoke":
+		switch kind {
+		case blastradius.KindCert:
 			impact = graph.SimulateRevoke(target)
-		case "retire_ca":
+		case blastradius.KindCA:
 			impact = graph.SimulateRetireCA(target)
-		case "deprecate_algorithm":
-			impact = graph.SimulateDeprecateAlgorithm(target)
 		default:
-			writeBadRequest(w, "action must be revoke, retire_ca or deprecate_algorithm")
-			return
+			impact = graph.SimulateDeprecateAlgorithm(target)
 		}
 
 		emitAuditEventDetail(r, auditProvider, principal, "blast_radius.simulate", "simulation", "blast-radius", AuditOutcomeSuccess,
 			fmt.Sprintf(`{"action":%q,"target":%q,"affected":%d,"severity":%q}`, action, target, impact.TotalAffected, impact.Severity))
 
 		affected := map[string][]string{}
-		for kind, ids := range impact.AffectedByKind {
-			affected[string(kind)] = ids
+		for k, ids := range impact.AffectedByKind {
+			affected[string(k)] = ids
 		}
+		cov := graph.Coverage()
 		writeJSONData(w, map[string]any{
 			"action":           action,
 			"target":           impact.Target,
@@ -143,6 +253,12 @@ func registerBlastRadiusHandler(mux *http.ServeMux, auth *Authenticator, certPro
 			"severity":         impact.Severity,
 			"affected_by_kind": affected,
 			"graph_size":       strconv.Itoa(len(items)) + " certificates",
+			"edge_coverage": map[string]any{
+				"certs_total":             cov.CertsTotal,
+				"certs_with_ca_edge":      cov.CertsWithCAEdge,
+				"certs_with_service_edge": cov.CertsWithServiceEdge,
+				"basis":                   blastRadiusEdgeBasis,
+			},
 		})
 	})
 }

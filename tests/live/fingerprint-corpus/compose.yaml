@@ -1,0 +1,148 @@
+# W34-20: the fingerprint corpus. One container per technology, each on its
+# canonical ports, all on this project's own network so the scanner reaches
+# them by service name. run.sh drives it (podman compose -p kk-w34-corpus) and
+# is the only intended entry point; CORPUS_CERTS holds one self-signed
+# <name>.crt/<name>.key per service and CORPUS_BIN the linux scanctl binary.
+#
+# Ground truth lives in expected.json, written from what is started here and
+# never from the scanner. Every service is optional: run.sh skips (and reports)
+# any that did not come up.
+name: kk-w34-corpus
+
+services:
+  nginx:
+    image: docker.io/library/nginx:alpine
+    volumes: ["${CORPUS_CERTS}:/certs:ro"]
+    command:
+      - sh
+      - -c
+      - |
+        printf '%s\n' 'events {} http { server { listen 443 ssl; ssl_certificate /certs/nginx.crt; ssl_certificate_key /certs/nginx.key; location / { return 200 ok; } } }' > /tmp/n.conf
+        exec nginx -c /tmp/n.conf -g 'daemon off;'
+
+  apache:
+    image: docker.io/library/httpd:alpine
+    volumes: ["${CORPUS_CERTS}:/certs:ro"]
+    working_dir: /usr/local/apache2
+    command:
+      - sh
+      - -c
+      - |
+        sed -i -e 's/^#LoadModule ssl_module/LoadModule ssl_module/' -e 's/^#LoadModule socache_shmcb_module/LoadModule socache_shmcb_module/' conf/httpd.conf
+        printf 'Listen 443\n<VirtualHost *:443>\nSSLEngine on\nSSLCertificateFile /certs/apache.crt\nSSLCertificateKeyFile /certs/apache.key\n</VirtualHost>\n' >> conf/httpd.conf
+        exec httpd-foreground
+
+  tomcat:
+    image: docker.io/library/tomcat:10.1-jdk17-temurin
+    command:
+      - sh
+      - -c
+      - |
+        keytool -genkeypair -alias tomcat -keyalg RSA -keysize 2048 -dname CN=tomcat -validity 30 -keystore /tmp/ks.jks -storepass changeit -keypass changeit >/dev/null 2>&1
+        sed -i 's#</Service>#<Connector port="8443" protocol="org.apache.coyote.http11.Http11NioProtocol" SSLEnabled="true" sslImplementationName="org.apache.tomcat.util.net.jsse.JSSEImplementation"><SSLHostConfig><Certificate certificateKeystoreFile="/tmp/ks.jks" certificateKeystorePassword="changeit"/></SSLHostConfig></Connector></Service>#' conf/server.xml
+        exec catalina.sh run
+
+  openldap:
+    image: docker.io/library/alpine:3.20
+    volumes: ["${CORPUS_CERTS}:/certs:ro"]
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache openldap openldap-back-mdb >/dev/null 2>&1
+        mkdir -p /run/openldap /var/lib/openldap/data
+        cat > /etc/openldap/t.conf <<EOF
+        include /etc/openldap/schema/core.schema
+        pidfile /run/openldap/slapd.pid
+        modulepath /usr/lib/openldap
+        moduleload back_mdb.so
+        TLSCertificateFile /certs/openldap.crt
+        TLSCertificateKeyFile /certs/openldap.key
+        database mdb
+        suffix "dc=example,dc=org"
+        rootdn "cn=admin,dc=example,dc=org"
+        rootpw secret
+        directory /var/lib/openldap/data
+        EOF
+        exec slapd -d 0 -f /etc/openldap/t.conf -h "ldap://0.0.0.0:389 ldaps://0.0.0.0:636"
+
+  postfix:
+    image: docker.io/library/alpine:3.20
+    hostname: postfix
+    volumes: ["${CORPUS_CERTS}:/certs:ro"]
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache postfix >/dev/null 2>&1
+        postconf -e myhostname=postfix mydestination=postfix inet_interfaces=all inet_protocols=ipv4 \
+          smtpd_tls_cert_file=/certs/postfix.crt smtpd_tls_key_file=/certs/postfix.key smtpd_tls_security_level=may
+        newaliases >/dev/null 2>&1
+        exec postfix start-fg
+
+  dovecot:
+    image: docker.io/library/alpine:3.20
+    volumes: ["${CORPUS_CERTS}:/certs:ro"]
+    command:
+      - sh
+      - -c
+      - |
+        apk add --no-cache dovecot dovecot-pop3d dovecot-lmtpd >/dev/null 2>&1
+        adduser -D vmail >/dev/null 2>&1
+        cat > /etc/dovecot/dovecot.conf <<EOF
+        log_path = /dev/stderr
+        protocols = imap pop3
+        ssl = yes
+        ssl_cert = </certs/dovecot.crt
+        ssl_key = </certs/dovecot.key
+        disable_plaintext_auth = no
+        mail_location = maildir:/tmp/mail
+        passdb {
+          driver = static
+          args = password=pw
+        }
+        userdb {
+          driver = static
+          args = uid=vmail gid=vmail home=/tmp/%u
+        }
+        EOF
+        exec dovecot -F
+
+  mysql:
+    image: docker.io/library/mysql:8.0
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+
+  postgres:
+    image: docker.io/library/postgres:16
+    environment:
+      POSTGRES_PASSWORD: corpus
+    volumes: ["${CORPUS_CERTS}:/certs:ro"]
+    command:
+      - sh
+      - -c
+      - |
+        install -o postgres -g postgres -m 600 /certs/postgres.key /tmp/pg.key
+        exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/certs/postgres.crt -c ssl_key_file=/tmp/pg.key
+
+  redis:
+    image: docker.io/library/redis:7
+    volumes: ["${CORPUS_CERTS}:/certs:ro"]
+    command: ["redis-server", "--port", "0", "--tls-port", "6380", "--tls-cert-file", "/certs/redis.crt", "--tls-key-file", "/certs/redis.key", "--tls-ca-cert-file", "/certs/redis.crt", "--tls-auth-clients", "no"]
+
+  vault:
+    image: docker.io/hashicorp/vault:1.17
+    volumes: ["${CORPUS_CERTS}:/certs:ro"]
+    environment:
+      VAULT_LOCAL_CONFIG: '{"listener":{"tcp":{"address":"0.0.0.0:8200","tls_cert_file":"/certs/vault.crt","tls_key_file":"/certs/vault.key"}},"storage":{"file":{"path":"/tmp/vault"}},"disable_mlock":true,"ui":false}'
+    command: ["server"]
+
+  k8s:
+    image: docker.io/library/alpine:3.20
+    volumes: ["${CORPUS_CERTS}:/certs:ro", "${CORPUS_BIN}:/bin/scanctl:ro"]
+    command: ["scanctl", "standin", "-kind", "k8s", "-addr", ":6443", "-cert", "/certs/k8s.crt", "-key", "/certs/k8s.key"]
+
+  winrm:
+    image: docker.io/library/alpine:3.20
+    volumes: ["${CORPUS_CERTS}:/certs:ro", "${CORPUS_BIN}:/bin/scanctl:ro"]
+    command: ["scanctl", "standin", "-kind", "winrm", "-addr", ":5986", "-cert", "/certs/winrm.crt", "-key", "/certs/winrm.key"]

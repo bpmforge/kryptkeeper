@@ -222,3 +222,26 @@ func TestMetricsHandler_RejectsNonGet(t *testing.T) {
 		t.Fatalf("expected 405, got %d", rec.Code)
 	}
 }
+
+func TestProtocolRateLimitsFromEnv(t *testing.T) {
+	cases := []struct {
+		name, cred, ip string
+		wantC, wantI   int
+	}{
+		{"defaults", "", "", 600, 30},
+		{"override", "1200", "50", 1200, 50},
+		{"invalid", "abc", "1.5", 600, 30},
+		{"zero", "0", "0", 600, 30},
+		{"negative", "-5", "-1", 600, 30},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("RATELIMIT_PROTOCOL_PER_CREDENTIAL", tc.cred)
+			t.Setenv("RATELIMIT_UNAUTH_PER_IP", tc.ip)
+			c, i := ProtocolRateLimitsFromEnv()
+			if c != tc.wantC || i != tc.wantI {
+				t.Fatalf("got %d/%d want %d/%d", c, i, tc.wantC, tc.wantI)
+			}
+		})
+	}
+}

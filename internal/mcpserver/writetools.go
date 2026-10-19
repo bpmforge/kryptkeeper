@@ -55,6 +55,7 @@ func writeTools(hub *HubClient) []readTool {
 					return mcp.NewToolResultErrorFromErr("rationale required", err), nil
 				}
 				return propose(ctx, hub, "revoke", map[string]any{
+					"impact":      fetchImpact(ctx, hub, "revoke", fp),
 					"fingerprint": fp,
 					"reason_code": req.GetInt("reason_code", 0),
 					"reason_text": req.GetString("reason_text", ""),
@@ -79,6 +80,7 @@ func writeTools(hub *HubClient) []readTool {
 					return mcp.NewToolResultErrorFromErr("rationale required", err), nil
 				}
 				return propose(ctx, hub, "bulk_revoke", map[string]any{
+					"impact":      fetchImpact(ctx, hub, "retire_ca", caID),
 					"ca_id":       caID,
 					"reason_code": req.GetInt("reason_code", 0),
 					"reason_text": req.GetString("reason_text", ""),
@@ -163,6 +165,35 @@ func writeTools(hub *HubClient) []readTool {
 				return propose(ctx, hub, "rotate", map[string]any{
 					"fingerprint": fp, "csr_pem": csr,
 				}, rationale)
+			},
+		},
+		{
+			mcp.NewTool("draft_policy",
+				mcp.WithDescription("Draft an issuance policy from plain English. Creates a DISABLED draft and a pending approval; it does NOT activate. A different human must approve it in the dashboard. Returns the policy id, the pending action id and any unrecognized clauses (parts of the text no rule could be built from)."),
+				mcp.WithString("name", mcp.Required(), mcp.Description("policy name (1-120 characters)")),
+				mcp.WithString("text", mcp.Required(), mcp.Description("the requirements in plain English, e.g. 'valid for at most 90 days; rsa at least 3072 bits' (max 2000 characters)")),
+				mcp.WithString("rationale", mcp.Required(), mcp.Description("why (recorded in this tool call only, for the audit trail of the conversation)")),
+				mcp.WithString("ca_id", mcp.Description("scope the policy to one CA (default: every CA)")),
+			),
+			func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				name, err := req.RequireString("name")
+				if err != nil {
+					return mcp.NewToolResultErrorFromErr("name required", err), nil
+				}
+				text, err := req.RequireString("text")
+				if err != nil {
+					return mcp.NewToolResultErrorFromErr("text required", err), nil
+				}
+				if _, err := req.RequireString("rationale"); err != nil {
+					return mcp.NewToolResultErrorFromErr("rationale required", err), nil
+				}
+				body, err := json.Marshal(map[string]string{"name": name, "text": text, "ca_id": req.GetString("ca_id", "")})
+				if err != nil {
+					return mcp.NewToolResultErrorFromErr("bad request", err), nil
+				}
+				// Submit only enqueues; there is deliberately no path from this
+				// tool to approval or activation.
+				return jsonResult(hub.post(ctx, "/policies/draft/submit", body))
 			},
 		},
 		{

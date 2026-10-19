@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"kryptkeeper/internal/keyinventory"
+	"kryptkeeper/internal/sshkeys"
 )
 
 // W17-03: the W15-01 cloud key inventory, wired. Sources are injected
@@ -42,7 +43,7 @@ func withKeySources(t *testing.T, sources ...keyinventory.KeySource) {
 func keyInventoryMux(t *testing.T) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
-	registerKeyInventoryHandler(mux, newReportsTestAuth(t), nil, stubAuditProvider{})
+	registerKeyInventoryHandler(mux, newReportsTestAuth(t), nil, stubAuditProvider{}, nil)
 	return mux
 }
 
@@ -132,7 +133,7 @@ func TestKeyInventoryPermissionGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	registerKeyInventoryHandler(mux, auth, roles, stubAuditProvider{})
+	registerKeyInventoryHandler(mux, auth, roles, stubAuditProvider{}, nil)
 	withKeySources(t, fakeKeySource{provider: "aws-kms"})
 
 	cases := []struct {
@@ -177,4 +178,105 @@ func TestKeyInventoryErrorsAreGeneric(t *testing.T) {
 	if !strings.Contains(body, "cloud key inventory unavailable: aws-kms") {
 		t.Fatalf("expected generic provider error, got %s", body)
 	}
+}
+
+// W24-33: SSH host/user keys join the cloud keys; a hung provider is bounded.
+
+type sshEndpointsDiscovery struct {
+	DiscoveryProvider
+	eps []DiscoveryEndpoint
+}
+
+func (d sshEndpointsDiscovery) ListEndpoints(_ context.Context, q DiscoveryEndpointQuery) (DiscoveryEndpointResult, error) {
+	return DiscoveryEndpointResult{Endpoints: d.eps}, nil
+}
+
+type keyInvBody struct {
+	Data struct {
+		Total     int                `json:"total"`
+		Providers []string           `json:"providers"`
+		Keys      []keyinventory.Key `json:"keys"`
+		Errors    []string           `json:"errors"`
+	} `json:"data"`
+}
+
+func withSSHUserInventory(t *testing.T, inv *sshkeys.Inventory) {
+	t.Helper()
+	prev := sshUserKeyInventory
+	sshUserKeyInventory = inv
+	t.Cleanup(func() { sshUserKeyInventory = prev })
+}
+
+func TestKeyInventoryIncludesSSHHostAndUserKeys(t *testing.T) {
+	withKeySources(t, fakeKeySource{provider: "aws-kms", keys: []keyinventory.Key{{Provider: "aws-kms", KeyID: "k1", PQCReadiness: "vulnerable"}}})
+	inv := sshkeys.NewInventory()
+	inv.Add(sshkeys.SSHKey{Fingerprint: "SHA256:u1", KeyType: sshkeys.RSA, BitSize: 2048, Host: "h2", IsAuthorized: true})
+	withSSHUserInventory(t, inv)
+	disc := sshEndpointsDiscovery{eps: []DiscoveryEndpoint{
+		{Hostname: "h1", Port: 22, Protocol: "ssh", SSHHostKeyAlgorithms: []string{"ssh-ed25519", "ssh-rsa"}},
+		{Hostname: "h3", Port: 22, Protocol: "ssh"},
+	}}
+	mux := http.NewServeMux()
+	registerKeyInventoryHandler(mux, newReportsTestAuth(t), nil, stubAuditProvider{}, disc)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, authedReq(http.MethodGet, "/api/v1/inventory/keys", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp keyInvBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Data.Total != 4 || strings.Join(resp.Data.Providers, ",") != "aws-kms,ssh-host,ssh-user" {
+		t.Fatalf("unexpected: %+v", resp.Data)
+	}
+	var user *keyinventory.Key
+	hosts := 0
+	for i, k := range resp.Data.Keys {
+		switch k.Provider {
+		case "ssh-user":
+			user = &resp.Data.Keys[i]
+		case "ssh-host":
+			hosts++
+			if k.KeyType != "host" {
+				t.Errorf("host key_type %q", k.KeyType)
+			}
+		}
+	}
+	if hosts != 2 || user == nil || user.KeyType != "user" || user.Algorithm != "RSA_2048" || !user.Stale {
+		t.Fatalf("rows wrong: hosts=%d user=%+v", hosts, user)
+	}
+}
+
+func TestKeyInventoryPartialOutageWithin5s(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	withKeySources(t,
+		hungKeySource{provider: "slow-kms", release: release},
+		fakeKeySource{provider: "aws-kms", keys: []keyinventory.Key{{Provider: "aws-kms", KeyID: "k1", PQCReadiness: "vulnerable"}}},
+	)
+	withSSHUserInventory(t, sshkeys.NewInventory())
+	rec := httptest.NewRecorder()
+	start := time.Now()
+	keyInventoryMux(t).ServeHTTP(rec, authedReq(http.MethodGet, "/api/v1/inventory/keys", nil))
+	elapsed := time.Since(start)
+	if rec.Code != http.StatusOK || elapsed > 5*time.Second || elapsed < 2500*time.Millisecond {
+		t.Fatalf("code=%d elapsed=%s", rec.Code, elapsed)
+	}
+	var resp keyInvBody
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if len(resp.Data.Errors) != 1 || resp.Data.Errors[0] != "cloud key inventory unavailable: slow-kms" || resp.Data.Total != 1 {
+		t.Fatalf("unexpected: %+v", resp.Data)
+	}
+}
+
+type hungKeySource struct {
+	provider string
+	release  chan struct{}
+}
+
+func (h hungKeySource) Provider() string { return h.provider }
+func (h hungKeySource) ListKeys(context.Context) ([]keyinventory.Key, error) {
+	<-h.release
+	return nil, nil
 }

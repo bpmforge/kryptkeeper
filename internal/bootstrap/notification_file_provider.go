@@ -107,7 +107,11 @@ func (p *fileNotificationProvider) ListRules(_ context.Context) ([]NotificationR
 	return out, nil
 }
 
-func (p *fileNotificationProvider) CreateRule(_ context.Context, name string, thresholdDays int, channel string, target string) (NotificationRule, error) {
+func (p *fileNotificationProvider) CreateRule(ctx context.Context, name string, thresholdDays int, channel string, target string) (NotificationRule, error) {
+	return p.CreateRuleForTenant(ctx, "", name, thresholdDays, channel, target)
+}
+
+func (p *fileNotificationProvider) CreateRuleForTenant(_ context.Context, tenant, name string, thresholdDays int, channel string, target string) (NotificationRule, error) {
 	now := time.Now().UTC()
 	r := NotificationRule{
 		ID:            fmt.Sprintf("rule-%d", now.UnixNano()),
@@ -117,6 +121,7 @@ func (p *fileNotificationProvider) CreateRule(_ context.Context, name string, th
 		Target:        target,
 		Enabled:       true,
 		CreatedAt:     now.Format(time.RFC3339),
+		Tenant:        tenant,
 	}
 	p.mu.Lock()
 	p.rules[r.ID] = r

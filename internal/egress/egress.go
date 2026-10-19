@@ -13,9 +13,13 @@
 // An internal PKI hub legitimately talks to private-network services, so the
 // default policy used by callers allows RFC1918/ULA space; link-local,
 // unspecified and multicast space is refused unconditionally.
+//
+// The claim this package backs is limited to user-supplied URL calls; discovery scanners and fixed-endpoint cloud/vendor clients are listed with reasons in lint_test.go.
 package egress
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net"
@@ -31,6 +35,20 @@ import (
 // ErrBlockedDestination is wrapped by every refusal so callers can map it to
 // a generic message instead of reflecting the raw network error.
 var ErrBlockedDestination = errors.New("egress: destination blocked")
+
+// BlockedMessage tells an operator why a configured destination was refused
+// and what they can change. There is deliberately no allowlist for loopback or
+// link-local space: the guard is not relaxed for convenience.
+const BlockedMessage = "Blocked by the hub's outbound egress guard: loopback, link-local and cloud-metadata addresses are never allowed. " +
+	"Point the destination at a LAN or public address instead (private ranges are allowed unless KRYPTKEEPER_EGRESS_DENY_PRIVATE=true). See docs/ops/EGRESS.md."
+
+// ExplainBlocked returns BlockedMessage when errText came from this guard.
+func ExplainBlocked(errText string) (string, bool) {
+	if strings.Contains(errText, ErrBlockedDestination.Error()) {
+		return BlockedMessage, true
+	}
+	return "", false
+}
 
 // EnvDenyPrivate, when "true", makes PolicyFromEnv refuse RFC1918/ULA/CGNAT
 // space too, for deployments that only talk to public SaaS.
@@ -49,6 +67,9 @@ type Policy struct {
 	// scheme downgrade) so credentials set on the first request are never
 	// replayed to a third party.
 	SameHostRedirectsOnly bool
+	// RootCAs, when non-nil, replaces the system roots for TLS verification
+	// (devices fronted by an internal CA). The address policy still applies.
+	RootCAs *x509.CertPool
 }
 
 // PolicyFromEnv returns p with AllowPrivate switched off when
@@ -68,6 +89,13 @@ var (
 	// (loopback, metadata) into it, and unlike 64:ff9b::/96 the embedding
 	// offset is deployment-defined, so refuse the whole range, not unwrap it.
 	nat64LocalPfx = netip.MustParsePrefix("64:ff9b:1::/48")
+	// Cloud metadata services that sit outside link-local and would otherwise
+	// pass as private (ULA) or CGNAT space, which on-prem integrations need:
+	// AWS IMDS over IPv6 and Alibaba Cloud's metadata endpoint.
+	metadataAddrs = []netip.Addr{
+		netip.MustParseAddr("fd00:ec2::254"),
+		netip.MustParseAddr("100.100.100.200"),
+	}
 )
 
 // CheckIP reports whether p allows dialling ip, wrapping ErrBlockedDestination
@@ -91,6 +119,11 @@ func (p Policy) checkIP(ip netip.Addr) error {
 		// NAT64 embeds an IPv4 address; judge the embedded address.
 		b := ip.As16()
 		ip = netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
+	}
+	for _, m := range metadataAddrs {
+		if ip == m {
+			return fmt.Errorf("%w: %s", ErrBlockedDestination, ip)
+		}
 	}
 	switch {
 	case ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast(), ip.IsInterfaceLocalMulticast(),
@@ -173,6 +206,9 @@ func NewClient(policy Policy) *http.Client {
 		DisableKeepAlives:     true,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: timeout,
+	}
+	if policy.RootCAs != nil {
+		base.TLSClientConfig = &tls.Config{RootCAs: policy.RootCAs, MinVersion: tls.VersionTLS12}
 	}
 	return &http.Client{
 		Timeout:   timeout,

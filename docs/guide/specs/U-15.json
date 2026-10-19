@@ -1,0 +1,458 @@
+{
+  "task": "U-15",
+  "title": "Request a certificate that needs approval, then track it",
+  "sourceStory": "STORIES.md#u-15",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/certificates/issue"
+      },
+      "caption": "Open /certificates/issue",
+      "slug": "wizard-step-1",
+      "expect": {
+        "role": "heading",
+        "name": "Certificate Authority"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-15/01-wizard-step-1.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Certificate authority"
+      },
+      "value": "Acme Issuing CA",
+      "caption": "Select \"Acme Issuing CA\" in **Certificate authority**",
+      "slug": "Certificate authority",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-15/02-certificate-authority.png",
+        "annotated": "docs/guide/screenshots/U-15/02-certificate-authority-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 332,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "wizard-step-2",
+      "expect": {
+        "role": "heading",
+        "name": "Template"
+      },
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-15/03-wizard-step-2.png",
+        "annotated": "docs/guide/screenshots/U-15/03-wizard-step-2-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 337,
+          "y": 394,
+          "w": 60,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Issuance template"
+      },
+      "value": "Production Wildcard (needs approval)",
+      "caption": "Select \"Production Wildcard (needs approval)\" in **Issuance template**",
+      "slug": "pick-approval-template",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-15/04-pick-approval-template.png",
+        "annotated": "docs/guide/screenshots/U-15/04-pick-approval-template-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 332,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "wizard-step-3",
+      "expect": {
+        "role": "heading",
+        "name": "Subject"
+      },
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-15/05-wizard-step-3.png",
+        "annotated": "docs/guide/screenshots/U-15/05-wizard-step-3-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 337,
+          "y": 464,
+          "w": 60,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Subject common name"
+      },
+      "value": "*.pay.acme.test",
+      "caption": "Fill **Subject common name** with \"*.pay.acme.test\"",
+      "slug": "Subject common name",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-15/06-subject-common-name.png",
+        "annotated": "docs/guide/screenshots/U-15/06-subject-common-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 332,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Subject alternative names"
+      },
+      "value": "*.pay.acme.test",
+      "caption": "Fill **Subject alternative names** with \"*.pay.acme.test\"",
+      "slug": "Subject alternative names",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-15/07-subject-alternative-names.png",
+        "annotated": "docs/guide/screenshots/U-15/07-subject-alternative-names-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 402,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "wizard-step-4",
+      "expect": {
+        "role": "button",
+        "name": "I already have a CSR"
+      },
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-15/08-wizard-step-4.png",
+        "annotated": "docs/guide/screenshots/U-15/08-wizard-step-4-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 337,
+          "y": 410,
+          "w": 60,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "I already have a CSR"
+      },
+      "caption": "Click **I already have a CSR**",
+      "slug": "csr-choice",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-15/09-csr-choice.png",
+        "annotated": "docs/guide/screenshots/U-15/09-csr-choice-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 312,
+          "w": 559,
+          "h": 74
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "CSR PEM"
+      },
+      "value": "-----BEGIN CERTIFICATE REQUEST-----\nMIH7MIGhAgEAMBYxFDASBgNVBAMMCyouYWNtZS50ZXN0MFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAE2UWCal6X2qMQPscDN39nR17UjjCFyoPBrXK5BYN1M4r2lGhu\nteUWwAvJOvTzRtav691n/6Wtf3XHwmyAt8ERVKApMCcGCSqGSIb3DQEJDjEaMBgw\nFgYDVR0RBA8wDYILKi5hY21lLnRlc3QwCgYIKoZIzj0EAwIDSQAwRgIhAOU5FcuG\nVetF1kv55E6LkGluK/+xFkFm70sludmIBfhOAiEA2rQZzqR/Ila9AJLmgTEYmVNp\n7ZbW4tN6dbiibt5xkHk=\n-----END CERTIFICATE REQUEST-----",
+      "caption": "Fill **CSR PEM** with \"-----BEGIN CERTIFICATE REQUEST-----\nMIH7MIGhAgEAMBYxFDASBgNVBAMMCyouYWNtZS50ZXN0MFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAE2UWCal6X2qMQPscDN39nR17UjjCFyoPBrXK5BYN1M4r2lGhu\nteUWwAvJOvTzRtav691n/6Wtf3XHwmyAt8ERVKApMCcGCSqGSIb3DQEJDjEaMBgw\nFgYDVR0RBA8wDYILKi5hY21lLnRlc3QwCgYIKoZIzj0EAwIDSQAwRgIhAOU5FcuG\nVetF1kv55E6LkGluK/+xFkFm70sludmIBfhOAiEA2rQZzqR/Ila9AJLmgTEYmVNp\n7ZbW4tN6dbiibt5xkHk=\n-----END CERTIFICATE REQUEST-----\"",
+      "slug": "csr-pasted",
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-15/10-csr-pasted.png",
+        "annotated": "docs/guide/screenshots/U-15/10-csr-pasted-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 418,
+          "w": 1130,
+          "h": 138
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "wizard-step-5-review",
+      "expect": {
+        "role": "button",
+        "name": "Finish"
+      },
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-15/11-wizard-step-5-review.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Finish"
+      },
+      "caption": "Click **Finish**",
+      "slug": "submitted-for-approval",
+      "expect": {
+        "text": "approval"
+      },
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-15/12-submitted-for-approval.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/my-requests"
+      },
+      "caption": "Open /my-requests",
+      "slug": "my-requests-pending",
+      "expect": {
+        "role": "heading",
+        "name": "My requests"
+      },
+      "n": 13,
+      "capture": {
+        "file": "docs/guide/screenshots/U-15/13-my-requests-pending.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:41:13.046Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-15",
+    "steps": 13,
+    "shots": 13,
+    "annotated": 9,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/my-requests"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-15/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-15/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

@@ -1,0 +1,80 @@
+# syntax=docker/dockerfile:1.7
+
+# W23-32: FIPS 140-3 variant of the Kryptkeeper image.
+#
+# The binaries are built against the pinned Go Cryptographic Module snapshot
+# (GOFIPS140) and the image runs with GODEBUG=fips140=on. This is "on", not
+# "only": the software keystore's AES-GCM cannot run under fips140=only (see
+# docs/board/specs/W23-31.md). A user can still override the environment with
+# -e GODEBUG=fips140=off, so never assume the posture from the image tag:
+# read GET /api/v1/meta ("fips") or run `make fips-smoke`.
+#
+# Build:
+#   docker build -f Dockerfile.fips --build-arg GOFIPS140=v1.0.0 -t kryptkeeper-fips:local .
+#
+# Real mode only; there is no placeholder fallback for a FIPS image.
+
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+
+ARG TARGETOS=linux
+ARG TARGETARCH=arm64
+ARG GOFIPS140=v1.0.0
+ARG APP_BUILD_PATH=./cmd/kryptkeeper
+ARG HEALTHCHECK_URL=http://127.0.0.1:8080/healthz
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG DATE=unknown
+
+WORKDIR /src
+
+COPY . /src
+
+RUN --mount=type=cache,target=/root/.cache/go-build <<'EOF'
+set -eu
+mkdir -p /out
+
+if [ ! -f /src/go.mod ]; then
+  echo "Dockerfile.fips requires go.mod at repository root" >&2
+  exit 1
+fi
+if [ ! -e "/src/${APP_BUILD_PATH#./}" ]; then
+  echo "Dockerfile.fips requires app entrypoint '${APP_BUILD_PATH}' in build context" >&2
+  exit 1
+fi
+
+GOFIPS140="${GOFIPS140}" CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+  go build -trimpath -ldflags='-s -w' -o /out/healthcheck ./cmd/healthcheck
+
+GOFIPS140="${GOFIPS140}" CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+  go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+  -o /out/kryptkeeper "${APP_BUILD_PATH}"
+
+GOFIPS140="${GOFIPS140}" CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+  go build -trimpath -ldflags='-s -w' -o /out/kryptkeeper-mcp ./cmd/kryptkeeper-mcp
+EOF
+
+FROM gcr.io/distroless/static-debian12:nonroot
+
+ARG HEALTHCHECK_URL=http://127.0.0.1:8080/healthz
+ARG GOFIPS140=v1.0.0
+
+LABEL org.opencontainers.image.title="kryptkeeper-fips"
+LABEL org.opencontainers.image.description="Kryptkeeper built against the Go FIPS 140-3 Cryptographic Module, fips140=on"
+LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY:-unknown}"
+LABEL io.kryptkeeper.fips.module="Go Cryptographic Module ${GOFIPS140}"
+
+COPY --from=builder /out/kryptkeeper /kryptkeeper
+COPY --from=builder /out/kryptkeeper-mcp /kryptkeeper-mcp
+COPY --from=builder /out/healthcheck /healthcheck
+
+ENV HEALTHCHECK_URL=${HEALTHCHECK_URL}
+# Keep serving 5s after SIGTERM with /readyz 503 so endpoint removal propagates; 0 disables.
+ENV KRYPTKEEPER_READINESS_DRAIN_SECONDS=5
+ENV GODEBUG=fips140=on
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 CMD ["/healthcheck"]
+
+USER nonroot:nonroot
+ENTRYPOINT ["/kryptkeeper"]

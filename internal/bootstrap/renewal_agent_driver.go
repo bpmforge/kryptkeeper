@@ -7,12 +7,13 @@ package bootstrap
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // haLockRenewalAgentDriver names this driver's lease row in
@@ -150,7 +151,7 @@ func (d *RenewalAgentDriver) sweep() {
 	if d.haCoordinator != nil {
 		ok, err := d.haCoordinator.TryAcquire(ctx, haLockRenewalAgentDriver, 2*d.pollInterval)
 		if err != nil {
-			log.Printf("renewal agent driver: ha lock check failed, skipping this tick: %v", err)
+			logging.Warnf("renewal agent driver: ha lock check failed, skipping this tick: %v", err)
 			return
 		}
 		if !ok {
@@ -159,7 +160,11 @@ func (d *RenewalAgentDriver) sweep() {
 	}
 
 	if added := d.store.sweepRenewals(d.now()); added > 0 {
-		log.Printf("renewal agent driver: assigned %d renewal task(s) on scheduled sweep", added)
+		logging.Infof("renewal agent driver: assigned %d renewal task(s) on scheduled sweep", added)
+	}
+	// W24-15: AGENT_STALE has no inventory push to hang on, so edge-detect here.
+	if sw, ok := d.store.(interface{ sweepStale(time.Time) }); ok {
+		sw.sweepStale(d.now())
 	}
 }
 
@@ -174,7 +179,7 @@ func (s *dbAgentStore) sweepRenewals(now time.Time) int {
 	for _, a := range s.list() {
 		n, err := s.sweepAgentRenewals(ctx, a.ID, now)
 		if err != nil {
-			log.Printf("renewal agent driver: sweep failed for agent %s: %v", a.ID, err)
+			logging.Warnf("renewal agent driver: sweep failed for agent %s: %v", a.ID, err)
 			continue
 		}
 		added += n

@@ -7,7 +7,7 @@ package bootstrap
 import (
 	"context"
 	"kryptkeeper/internal/discovery/scanner"
-	"log"
+	"kryptkeeper/internal/logging"
 	"os"
 	"strings"
 	"sync"
@@ -21,15 +21,16 @@ const (
 	discoveryProviderDB   = "db"
 )
 
-var discoveryProviderWarnf = log.Printf
+var discoveryProviderWarnf = logging.Warnf
 
 type DiscoverySummary struct {
 	DiscoveredEndpoints int `json:"discovered_endpoints"`
 	MappedCertificates  int `json:"mapped_certificates"`
 	RiskyEndpoints      int `json:"risky_endpoints"`
 	ActiveScanJobs      int `json:"active_scan_jobs"`
-	// Findings is the W2-11 finding funnel (raw/effective/suppressed),
-	// sourced from EndpointTLSConfig.Issues (internal/cipheraudit) per
+	// Findings is the finding funnel (raw/deduped/in-scope/effective/
+	// suppressed; five stages since W22-29), sourced from
+	// EndpointTLSConfig.Issues (internal/cipheraudit) per
 	// docs/design/FINDING_ECONOMICS.md — see FindingFunnelSummary's doc
 	// comment in handlers_reports.go for what this is (and isn't). Only
 	// dbDiscoveryProvider (the "db"-mode APP_DISCOVERY_PROVIDER) populates
@@ -38,9 +39,13 @@ type DiscoverySummary struct {
 	// TrustClasses breaks discovery-found leaf certificates down by whose
 	// they are. Zero on providers without a certificate table.
 	TrustClasses TrustClassCounts `json:"trust_classes"`
+	// InventoryClasses is the same population by inventory_class (W34-06).
+	InventoryClasses InventoryClassCounts `json:"inventory_classes"`
 }
 
 type DiscoveryEndpoint struct {
+	// Tenant is the stored tenant ("" = DefaultTenant); never serialized.
+	Tenant    string `json:"-"`
 	ID        string `json:"id"`
 	Hostname  string `json:"hostname"`
 	Port      int    `json:"port"`
@@ -59,6 +64,22 @@ type DiscoveryEndpoint struct {
 	// Target Setup can suggest the right automation instead of assuming.
 	ServerTech             string `json:"server_tech,omitempty"`
 	RecommendedInstallMode string `json:"recommended_install_mode,omitempty"`
+	// Tech/TechConfidence/Platform/TLSStack/TechEvidence are the W34-01
+	// fingerprint (scanner.Fingerprint): the technology behind the endpoint,
+	// how sure the scan is, and the evidence rows that voted. Empty for an
+	// endpoint no network scan has fingerprinted.
+	// InventoryClass is the headline classification of the endpoint's leaf
+	// certificates (managed|ours_unmanaged|authorized_external|unknown_issuer|
+	// self_signed); the least-trusted class among them when it presents several.
+	InventoryClass string             `json:"inventory_class,omitempty"`
+	Tech           string             `json:"tech,omitempty"`
+	TechConfidence string             `json:"tech_confidence,omitempty"`
+	Platform       string             `json:"platform,omitempty"`
+	TLSStack       string             `json:"tls_stack,omitempty"`
+	TechEvidence   []scanner.Evidence `json:"tech_evidence,omitempty"`
+	// InstallPosture is the W34-08 posture of the discovered file holding this
+	// endpoint's served leaf; nil when no host scan has seen that file.
+	InstallPosture *DiscoveryInstallPosture `json:"install_posture,omitempty"`
 	// SSH endpoints carry no certificate; the banner and advertised
 	// host-key algorithms are the discoverable material (and feed
 	// algorithm-sunset/PQC tracking).
@@ -97,10 +118,19 @@ type DiscoveryMappedCert struct {
 	// ChainComplete is nil when completeness could not be judged (a private
 	// chain whose issuer the hub does not hold); only a proven missing
 	// intermediate is false.
-	TrustClass    string `json:"trust_class,omitempty"`
+	TrustClass string `json:"trust_class,omitempty"`
+	// IssuerClass and InventoryClass are the W34-06 refinements of TrustClass
+	// with the operator's authorized issuers.
+	IssuerClass    string `json:"issuer_class,omitempty"`
+	InventoryClass string `json:"inventory_class,omitempty"`
+	// IssuerDN is the issuer as observed, so the UI can declare it authorized.
+	IssuerDN      string `json:"issuer_dn,omitempty"`
 	ChainCA       bool   `json:"chain_ca,omitempty"`
 	ChainComplete *bool  `json:"chain_complete,omitempty"`
 	ChainTrusted  bool   `json:"chain_trusted"`
+	// SourcePath is the file the certificate was read from on the scanned host
+	// (agentless SSH discovery); empty for network-scanned links.
+	SourcePath string `json:"source_path,omitempty"`
 }
 
 type DiscoveryEndpointQuery struct {
@@ -108,8 +138,10 @@ type DiscoveryEndpointQuery struct {
 	RiskyOnly bool
 	// TrustClass keeps endpoints currently presenting a leaf of this class.
 	TrustClass string
-	Limit      int
-	Cursor     int
+	// InventoryClass keeps endpoints currently presenting a leaf of this inventory class.
+	InventoryClass string
+	Limit          int
+	Cursor         int
 }
 
 type DiscoveryEndpointResult struct {
@@ -121,6 +153,8 @@ type DiscoveryEndpointResult struct {
 }
 
 type DiscoveryScanJob struct {
+	// Tenant is the stored tenant ("" = DefaultTenant); never serialized.
+	Tenant   string `json:"-"`
 	ID       string `json:"id"`
 	ScanType string `json:"scan_type"`
 	Target   string `json:"target"`
@@ -224,7 +258,10 @@ type configuredDiscoveryProvider struct {
 	fileProvider DiscoveryProvider
 	dbProvider   DiscoveryProvider
 	winrmScan    winRMTargetScanner
+	sshScan      sshTargetScanner
 	hubCAs       hubCASource
+	// scanDiffNotifier is handed to the DB provider when it is built (W24-06).
+	scanDiffNotifier ScanDiffNotifier
 }
 
 func NewDiscoveryProviderFromEnv() DiscoveryProvider {
@@ -288,8 +325,14 @@ func (c *configuredDiscoveryProvider) current(ctx context.Context) DiscoveryProv
 			if s, ok := c.dbProvider.(winRMScanSetter); ok && c.winrmScan != nil {
 				s.SetWinRMScanner(c.winrmScan)
 			}
+			if s, ok := c.dbProvider.(sshScanSetter); ok && c.sshScan != nil {
+				s.SetSSHScanner(c.sshScan)
+			}
 			if s, ok := c.dbProvider.(hubCASetter); ok && c.hubCAs != nil {
 				s.SetHubCASource(c.hubCAs)
+			}
+			if s, ok := c.dbProvider.(scanDiffNotifierSetter); ok && c.scanDiffNotifier != nil {
+				s.SetScanDiffNotifier(c.scanDiffNotifier)
 			}
 		}
 		c.active = c.dbProvider

@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
+import { scrollableProps } from "../lib/scrollable";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { api } from "../lib/api";
+import { useOperationEvents } from "../hooks/useOperationEvents";
+import { opLabel, opTone } from "../lib/operationStatus";
+import { api, type BulkTakeoverRow, type TakeoverSuggestion } from "../lib/api";
+import {
+  listOrphans,
+  reassignOrphans,
+  type OrphanedOwner,
+} from "../lib/ownershipApi";
+import { GradeLabel } from "../components/StatusCue";
 import {
   Badge,
   Button,
@@ -11,13 +20,24 @@ import {
   Select,
   StateMessage,
 } from "../components/ops-ui";
+import {
+  BlastRadiusImpact,
+  approveEnabled,
+  type ImpactState,
+} from "../components/BlastRadiusImpact";
 import { EmptyState } from "../components/EmptyState";
+import { formatDateTime } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
 import { canManageCertificates, useAuthz } from "../lib/auth";
 import { extractList } from "../lib/models";
 import { useCaNames } from "../lib/useResourceNames";
 import { savePemFile } from "../lib/utils";
-import { TRUST_CLASSES, TRUST_CLASS_LABEL } from "../lib/trustClass";
+import { hostForCert } from "../lib/certHost";
+import {
+  TRUST_CLASSES,
+  TRUST_CLASS_LABEL,
+  riskLevelText,
+} from "../lib/trustClass";
 import type { CaRecord, CertificateRecord } from "../lib/models";
 
 type CertFilters = {
@@ -30,6 +50,8 @@ type CertFilters = {
   origin: string;
   management_state: string;
   trust_class: string;
+  owner: string;
+  sunset_group: string;
 };
 
 const initialFilters: CertFilters = {
@@ -41,6 +63,8 @@ const initialFilters: CertFilters = {
   origin: "",
   management_state: "",
   trust_class: "",
+  owner: "",
+  sunset_group: "",
   order: "desc",
 };
 
@@ -148,8 +172,14 @@ export function OwnershipEditor({
           }}
         >
           <div>
-            <label className="text-xs text-muted-foreground">Owner email</label>
+            <label
+              htmlFor="cert-owner-email"
+              className="text-xs text-muted-foreground"
+            >
+              Owner email
+            </label>
             <Input
+              id="cert-owner-email"
               type="email"
               value={ownerEmail}
               onChange={(e) => setOwnerEmail(e.target.value)}
@@ -157,28 +187,42 @@ export function OwnershipEditor({
             />
           </div>
           <div>
-            <label className="text-xs text-muted-foreground">Owner team</label>
+            <label
+              htmlFor="cert-owner-team"
+              className="text-xs text-muted-foreground"
+            >
+              Owner team
+            </label>
             <Input
+              id="cert-owner-team"
               value={ownerTeam}
               onChange={(e) => setOwnerTeam(e.target.value)}
               placeholder="platform"
             />
           </div>
           <div>
-            <label className="text-xs text-muted-foreground">
+            <label
+              htmlFor="cert-service-name"
+              className="text-xs text-muted-foreground"
+            >
               Service name
             </label>
             <Input
+              id="cert-service-name"
               value={serviceName}
               onChange={(e) => setServiceName(e.target.value)}
               placeholder="checkout-api"
             />
           </div>
           <div>
-            <label className="text-xs text-muted-foreground">
+            <label
+              htmlFor="cert-labels"
+              className="text-xs text-muted-foreground"
+            >
               Labels (comma-separated)
             </label>
             <Input
+              id="cert-labels"
               value={labels}
               onChange={(e) => setLabels(e.target.value)}
               placeholder="prod, pci, tier-1"
@@ -268,6 +312,7 @@ function TakeoverForm({
   const [connectorId, setConnectorId] = useState("");
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -300,9 +345,20 @@ function TakeoverForm({
             — to renew automatically, also declare the serving host as a managed
             target with auto-renew in Target Setup.
           </p>
-          <Button tone="primary" onClick={onClose}>
-            Done
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              tone="primary"
+              onClick={() => {
+                navigate(
+                  `/targets/setup?host=${encodeURIComponent(hostForCert(cert))}&certificate=${encodeURIComponent(cert.fingerprint_sha256)}`,
+                );
+                onClose();
+              }}
+            >
+              Set up target
+            </Button>
+            <Button onClick={onClose}>Done</Button>
+          </div>
         </div>
       ) : (
         <form
@@ -384,6 +440,381 @@ function TakeoverForm({
         </form>
       )}
     </>
+  );
+}
+
+// Mirrors the server cap (maxBulkTakeoverItems, W27-12).
+const BULK_TAKEOVER_MAX = 500;
+
+type BulkTakeoverResult = {
+  total: number;
+  succeeded: number;
+  failed: number;
+  skipped?: number;
+  results: BulkTakeoverRow[];
+};
+
+// BulkTakeoverDialog fronts POST /estate/takeover/bulk (W24-31/32): one owner
+// and renewal path applied to every selected unmanaged certificate, with a
+// per-row result list. Failed rows stay visible with the server's message.
+export function BulkTakeoverDialog({
+  open,
+  certs,
+  onClose,
+  onDone,
+}: {
+  open: boolean;
+  certs: CertificateRecord[];
+  onClose: () => void;
+  onDone?: () => void;
+}) {
+  const connectorsQuery = useQuery({
+    queryKey: ["connectors"],
+    queryFn: api.connectors,
+    enabled: open,
+  });
+  const connectorList = connectorsQuery.data?.data ?? [];
+  const fingerprints = certs
+    .filter((c) => c.management_state !== "managed")
+    .map((c) => c.fingerprint_sha256);
+  // Owner suggestions only prefill the form; a failure never blocks takeover.
+  const suggestionsQuery = useQuery({
+    queryKey: ["takeover-suggestions", fingerprints],
+    queryFn: () => api.estateTakeoverSuggestions(fingerprints),
+    enabled: open && fingerprints.length > 0,
+    retry: false,
+  });
+  return (
+    <Dialog
+      open={open}
+      title="Take selected certificates under management"
+      description="Assign one owner and renewal path to every selected unmanaged certificate."
+      onClose={onClose}
+    >
+      <BulkTakeoverForm
+        key={String(open)}
+        certs={certs}
+        connectorList={connectorList}
+        suggestions={suggestionsQuery.data}
+        onClose={onClose}
+        onDone={onDone}
+      />
+    </Dialog>
+  );
+}
+
+function BulkTakeoverForm({
+  certs,
+  connectorList,
+  suggestions,
+  onClose,
+  onDone,
+}: {
+  certs: CertificateRecord[];
+  connectorList: {
+    id: string;
+    name: string;
+    type: string;
+    health?: { status: string };
+  }[];
+  suggestions?: TakeoverSuggestion[];
+  onClose: () => void;
+  onDone?: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const eligible = certs.filter((c) => c.management_state !== "managed");
+  const skipped = certs.length - eligible.length;
+  const tooMany = eligible.length > BULK_TAKEOVER_MAX;
+  const [ownerEmail, setOwnerEmail] = useState("");
+  const [ownerTeam, setOwnerTeam] = useState("");
+  const [mode, setMode] = useState("internal");
+  const [connectorId, setConnectorId] = useState("");
+  const [result, setResult] = useState<BulkTakeoverResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [ownersDiffer, setOwnersDiffer] = useState(false);
+  const [prefilled, setPrefilled] = useState(false);
+  if (suggestions && suggestions.length > 0 && !prefilled) {
+    // Prefill only when every certificate agrees on the owner.
+    setPrefilled(true);
+    const first = suggestions[0];
+    const same = suggestions.every(
+      (x) =>
+        x.owner_email === first.owner_email &&
+        x.owner_team === first.owner_team,
+    );
+    if (same) {
+      setOwnerEmail(first.owner_email);
+      setOwnerTeam(first.owner_team);
+    } else {
+      setOwnersDiffer(true);
+    }
+  }
+  const nameByFp = new Map(
+    certs.map((c) => [c.fingerprint_sha256, c.common_name ?? ""]),
+  );
+
+  const mutation = useMutation({
+    mutationFn: () =>
+      api.estateBulkTakeover({
+        items: eligible.map((c) => ({
+          fingerprint: c.fingerprint_sha256,
+          owner_email: ownerEmail.trim(),
+          owner_team: ownerTeam.trim(),
+          renewal_path: {
+            mode,
+            ...(mode === "connector" ? { connector_id: connectorId } : {}),
+          },
+        })),
+      }),
+    onSuccess: (res) => {
+      setResult(res.data);
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ["certificates"] });
+      onDone?.();
+    },
+    onError: (e) =>
+      setError(e instanceof Error ? e.message : "Bulk takeover failed."),
+  });
+
+  if (result) {
+    return (
+      <div className="space-y-3 text-sm">
+        <p
+          className={result.failed > 0 ? "text-state-attn" : "text-state-auto"}
+        >
+          {result.succeeded} succeeded, {result.failed} failed
+          {result.skipped ? `, ${result.skipped} skipped` : ""}
+        </p>
+        <table className="w-full text-left text-xs">
+          <thead className="text-muted-foreground">
+            <tr>
+              <th className="pb-1 pr-2">Certificate</th>
+              <th className="pb-1 pr-2">Result</th>
+              <th className="pb-1">Detail</th>
+            </tr>
+          </thead>
+          <tbody>
+            {result.results.map((r) => (
+              <tr
+                key={r.fingerprint}
+                className="border-t border-border align-top"
+              >
+                <td className="py-1 pr-2">
+                  <span className="font-mono">
+                    {r.fingerprint.slice(0, 12)}
+                  </span>{" "}
+                  {nameByFp.get(r.fingerprint) ?? ""}
+                </td>
+                <td className="py-1 pr-2">
+                  <Badge
+                    tone={
+                      r.status === "ok"
+                        ? "success"
+                        : r.status === "skipped"
+                          ? "warning"
+                          : "danger"
+                    }
+                  >
+                    {r.status}
+                  </Badge>
+                </td>
+                <td className="py-1">
+                  {r.error ?? (r.reason ? r.reason.replace(/_/g, " ") : "")}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <Button tone="primary" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+    );
+  }
+
+  if (eligible.length === 0) {
+    return (
+      <div className="space-y-3 text-sm">
+        <p>
+          None of the selected certificates can be taken over: they are already
+          managed.
+        </p>
+        <Button onClick={onClose}>Close</Button>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      className="space-y-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        mutation.mutate();
+      }}
+    >
+      <p className="text-sm text-foreground">
+        {eligible.length} of {certs.length} selected certificates will be taken
+        over.
+        {skipped > 0 ? ` ${skipped} already managed and will be skipped.` : ""}
+      </p>
+      {tooMany ? (
+        <p className="text-xs text-state-over">
+          Select at most {BULK_TAKEOVER_MAX.toLocaleString("en-US")}
+        </p>
+      ) : null}
+      {ownersDiffer ? (
+        <p className="text-xs text-muted-foreground">
+          Suggested owners differ — enter one to apply to all
+        </p>
+      ) : null}
+      <label className="block space-y-1 text-sm text-foreground">
+        <span>Owner email</span>
+        <Input
+          aria-label="Takeover owner email"
+          type="email"
+          value={ownerEmail}
+          onChange={(e) => setOwnerEmail(e.target.value)}
+          placeholder="owner@example.com"
+        />
+      </label>
+      <label className="block space-y-1 text-sm text-foreground">
+        <span>Owner team</span>
+        <Input
+          aria-label="Takeover owner team"
+          value={ownerTeam}
+          onChange={(e) => setOwnerTeam(e.target.value)}
+          placeholder="platform"
+        />
+      </label>
+      <fieldset className="space-y-2 text-sm text-foreground">
+        <legend>Renewal path</legend>
+        <label className="flex items-center gap-2">
+          <input
+            type="radio"
+            name="bulk-renewal-path"
+            value="internal"
+            checked={mode === "internal"}
+            onChange={() => setMode("internal")}
+          />
+          <span>Renew from an internal CA (migrate it to Kryptkeeper)</span>
+        </label>
+        <label className="flex items-center gap-2">
+          <input
+            type="radio"
+            name="bulk-renewal-path"
+            value="connector"
+            checked={mode === "connector"}
+            onChange={() => setMode("connector")}
+          />
+          <span>Renew at its original CA via a connector</span>
+        </label>
+        {mode === "connector" ? (
+          <Select
+            aria-label="Takeover connector"
+            value={connectorId}
+            onChange={(e) => setConnectorId(e.target.value)}
+          >
+            <option value="" disabled>
+              — select a connector —
+            </option>
+            {connectorList.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} ({c.type}
+                {c.health?.status ? ` · ${c.health.status}` : ""})
+              </option>
+            ))}
+          </Select>
+        ) : null}
+      </fieldset>
+      {error ? <p className="text-xs text-state-over">{error}</p> : null}
+      <Button
+        type="submit"
+        tone="primary"
+        disabled={
+          mutation.isPending ||
+          tooMany ||
+          (mode === "connector" && !connectorId)
+        }
+      >
+        {mutation.isPending ? "Taking over…" : `Take over ${eligible.length}`}
+      </Button>
+    </form>
+  );
+}
+
+// revertTarget mirrors the hub's revertTargetState: a certificate synced from
+// an inventory source returns to external, anything else to unmanaged.
+function revertTarget(cert: Pick<CertificateRecord, "origin">): string {
+  return cert.origin === "synced" ? "external" : "unmanaged";
+}
+
+// RevertDialog fronts POST /estate/revert (W24-31/32): a managed certificate
+// goes back to its pre-takeover state. Explicit confirm; the certificate
+// itself is untouched.
+export function RevertDialog({
+  open,
+  cert,
+  onClose,
+  onDone,
+}: {
+  open: boolean;
+  cert: CertificateRecord | null;
+  onClose: () => void;
+  onDone?: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const mutation = useMutation({
+    mutationFn: (fingerprint: string) => api.estateRevert(fingerprint),
+    onSuccess: () => {
+      setDone(true);
+      setError(null);
+      void queryClient.invalidateQueries({ queryKey: ["certificates"] });
+      void queryClient.invalidateQueries({ queryKey: ["certificate-by-id"] });
+      onDone?.();
+    },
+    onError: (e) => setError(e instanceof Error ? e.message : "Revert failed."),
+  });
+
+  if (!cert) return null;
+  const target = revertTarget(cert);
+  const close = () => {
+    setDone(false);
+    setError(null);
+    onClose();
+  };
+  return (
+    <Dialog
+      open={open}
+      title={`Revert to ${target}`}
+      description={`${cert.common_name || cert.fingerprint_sha256} will no longer be treated as managed by Kryptkeeper. The certificate itself is not changed or revoked.`}
+      onClose={close}
+      size="sm"
+    >
+      {done ? (
+        <div className="space-y-3 text-sm">
+          <p className="text-state-auto">Now {target}.</p>
+          <Button tone="primary" onClick={close}>
+            Done
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {error ? <p className="text-xs text-state-over">{error}</p> : null}
+          <div className="flex justify-end gap-2">
+            <Button onClick={close}>Cancel</Button>
+            <Button
+              tone="danger"
+              disabled={mutation.isPending}
+              onClick={() => mutation.mutate(cert.fingerprint_sha256)}
+            >
+              Revert to {target}
+            </Button>
+          </div>
+        </div>
+      )}
+    </Dialog>
   );
 }
 
@@ -520,6 +951,158 @@ export function BulkImportDialog({
   );
 }
 
+// OrphanBanner lists owners who have left (W22-26) with the count of
+// certificates they still own, and fronts the bulk reassign. A tenant-scoped
+// principal gets 403 from the list; that renders nothing rather than an error.
+function OrphanBanner({ canManage }: { canManage: boolean }) {
+  const [target, setTarget] = useState<OrphanedOwner | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const orphansQuery = useQuery({
+    queryKey: ["ownership-orphans"],
+    queryFn: listOrphans,
+    enabled: canManage,
+    retry: false,
+  });
+  const orphans = orphansQuery.data?.data ?? [];
+  if (!canManage || (orphans.length === 0 && !notice)) return null;
+  return (
+    <div
+      data-testid="orphan-banner"
+      className="space-y-2 rounded-xl border border-border bg-background/60 px-4 py-3 text-sm"
+    >
+      {notice ? (
+        <p role="status" className="text-state-auto">
+          {notice}
+        </p>
+      ) : null}
+      {orphans.map((o) => (
+        <div
+          key={o.user_id || o.owner_email}
+          className="flex flex-wrap items-center gap-3"
+        >
+          <span className="text-foreground">
+            {o.owner_email} left — {o.cert_count} certificates
+          </span>
+          <Button
+            aria-label={`Reassign certificates of ${o.owner_email}`}
+            onClick={() => {
+              setNotice(null);
+              setTarget(o);
+            }}
+          >
+            Reassign
+          </Button>
+        </div>
+      ))}
+      <ReassignOrphansDialog
+        orphan={target}
+        onClose={() => setTarget(null)}
+        onDone={(n) => {
+          setTarget(null);
+          setNotice(`Reassigned ${n} certificates.`);
+        }}
+      />
+    </div>
+  );
+}
+
+function ReassignOrphansDialog({
+  orphan,
+  onClose,
+  onDone,
+}: {
+  orphan: OrphanedOwner | null;
+  onClose: () => void;
+  onDone: (reassigned: number) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [toTeam, setToTeam] = useState("");
+  const [toEmail, setToEmail] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const mutation = useMutation({
+    mutationFn: () =>
+      reassignOrphans({
+        from_email: orphan?.owner_email ?? "",
+        to_team: toTeam.trim(),
+        ...(toEmail.trim() ? { to_email: toEmail.trim() } : {}),
+      }),
+    onSuccess: async (res) => {
+      setToTeam("");
+      setToEmail("");
+      setError(null);
+      for (const key of [
+        "certificates",
+        "dashboard-summary",
+        "ownership-orphans",
+      ]) {
+        await queryClient.invalidateQueries({ queryKey: [key] });
+      }
+      onDone(res.data.reassigned);
+    },
+    onError: (e) =>
+      setError(e instanceof Error ? e.message : "Reassignment failed."),
+  });
+  if (!orphan) return null;
+  return (
+    <Dialog
+      open
+      title="Reassign certificates"
+      description={`${orphan.cert_count} certificates still list ${orphan.owner_email} as owner.`}
+      onClose={onClose}
+    >
+      <form
+        className="space-y-3"
+        onSubmit={(e) => {
+          e.preventDefault();
+          mutation.mutate();
+        }}
+      >
+        <label className="block space-y-1 text-sm text-foreground">
+          <span>New owner team</span>
+          <Input
+            aria-label="New owner team"
+            value={toTeam}
+            onChange={(e) => setToTeam(e.target.value)}
+            placeholder="platform"
+          />
+        </label>
+        <label className="block space-y-1 text-sm text-foreground">
+          <span>New owner email (optional)</span>
+          <Input
+            aria-label="New owner email"
+            type="email"
+            value={toEmail}
+            onChange={(e) => setToEmail(e.target.value)}
+            placeholder="owner@example.com"
+          />
+        </label>
+        {error ? (
+          <p role="alert" className="text-xs text-state-over">
+            {error}
+          </p>
+        ) : null}
+        <div className="flex gap-2">
+          <Button
+            type="submit"
+            tone="primary"
+            disabled={mutation.isPending || toTeam.trim() === ""}
+          >
+            {mutation.isPending ? "Reassigning…" : "Reassign"}
+          </Button>
+          <Button tone="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+
+// Imported, discovered and synced certificates have no issuing CA in this hub, so there is no
+// CRL or OCSP responder to publish to: the revocation is an inventory record only.
+const EXTERNAL_REVOKE_NOTE =
+  "Marked revoked in inventory — revoke at the issuing CA. This hub is not the issuer.";
+
 export default function Certificates() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -537,6 +1120,8 @@ export default function Certificates() {
     origin: searchParams.get("origin") ?? "",
     management_state: searchParams.get("management_state") ?? "",
     trust_class: searchParams.get("trust_class") ?? "",
+    owner: searchParams.get("owner") ?? "",
+    sunset_group: searchParams.get("sunset_group") ?? "",
   }));
   const [cursor, setCursor] = useState<string | null>(
     searchParams.get("cursor") ?? null,
@@ -563,6 +1148,8 @@ export default function Certificates() {
   const [takeoverOpen, setTakeoverOpen] = useState(
     searchParams.get("takeover") === "1",
   );
+  const [bulkTakeoverOpen, setBulkTakeoverOpen] = useState(false);
+  const [revertOpen, setRevertOpen] = useState(false);
   const [selectedFingerprints, setSelectedFingerprints] = useState<string[]>(
     [],
   );
@@ -570,6 +1157,7 @@ export default function Certificates() {
     "renew" | "revoke" | "import" | "bulk-renew" | "bulk-revoke" | null
   >(null);
   const [revokeConfirm, setRevokeConfirm] = useState("");
+  const [revokeImpact, setRevokeImpact] = useState<ImpactState>("loading");
   const [bulkProgress, setBulkProgress] = useState<{
     done: number;
     total: number;
@@ -600,12 +1188,21 @@ export default function Certificates() {
       origin: filters.origin,
       management_state: filters.management_state,
       trust_class: filters.trust_class,
+      owner: filters.owner,
+      sunset_group: filters.sunset_group,
       limit: 50,
       ...(cursor ? { cursor } : {}),
     }),
     [filters, cursor],
   );
 
+  const { latest: certOps } = useOperationEvents({
+    kinds: ["renew", "install"],
+    onEvent: () =>
+      void queryClient.invalidateQueries({ queryKey: ["certificates"] }),
+    onResync: () =>
+      void queryClient.invalidateQueries({ queryKey: ["certificates"] }),
+  });
   const certsQuery = useQuery({
     queryKey: ["certificates", queryParams],
     queryFn: () => api.certificates(queryParams),
@@ -691,11 +1288,19 @@ export default function Certificates() {
         reason_text: form.reasonText,
       });
     },
-    onSuccess: async () => {
+    onSuccess: async (res) => {
+      const scope = res?.data?.revocation_scope;
+      const inventoryOnly = scope
+        ? scope === "inventory_only"
+        : !selectedCert?.ca_id;
       setStatusMessage({
         tone: "success",
-        title: "Certificate revoked",
-        message: "The certificate is now marked revoked.",
+        title: inventoryOnly
+          ? "Marked revoked in inventory"
+          : "Certificate revoked",
+        message: inventoryOnly
+          ? EXTERNAL_REVOKE_NOTE
+          : "The certificate is now marked revoked.",
       });
       setAction(null);
       await refresh();
@@ -841,6 +1446,7 @@ export default function Certificates() {
     next: "renew" | "revoke" | "import" | "bulk-renew" | "bulk-revoke",
   ) => {
     setRevokeConfirm("");
+    setRevokeImpact("loading");
     setAction(next);
     setStatusMessage(null);
     setBulkProgress(null);
@@ -956,6 +1562,23 @@ export default function Certificates() {
           setTakeoverOpen(false);
           void queryClient.invalidateQueries({ queryKey: ["certificates"] });
         }}
+      />
+
+      <OrphanBanner canManage={canManage} />
+
+      <BulkTakeoverDialog
+        open={bulkTakeoverOpen}
+        certs={certs.filter((c) =>
+          selectedFingerprints.includes(c.fingerprint_sha256),
+        )}
+        onClose={() => setBulkTakeoverOpen(false)}
+        onDone={() => setSelectedFingerprints([])}
+      />
+
+      <RevertDialog
+        open={revertOpen && !!selectedCert}
+        cert={selectedCert}
+        onClose={() => setRevertOpen(false)}
       />
 
       <Panel
@@ -1088,6 +1711,22 @@ export default function Certificates() {
           <Button tone="primary" onClick={() => certsQuery.refetch()}>
             Apply filters
           </Button>
+          <button
+            type="button"
+            aria-pressed={filters.owner === "unassigned"}
+            onClick={() =>
+              updateFilter({
+                owner: filters.owner === "unassigned" ? "" : "unassigned",
+              })
+            }
+            className={`rounded-xl px-3 py-1.5 text-sm transition ${
+              filters.owner === "unassigned"
+                ? "bg-primary/15 text-primary border border-primary/40"
+                : "border border-border text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Unowned only
+          </button>
           <Button
             onClick={() => {
               setCursor(null);
@@ -1120,7 +1759,7 @@ export default function Certificates() {
         />
       ) : null}
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1.45fr)_minmax(0,0.75fr)]">
         <Panel
           title={`Certificate inventory${meta ? ` · ${meta.total ?? 0} ${filters.status ? "matching" : "records"}` : ""}`}
           subtitle="Click a row to inspect details"
@@ -1145,6 +1784,12 @@ export default function Certificates() {
                   Bulk renew
                 </Button>
                 <Button
+                  onClick={() => setBulkTakeoverOpen(true)}
+                  disabled={selectedCount === 0}
+                >
+                  Take over selected
+                </Button>
+                <Button
                   tone="danger"
                   onClick={() => openAction("bulk-revoke")}
                   disabled={selectedCount === 0}
@@ -1160,55 +1805,56 @@ export default function Certificates() {
           <div
             data-testid="certificate-inventory-scroll"
             className="overflow-x-auto rounded-xl border border-border"
+            {...scrollableProps}
           >
             <table className="min-w-full divide-y divide-border">
               <thead className="bg-background/80">
                 <tr>
                   <th
                     scope="col"
-                    className="px-4 py-3 text-left text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground"
+                    className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider whitespace-nowrap text-muted-foreground"
                   >
                     Select
                   </th>
                   <th
                     scope="col"
-                    className="px-4 py-3 text-left text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground"
+                    className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider whitespace-nowrap text-muted-foreground"
                   >
                     Common Name
                   </th>
                   <th
                     scope="col"
-                    className="px-4 py-3 text-left text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground"
+                    className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider whitespace-nowrap text-muted-foreground"
                   >
                     Issuer
                   </th>
                   <th
                     scope="col"
-                    className="px-4 py-3 text-left text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground"
+                    className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider whitespace-nowrap text-muted-foreground"
                   >
                     Valid Until
                   </th>
                   <th
                     scope="col"
-                    className="px-4 py-3 text-left text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground"
+                    className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider whitespace-nowrap text-muted-foreground"
                   >
                     Grade
                   </th>
                   <th
                     scope="col"
-                    className="px-4 py-3 text-left text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground"
+                    className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider whitespace-nowrap text-muted-foreground"
                   >
                     Risk
                   </th>
                   <th
                     scope="col"
-                    className="px-4 py-3 text-left text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground"
+                    className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider whitespace-nowrap text-muted-foreground"
                   >
                     Estate
                   </th>
                   <th
                     scope="col"
-                    className="px-4 py-3 text-left text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground"
+                    className="px-3 py-3 text-left text-xs font-medium uppercase tracking-wider whitespace-nowrap text-muted-foreground"
                   >
                     Status
                   </th>
@@ -1225,7 +1871,7 @@ export default function Certificates() {
                         : ""
                     }
                   >
-                    <td className="px-4 py-3 text-sm text-foreground">
+                    <td className="px-3 py-3 text-sm text-foreground">
                       <input
                         type="checkbox"
                         aria-label={`Select ${cert.common_name || cert.subject_dn || cert.fingerprint_sha256}`}
@@ -1238,7 +1884,7 @@ export default function Certificates() {
                         className="h-4 w-4 rounded border-border bg-background text-primary focus:ring-ring"
                       />
                     </td>
-                    <td className="px-4 py-3 text-sm text-foreground">
+                    <td className="px-3 py-3 text-sm text-foreground">
                       <button
                         type="button"
                         className="text-left font-medium hover:text-primary"
@@ -1251,16 +1897,24 @@ export default function Certificates() {
                           cert.subject_dn ||
                           cert.fingerprint_sha256}
                       </button>
+                      {certOps[cert.fingerprint_sha256] ? (
+                        <Badge
+                          tone={opTone(certOps[cert.fingerprint_sha256].status)}
+                        >
+                          {certOps[cert.fingerprint_sha256].kind}:{" "}
+                          {opLabel(certOps[cert.fingerprint_sha256].status)}
+                        </Badge>
+                      ) : null}
                     </td>
-                    <td className="px-4 py-3 text-sm text-muted-foreground">
+                    <td className="px-3 py-3 text-sm text-muted-foreground">
                       {cert.issuer_cn || cert.issuer_dn || "—"}
                     </td>
-                    <td className="px-4 py-3 text-sm text-muted-foreground">
+                    <td className="px-3 py-3 text-sm text-muted-foreground whitespace-nowrap">
                       {cert.valid_until?.slice?.(0, 10) ||
                         cert.valid_until ||
                         "—"}
                     </td>
-                    <td className="px-4 py-3 text-sm">
+                    <td className="px-3 py-3 text-sm">
                       <Badge
                         tone={
                           String(cert.grade ?? "").startsWith("A")
@@ -1270,10 +1924,10 @@ export default function Certificates() {
                               : "neutral"
                         }
                       >
-                        {cert.grade || "—"}
+                        <GradeLabel grade={cert.grade} />
                       </Badge>
                     </td>
-                    <td className="px-4 py-3 text-sm">
+                    <td className="px-3 py-3 text-sm">
                       {cert.risk_score != null ? (
                         <span
                           className={
@@ -1285,12 +1939,16 @@ export default function Certificates() {
                           }
                         >
                           {cert.risk_score}
+                          <span className="sr-only">
+                            {" "}
+                            ({riskLevelText(cert.risk_score)} risk)
+                          </span>
                         </span>
                       ) : (
                         <span className="text-muted-foreground">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-sm">
+                    <td className="px-3 py-3 text-sm">
                       <Badge
                         tone={
                           cert.management_state === "managed"
@@ -1303,7 +1961,7 @@ export default function Certificates() {
                         {cert.management_state || "unmanaged"}
                       </Badge>
                     </td>
-                    <td className="px-4 py-3 text-sm">
+                    <td className="px-3 py-3 text-sm">
                       <Badge
                         tone={
                           String(cert.renewal_status ?? "").includes("expir") ||
@@ -1327,6 +1985,8 @@ export default function Certificates() {
                   filters.status ||
                   filters.grade ||
                   filters.origin ||
+                  filters.owner ||
+                  filters.sunset_group ||
                   filters.management_state) ? (
                   <tr>
                     <td colSpan={8} className="px-4 py-10">
@@ -1350,6 +2010,8 @@ export default function Certificates() {
                   filters.status ||
                   filters.grade ||
                   filters.origin ||
+                  filters.owner ||
+                  filters.sunset_group ||
                   filters.management_state
                 ) ? (
                   <tr>
@@ -1426,14 +2088,16 @@ export default function Certificates() {
                 <div>
                   <div className="text-muted-foreground">Valid until</div>
                   <div className="text-foreground">
-                    {selectedCert.valid_until || "—"}
+                    {selectedCert.valid_until
+                      ? formatDateTime(selectedCert.valid_until)
+                      : "—"}
                   </div>
                 </div>
                 {selectedCert.valid_from ? (
                   <div>
                     <div className="text-muted-foreground">Valid from</div>
                     <div className="text-foreground">
-                      {selectedCert.valid_from}
+                      {formatDateTime(selectedCert.valid_from)}
                     </div>
                   </div>
                 ) : null}
@@ -1518,7 +2182,7 @@ export default function Certificates() {
                     }
                   >
                     {selectedCert.risk_score != null
-                      ? `${selectedCert.risk_score} / 100`
+                      ? `${selectedCert.risk_score} / 100 (${riskLevelText(selectedCert.risk_score)})`
                       : "—"}
                   </div>
                 </div>
@@ -1542,12 +2206,17 @@ export default function Certificates() {
               {selectedCert.revoked_at ? (
                 <div className="rounded-xl border border-state-over/50 bg-state-over/10 p-3 text-sm">
                   <div className="font-medium text-state-over">Revoked</div>
-                  <div className="mt-1 text-state-over/70">
+                  <div className="mt-1 text-state-over">
                     {selectedCert.revoked_at}
                     {selectedCert.revocation_reason
                       ? ` — ${selectedCert.revocation_reason}`
                       : ""}
                   </div>
+                  {selectedCert.ca_id ? null : (
+                    <div className="mt-1 text-xs text-state-over">
+                      {EXTERNAL_REVOKE_NOTE}
+                    </div>
+                  )}
                 </div>
               ) : null}
               {(selectedCert.subject_alt_names ?? []).length > 0 ? (
@@ -1645,6 +2314,18 @@ export default function Certificates() {
                   </div>
                 </div>
               ) : null}
+              {selectedCert.management_state === "managed" && canManage ? (
+                <div className="rounded-xl border border-border bg-background/60 p-3 text-sm">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-muted-foreground">
+                      Managed by Kryptkeeper.
+                    </div>
+                    <Button onClick={() => setRevertOpen(true)}>
+                      Revert to {revertTarget(selectedCert)}
+                    </Button>
+                  </div>
+                </div>
+              ) : null}
               <div className="text-sm">
                 <div className="flex items-center justify-between">
                   <div className="text-muted-foreground">Certificate PEM</div>
@@ -1697,7 +2378,7 @@ export default function Certificates() {
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
-            void renewMutation.mutateAsync();
+            renewMutation.mutate();
           }}
         >
           <label className="block space-y-2 text-sm text-foreground">
@@ -1728,14 +2409,18 @@ export default function Certificates() {
       <Dialog
         open={action === "revoke"}
         title="Revoke certificate"
-        description="Mark this certificate revoked for the provided reason."
+        description={
+          selectedCert?.ca_id
+            ? "Mark this certificate revoked for the provided reason."
+            : `Mark this certificate revoked for the provided reason. ${EXTERNAL_REVOKE_NOTE}`
+        }
         onClose={() => setAction(null)}
       >
         <form
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
-            void revokeMutation.mutateAsync();
+            revokeMutation.mutate();
           }}
         >
           <label className="block space-y-2 text-sm text-foreground">
@@ -1766,6 +2451,13 @@ export default function Certificates() {
               placeholder="Optional explanation"
             />
           </label>
+          {selectedCert ? (
+            <BlastRadiusImpact
+              action="revoke"
+              target={selectedCert.fingerprint_sha256}
+              onStateChange={setRevokeImpact}
+            />
+          ) : null}
           <label className="block space-y-2 text-sm text-foreground">
             <span>
               Type <strong>REVOKE</strong> to confirm
@@ -1780,7 +2472,11 @@ export default function Certificates() {
             <Button
               tone="danger"
               type="submit"
-              disabled={revokeMutation.isPending || revokeConfirm !== "REVOKE"}
+              disabled={
+                revokeMutation.isPending ||
+                revokeConfirm !== "REVOKE" ||
+                !approveEnabled(true, revokeImpact)
+              }
             >
               Confirm revoke
             </Button>
@@ -1799,7 +2495,7 @@ export default function Certificates() {
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
-            void importMutation.mutateAsync();
+            importMutation.mutate();
           }}
         >
           <label className="block space-y-2 text-sm text-foreground">
@@ -1860,7 +2556,7 @@ export default function Certificates() {
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
-            void bulkRenewMutation.mutateAsync();
+            bulkRenewMutation.mutate();
           }}
         >
           <label className="block space-y-2 text-sm text-foreground">
@@ -1936,7 +2632,7 @@ export default function Certificates() {
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
-            void bulkRevokeMutation.mutateAsync();
+            bulkRevokeMutation.mutate();
           }}
         >
           <label className="block space-y-2 text-sm text-foreground">

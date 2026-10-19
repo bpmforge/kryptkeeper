@@ -8,10 +8,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // PQCDeadline is a regulatory PQC milestone with time remaining.
@@ -163,13 +164,7 @@ func registerPQCCountdownHandler(mux *http.ServeMux, auth *Authenticator, certPr
 		var waves []WaveProgress
 		if waveStore != nil {
 			if list, err := waveStore.ListWaves(r.Context()); err == nil {
-				vuln := map[string]bool{}
-				for _, c := range result.Items {
-					if c.PQCReadiness == "vulnerable" {
-						vuln[c.FingerprintSHA256] = true
-					}
-				}
-				waves = computeWaveProgress(list, vuln)
+				waves = computeWaveProgress(list, waveCurrentReadiness(result.Items))
 			}
 		}
 
@@ -179,7 +174,7 @@ func registerPQCCountdownHandler(mux *http.ServeMux, auth *Authenticator, certPr
 			pdfBytes, perr := renderPQCCountdownPDF(report, now)
 			if perr != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "report.pqc_countdown", "report", "pqc-countdown", AuditOutcomeFailure)
-				log.Printf("pqc countdown pdf: %v", perr)
+				logging.Infof("pqc countdown pdf: %v", perr)
 				writeServiceUnavailable(w, "pdf unavailable")
 				return
 			}
@@ -196,7 +191,7 @@ func registerPQCCountdownHandler(mux *http.ServeMux, auth *Authenticator, certPr
 		if err := json.NewEncoder(w).Encode(struct {
 			Data PQCCountdownReport `json:"data"`
 		}{Data: report}); err != nil {
-			log.Printf("failed to encode pqc countdown: %v", err)
+			logging.Warnf("failed to encode pqc countdown: %v", err)
 		}
 	})
 }

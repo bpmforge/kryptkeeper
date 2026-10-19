@@ -5,8 +5,10 @@
 package bootstrap
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"strings"
 	"time"
@@ -33,6 +35,9 @@ func RegisterCeremonyHandlers(mux *http.ServeMux, auth *Authenticator, mgr *ca.C
 		if !isAdminRole(pd.Role) {
 			emitAuditEvent(r, auditProvider, pd.ID, action, "ceremony", "-", AuditOutcomeDenied)
 			writeForbidden(w, "admin role required for key ceremonies")
+			return "", false
+		}
+		if denyNonSuperAdminGlobal(w, r, auditProvider, pd, action, "ceremony", "-") {
 			return "", false
 		}
 		return pd.ID, true
@@ -184,4 +189,51 @@ func RegisterCeremonyHandlers(mux *http.ServeMux, auth *Authenticator, mgr *ca.C
 		emitAuditEvent(r, auditProvider, principal, "ceremony.get", "ceremony", id, AuditOutcomeSuccess)
 		writeCeremony(w, http.StatusOK, c)
 	})
+}
+
+// SweepCeremonies is one pass of the ceremony sweeper: auto-abort ceremonies
+// past their TTL (one ceremony.expire audit row each), then send due
+// 24h-before-expiry reminders. There is no request, so it appends audit
+// entries directly. Errors are logged; the next pass retries.
+func SweepCeremonies(ctx context.Context, mgr *ca.CeremonyManager, audit AuditProvider) {
+	expired, err := mgr.ExpireDue()
+	if err != nil {
+		logging.Infof("ceremony sweep: expire: %v", err)
+	}
+	for _, c := range expired {
+		if audit == nil {
+			continue
+		}
+		entry := AuditEntry{
+			Timestamp:     time.Now().UTC().Format(time.RFC3339),
+			Action:        "ceremony.expire",
+			ActorType:     "system",
+			ActorID:       "system",
+			ResourceType:  "ceremony",
+			ResourceID:    c.ID,
+			Outcome:       AuditOutcomeSuccess,
+			ChangeSummary: fmt.Sprintf(`{"id":%q,"ca_id":%q}`, c.ID, c.CAID),
+		}
+		if err := audit.AppendEntry(ctx, entry); err != nil {
+			logging.Errorf("audit append failed action=ceremony.expire resource_id=%s: %v", c.ID, err)
+		}
+	}
+	if _, err := mgr.SendDueReminders(); err != nil {
+		logging.Infof("ceremony sweep: reminders: %v", err)
+	}
+}
+
+// RunCeremonySweeper sweeps immediately, then every `every` until ctx ends.
+func RunCeremonySweeper(ctx context.Context, mgr *ca.CeremonyManager, audit AuditProvider, every time.Duration) {
+	SweepCeremonies(ctx, mgr, audit)
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			SweepCeremonies(ctx, mgr, audit)
+		}
+	}
 }

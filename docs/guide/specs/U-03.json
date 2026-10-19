@@ -1,0 +1,222 @@
+{
+  "task": "U-03",
+  "sourceStory": "STORIES.md#u-03-find-anything-with-global-search-and-the-command-palette",
+  "title": "Find anything with global search and the command palette",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/"
+      },
+      "caption": "Open the Dashboard",
+      "slug": "dashboard",
+      "expect": {
+        "role": "heading",
+        "name": "What needs a human"
+      },
+      "capture": false
+    },
+    {
+      "action": "press",
+      "value": "Control+k",
+      "caption": "Press Ctrl/Cmd+K to open the command palette",
+      "slug": "palette-open",
+      "expect": {
+        "role": "combobox"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-03/02-palette-open.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "role": "combobox"
+      },
+      "value": "acme",
+      "caption": "Fill the palette search with \"acme\"",
+      "slug": "palette-query",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-03/03-palette-query.png",
+        "annotated": "docs/guide/screenshots/U-03/03-palette-query-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 477,
+          "y": 151,
+          "w": 444,
+          "h": 20
+        }
+      }
+    },
+    {
+      "action": "press",
+      "value": "Escape",
+      "caption": "Press Escape to close the palette",
+      "slug": "palette-closed",
+      "capture": false
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/search"
+      },
+      "caption": "Open Search without a query",
+      "slug": "search-empty",
+      "expect": {
+        "text": "Start typing"
+      },
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-03/05-search-empty.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Search all inventory"
+      },
+      "value": "acme",
+      "caption": "Fill **Search all inventory** with \"acme\"",
+      "slug": "search-results",
+      "expect": {
+        "text": "Results"
+      },
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-03/06-search-results.png",
+        "annotated": "docs/guide/screenshots/U-03/06-search-results-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 265,
+          "w": 1053,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Clear"
+      },
+      "caption": "Click **Clear**",
+      "slug": "search-cleared",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-03/07-search-cleared.png",
+        "annotated": "docs/guide/screenshots/U-03/07-search-cleared-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1330,
+          "y": 245,
+          "w": 65,
+          "h": 58
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:38:25.438Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-03",
+    "steps": 7,
+    "shots": 5,
+    "annotated": 3,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/search"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-03/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-03/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

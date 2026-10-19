@@ -55,6 +55,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/openapi.yaml": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * This API's OpenAPI document
+         * @description Serves the exact docs/openapi.yaml the hub was built from. Unauthenticated, read-only, not audited.
+         */
+        get: operations["getOpenAPISpec"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/meta": {
         parameters: {
             query?: never;
@@ -66,6 +86,30 @@ export interface paths {
         get: operations["getServiceMeta"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/certificate-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * File a certificate request on behalf of another principal's team (W33-23)
+         * @description A delegate with an active, tenant-scoped approval delegation from
+         *     `on_behalf_of` files a request that always goes to approval. The request
+         *     is enforced against, and consumes the quota of, the delegator's team.
+         *     The audit trail records the requester (delegate), `on_behalf_of` and the
+         *     approver. 403 `error_code`: `obo_no_delegation`, or a team policy code.
+         */
+        post: operations["createCertificateRequestOnBehalf"];
         delete?: never;
         options?: never;
         head?: never;
@@ -84,6 +128,26 @@ export interface paths {
         put?: never;
         /** Issue certificate from CSR */
         post: operations["issueCertificate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/certificates/quota": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Team issuance quota usage for the current UTC month
+         * @description A team principal reads its own team; an admin names the team with `team_id` (and optionally `tenant`). A team with no policy, or a quota of 0 (unlimited), reports limit 0 and remaining null.
+         */
+        get: operations["getCertificateQuota"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -176,6 +240,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/connectors/dcv-validations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Per-domain DCV validation lifetime (W27-24)
+         * @description When each domain was last validated through an ACME connector, the days left on the CA/B Forum reuse schedule, and the schedule itself. warn is true once 20% or less of the reuse period remains; a dcv.expiry_warning audit event fires once per validation at that point.
+         */
+        get: operations["listDcvValidations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/connectors/{id}": {
         parameters: {
             query?: never;
@@ -191,6 +275,178 @@ export interface paths {
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List issuance policies */
+        get: operations["listIssuancePolicies"];
+        put?: never;
+        /** Create an issuance policy (audited as policy.create) */
+        post: operations["createIssuancePolicy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/policies/dry-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Evaluate a hypothetical or CSR-derived request without issuing
+         * @description With csr_pem, algorithm and RSA size come from the CSR's key (client strings are ignored, exactly as on the real issue path). Never signs and writes no audit row.
+         */
+        post: operations["dryRunIssuancePolicy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/policies/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Parse plain English into a disabled issuance-policy draft (persists nothing)
+         * @description Deterministic phrase extraction, no LLM. Every clause that could not be turned into a rule is returned in unrecognized, never dropped. The draft is always enabled=false, whatever the text asks for.
+         */
+        post: operations["draftIssuancePolicy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/policies/draft/submit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Store a draft DISABLED and file a policy.activate approval
+         * @description Re-parses the text server-side (client rules and enabled flags are never accepted). The policy stays disabled until a different approver approves the pending action through /pending-actions/{id}/approve.
+         */
+        post: operations["submitIssuancePolicyDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/policies/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Get one issuance policy */
+        get: operations["getIssuancePolicy"];
+        put?: never;
+        post?: never;
+        /** Delete an issuance policy (audited as policy.delete) */
+        delete: operations["deleteIssuancePolicy"];
+        options?: never;
+        head?: never;
+        /**
+         * Partially update an issuance policy (audited as policy.update)
+         * @description Omitted fields are unchanged. A change that tightens applies at once (200). A change that loosens (longer validity, lower RSA floor, new algorithm, CA certificates allowed, policy disabled or narrowed to a specific CA) is parked for a second approver and returns 202; it is applied when approved, and fails if the policy changed in between. revert_to restores a prior version under the same rule.
+         */
+        patch: operations["updateIssuancePolicy"];
+        trace?: never;
+    };
+    "/policies/{id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Version history of an issuance policy */
+        get: operations["listIssuancePolicyVersions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/team-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List team issuance policies (W33-20)
+         * @description Tenant-scoped; an unscoped super-admin sees every tenant, or one with ?tenant=.
+         */
+        get: operations["listTeamPolicies"];
+        put?: never;
+        /**
+         * Create a team policy (audited as team_policy.create)
+         * @description A team with no policy is unrestricted, so creating one only restricts and applies at once (201). Within a policy an empty list places no restriction on that axis, max_validity_days 0 is no cap and monthly_quota 0 is unlimited.
+         */
+        post: operations["createTeamPolicy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/team-policies/{team}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                team: string;
+            };
+            cookie?: never;
+        };
+        /** Get one team policy */
+        get: operations["getTeamPolicy"];
+        put?: never;
+        post?: never;
+        /**
+         * Delete a team policy (audited as team_policy.delete)
+         * @description An absent policy means the team is unrestricted, so deleting always loosens: the request is parked for a second approver (202) and the policy keeps applying until it is approved.
+         */
+        delete: operations["deleteTeamPolicy"];
+        options?: never;
+        head?: never;
+        /**
+         * Partially update a team policy (audited as team_policy.update)
+         * @description Omitted fields are unchanged; a list field replaces the whole list. A tightening applies at once (200): filling an empty list, narrowing a list while keeping an entry, lowering a non-zero cap or quota, or setting 0 to a non-zero value. A loosening is parked for a second approver (202): emptying a non-empty list, adding an entry to a non-empty list, raising a cap or quota, or setting a non-zero cap or quota to 0. It fails at approval if the policy changed in between.
+         */
+        patch: operations["updateTeamPolicy"];
         trace?: never;
     };
     "/ssh/ca": {
@@ -297,6 +553,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/estate/takeover/bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Take up to 500 unmanaged certificates under management (W24-31, W27-12)
+         * @description All-or-nothing on request validity: an invalid renewal_path or a connector_id that names no connector fails the whole call with 400 and performs no mutation. Otherwise per-row results in request order; a failing row (unknown fingerprint, duplicate) mutates nothing and never stops later rows. Rows that must not be touched are skipped with a reason (already_managed, other_tenant, not_permitted). Audit-only like single takeover (D-127, no approval gate): one estate.takeover row per successful item plus an estate.takeover.bulk summary.
+         */
+        post: operations["estateTakeoverBulk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/estate/takeover/suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Owner suggestion per certificate for takeover (W27-12)
+         * @description Read-only. Per fingerprint (request order): the certificate's own ownership (existing_ownership, high), else the most common owner of visible certificates sharing its CommonName or a SAN (sibling_certificate, medium when 2 or more agree, else low), else none. Unknown or inaccessible fingerprints return source unavailable with empty owner fields. Audited as estate.takeover.suggest.
+         */
+        get: operations["estateTakeoverSuggestions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/estate/revert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Return a managed certificate to its pre-takeover state (W24-31)
+         * @description Changes only management_state, back to what it was before takeover: external for a certificate an inventory source synced (origin synced), unmanaged otherwise. Any recorded renewal method/connector remains as stale metadata. Audit-logged as estate.takeover.revert with {"from","to"} states.
+         */
+        post: operations["estateRevert"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/estate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Estate board report, origin x management_state (W24-36)
+         * @description Counts active certificates (same rule as the dashboard) by origin and management state, plus the PQC split and risk summary. format=pdf returns the board one-pager.
+         */
+        get: operations["getEstateReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/renewal/execute": {
         parameters: {
             query?: never;
@@ -308,6 +644,26 @@ export interface paths {
         put?: never;
         /** Hub-side renewal execution (W5-13) — generate key/CSR, renew, install over SSH */
         post: operations["executeRenewal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/renewal/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-queue a failed scheduled renewal now (W27-19)
+         * @description Requires certificate.renew. Resets the certificate's scheduled-attempt budget (failures recorded before this call stop counting, so a gave-up certificate gets a fresh renewalInstallMaxAttempts and attempt numbers restart at 1) and wakes the scheduler for an immediate scan. The certificate must have an execute_failure entry in the renewal failure queue. The retry backoff doubles from renewal_policy.retry_base_minutes (default 5) up to renewal_policy.retry_cap_hours (default 6).
+         */
+        post: operations["retryRenewalNow"];
         delete?: never;
         options?: never;
         head?: never;
@@ -344,7 +700,10 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Update a certificate's owner metadata */
+        /**
+         * Update a certificate's owner metadata
+         * @description Records `ownership_source=manual` (cleared when `owner_team` is emptied) and writes the source into the `certificate.ownership_update` audit row.
+         */
         patch: operations["updateCertificateOwnership"];
         trace?: never;
     };
@@ -376,6 +735,66 @@ export interface paths {
         put?: never;
         /** Bulk-import certificates (W11-02) — PEM bundle, base64 DER list, or CSV */
         post: operations["bulkImportCertificates"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ownership/cmdb-import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * One-shot CMDB ownership import — host/IP/CIDR/fingerprint rules to owner team (W22-25)
+         * @description Applies the rules once, in file order (first matching rule wins), to the certificates visible to the caller's tenant; rules are not stored, so certificates issued later are not auto-assigned. Matching is against the certificate CN and SAN entries only. Assigned certificates get `ownership_source=cmdb`. A certificate whose owner was set by a person (`manual`, or an owner with no recorded source) or by bulk import/agent is never overwritten; re-importing over earlier `cmdb` values is allowed. A `fingerprint` row naming a certificate the caller cannot see (or that does not exist) is rejected with the same reason, per row, and is not applied. Writes one `ownership.cmdb_import` audit row (none for `dry_run`). Requires a certificate-admin role.
+         */
+        post: operations["importOwnershipFromCMDB"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ownership/orphans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Deactivated users that still own certificates (W22-26)
+         * @description Lists users whose account is deactivated (SCIM or admin) and whose `owner_email` still appears on at least one non-revoked certificate. Counts include only certificates visible to the caller's tenant, so a tenant admin never learns about another tenant's inventory. An email shared with an active account is never reported. Requires a certificate-admin role.
+         */
+        get: operations["listOrphanedOwners"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ownership/reassign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move every certificate of a departed owner to a new owner (W22-26)
+         * @description Reassigns all non-revoked certificates visible to the caller whose owner is `from_email`, which must belong to a deactivated user (400 otherwise, including when every such certificate belongs to another tenant). Preserves each certificate's service name and records the assignment as `manual`. Writes one `certificate.ownership_update` audit row per certificate plus one `ownership.reassign` summary row. Requires a certificate-admin role.
+         */
+        post: operations["reassignOrphanedOwner"];
         delete?: never;
         options?: never;
         head?: never;
@@ -434,6 +853,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cas/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import an external self-signed root CA as a keyless trust anchor (dual control)
+         * @description D-122 dual control: the first call proposes (202 + action_id), a different human approves it in the pending-actions queue, and the proposer repeats the call with `approved_action_id` (201). The root is stored without a private key (key_storage_type external); issuing from it fails with 422 "no signing key available".
+         */
+        post: operations["importCA"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cas/{id}": {
         parameters: {
             query?: never;
@@ -445,12 +884,92 @@ export interface paths {
         get: operations["getCA"];
         put?: never;
         post?: never;
-        /** Delete a CA (must be revoked/expired first) */
+        /**
+         * Delete a CA (must be revoked/expired first), or remove an imported trust anchor (dual control)
+         * @description On the engine-backed provider this removes an imported keyless root under D-122 dual control: 202 + action_id on the first call, then repeat with `approved_action_id` once a different human approved. Removal is soft (status revoked); re-importing the same certificate reactivates it.
+         */
         delete: operations["deleteCA"];
         options?: never;
         head?: never;
         /** Update mutable CA fields (display_name, crl_distribution_points, ocsp_service_url) */
         patch: operations["updateCA"];
+        trace?: never;
+    };
+    "/cas/{id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke a CA (irreversible, always dual control)
+         * @description Admin only. Always returns 202 with `data.action_id`; nothing is revoked until a different human approves the action in `/pending-actions` (there is no env bypass). The reason is always `cACompromise`. An intermediate is added to its parent's revocation list; a root is status-only. The audit event `ca.revoke` records the blast radius (active certificates and descendant CAs). A revoked CA refuses issuance, as do its descendants.
+         */
+        post: operations["revokeCA"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cas/{id}/rotate-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-key a CA, optionally cross-signed (dual control)
+         * @description Admin only. Under D-122 dual control the first call returns 202 with `data.action_id`; after a different human approves it in `/pending-actions`, the proposer repeats the same request (same `mode` and `algorithm`) with `approved_action_id`. The grant is single-use and bound to mode and algorithm. `mode=cross-sign` re-keys and returns the bridge certificate (new identity, old signature) and the retired certificate; the hub verifies a probe leaf against both anchors before returning. Default and `mode=rekey` re-key without a bridge.
+         */
+        post: operations["rotateCAKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cas/{id}/csr": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the CSR of an issuing CA awaiting its signed certificate */
+        get: operations["getCACSR"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cas/{id}/certificate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload the offline-signed certificate for a pending issuing CA
+         * @description The certificate must certify exactly this CA's key, be signed by the CA's parent, be a currently valid CA certificate that does not outlive the parent, and respect the parent's path length. Anything else is 400 and the CA stays pending_certificate.
+         */
+        post: operations["completeCA"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/cas/{id}/suspend": {
@@ -540,8 +1059,28 @@ export interface paths {
         delete: operations["deleteTemplate"];
         options?: never;
         head?: never;
-        /** Patch mutable template fields (display_name, auto_enroll, active, allowed_algorithms) */
+        /** Patch mutable template fields (display_name, auto_enroll, active, allowed_algorithms, enrollment_permissions) */
         patch: operations["patchTemplate"];
+        trace?: never;
+    };
+    "/templates/{id}/revisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List a template's revisions with per-revision field diffs
+         * @description Revisions ascending, each with a snapshot and the changes against the previous revision (empty for the first). A template that predates history starts at its revision on first use: earlier revisions are unknowable. A clone restarts at revision 1.
+         */
+        get: operations["listTemplateRevisions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/templates/{id}/clone": {
@@ -568,10 +1107,86 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List approval requests (own requests, or all for admins) */
+        /**
+         * List approval requests (own requests plus those the caller's role may decide; all for admins)
+         * @description pki-admin sees every request in its tenant scope. Any other role sees the requests it raised and the requests on templates whose `approval_roles` name its role (the ones it can approve or reject). Tenant scoping applies on top of this.
+         */
         get: operations["listApprovals"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/delegation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The caller's own approval delegation, or null */
+        get: operations["getApprovalDelegation"];
+        /** Delegate approval rights to another approver for up to 30 days (replaces any existing delegation) */
+        put: operations["setApprovalDelegation"];
+        post?: never;
+        /** Clear the caller's delegation */
+        delete: operations["clearApprovalDelegation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/inbox": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Unified inbox of pending certificate approvals and pending actions (tenant-scoped, oldest first)
+         * @description Certificate approvals follow the same visibility as GET /approvals. Pending actions (key and CA dual control) are listed to pki-admin and pki-operator; any other role, including `approver`, sees only the ones it proposed.
+         */
+        get: operations["listApprovalInbox"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/inbox/{type}/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve an inbox item; delegates to the certificate-approval or pending-action approve handler, keeping all its refusals */
+        post: operations["approveInboxItem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/inbox/{type}/{id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject an inbox item; delegates to the source reject handler */
+        post: operations["rejectInboxItem"];
         delete?: never;
         options?: never;
         head?: never;
@@ -623,6 +1238,65 @@ export interface paths {
         put?: never;
         /** Reject a pending approval request */
         post: operations["rejectApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/exceptions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List active and pending accepted-risk exceptions (tenant-scoped) */
+        get: operations["listExceptions"];
+        put?: never;
+        /**
+         * Propose an accepted-risk exception (never takes effect without a second approver)
+         * @description Parks the proposal in the approval queue (so quorum, expiry and delegation apply). The exception row exists only once approved. Wildcard targets and an expiry beyond EXCEPTION_MAX_DAYS (default and maximum 365) are refused with 400.
+         */
+        post: operations["proposeException"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/exceptions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove an active exception; the finding counts again immediately */
+        delete: operations["deleteException"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/anomalies/remediations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List anomaly remediation proposals (pending, approved, rejected; tenant-scoped) */
+        get: operations["listAnomalyRemediations"];
+        put?: never;
+        /**
+         * Propose a remediation for an anomaly finding (never executes without a second approver)
+         * @description Parks the proposal in the approval queue. Nothing is suspended, disabled or revoked until a different approver approves it through /pending-actions/{id}/approve. suspend_ca and disable_template apply instance-wide; reactivate_ca and enable_template are the rollback and take the same path. revoke_batch takes up to 100 fingerprints the requester issued in the last hour.
+         */
+        post: operations["proposeAnomalyRemediation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -812,6 +1486,71 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/discovery/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Per-target discovery schedules with last and next run (W24-04)
+         * @description One row per scheduled discovery target: env network targets (KRYPTKEEPER_DISCOVERY_SCAN_TARGETS) and managed targets with a scheduled discovery mode. next_run is last_run plus the effective interval (now when never run, null when no interval applies) and is not advanced while a job for the target is running.
+         */
+        get: operations["listDiscoverySchedules"];
+        /**
+         * Set or clear a target's own scan interval (W24-04)
+         * @description The key travels in the body because CIDR keys contain "/". A null interval clears the override so the target follows KRYPTKEEPER_DISCOVERY_SCAN_INTERVAL again. The scheduler wakes at most once a minute, so an interval under a minute cannot fire more often.
+         */
+        put: operations["updateDiscoverySchedule"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/discovery/authorized-issuers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the CA groups the operator authorizes (W34-06)
+         * @description Tenant-scoped: a tenant sees its own rows; an unscoped administrator sees every tenant's.
+         */
+        get: operations["listAuthorizedIssuers"];
+        put?: never;
+        /**
+         * Authorize an issuer (W34-06)
+         * @description Declares an issuer as a CA group the operator accepts. Public roots are never authorized implicitly (D-205); this is the only way a certificate becomes authorized_external. Stored certificates are re-judged immediately from the leaf; the next scan re-judges from the served chain.
+         */
+        post: operations["createAuthorizedIssuer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/discovery/authorized-issuers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Stop authorizing an issuer (W34-06) */
+        delete: operations["deleteAuthorizedIssuer"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1111,6 +1850,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/notifications/team-routes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List owner-team notification routes */
+        get: operations["listNotificationTeamRoutes"];
+        put?: never;
+        /**
+         * Create an owner-team notification route
+         * @description Used by alert rules whose target is @owner_team. owner_team `*` is the global inbox, used when the certificate's own team has no route on the rule's channel.
+         */
+        post: operations["createNotificationTeamRoute"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notifications/team-routes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete an owner-team notification route */
+        delete: operations["deleteNotificationTeamRoute"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/reports/crypto-posture": {
         parameters: {
             query?: never;
@@ -1244,6 +2021,24 @@ export interface paths {
         get: operations["getComplianceEvidenceReport"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/compliance-attestations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Latest manual-control attestation per control */
+        get: operations["listComplianceAttestations"];
+        put?: never;
+        /** Record a named attestation for a manual compliance control (administrators only; audit action evidence.attest) */
+        post: operations["attestComplianceControl"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1513,6 +2308,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/reports/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List scheduled report deliveries (CSV/XLSX/PDF) */
+        get: operations["listReportSchedules"];
+        put?: never;
+        /**
+         * Create a scheduled report delivery
+         * @description Allowed report/format pairs are executive-summary with pdf, and inventory or findings with csv or xlsx. Delivery is retried 3 times, then the report.delivery_failed alert event is raised. Audited as report.schedule_create.
+         */
+        post: operations["createReportSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/schedules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete a scheduled report delivery
+         * @description Audited as report.schedule_delete.
+         */
+        delete: operations["deleteReportSchedule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/reports/evidence/send": {
         parameters: {
             query?: never;
@@ -1525,6 +2361,89 @@ export interface paths {
         /** Render and email a compliance evidence pack now */
         post: operations["sendEvidencePack"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/itsm/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List ITSM connections (admin role required, W32-10)
+         * @description Responses carry the credential reference only, never the credential.
+         */
+        get: operations["listItsmConnections"];
+        put?: never;
+        /**
+         * Connect a ticketing system (admin role required, W32-10)
+         * @description base_url must be https (http only for a loopback host). credential_ref names an entry in the encrypted outbound credential store; for ServiceNow its api_token payload is {"username","password"}, for Jira {"email","api_token"}.
+         */
+        post: operations["createItsmConnection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/itsm/connections/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** Read one ITSM connection (admin role required) */
+        get: operations["getItsmConnection"];
+        put?: never;
+        post?: never;
+        /** Remove an ITSM connection that has no ticket history (admin role required) */
+        delete: operations["deleteItsmConnection"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/itsm/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List ticket events and their queue state (admin role required, W32-10) */
+        get: operations["listItsmEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/itsm/principal-map": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List ITSM approver mappings of the caller's tenant (admin role required, W32-12) */
+        get: operations["listItsmPrincipalMap"];
+        put?: never;
+        /**
+         * Map an ITSM approver to a hub user (admin role required, W32-12)
+         * @description An approval granted on a linked ticket is applied through the normal approve route as the mapped user, so that user needs the approver capability and must not be the requester. Replaces an existing mapping of the same tenant.
+         */
+        post: operations["createItsmPrincipalMapping"];
+        /** Remove an ITSM approver mapping (admin role required, W32-12) */
+        delete: operations["deleteItsmPrincipalMapping"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1566,6 +2485,26 @@ export interface paths {
         post?: never;
         /** Delete an outbound credential (admin role required) */
         delete: operations["deleteCredential"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/credentials/{id}/privileged": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Mark or clear the privileged flag on an outbound credential (admin role required)
+         * @description Manual half of the W34-11 flag; the sudo preflight sets it automatically (sudo ALL, uid 0, broad cat/install globs). The flag gates nothing: it is shown on the credential, its targets and the access-review and executive reports, and every change is audited `credential.privileged.set` with the reason and source (auto|manual).
+         */
+        put: operations["setCredentialPrivileged"];
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1658,7 +2597,7 @@ export interface paths {
         };
         /**
          * Export the cryptographic bill of materials (CycloneDX 1.6 CBOM)
-         * @description Always-current CycloneDX 1.6 JSON built from the live inventory on every call: certificates, private-key metadata (never material), observed algorithms (ML-DSA parameter sets carry NIST quantum security levels), and discovered protocol endpoints (W6-05).
+         * @description Always-current CycloneDX 1.6 JSON built from the live inventory on every call: certificates, private-key metadata (never material), observed algorithms (ML-DSA parameter sets carry NIST quantum security levels), and discovered protocol endpoints (W6-05). Every certificate component carries kryptkeeper:public-key-algorithm, kryptkeeper:signature-algorithm, kryptkeeper:key-size-bits and kryptkeeper:pqc-readiness properties; the body is streamed.
          */
         get: operations["exportCBOM"];
         put?: never;
@@ -1775,6 +2714,114 @@ export interface paths {
         put?: never;
         /** Validate an autoenrollment GPO configuration (advisory, writes nothing) */
         post: operations["checkADGPOConfig"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/migration/sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the registered template importers */
+        get: operations["listMigrationSources"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/migration/dryrun": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Diff an export against existing templates (writes nothing) */
+        post: operations["dryRunMigration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/migration/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Propose creating or updating the templates a dry run would
+         * @description Nothing is written here. When at least one template would be created or updated the apply is queued for a second person (202, pending-actions); on approval the templates are created or updated under a batch id. Rerunning an applied export changes nothing (200, nothing_to_apply). Rolling back a batch disables the templates it created or updated; an update is not reverted to the old content.
+         */
+        post: operations["applyMigration"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/migration/batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List applied migration batches */
+        get: operations["listMigrationBatches"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/migration/{batch}/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Per-object report of a batch (mapped, partial and unmapped fields) */
+        get: operations["getMigrationReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/migration/{batch}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disable (never delete) the templates a batch created
+         * @description Templates with a pending certificate approval stay active and are reported as kept. A batch with kept items is still marked rolled back; rolling back twice is a no-op (200, already_rolled_back, no audit row). A failure part-way leaves the batch applied, so a retry resumes.
+         */
+        post: operations["rollbackMigration"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1951,6 +2998,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/keys/{id}/policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a key's lifecycle policy
+         * @description Admin only. 404 when the key has no policy.
+         */
+        get: operations["getKeyPolicy"];
+        /**
+         * Set a key's owner, ACL and max age
+         * @description Admin only. Once a key has a policy, rotate, delete and export are limited to its owner and ACL principals; policy edits stay admin-only so a lost owner cannot brick the key. `max_age_days` of 0 disables scheduled rotation. The sweep proposes (never directly performs) the re-key of an overdue CA-backing key, through the approval queue.
+         */
+        put: operations["setKeyPolicy"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/keys/{id}/compromise": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start the key-compromise flow (always dual control)
+         * @description Admin on the key's ACL, and the key must have a policy (409 otherwise). Always returns 202 with `data.action_id`; nothing runs until a different human approves it. On approval the hub rotates the key (a failed rotation aborts with no other effect), stamps it compromised, revokes the certificates of the CA it backed with reason keyCompromise, then flags and re-issues them. The approved action's result report lists `inventory_only`: revoked certificates that were only marked in the hub inventory (no issuing CA here), which still need revoking at the real issuer. `KRYPTKEEPER_KEY_DUAL_CONTROL=false` does not bypass this.
+         */
+        post: operations["markKeyCompromised"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/keys/{id}/cancel-deletion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel a scheduled cloud-KMS key deletion (admin role required)
+         * @description Restores a cloud-KMS key that is inside its provider pending-deletion window (AWS 7 days, GCP 24 hours, Azure soft-delete 90 days) to Enabled. With dual control on (the default) this files a proposal that a different administrator approves at POST /pending-actions/{id}/approve; the cancellation runs on approval. Audited as key.destroy_cancel.
+         */
+        post: operations["cancelKeyDeletion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/keys/{id}/export": {
         parameters: {
             query?: never;
@@ -1985,6 +3096,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/audit/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream every matching audit row as CSV or JSON
+         * @description Pages the audit log server-side in fixed chunks of 1000 and streams each chunk, so memory stays bounded however large the log is. Rows are oldest-first. Filters match GET /audit; a tenant principal receives only its own tenant's rows (an unscoped super-admin gets all). The export itself is recorded as an audit.export event carrying the filter and row count, written after the stream so the file never contains its own row. CSV fields starting with = + - @ tab or CR are prefixed with a quote to defuse formula injection. An error after the first byte truncates the body (status cannot change) and is recorded as a failed audit.export event.
+         */
+        get: operations["exportAuditEntries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/audit/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Propose archiving and deleting audit rows older than the retention window
+         * @description Files a dual-control pending action (action_type audit_archive); it changes nothing until a second, distinct pki-admin approves it via POST /pending-actions/{id}/approve. On approval the hub writes every audit row older than `before` to a signed, hash-chained JSONL archive under AUDIT_ARCHIVE_DIR (default KRYPTKEEPER_DATA_DIR/audit-archive, mode 0600), records the archive's Merkle checkpoint in the audit_archives table, and only then deletes those rows in one transaction in which the append-only trigger is relaxed for that transaction alone. The job is recorded as an audit.archive event. The cutoff may not reach into the retention window (AUDIT_RETENTION_DAYS, default 2555); `before` defaults to the edge of the window. Instance-wide: with multi-tenancy on, only an unscoped super-admin may propose or approve. Transparency log: the live Merkle tree is derived from the remaining rows, so it restarts after an archive; checkpoints published before the archive cannot be proven consistent with later ones, and the signed archive checkpoint anchors the archived prefix.
+         */
+        post: operations["proposeAuditArchive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/users": {
         parameters: {
             query?: never;
@@ -1995,6 +3146,24 @@ export interface paths {
         /** List users (requires user.manage) */
         get: operations["listUsers"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/me/prefs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The caller's own UI preferences (onboarding dismissal) */
+        get: operations["getMyPrefs"];
+        /** Set the caller's own UI preferences (audited as user.prefs.set) */
+        put: operations["setMyPrefs"];
         post?: never;
         delete?: never;
         options?: never;
@@ -2125,6 +3294,26 @@ export interface paths {
         };
         /** Report the caller's resolved role/scopes/permissions */
         get: operations["authzCheck"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/role-map/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview which role a set of IdP groups would receive
+         * @description W22-19. Applies APP_AUTH_ROLE_MAP_JSON (first matching entry, in order) to the supplied group values and reports the role, the APP_AUTH_UNMAPPED_ROLE policy and whether an SSO login with those groups would succeed. Requires role-management permission (user.manage). Reads instance-global auth config only.
+         */
+        get: operations["previewRoleMap"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2624,7 +3813,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List built-in and custom roles */
+        /** List built-in roles plus the caller tenant's custom roles and global custom roles */
         get: operations["listRoles"];
         put?: never;
         /** Create a custom role from the closed permission vocabulary */
@@ -2756,6 +3945,86 @@ export interface paths {
         post?: never;
         /** Withdraw an unused SCEP challenge */
         delete: operations["deleteSCEPChallenge"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/acme/eab-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List ACME EAB credentials without key material (pki-admin) */
+        get: operations["listACMEEABKeys"];
+        put?: never;
+        /**
+         * Mint an ACME External Account Binding credential (pki-admin; W26-01)
+         * @description hmac_key (base64url, unpadded; what certbot --eab-hmac-key and lego --hmac take) appears only in this response. provisioner and template_id are recorded as metadata; a key bound to a provisioner only registers accounts on that provisioner's directory (W26-02).
+         */
+        post: operations["createACMEEABKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/acme/eab-keys/{kid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke an ACME EAB credential; its next newAccount fails (pki-admin) */
+        delete: operations["revokeACMEEABKey"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/acme/provisioners": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List ACME provisioners (pki-admin; W26-02) */
+        get: operations["listACMEProvisioners"];
+        put?: never;
+        /**
+         * Create an ACME provisioner (pki-admin; W26-02)
+         * @description Serves /acme/{name}/directory bound to one CA and optional template. allow_names entries are exact names or "*.suffix" (any depth below the suffix); at least one is required. challenges is a subset of http-01 and dns-01 (empty means both); wildcard names never get http-01.
+         */
+        post: operations["createACMEProvisioner"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/acme/provisioners/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        /** Get an ACME provisioner (pki-admin) */
+        get: operations["getACMEProvisioner"];
+        /** Replace an ACME provisioner's settings (pki-admin) */
+        put: operations["updateACMEProvisioner"];
+        post?: never;
+        /** Delete an ACME provisioner; its directory 404s (pki-admin) */
+        delete: operations["deleteACMEProvisioner"];
         options?: never;
         head?: never;
         patch?: never;
@@ -2927,7 +4196,7 @@ export interface paths {
         put?: never;
         /**
          * Cluster-atomic renewal - one certificate, canary then fleet
-         * @description Multi-node clusters where several nodes serve the SAME certificate are left manual by incumbents: renew node-by-node and the cluster serves a split identity until the last node lands. This performs EXACTLY ONE renewal and pushes that identical material to every node, canary first. Every node's tenant visibility is authorized BEFORE any node is touched, so an unauthorized target aborts the rollout untouched rather than splitting the cluster halfway. A node whose verify fails is reverted by the pusher's own restore; a node that already SUCCEEDED cannot be auto-reverted (that would require the predecessor's private key, which is deliberately not retained) and is reported as rollback_failed so the operator knows exactly which nodes are on the new certificate.
+         * @description Multi-node clusters where several nodes serve the SAME certificate are left manual by incumbents: renew node-by-node and the cluster serves a split identity until the last node lands. This performs EXACTLY ONE renewal and pushes that identical material to every node, canary first. Every node's tenant visibility is authorized BEFORE any node is touched, so an unauthorized target aborts the rollout untouched rather than splitting the cluster halfway. When every node is an ssh-mode nginx, apache or haproxy host the rollout is STAGED (mode "staged"): the new certificate is written beside the live files on every node first, then flipped canary-first with reload and verify. Any failure returns every node to the old certificate (flipped nodes restore the copy kept on the host; staged nodes discard), so the cluster is all-new or all-old; the host-side predecessor copy is deleted once the whole group has flipped. Other groups run "sequential": a node whose verify fails is reverted by the pusher's own restore, but a node that already SUCCEEDED cannot be auto-reverted (that would require the predecessor's private key, which is deliberately not retained) and is reported as rollback_failed so the operator knows exactly which nodes are on the new certificate. The maintenance window is checked before anything runs: an out-of-window request issues no certificate and dials no node. Each node's outcome is audited as its own certificate.renew_rollout row.
          */
         post: operations["runCoordinatedRollout"];
         delete?: never;
@@ -2965,7 +4234,7 @@ export interface paths {
         };
         /**
          * What breaks if I revoke this, retire that CA, or disallow an algorithm
-         * @description Pre-flight simulation over the live inventory. Edges run dependent->dependency, so impact propagates transitively: retiring a CA reaches its certificates and then the services those certificates serve. Algorithm targets are named algorithm+size ("RSA-2048") because deprecation deadlines are written against a key size, not a bare family.
+         * @description Pre-flight simulation over the live inventory. Edges run dependent->dependency, so impact propagates transitively: retiring a CA reaches its certificates and then the services those certificates serve. Algorithm targets are named algorithm+size ("RSA-2048") because deprecation deadlines are written against a key size, not a bare family. Child CAs depend on their parent, so retiring a CA also reaches its sub-CAs. Services are derived from certificate SANs and common names and attach to every certificate naming them, so a service served by two certificates is reported when either breaks (over-reported, never under-reported). `edge_coverage` discloses how many certificates carry dependency edges. Unknown targets return 404; a target owned by another tenant returns 403.
          */
         get: operations["simulateBlastRadius"];
         put?: never;
@@ -2985,7 +4254,7 @@ export interface paths {
         };
         /**
          * Signed Merkle checkpoint over the audit log (the auditor's trust anchor)
-         * @description Returns the Ed25519-signed tree head. Requires AUDIT_TRANSPARENCY_SIGNING_SEED; when unset the endpoint refuses with 503 rather than minting a checkpoint under an ephemeral key, which would be unverifiable after a restart and would look like tamper evidence while providing none.
+         * @description Returns the Ed25519-signed tree head. When AUDIT_TRANSPARENCY_SIGNING_SEED is unset the hub generates a seed once and persists it at KRYPTKEEPER_DATA_DIR/audit-transparency.seed (mode 0600), logging a warning; if that file cannot be written the endpoint refuses with 503 rather than signing under an ephemeral key, which would be unverifiable after a restart. Auditors must pin the public key out of band (the public_key field here is informational; a forger could ship their own) and verify offline with kryptkeeper-audit-verify.
          */
         get: operations["getAuditTransparencyCheckpoint"];
         put?: never;
@@ -3041,12 +4310,110 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Unified cloud KMS key inventory across AWS, Azure and GCP
-         * @description The crypto-agility denominator for KEYS, completing the certificate-side inventory. Read-only: a provider that cannot be reached degrades the result and is named in `errors` rather than failing the request, so one dead cloud never hides the others. Requires `key.manage` or `report.read`.
+         * Unified key inventory across cloud KMS, SSH host keys and SSH user keys
+         * @description Each provider runs concurrently under a 3 s timeout. SSH host keys come from discovery (algorithms only); SSH user keys from the in-memory SSH key inventory. The crypto-agility denominator for KEYS, completing the certificate-side inventory. Read-only: a provider that cannot be reached degrades the result and is named in `errors` rather than failing the request, so one dead cloud never hides the others. Requires `key.manage` or `report.read`.
          */
         get: operations["getCloudKeyInventory"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/codesign/issue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange a CI OIDC token and a CSR for a short-lived code-signing certificate
+         * @description The OIDC token is the credential (no hub Bearer). It must come from an issuer with an approved trust rule and match that rule's audience, repository pattern and ref pattern, and its jti is single-use. The certificate carries EKU codeSigning, is valid for at most 15 minutes (KRYPTKEEPER_CODESIGN_TTL, clamped to 30s-14m) and is bound to the repository and ref through a URI SAN of the form `<base>/<repo>@<ref>` (base is https://github.com for github, the issuer for gitlab). The CSR key must be ECDSA P-256/P-384/P-521 or RSA >= 3072; the hub never generates the subject key. The certificate is recorded in the inventory, so revoke and policy-check see it. Every outcome is audited as codesign.issue; refusal reasons are written to the audit trail only.
+         */
+        post: operations["issueCodesignCertificate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/codesign/oidc-trust-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List CI OIDC trust rules visible to the caller's tenant */
+        get: operations["listCodesignTrustRules"];
+        put?: never;
+        /**
+         * Propose a CI OIDC trust rule (dual control)
+         * @description Queues the rule in the approval queue; it takes effect only when a different approver approves it. The CA must be visible to the caller's tenant. Repo patterns must name an owner (contain `/`, not start with `*`), ref patterns must start with `refs/`, `**` is not supported.
+         */
+        post: operations["proposeCodesignTrustRule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/codesign/oidc-trust-rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Remove a CI OIDC trust rule (single control; removing trust is the safe direction) */
+        delete: operations["deleteCodesignTrustRule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tsa": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * RFC 3161 time-stamp authority
+         * @description Body is a DER TimeStampReq (`Content-Type: application/timestamp-query`, up to 64 KiB, SHA-256/384/512 digests); the reply is a DER TimeStampResp (`application/timestamp-reply`). A rejected request (for example an unsupported hash) is still HTTP 200: clients read the PKIStatus. Needs a hub principal (Bearer) unless the operator set KRYPTKEEPER_TSA_ALLOW_ANONYMOUS=true, because jarsigner and openssl ts cannot send a Bearer token. Every request is audited as codesign.timestamp with the digest (never the request body). The TSA key and certificate are operator-provisioned files (KRYPTKEEPER_TSA_CERT_FILE / KRYPTKEEPER_TSA_KEY_FILE).
+         */
+        post: operations["timestampRFC3161"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/codesign/requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request a code-signing certificate with an HSM-generated key
+         * @description The hub generates the key pair in the HSM/KMS backend (never a software store) and builds the CSR there, then queues the request for a second user's approval. A codeSigning-EKU template always requires approval and the approver must differ from the requester. Refusals (including `protected_store_required`) audit `codesign.request.deny`.
+         */
+        post: operations["createCodeSigningRequest"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3097,10 +4464,79 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Renewal scheduler status (last scan, next scan, counts) */
+        /**
+         * Renewal scheduler status (last scan, next scan, counts)
+         * @description threshold_days is the global default window. max_threshold_days (W27-04) is the widest window in force on the last scan: the default or the largest target or group threshold.
+         */
         get: operations["getRenewalSchedulerStatus"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ct/findings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Certificate Transparency findings (tenant-scoped, audited as ct.finding.list)
+         * @description Certificates seen in CT for an owned domain whose serial is absent from the inventory (W24-19). Sorted created_at desc, id.
+         */
+        get: operations["listCTFindings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ct/findings/{id}/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Finding id (source:entry-id, e.g. crtsh:12345) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Acknowledge a CT finding (idempotent; audited as ct.finding.acknowledge)
+         * @description Acknowledged findings are never re-notified by a later scan. Revokes nothing.
+         */
+        post: operations["acknowledgeCTFinding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ct/findings/{id}/known-issuer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Finding id (source:entry-id, e.g. crtsh:12345) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark a CT finding as issued by a known issuer (idempotent; audited as ct.finding.known_issuer)
+         * @description Resolves this one finding only; it does not allow-list the issuer for future findings. Revokes nothing.
+         */
+        post: operations["markCTFindingKnownIssuer"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3119,6 +4555,26 @@ export interface paths {
         put?: never;
         /** Create a managed target, including its renewal policy (method + threshold) */
         post: operations["createManagedTarget"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/targets/hostkey": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Observe an SSH host's host key for operator confirmation (W24-09)
+         * @description Dials host:port without authenticating (no credential is used) through the egress policy and returns the key the host presents. The operator confirms the fingerprint and submits ssh_host_key on target creation.
+         */
+        post: operations["probeTargetHostKey"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3146,6 +4602,91 @@ export interface paths {
         patch: operations["updateManagedTarget"];
         trace?: never;
     };
+    "/targets/privilege-bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Privilege bundle from an install profile, before the target exists (setup wizard)
+         * @description Same payload as the per-target route, built from the server_type, cert_path and key_path query parameters.
+         */
+        get: operations["getPrivilegeBundleForProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/targets/{id}/privilege-bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /**
+         * Sudoers drop-in, helper script with sha256, and customer checklist for a target
+         * @description Requires discovery or certificate.renew permission on the target's tenant. Audited as target.privilege_bundle.read. The helper text is byte-identical to the one the hub verifies by sha256 before first use.
+         */
+        get: operations["getTargetPrivilegeBundle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/targets/{id}/unblock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Clear a rollback block after checking the host (discovery.manage or certificate.renew)
+         * @description A failed rollback blocks the target so the scheduler stops pushing to a host in an unknown state. An operator who has checked the host clears it here. A privilege block is not cleared by this route: it follows the credential and the latest scan.
+         */
+        post: operations["unblockTarget"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/targets/{id}/preflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** The last stored privilege preflight report for a target */
+        get: operations["getTargetPreflight"];
+        put?: never;
+        /**
+         * Test an ssh target's credential and privilege (per-capability rows with fixes)
+         * @description Dials with the pinned host key (8 s dial cap), authenticates, and runs the privilege preflight for role scan and, when auto_renew is set, role install. Needs discovery or certificate.renew permission on the target's tenant. Stores the secret-free report on the target and audits target.privilege.preflight. A failed dial is reported as a failing ssh_auth row, not an error status.
+         */
+        post: operations["preflightTarget"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/targets/{id}/endpoints": {
         parameters: {
             query?: never;
@@ -3157,6 +4698,109 @@ export interface paths {
         };
         /** Resolve a managed target's declared host against scanned/agent-reported endpoints */
         get: operations["getManagedTargetEndpoints"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/targets/{id}/bindings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** List the certificates bound to a managed target for auto-renew (W27-02) */
+        get: operations["listTargetBindings"];
+        put?: never;
+        /**
+         * Bind a certificate to a managed target for auto-renew (W27-02)
+         * @description Authorizes the renewal scheduler to renew this certificate onto this target and push its private key there. Needs certificate.renew on top of discovery.manage, and the target's tenant must be able to see the certificate's CA. Audited as target.update ("binding.create cert=<fp>").
+         */
+        post: operations["createTargetBinding"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/targets/{id}/bindings/{fingerprint}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                fingerprint: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Unbind a certificate from a managed target (W27-02)
+         * @description Stops auto-renewal of the certificate onto the target. Audited as target.update ("binding.delete cert=<fp>").
+         */
+        delete: operations["deleteTargetBinding"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/target-groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List target groups and their renewal thresholds (tenant-scoped, W27-04) */
+        get: operations["listTargetGroups"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/target-groups/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Create or replace a target group (pki-admin, audited as target.update, W27-04)
+         * @description Sets the group's renewal threshold and replaces its membership. The scheduler re-reads groups every tick, so a change applies on the next scan with no restart. A target already in another group is moved. Members must belong to the caller's tenant.
+         */
+        put: operations["putTargetGroup"];
+        post?: never;
+        /** Delete a target group (pki-admin, audited as target.update, W27-04) */
+        delete: operations["deleteTargetGroup"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/target-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Effective renewal threshold per target, with its source (W27-04) */
+        get: operations["getTargetPolicy"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3208,9 +4852,56 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Register a satellite agent (no auth required) */
+        /**
+         * Register a satellite agent (enrollment evidence required)
+         * @description Enrollment is closed by default (W5-07, W33-24). Present exactly one kind of evidence: a single-use, 24h enrollment token minted by an admin (`enrollment_token` or `X-Enrollment-Token`; wins if both are sent), or a configured enrollment secret (`enrollment_secret` or `X-Enrollment-Secret`). The legacy open mode is opt-in via `KRYPTKEEPER_AGENT_OPEN_REGISTRATION=true`. No evidence answers 401; invalid, expired, used or revoked evidence answers a generic 403. Audited as `agent.register` (the detail carries the token id, never the token). Rate limited per client IP (429).
+         */
         post: operations["registerAgent"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/enrollment-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List agent enrollment tokens (admin only; never includes the secret)
+         * @description Tenant-scoped (W33-24): a tenant admin sees only its own tenant's tokens. redeemed_agent_id names the agent a redeemed token enrolled.
+         */
+        get: operations["listAgentEnrollmentTokens"];
+        put?: never;
+        /**
+         * Mint a single-use agent enrollment token (admin only)
+         * @description W29-06: returns a hashed-at-rest, single-use token (default 24h, max 7d) that POST /agent/register redeems via the enrollment_token body field or X-Enrollment-Token header. The secret appears only in this 201 response (Cache-Control: no-store). Audited as agent.token_mint. W33-24: the token belongs to the caller's tenant.
+         */
+        post: operations["mintAgentEnrollmentToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/enrollment-tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke an unredeemed enrollment token (admin only)
+         * @description Audited as agent.token_revoke.
+         */
+        delete: operations["revokeAgentEnrollmentToken"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3284,6 +4975,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agents/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove an agent and revoke its token (admin only)
+         * @description W24-13: deletes the agent and its inventory, endpoints, tasks and results. The agent token lives in the agent row, so the agent's next call is rejected with 401. Audited as agent.remove.
+         */
+        delete: operations["removeAgent"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agents/{id}/tasks": {
         parameters: {
             query?: never;
@@ -3304,10 +5015,644 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/access-review/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Access review report - principals, roles, keys, last use, dormant accounts, role changes
+         * @description Read-only. Joins users, API keys and the audit trail. Needs the audit.read permission (admin or auditor). With multi-tenancy on, a tenant-scoped caller sees only their own tenant's principals and role changes; an unscoped super-admin sees every tenant.
+         */
+        get: operations["getAccessReviewReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/access-review/campaigns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List access recertification campaigns visible to the caller
+         * @description Needs audit.read. A tenant-scoped caller sees only their tenant's campaigns.
+         */
+        get: operations["listAccessReviewCampaigns"];
+        put?: never;
+        /**
+         * Open a campaign, snapshotting the access review report (admin)
+         * @description Freezes the current access review report (scoped to the caller's tenant) as the campaign's entries. An unscoped super-admin's campaign is instance-wide (tenant "*").
+         */
+        post: operations["openAccessReviewCampaign"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/access-review/campaigns/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One campaign with each entry's decision */
+        get: operations["getAccessReviewCampaign"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/access-review/campaigns/{id}/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record keep / revoke / modify for one entry (admin)
+         * @description Revoke and modify execute the same changes as DELETE /api-keys/{kid} and PATCH /users/{id} (and are audited under those action names). Role and source come from the stored snapshot. SCIM-managed users are read-only here (keep only). A revoke of an approver-capable user is held (202) until a different human, never the bootstrap token, repeats it; the held decision counts as undecided at close.
+         */
+        post: operations["decideAccessReviewEntry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/access-review/campaigns/{id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Close a campaign and record the export hash (admin)
+         * @description Refuses (409) while entries are undecided unless allow_undecided is set; held revokes count as undecided. Writes access_review.close with the SHA-256 of the CSV export.
+         */
+        post: operations["closeAccessReviewCampaign"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/access-review/campaigns/{id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Deterministic CSV export of a campaign
+         * @description Byte-identical to the content hashed at close. CSV only; PDF export (UC-F04) is not available yet.
+         */
+        get: operations["exportAccessReviewCampaign"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/breakglass/activations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Request a break-glass window (first holder)
+         * @description Caller must be an interactive session of an active user holding the custom role `break-glass` (an administrator creates it once, with the benign permission certificate.read, because the roles API needs at least one permission). The bootstrap token and API keys are refused. Only one pending or active activation exists at a time. A pending request lapses after 15 minutes.
+         */
+        post: operations["requestBreakGlassActivation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/breakglass/activations/{id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm a pending request (a different holder); opens a 4 h window */
+        post: operations["confirmBreakGlassActivation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/breakglass/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether a break-glass window is open
+         * @description Holders and administrators. With multi-tenancy on, administrators must be unscoped super-admins.
+         */
+        get: operations["getBreakGlassStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/breakglass/reviews": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** After-action review tasks opened by break-glass use */
+        get: operations["listBreakGlassReviews"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/breakglass/reviews/{id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Complete an after-action review (an administrator who was not involved)
+         * @description The reviewer must be a pki-admin (not the bootstrap token) who is neither a holder of the reviewed activation nor an actor of the reviewed use. Audited as breakglass.review.
+         */
+        post: operations["completeBreakGlassReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/breakglass/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Local login for the flagged break-glass account while the IdP is unavailable
+         * @description Only answers when APP_AUTH_BREAKGLASS_EMAIL names the configured local login user (otherwise 503). Never contacts the IdP. Every successful login is audited as auth.breakglass_login, raises the breakglass.used alert and opens or extends a 24 h review task (scope local-login). Rate limited separately from /auth/login (5 per minute per client).
+         */
+        post: operations["breakGlassLogin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/pending-actions/{id}/override": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Execute a pending action whose approval quorum cannot be met (break-glass)
+         * @description Requires a live two-holder break-glass window and a caller who is one of its two holders (an interactive session; the bootstrap token and API keys are refused). Proposer != approver and tenant scope still apply: a holder cannot override their own proposal or an action outside their tenant (404). Refused with 409 while enough eligible approvers remain for the normal flow. The use is audited as approval.override naming both holders, raises breakglass.used and opens a 24 h review task.
+         */
+        post: operations["overridePendingAction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/est/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List EST HTTP Basic users (pki-admin; W26-07)
+         * @description Users stored through this API. Never returns a hash or password. Users defined in KRYPTKEEPER_EST_USERS_FILE are not listed; the users file wins on a name clash, and a stored user that a file user shadows reports shadowed_by_file.
+         */
+        get: operations["listESTUsers"];
+        put?: never;
+        /**
+         * Create an EST Basic user with a generated password (pki-admin)
+         * @description The server generates the password (24 characters) and returns it only in this response (Cache-Control no-store); admin-chosen passwords are not accepted. Refused with 409 when the name is already stored or is defined in the users file (the users file wins on a name clash).
+         */
+        post: operations["createESTUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/est/users/{username}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        /** Get one EST Basic user (pki-admin) */
+        get: operations["getESTUser"];
+        put?: never;
+        post?: never;
+        /** Delete an EST Basic user (pki-admin) */
+        delete: operations["deleteESTUser"];
+        options?: never;
+        head?: never;
+        /** Disable, enable or re-suffix an EST Basic user (pki-admin) */
+        patch: operations["updateESTUser"];
+        trace?: never;
+    };
+    "/est/users/{username}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replace an EST Basic user's password (pki-admin)
+         * @description The new password is returned once; the old one stops working immediately.
+         */
+        post: operations["rotateESTUserPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/est/labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List EST labels (pki-admin; W26-06)
+         * @description A label publishes a named EST endpoint, /.well-known/est/{label}/, bound to one certificate template. The bare /.well-known/est/ routes remain the default label. Allow EST on the bound template by listing the role protocol:est in its enrollment_permissions.enroll.
+         */
+        get: operations["listESTLabels"];
+        put?: never;
+        /** Create an EST label bound to a template (pki-admin) */
+        post: operations["createESTLabel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/est/labels/{label}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                label: string;
+            };
+            cookie?: never;
+        };
+        /** Get one EST label (pki-admin) */
+        get: operations["getESTLabel"];
+        /** Rebind an EST label to another template (pki-admin) */
+        put: operations["updateESTLabel"];
+        post?: never;
+        /** Delete an EST label (pki-admin) */
+        delete: operations["deleteESTLabel"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cmp/credentials": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List CMP credentials without secret material (pki-admin) */
+        get: operations["listCMPCredentials"];
+        put?: never;
+        /**
+         * Mint a CMP PBM shared secret or register a trust anchor (pki-admin; W26-09)
+         * @description kind "pbm" returns reference (the senderKID: openssl cmp -ref) and secret (openssl cmp -secret pass:); the secret appears only in this response. kind "trust_anchor" stores one CERTIFICATE; it is listed and revocable but NOT yet used to verify messages (enforced is false). allowed_dns_suffixes, when set, replaces the server-wide suffix binding for clients using this secret.
+         */
+        post: operations["createCMPCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cmp/credentials/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke a CMP credential (pki-admin)
+         * @description A message protected by a revoked secret is answered badMessageCheck, the same as a wrong secret. Immediate on the node that handled this call, within 30 seconds on other nodes.
+         */
+        delete: operations["revokeCMPCredential"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cmp/credentials/{id}/rotate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replace a PBM secret, keeping its reference (pki-admin)
+         * @description The new secret appears only in this response; the old one stops working (same 30 second note as revoke).
+         */
+        post: operations["rotateCMPCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/itsm/connections/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check an ITSM connection with a read-only lookup (admin role required, W32-25)
+         * @description Resolves the connection's credential and runs one read-only ticket lookup. ok=false carries a short generic detail; the upstream response and the credential are never returned. Every outcome is audited.
+         */
+        post: operations["testItsmConnection"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chatops/slack/interactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Receive a Slack approve/reject button press (Slack signature auth, W32-21)
+         * @description Unauthenticated by Bearer token: the caller is authenticated by Slack's request signature. Requests must carry X-Slack-Request-Timestamp and X-Slack-Signature (v0 HMAC-SHA256 of the raw body, keyed by SLACK_SIGNING_SECRET); timestamps outside a 5-minute window and replayed signatures are refused with 401. The Slack user is mapped to a Kryptkeeper user via the identity map, and the decision is applied through the normal approve/reject route as that user, so role, proposer-is-not-approver, tenant and quorum rules all apply. Every outcome is audited.
+         */
+        post: operations["slackChatopsInteraction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chatops/teams/activities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Receive a Teams Adaptive Card approve/reject action (Bot Framework JWT auth, W32-23)
+         * @description Unauthenticated by Bearer token: the Authorization header carries the Bot Framework JWT, validated against the public Bot Framework key set, the TEAMS_APP_ID audience and the activity's serviceUrl. Activities older than 5 minutes and replayed activity ids are refused with 401. Non-message activities are acknowledged with status ignored. The AAD user is mapped through the identity map and the decision is applied through the normal approve/reject route as that user. Every outcome is audited.
+         */
+        post: operations["teamsChatopsActivity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chatops/identity-map": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List chat identity mappings of the caller's tenant (admin role required, W32-21) */
+        get: operations["listChatopsIdentityMap"];
+        /**
+         * Map a Slack or Teams user to a Kryptkeeper user (admin role required, W32-21)
+         * @description Creates or replaces the mapping. kryptkeeper_user must be an existing user in the caller's tenant. A mapping that belongs to another tenant is refused. Every outcome is audited.
+         */
+        put: operations["setChatopsIdentityMapping"];
+        post?: never;
+        /** Remove a chat identity mapping (admin role required, W32-21) */
+        delete: operations["deleteChatopsIdentityMapping"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        PrivilegePreflight: {
+            /** Format: date-time */
+            checked_at: string;
+            /** @enum {string} */
+            mode: "none" | "nopasswd" | "password" | "helper";
+            roles?: ("scan" | "install")[];
+            ok: boolean;
+            privileged_all: boolean;
+            rows: {
+                /** @description ssh_auth, sudo_present, requiretty, nopasswd, password, helper_present, helper_sha, helper_sudo, command:<name>, verb:<name> */
+                capability: string;
+                /** @enum {string} */
+                status: "ok" | "fail" | "skipped";
+                detail?: string;
+                fix?: string;
+            }[];
+        };
+        PrivilegeBundle: {
+            /** @enum {string} */
+            mode: "helper" | "nopasswd" | "password";
+            user: string;
+            sudoers: string;
+            /** @description POSIX sh helper source (helper mode only) */
+            helper?: string;
+            helper_sha256?: string;
+            helper_path?: string;
+            checklist: string[];
+            warnings: string[];
+        };
+        /** @description A named EST endpoint bound to one template (W26-06). */
+        ESTLabel: {
+            label?: string;
+            template_id?: string;
+            description?: string;
+            created_by?: string;
+            /** Format: date-time */
+            created_at?: string;
+            /** Format: date-time */
+            updated_at?: string;
+            /** @description <KRYPTKEEPER_BASE_URL>/.well-known/est/<label>/ */
+            url?: string;
+        };
+        ESTUser: {
+            username?: string;
+            allowed_dns_suffixes?: string[];
+            disabled?: boolean;
+            created_by?: string;
+            /** Format: date-time */
+            created_at?: string;
+            /** Format: date-time */
+            password_rotated_at?: string | null;
+            /** @description A users-file user of the same name wins, so this stored user is never consulted */
+            shadowed_by_file?: boolean;
+        };
+        ESTUserSecret: {
+            username?: string;
+            /** @description Shown once; never stored or returned again */
+            password?: string;
+            allowed_dns_suffixes?: string[];
+            /** Format: date-time */
+            created_at?: string;
+        };
+        EstateReport: {
+            generated_at: string;
+            org: string;
+            total: number;
+            by_state: {
+                [key: string]: number;
+            };
+            by_origin: {
+                [key: string]: number;
+            };
+            /** @description Always 12 cells (4 origins x 3 management states). */
+            matrix: {
+                /** @enum {string} */
+                origin: "internal" | "imported" | "discovered" | "synced";
+                /** @enum {string} */
+                management_state: "managed" | "external" | "unmanaged";
+                count: number;
+            }[];
+            pqc: {
+                quantum_safe?: number;
+                quantum_safe_leaf_only?: number;
+                migration_ready?: number;
+                vulnerable?: number;
+                not_applicable?: number;
+                pqc_score_percent?: number;
+                quantum_safe_percent?: number;
+            };
+            risk: {
+                critical?: number;
+                high?: number;
+                medium?: number;
+                low?: number;
+            };
+        };
+        KeyPolicy: {
+            key_id?: string;
+            owner?: string;
+            acl?: string[];
+            max_age_days?: number;
+            /** Format: date-time */
+            rotated_at?: string;
+            /** Format: date-time */
+            compromised_at?: string | null;
+        };
+        Ceremony: {
+            id: string;
+            ca_id: string;
+            ca_name?: string;
+            common_name?: string;
+            algorithm?: string;
+            validity_days?: number;
+            initiator?: string;
+            approvers: string[];
+            quorum: number;
+            approvals: string[];
+            /** @enum {string} */
+            status: "pending" | "completed" | "aborted" | "expired";
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * Format: date-time
+             * @description created_at + ceremony TTL (default 72h); derived, not stored
+             */
+            expires_at: string;
+        };
         /** @description Returned (202) by every private-key egress route while dual control is on (KRYPTKEEPER_KEY_DUAL_CONTROL, default on). No key material is included. */
         DualControlProposal: {
             data?: {
@@ -3317,17 +5662,165 @@ export interface components {
                 message?: string;
             };
         };
+        IssuancePolicyRules: {
+            allowed_algorithms?: ("RSA-2048" | "RSA-3072" | "RSA-4096" | "ECDSA-P256" | "ECDSA-P384" | "Ed25519" | "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87" | "Hybrid-ECDSA-P256-ML-DSA-65" | "Hybrid-ECDSA-P384-ML-DSA-87")[];
+            /** @description 0 or 2048-16384 */
+            min_rsa_bits?: number;
+            /** @description 0 (unrestricted) to 3650 */
+            max_validity_days?: number;
+            allow_ca_certs?: boolean;
+        };
+        IssuancePolicy: {
+            id?: string;
+            name?: string;
+            enabled?: boolean;
+            /** @description Empty applies to every CA */
+            ca_id?: string;
+            rules?: components["schemas"]["IssuancePolicyRules"];
+        };
+        IssuancePolicyVersion: {
+            policy_id?: string;
+            version?: number;
+            name?: string;
+            enabled?: boolean;
+            ca_id?: string;
+            rules?: components["schemas"]["IssuancePolicyRules"];
+            changed_by?: string;
+            /** @enum {string} */
+            change_kind?: "create" | "update" | "loosen" | "revert";
+            created_at?: string;
+        };
+        /** @description POST requires name; PATCH takes any subset. */
+        IssuancePolicyWrite: {
+            name?: string;
+            enabled?: boolean;
+            ca_id?: string;
+            rules?: components["schemas"]["IssuancePolicyRules"];
+            /** @description PATCH only, alone in the body: restore that version (audited as policy.revert). A restore that would loosen returns 202. */
+            revert_to?: number;
+        };
+        TeamPolicy: {
+            tenant: string;
+            team: string;
+            allowed_cas: string[];
+            allowed_templates: string[];
+            allowed_dns_suffixes: string[];
+            allowed_dns_names: string[];
+            /** @description 0 means no cap */
+            max_validity_days: number;
+            /** @description 0 means unlimited */
+            monthly_quota: number;
+            version: number;
+            updated_by?: string;
+            created_at?: string;
+            updated_at?: string;
+        };
+        /** @description POST requires team; PATCH takes any subset (team cannot change). An empty list places no restriction on that axis, max_validity_days 0 is no cap and monthly_quota 0 is unlimited. */
+        TeamPolicyWrite: {
+            team?: string;
+            allowed_cas?: string[];
+            allowed_templates?: string[];
+            allowed_dns_suffixes?: string[];
+            allowed_dns_names?: string[];
+            max_validity_days?: number;
+            monthly_quota?: number;
+        };
+        TeamPolicyPending: {
+            data?: {
+                /** @enum {string} */
+                status?: "pending_approval";
+                pending_action_id?: string;
+                reasons?: string[];
+            };
+        };
         Error: {
             error?: string;
+            /**
+             * @description Present on 403 refusals (W33-21). Certificate-access denials use `team_scope_mismatch` or
+             *     `tenant_visibility`; team-policy refusals use `team_policy_missing`, `team_policy_ca_not_allowed`,
+             *     `team_policy_template_not_allowed`, `team_policy_name_not_allowed`, `team_policy_validity_exceeded`
+             *     or `team_quota_exceeded`.
+             */
+            error_code?: string;
             message?: string;
+        };
+        CodesignTrustRule: {
+            id?: string;
+            provider?: string;
+            issuer?: string;
+            audience?: string;
+            repo_pattern?: string;
+            ref_pattern?: string;
+            ca_id?: string;
+            tenant?: string;
+            created_by?: string;
+            approved_by?: string;
+            created_at?: string;
+        };
+        /** @description RFC 7807 error body, emitted as application/problem+json when APP_ERROR_FORMAT is problem or rfc7807 (otherwise the Error envelope). */
+        ProblemDetails: {
+            /** @default about:blank */
+            type: string;
+            title?: string;
+            status?: number;
+            detail?: string;
+        };
+        /** @description n-of-m quorum not yet met; no state changed yet beyond recording this approval. */
+        PendingDecision: {
+            data: {
+                /** @enum {string} */
+                status: "pending";
+                approvals: number;
+                required: number;
+            };
+        };
+        DecisionResult: {
+            data: {
+                /**
+                 * @description ignored is returned by the Teams endpoint for non-message activities.
+                 * @enum {string}
+                 */
+                status: "approved" | "rejected" | "ignored";
+            };
+        };
+        ChatopsMapping: {
+            /** @enum {string} */
+            platform: "slack" | "teams";
+            /** @description Slack team id or Azure AD tenant id; 1-64 chars of [A-Za-z0-9_.-]. */
+            workspace: string;
+            /** @description Slack user id or AAD object id; 1-64 chars of [A-Za-z0-9_.-]. */
+            external_id: string;
+            kryptkeeper_user: string;
+            tenant: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        CertificateRevokeResult: {
+            fingerprint_sha256?: string;
+            renewal_status?: string;
+            /** Format: date-time */
+            revoked_at?: string;
+            revocation_reason?: number;
+            /**
+             * @description `ca`: recorded against the issuing CA, so CRL and OCSP reflect it. `inventory_only`: the certificate has no issuing CA in this hub (imported, discovered or synced); only the hub inventory was marked, and the operator must still revoke it at the real issuer.
+             * @enum {string}
+             */
+            revocation_scope?: "ca" | "inventory_only";
         };
         CertificateItem: {
             fingerprint_sha256?: string;
             serial_number?: string;
             common_name?: string;
+            /**
+             * @description Who assigned `owner_team` (W22-24). Omitted when the certificate is unowned. Server-assigned; a PATCH body cannot set it.
+             * @enum {string}
+             */
+            ownership_source?: "manual" | "cmdb" | "import" | "agent";
             subject_alt_names?: string[];
             uri_sans?: string[];
             issuer_cn?: string;
+            /** @description Revision of the issuing template in force when the certificate was issued (W23-44). Absent for certificates issued before it was recorded, imported and discovered ones. */
+            template_revision?: number;
             /** Format: date-time */
             valid_from?: string;
             /** Format: date-time */
@@ -3358,6 +5851,31 @@ export interface components {
             self_signed: number;
             unknown: number;
         };
+        /**
+         * @description Headline classification of a discovered leaf certificate (W34-06). managed = the hub renews it; ours_unmanaged = issued by this hub's CAs but nobody renews it; authorized_external = issued by a CA the operator declared under /discovery/authorized-issuers; unknown_issuer = public, private or unclassifiable issuer nobody declared; self_signed = the leaf vouches only for itself. Derived from management_state and issuer_class, never stored. An endpoint presenting several leaves reports the least-trusted class (unknown_issuer first).
+         * @enum {string}
+         */
+        InventoryClass: "managed" | "ours_unmanaged" | "authorized_external" | "unknown_issuer" | "self_signed";
+        /** @description Distinct leaf certificates seen on the network per inventory class; the classes sum to `mapped_certificates`. */
+        InventoryClassCounts: {
+            managed: number;
+            ours_unmanaged: number;
+            authorized_external: number;
+            unknown_issuer: number;
+            self_signed: number;
+        };
+        /** @description A CA group the operator accepts certificates from (D-205). kind ca_cert holds PEM CA certificates and matches by chain verification; issuer_dn matches a leaf's immediate issuer name; spki_sha256 matches the public-key hash of a CA certificate the server served (so it cannot match a lone leaf). */
+        AuthorizedIssuer: {
+            id: string;
+            name: string;
+            /** @enum {string} */
+            kind: "ca_cert" | "issuer_dn" | "spki_sha256";
+            value: string;
+            notes?: string;
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+        };
         CAItem: {
             id?: string;
             name?: string;
@@ -3365,6 +5883,8 @@ export interface components {
             type?: "root" | "intermediate";
             /** @enum {string} */
             status?: "active" | "suspended" | "expired";
+            /** @enum {string} */
+            revocation_signing?: "classical" | "ml-dsa";
         };
         PaginationMeta: {
             total?: number;
@@ -3375,7 +5895,12 @@ export interface components {
         NotificationRule: {
             id?: string;
             name?: string;
+            /** @description Absolute-days rule threshold; omitted for percent rules. */
             threshold_days?: number;
+            /** @description Percent of the certificate's own lifetime remaining; 0 means EXPIRED. Omitted for days rules. */
+            threshold_pct?: number;
+            /** @description Rule applies only to certificates of this template; omitted when it applies to every template. */
+            template_id?: string;
             channel?: string;
             target?: string;
             enabled?: boolean;
@@ -3390,6 +5915,14 @@ export interface components {
             created_by?: string;
             /** Format: date-time */
             created_at?: string;
+        };
+        NotificationTeamRoute: {
+            id?: string;
+            /** @description Owner team, or * for the global inbox. */
+            owner_team?: string;
+            /** @enum {string} */
+            channel?: "email" | "slack" | "pagerduty" | "webhook";
+            target?: string;
         };
         /** @description One append-only audit record. resource_name is the only field not stored with the record. */
         AuditEntry: {
@@ -3423,6 +5956,8 @@ export interface components {
             created_at?: string;
             /** Format: date-time */
             last_seen_at?: string | null;
+            /** @description Owning tenant. Empty means the default tenant. */
+            tenant?: string;
         };
         /** @description SCIM 2.0 core User (subset), W6-02. */
         SCIMUser: {
@@ -3455,17 +5990,27 @@ export interface components {
                 location?: string;
             };
         };
+        UserPrefs: {
+            onboarding_dismissed: boolean;
+        };
         /** @description A registered runtime setting merged with its current source. Secret keys never populate value -- only configured reports whether a value exists (env default or DB override). */
         EffectiveSetting: {
             key?: string;
             /** @enum {string} */
-            category?: "notifications" | "renewal_policy" | "discovery" | "sso";
+            category?: "notifications" | "renewal_policy" | "discovery" | "sso" | "saml" | "scim" | "key_backend" | "slo" | "agentless";
             env_var?: string;
             secret?: boolean;
             /** @enum {string} */
             source?: "database" | "env_default" | "unset";
             value?: string;
             configured?: boolean;
+            /**
+             * @description override when a DB override supplies the value, else env.
+             * @enum {string}
+             */
+            effective_source?: "env" | "override";
+            /** @description True when the setting only takes effect after a process restart. */
+            restart_required?: boolean;
             /** Format: date-time */
             updated_at?: string;
             updated_by?: string;
@@ -3478,7 +6023,7 @@ export interface components {
             validity_period?: string;
             key_usage?: string[];
             extended_key_usage?: string[];
-            /** @description Vocabulary: RSA-2048|RSA-4096|ECDSA-P256|ECDSA-P384|Ed25519| ML-DSA-44|ML-DSA-65|ML-DSA-87| Hybrid-ECDSA-P256-ML-DSA-65|Hybrid-ECDSA-P384-ML-DSA-87. A bare family name (RSA, ECDSA, Ed25519) allows any size/curve of that family. Editable via PATCH /api/v1/templates/{id}. */
+            /** @description Vocabulary: RSA-2048|RSA-3072|RSA-4096|ECDSA-P256|ECDSA-P384|Ed25519| ML-DSA-44|ML-DSA-65|ML-DSA-87| Hybrid-ECDSA-P256-ML-DSA-65|Hybrid-ECDSA-P384-ML-DSA-87. A bare family name (RSA, ECDSA, Ed25519) allows any size/curve of that family. Editable via PATCH /api/v1/templates/{id}. */
             allowed_algorithms?: string[];
             min_key_size?: number;
             auto_enroll?: boolean;
@@ -3494,7 +6039,23 @@ export interface components {
             approval_roles?: string[];
             ssh_policy?: components["schemas"]["SSHPolicy"];
             name_policy?: components["schemas"]["NamePolicy"];
+            enrollment_permissions?: components["schemas"]["EnrollmentPermissions"];
             revision?: number;
+        };
+        TemplateRevision: {
+            revision?: number;
+            /** Format: date-time */
+            changed_at?: string;
+            snapshot?: components["schemas"]["TemplateRecord"];
+            changes?: {
+                field?: string;
+                old?: unknown;
+                new?: unknown;
+            }[];
+        };
+        /** @description Roles allowed to issue from a template (W23-42). Absent or an empty enroll list means any role. Enforced on API/wizard issuance (POST /certificates); a caller whose role is not listed gets 403 and an issuance.denied_template_role audit row. Roles are lowercased, deduplicated and must match ^[a-z0-9][a-z0-9_.:-]{0,63}$ (max 32). Set on create, replace (PUT; omitting clears it) or PATCH. Windows autoenrollment enforces the list only when it holds at least one protocol:wstep entry (API roles alone leave XCEP/WSTEP unrestricted); then XCEP offers, and WSTEP issues, the template only to a caller named by protocol:wstep (every Windows client) or protocol:wstep:<host fqdn> (that machine, e.g. a domain controller). protocol:wstep:restricted matches no caller. An ADCS migration writes [pki-admin, protocol:wstep:restricted] on DC, Kerberos and RAS templates. */
+        EnrollmentPermissions: {
+            enroll?: string[];
         };
         /** @description Restricts the names certificates issued under a template may carry (SUP-A04-3). Enforced on the names about to be signed, on every issuance path that passes the template (API, renewal, bulk reissue, WSTEP). A template without name_policy is unrestricted. When present, IP and URI SANs are refused unless allowed; DNS names are restricted only when allowed_dns_suffixes or allowed_dns_names is non-empty. Set on create or replace (PUT); omitting it on PUT clears it. */
         NamePolicy: {
@@ -3524,6 +6085,87 @@ export interface components {
             /** @description Above this a request is refused, never clamped. At most 24 when cert_types includes user, 720 for host. */
             max_ttl_hours: number;
         };
+        MigrationFieldReport: {
+            field: string;
+            /** @enum {string} */
+            status: "mapped" | "partial" | "unmapped";
+            target?: string;
+            note?: string;
+        };
+        MigrationDiffEntry: {
+            source_key: string;
+            name: string;
+            /**
+             * @description update replaces, in place, a template an earlier batch of this source made (its mapping or the policy floor changed) or a template with the same name and OID (it is reactivated).
+             * @enum {string}
+             */
+            action: "create" | "skip" | "conflict" | "update";
+            reason?: string;
+            /** @description Deliberate changes the import makes, e.g. "key size raised from 2048 to 3072 to meet policy \"Baseline\"" when the mapped RSA minimum is below the active issuance policies' floor (the policy is never weakened). */
+            notes?: string[];
+            fields: components["schemas"]["MigrationFieldReport"][];
+        };
+        /** @description Dry-run result. Carries no timestamps or ids, so two runs over the same input and state are byte-identical. */
+        MigrationDiff: {
+            source: string;
+            entries: components["schemas"]["MigrationDiffEntry"][];
+            counts: {
+                create: number;
+                skip: number;
+                conflict: number;
+                update: number;
+            };
+            unmapped: number;
+            unsupported: number;
+        };
+        MigrationReportEntry: components["schemas"]["MigrationDiffEntry"] & {
+            template_id: string;
+        };
+        MigrationReport: {
+            batch_id: string;
+            created: number;
+            updated: number;
+            entries: components["schemas"]["MigrationReportEntry"][];
+        };
+        MigrationBatch: {
+            id: string;
+            source: string;
+            /** @enum {string} */
+            status: "applied" | "rolled_back";
+            created_by: string;
+            created_at: string;
+            rolled_back_at?: string;
+            /** @description Templates the batch created or updated. */
+            items?: number;
+        };
+        MigrationRollbackResult: {
+            batch_id: string;
+            already_rolled_back: boolean;
+            /** @description Templates the batch created */
+            disabled: number;
+            /** @description Templates the batch updated */
+            restored?: number;
+            /** @description Templates left as they are because they have pending approvals. */
+            kept: number;
+            items: {
+                name: string;
+                template_id: string;
+                /** @enum {string} */
+                outcome: "disabled" | "restored" | "kept" | "already_disabled";
+                reason?: string;
+            }[];
+        };
+        MigrationRequest: {
+            /** @description Importer name from GET /migration/sources. */
+            source: string;
+            /** @description The raw export text. Omit for a live read (importers that support it). */
+            content?: string;
+            /** @description Stored credential used for a live read. Only the reference is kept. */
+            credential_ref?: string;
+            options?: {
+                [key: string]: string;
+            };
+        };
         DeliveryPluginVersion: {
             plugin_id?: string;
             version?: string;
@@ -3543,6 +6185,75 @@ export interface components {
             pending_action_id?: string;
             /** @description sha256 of the PKIX public key that verified the signature; absent when unsigned */
             signer_key_id?: string;
+        };
+        ACMEProvisionerInput: {
+            /** @description Create only. Lowercase letters, digits, hyphens (1-32); reserved ACME path words are refused */
+            name?: string;
+            ca_id: string;
+            /** @description Optional enrollment template gating issuance */
+            template_id?: string;
+            /** @description Lowercase exact names or *.suffix entries */
+            allow_names: string[];
+            /** @description Empty means both */
+            challenges?: ("http-01" | "dns-01")[];
+        };
+        ACMEProvisioner: {
+            name: string;
+            ca_id: string;
+            template_id?: string;
+            allow_names: string[];
+            challenges: string[];
+            directory_url: string;
+        };
+        ItsmEventClass: {
+            /** @enum {string} */
+            class: "renewal_failed" | "approval_pending" | "expiry_no_owner";
+            /** @description ServiceNow incident or change_request; Jira an issue-type name (default Task when omitted on create). */
+            ticket_type: string;
+        };
+        ItsmConnection: {
+            id: string;
+            /** @enum {string} */
+            kind: "servicenow" | "jira";
+            name: string;
+            base_url: string;
+            credential_ref: string;
+            event_classes: components["schemas"]["ItsmEventClass"][];
+            enabled: boolean;
+            tenant: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        ItsmPrincipalMapping: {
+            /** @enum {string} */
+            kind: "servicenow" | "jira";
+            /** @description The approver identity the connector reports for the ticket. */
+            external_id: string;
+            user_id: string;
+            tenant: string;
+        };
+        ItsmEvent: {
+            event_id: string;
+            connection_id: string;
+            class: string;
+            fingerprint: string;
+            /** @enum {string} */
+            status: "pending" | "created" | "resolved" | "failed";
+            ticket_key: string;
+            ticket_url: string;
+            attempts: number;
+            /** Format: date-time */
+            next_attempt_at: string;
+            last_error: string;
+            /** @description The ticket was deleted externally and recreated once */
+            recreated: boolean;
+            tenant: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
         };
         DeliveryPlugin: {
             id?: string;
@@ -3574,6 +6285,73 @@ export interface components {
             /** @enum {string} */
             status?: "active" | "stale" | "offline";
             inventory_count?: number;
+            /** @description Agent build last reported via X-Agent-Version; empty if never reported. */
+            version?: string;
+            /** @description The agent's latest host pass (W34-09). `posture_known` is false for an agent that predates privilege reporting: its files are unknown, never assumed standard. Absent until the agent has pushed inventory. */
+            host_report?: {
+                /** Format: date-time */
+                received_at: string;
+                posture_known: boolean;
+                /** @enum {string} */
+                privilege_mode?: "none" | "nopasswd" | "helper";
+                scan_user?: string;
+                /** @description Paths the agent could not read for lack of privilege. */
+                unreadable_count: number;
+                /** @description At most 10 of them. */
+                unreadable_paths?: {
+                    path: string;
+                    error: string;
+                }[];
+                /** @description INSUFFICIENT_PRIVILEGE (with the fix for the mode) and the per-file posture findings, "CODE: detail" as on SSH targets. */
+                findings?: string[];
+                /** @description Files with a non-standard posture or a finding, at most 200. */
+                files?: {
+                    path: string;
+                    /** @enum {string} */
+                    kind: "pem" | "jks" | "p12" | "key" | "config";
+                    owner?: string;
+                    group?: string;
+                    mode?: string;
+                    /** @enum {string} */
+                    posture: "standard" | "privileged" | "root_service" | "unknown";
+                    service_tech?: string;
+                    findings?: string[];
+                }[];
+                posture_counts?: {
+                    [key: string]: number;
+                };
+                listener_count: number;
+                /** @description Listeners whose owning process the agent could not see. */
+                listeners_hidden: number;
+            };
+        };
+        /** @description A certificate observed in CT for an owned domain and absent from the inventory (W24-19). `ours` is true when the issuer is one of this hub's CAs; `revoke_url` then points at the Certificates page, where the operator revokes through the normal (dual-control) dialog. This API never revokes. */
+        CTFinding: {
+            /** @description source:entry-id */
+            id: string;
+            /** @description Source-scoped entry id; crt.sh aggregates logs so there is no per-log id */
+            log_id: string;
+            domain: string;
+            common_name?: string;
+            dns_names?: string[];
+            /** @description Issuer DN as reported by the CT source */
+            ca: string;
+            serial: string;
+            /** Format: date-time */
+            not_before?: string;
+            /** Format: date-time */
+            not_after?: string;
+            source: string;
+            /** @enum {string} */
+            status: "open" | "acknowledged" | "known_issuer";
+            resolved_by?: string;
+            /** Format: date-time */
+            resolved_at?: string | null;
+            /** Format: date-time */
+            created_at?: string;
+            ours: boolean;
+            /** @description Present only when ours; /certificates?q=<serial> */
+            revoke_url?: string;
         };
         /** @description A declared fleet target (W5-09, D-062, FR-P24): a host plus how it is discovered / installed / renewed. renewal_threshold_days (W8-15, FR-P33) is the per-target override for the renewal scheduler's env-configured RENEWAL_THRESHOLD_DAYS default -- omitted or 0 means "no override, use the process default." */
         ManagedTarget: {
@@ -3588,6 +6366,38 @@ export interface components {
             renewal_method?: "acme" | "est" | "scep" | "manual";
             /** @description Delivery plugin for install_mode=plugin (W20-20) */
             plugin_id?: string;
+            /**
+             * @description W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode.
+             * @enum {string}
+             */
+            key_handling_mode?: "client_csr" | "hub_generated" | "hsm_resident_ca" | "macos_non_extractable";
+            /**
+             * @description The explicit key_handling_mode, else the one derived from install_mode (W23-46). Never accepted in a request body.
+             * @enum {string}
+             */
+            readonly effective_key_handling_mode?: "client_csr" | "hub_generated" | "hsm_resident_ca" | "macos_non_extractable";
+            /** @description The target's credential carries the privileged flag (W34-11). Response only. */
+            readonly credential_privileged?: boolean;
+            /** @description The latest scan found a service-attributed file that needs root to replace (W34-08). Response only. */
+            readonly renewal_privilege_required?: boolean;
+            /**
+             * @description Privilege mode of the latest scan. Response only.
+             * @enum {string}
+             */
+            readonly last_privilege_mode?: "none" | "nopasswd" | "password" | "helper";
+            /** @description Paths the latest scan could not read for lack of privilege. Response only. */
+            readonly unreadable_count?: number;
+            /** Format: date-time */
+            readonly last_scanned_at?: string;
+            /** @description Present when renewal is Blocked. `privilege`: the target auto-renews, a file needs root to replace and the credential has sudo_mode none (the scheduler refuses to schedule it; clears when the credential gains a sudo mode or a scan sees the files standard). `rollback`: a failed rollback left the host in an unknown state (clears with POST /targets/{id}/unblock). */
+            readonly blocked?: {
+                /** @enum {string} */
+                kind: "privilege" | "rollback";
+                reason: string;
+                /** @description The recipe that clears the block. */
+                fix: string;
+                since?: string;
+            };
             plugin_settings?: {
                 [key: string]: string;
             };
@@ -3596,7 +6406,7 @@ export interface components {
             credential_ref?: string;
             schedule?: string;
             /** @enum {string} */
-            install_server_type?: "nginx" | "apache" | "";
+            install_server_type?: "nginx" | "apache" | "haproxy" | "tomcat" | "";
             install_cert_path?: string;
             install_key_path?: string;
             install_reload_method?: string;
@@ -3606,11 +6416,57 @@ export interface components {
             auto_renew?: boolean;
             /** @description Principal that last configured this target's key egress while holding certificate.renew (RC1-A-01). Server-stamped; empty on a target armed before this field existed, which the scheduler then skips until auto_renew=true is saved again by an authorized principal. */
             readonly auto_renew_set_by?: string;
+            /** @description Confirmed SSH host key pin, authorized_keys format (W24-09). */
+            ssh_host_key?: string;
+            /** @description SHA256 fingerprint of ssh_host_key; derived, never stored. */
+            readonly ssh_host_key_fingerprint?: string;
             tenant?: string;
             /** Format: date-time */
             created_at?: string;
             /** Format: date-time */
             updated_at?: string;
+        };
+        /** @description W27-02: an operator's authorization to renew one certificate onto one managed target and push its private key there. The renewal scheduler auto-renews only bound pairs; a CN/SAN equal to the target host no longer arms anything. served_fingerprint is the certificate currently installed on the target and advances on every renewal. */
+        CertTargetBinding: {
+            /** @description SHA-256 fingerprint (64 hex) of the certificate bound */
+            cert_fingerprint: string;
+            target_id: string;
+            served_fingerprint: string;
+            tenant: string;
+            /**
+             * @description backfill = migrated from a pre-W27-02 CN/SAN host match
+             * @enum {string}
+             */
+            source: "operator" | "backfill";
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        /** @description W27-04: a named set of targets sharing one renewal threshold. Members inherit renewal_threshold_days unless they carry their own (target > group > global default). A target belongs to at most one group; names are unique per tenant. */
+        TargetGroup: {
+            name: string;
+            tenant: string;
+            renewal_threshold_days: number;
+            target_ids: string[];
+        };
+        /** @description One target's effective renewal threshold and where it came from (W27-04). */
+        TargetPolicyRow: {
+            target_id: string;
+            name: string;
+            host: string;
+            /** @description Empty when the target is in no group */
+            group: string;
+            /** @description The target's own override; 0 = none */
+            own_days: number;
+            /** @description The group's threshold; 0 = no group */
+            group_days: number;
+            /** @description The scheduler's global default now */
+            default_days: number;
+            effective_days: number;
+            /** @enum {string} */
+            source: "target" | "group" | "default";
         };
         /** @description One endpoint (scanned or agent-reported) whose observed host matches a managed target's declared host -- a heuristic string-equality join, not a foreign key. */
         ManagedTargetEndpointMatch: {
@@ -3674,6 +6530,8 @@ export interface components {
             summary?: components["schemas"]["SunsetAlgoSummary"];
         };
         SunsetAlgoGroup: {
+            /** @description Stable group key; the `sunset_group` filter of GET /certificates. */
+            id?: string;
             algorithm?: string;
             /**
              * Format: date-time
@@ -3726,11 +6584,13 @@ export interface components {
             /** @description Human-readable explanation of the anomaly threshold and whether detection is active */
             anomaly_threshold_note?: string;
         };
-        /** @description Finding funnel (W2-11, docs/design/FINDING_ECONOMICS.md). Raw is every finding the source layer produces on every read, with no dedup or identity — computeRiskFlags for crypto-posture, EndpointTLSConfig.Issues (internal/cipheraudit) for discovery. NOTE (v0.9): finding exceptions (accepted-risk suppression) cannot be created yet — the feature is planned for v0.10 — so suppressed is always 0 and effective always equals raw. The text below describes the intended v0.10 semantics. Effective = raw minus every finding currently covered by an active accepted-risk exception (FindingException, W2-06). Suppressed is that subtracted count, reported alongside raw and effective rather than hidden behind them — raw is never replaced or omitted. This is NOT the full five-stage funnel the design doc describes (raw → dedup → scope → applicability → effective → suppressed(justified)): persisted dedup identity, tenant scope filtering, and applicability re-checks are explicitly out of scope for W2-11 and remain future work. As of W2-12, every posture-shaped surface is exception-aware: GET /reports/crypto-posture, the executive summary, the PQC countdown, and every persisted GET /reports/crypto-posture/trend snapshot (captured going forward — snapshots persisted before W2-12 shipped keep the raw==effective funnel they were captured with, since suppression is computed at capture time, not read time). */
+        /** @description Finding funnel (docs/design/FINDING_ECONOMICS.md): raw -> deduped -> in_scope -> effective -> suppressed. `raw` is every finding the source layer produces on every read (computeRiskFlags for crypto-posture, cipheraudit issues and certificate flags for discovery). `deduped` collapses repeats of the same finding on the same target to one persisted identity (W22-29: certificate fingerprint + finding code, and for discovery the endpoint's tenant). `in_scope` equals `deduped` today: every funnel surface is a super-admin aggregate or already scoped at the source. `suppressed` is the in-scope identities that carry an active accepted-risk exception (FindingException, W2-06) and `effective` = in_scope - suppressed. Invariants: raw >= deduped >= in_scope >= effective, and effective + suppressed == in_scope. Raw is never replaced or omitted. Applicability re-checks remain future work. Exceptions are created through POST /exceptions and take effect only after a second approver approves them. Persisted posture snapshots written before W22-29 lack `deduped` and `in_scope` (they decode as 0): treat 0 alongside a non-zero `raw` as unknown. */
         FindingFunnelSummary: {
             raw?: number;
+            deduped?: number;
+            in_scope?: number;
             effective?: number;
-            /** @description Reserved; finding exceptions are not available in v0.9 (planned v0.10), always 0. Effective therefore equals raw. */
+            /** @description In-scope findings covered by an active, approved accepted-risk exception (see /exceptions). */
             suppressed?: number;
         };
         /** @description Matches internal/bootstrap/handlers_executive_summary.go's ExecutiveSummary struct — a board-readable one-pager composed from the crypto-posture and compliance-evidence computes. findings (W2-12) is the same exception-aware funnel CryptoPostureReport carries. */
@@ -3758,6 +6618,65 @@ export interface components {
             risk_high?: number;
             top_risks?: string[];
             findings?: components["schemas"]["FindingFunnelSummary"];
+            privileged_credentials?: components["schemas"]["PrivilegedCredentialsSummary"];
+            /** @description Post-quantum readiness of cloud KMS and SSH keys from the unified key inventory. Omitted for tenant-scoped principals (keys are hub-wide). JSON only; the PDF one-pager does not render it. */
+            key_pqc?: {
+                /** @description quantum_safe keys. */
+                ready?: number;
+                /** @description Keys vulnerable to a quantum adversary. */
+                not_ready?: number;
+                unknown?: number;
+                total?: number;
+                /** @description Providers that could not be read, as "cloud key inventory unavailable: <provider>". */
+                errors?: string[];
+            };
+            /** @description Posture trend, last 90 days, grade counts per snapshot (same snapshots as /reports/crypto-posture/trend). Omitted for tenant-scoped principals (snapshots are fleet-wide). */
+            trend?: {
+                days?: number;
+                points?: {
+                    /** Format: date-time */
+                    captured_at?: string;
+                    total_certs?: number;
+                    grades?: {
+                        [key: string]: number;
+                    };
+                }[];
+            };
+        };
+        /** @description Matches internal/pqc/planner.go's Timeline. Certificates are bucketed by the quarter their validity ends (their natural rotation point), from the current quarter through the quarter containing the CNSA 2.0 deadline (2030-Q1). due = hybrid/migration_ready/vulnerable certs still to migrate; migrated = full-chain quantum_safe certs. quantum_safe_leaf_only and not_applicable certs are in neither. expire_before_2030 / expire_after_2030 split the due population by validity end relative to the deadline. */
+        PQCMigrationTimeline: {
+            quarters: {
+                /** @example 2027-Q3 */
+                quarter: string;
+                due: number;
+                migrated: number;
+            }[];
+            expire_before_2030: number;
+            expire_after_2030: number;
+        };
+        /** @description Matches internal/pqc/planner.go's MigrationRoadmap. */
+        PQCMigrationRoadmap: {
+            /** Format: date-time */
+            generated_at?: string;
+            total_certs?: number;
+            vulnerable?: number;
+            migration_ready?: number;
+            quantum_safe?: number;
+            quantum_safe_leaf_only?: number;
+            not_applicable?: number;
+            pqc_score_percent?: number;
+            quantum_safe_percent?: number;
+            items?: {
+                fingerprint?: string;
+                common_name?: string;
+                /** @enum {string} */
+                priority?: "critical" | "high" | "medium" | "low";
+                reason?: string;
+                action?: string;
+                /** Format: date-time */
+                deadline?: string;
+            }[] | null;
+            timeline?: components["schemas"]["PQCMigrationTimeline"];
         };
         /** @description Matches internal/bootstrap/handlers_pqc_countdown.go's PQCCountdownReport struct — PQC readiness against the CNSA 2.0 / NIST 800-131A deadlines, trending over time. findings (W2-12) is the same exception-aware funnel CryptoPostureReport carries. */
         PQCCountdownReport: {
@@ -3796,14 +6715,124 @@ export interface components {
             ca_id?: string;
             requester?: string;
             team_id?: string;
+            /** @description W33-23: the delegator a delegate filed this request for; requester is the delegate and team_id is the delegator */
+            on_behalf_of?: string;
             /** @enum {string} */
             status?: "pending" | "approved" | "rejected";
+            /**
+             * @description ssh = a pending POST /ssh/certificates request (no CA or CSR; ca_id and csr_pem are empty)
+             * @enum {string}
+             */
+            kind?: "x509" | "ssh";
             /** Format: date-time */
             requested_at?: string;
             decided_by?: string;
             /** Format: date-time */
             decided_at?: string | null;
             reason?: string;
+        };
+        /** @description An active accepted-risk exception shown in the evidence pack (W22-32). */
+        AcceptedRisk: {
+            id?: string;
+            /** @enum {string} */
+            target_type?: "certificate" | "ca" | "target_file";
+            target_id?: string;
+            finding_code?: string;
+            justification_code?: string;
+            justification_note?: string;
+            /** @description Empty for CA targets and unowned certificates */
+            owner_team?: string;
+            owner_email?: string;
+            /** @description host:path of a target_file exception's file */
+            target_label?: string;
+            created_by?: string;
+            created_at?: string;
+            expires_at?: string;
+        };
+        ComplianceEvidenceReport: {
+            generated_at?: string;
+            framework?: string;
+            controls?: {
+                id?: string;
+                framework?: string;
+                title?: string;
+                /**
+                 * @description attested and pending apply to type manual controls only
+                 * @enum {string}
+                 */
+                status?: "pass" | "warn" | "fail" | "attested" | "pending";
+                evidence?: string;
+                remediation?: string;
+                /**
+                 * @description Present for human-attested controls; they never count toward summary
+                 * @enum {string}
+                 */
+                type?: "manual";
+                /** @description Named attester of a current manual attestation */
+                attester?: string;
+                /** @description RFC3339 time of the current attestation */
+                attested_at?: string;
+                /** @description The pass/warn/fail rule applied to this control */
+                rule?: string;
+                /** @description Evidence artifacts that substantiate the control */
+                artifacts?: {
+                    /** @enum {string} */
+                    kind?: "inventory_export" | "findings_export" | "audit_extract" | "custody_report" | "cbom" | "ca_health";
+                    id?: string;
+                    url?: string;
+                }[];
+            }[];
+            summary?: {
+                pass?: number;
+                warn?: number;
+                fail?: number;
+            };
+            /** @description Key custody section (same shape as /reports/key-custody data); tenant-filtered; absent when key_custody_note is set. */
+            key_custody?: {
+                [key: string]: unknown;
+            } | null;
+            /** @description Why key_custody is absent */
+            key_custody_note?: string;
+            /** @description Every active accepted-risk exception in the caller's scope (tenant-scoped); [] when none. */
+            accepted_risks?: components["schemas"]["AcceptedRisk"][];
+        };
+        ComplianceAttestation: {
+            id?: string;
+            control_id?: string;
+            attester_name?: string;
+            /** @description Principal that recorded the attestation */
+            attested_by?: string;
+            note?: string;
+            attested_at?: string;
+        };
+        ExceptionRequest: {
+            /** @enum {string} */
+            target_type: "certificate" | "ca" | "target_file";
+            /** @description Certificate fingerprint */
+            target_id: string;
+            finding_code: string;
+            /** @enum {string} */
+            justification_code: "risk_accepted" | "compensating_control" | "false_positive" | "planned_remediation" | "not_applicable";
+            justification_note?: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        Exception: {
+            id?: string;
+            /** @enum {string} */
+            target_type?: "certificate" | "ca" | "target_file";
+            target_id?: string;
+            finding_code?: string;
+            justification_code?: string;
+            justification_note?: string;
+            created_by?: string;
+            created_at?: string;
+            expires_at?: string;
+            /** @enum {string} */
+            status?: "active" | "pending";
+            pending_action_id?: string;
+            /** @description host:path of a target_file exception's file */
+            target_label?: string;
         };
         PendingAction: {
             id?: string;
@@ -3815,8 +6844,36 @@ export interface components {
             /** @enum {string} */
             status?: "pending" | "approved" | "rejected" | "failed";
             tenant?: string;
+            /** @description Distinct human approvals required; stamped at proposal time from APPROVAL_QUORUM_POLICY (default 1). */
+            quorum_n?: number;
+            quorum_m?: number;
+            /** @description Distinct humans who have approved so far. */
+            approvals_count?: number;
             /** Format: date-time */
             created_at?: string;
+        };
+        ApprovalInboxItem: {
+            /** @enum {string} */
+            type?: "certificate_approval" | "pending_action";
+            id?: string;
+            summary?: string;
+            requester?: string;
+            tenant?: string;
+            /** Format: date-time */
+            created_at?: string;
+            age_seconds?: number;
+            action_type?: string;
+        };
+        ApprovalDelegation: {
+            delegator?: string;
+            delegate?: string;
+            /** Format: date-time */
+            starts_at?: string;
+            /** Format: date-time */
+            ends_at?: string;
+            /** Format: date-time */
+            created_at?: string;
+            tenant?: string;
         };
         KeyMetadata: {
             id?: string;
@@ -3825,6 +6882,35 @@ export interface components {
             created_at?: string;
             /** Format: date-time */
             rotated_at?: string | null;
+            /**
+             * @description Absent for a live key. `pending_deletion` marks a cloud-KMS key inside its provider recovery window; cancel it at POST /keys/{id}/cancel-deletion.
+             * @enum {string}
+             */
+            state?: "pending_deletion";
+            /**
+             * Format: date-time
+             * @description When the provider purges a pending_deletion key for good.
+             */
+            deletion_scheduled_at?: string;
+        };
+        DiscoverySchedule: {
+            key: string;
+            /** @enum {string} */
+            scan_type: "targeted" | "winrm" | "ssh";
+            target: string;
+            /** @enum {string} */
+            source: "env" | "managed";
+            /** @description Managed target name */
+            name?: string;
+            /** @description This target's own interval; null follows the global one */
+            interval_seconds: number | null;
+            effective_interval_seconds: number | null;
+            /** Format: date-time */
+            last_run: string | null;
+            /** Format: date-time */
+            next_run: string | null;
+            running: boolean;
+            running_job_id: string;
         };
         /** @description Matches internal/bootstrap/discovery_provider.go's DiscoveryScanJob struct. All three provider implementations (db/file/scanner) now emit exactly this canonical status set (G-87/S-23 normalized a "complete" vs "completed" inconsistency in the db-mode provider). */
         DiscoveryScanJob: {
@@ -3841,7 +6927,7 @@ export interface components {
             /** @description Why a job failed, or for `completed_with_errors` which hosts answered but could not be read and how many closed ports were not recorded. Absent for a clean run. Truncated to 500 characters. */
             error?: string;
         };
-        /** @description Matches internal/bootstrap/event_bus.go's Event struct -- the stable envelope every GET /events `data:` line carries (W8-14). `status` reuses DiscoveryScanJob.status's vocabulary verbatim rather than a parallel one. `op_id` is the id the client already holds from the call that started the operation (e.g. DiscoveryScanJob.id from POST /discovery/scans) -- correlation needs no new lookup. Only `scan` has a producer wired today (the discovery scan create/cancel/requeue endpoints); renew/install/migrate are follow-up tickets and reuse this same envelope once wired. */
+        /** @description Matches internal/bootstrap/event_bus.go's Event struct -- the stable envelope every GET /events `data:` line carries (W8-14). `status` reuses DiscoveryScanJob.status's vocabulary verbatim rather than a parallel one. `op_id` is the id the client already holds from the call that started the operation (e.g. DiscoveryScanJob.id from POST /discovery/scans) -- correlation needs no new lookup. Producers: `scan` (discovery scan create/cancel/requeue), `renew` (op_id is the certificate fingerprint), `install` (op_id is the agent task id) and `migrate` (op_id is the PQC wave id) (W30-13). Each frame also carries an SSE `id:` line for Last-Event-ID resume; the id is not part of this envelope. */
         OperationEvent: {
             op_id: string;
             /** @enum {string} */
@@ -3862,6 +6948,7 @@ export interface components {
             active_scan_jobs?: number;
             findings?: components["schemas"]["FindingFunnelSummary"];
             trust_classes?: components["schemas"]["TrustClassCounts"];
+            inventory_classes?: components["schemas"]["InventoryClassCounts"];
         };
         /** @description Matches internal/bootstrap/handlers_dashboard.go's GET /dashboard/summary response struct. `discovery` is a narrower projection of DiscoverySummary (no mapped_certificates) but carries the same `findings` sub-object (W2-11) — see FindingFunnelSummary. */
         DashboardSummary: {
@@ -3874,6 +6961,8 @@ export interface components {
                 revoked?: number;
                 expiring_30_days?: number;
                 expired?: number;
+                /** @description Active certificates with no owner team (W22-24). Equals the `meta.total` of `GET /certificates?owner=unassigned`. */
+                unowned?: number;
                 source?: string;
             };
             discovery?: {
@@ -3888,12 +6977,75 @@ export interface components {
                 escalations?: number;
             };
         };
+        /** @description 30-day error budget and burn rates for one ratio SLO (history is in-memory; a hub restart restarts the window) */
+        RenewalSloBudget: {
+            name: string;
+            objective: number;
+            window_days: number;
+            has_data: boolean;
+            budget_remaining_pct: number;
+            burn_rate_1h: number;
+            burn_rate_6h: number;
+            breached: boolean;
+        };
+        RenewalSloReport: {
+            generated_at?: string;
+            agents_total?: number;
+            agents_active?: number;
+            endpoints_managed?: number;
+            outcomes?: {
+                [key: string]: number;
+            };
+            total_renewals?: number;
+            success_rate_percent?: number;
+            mean_time_to_renew_secs?: number;
+            mttr_samples?: number;
+            failed_renewals?: {
+                [key: string]: unknown;
+            }[];
+            /** @description W27-33 renewal sweep backlog and per-connector throttle state */
+            queue?: {
+                [key: string]: unknown;
+            };
+            slos: components["schemas"]["RenewalSloBudget"][];
+        };
         EvidenceSchedule: {
             id?: string;
             framework?: string;
-            /** @enum {string} */
-            cadence?: "monthly" | "quarterly" | "annual";
+            /**
+             * @description Unknown values are treated as weekly.
+             * @enum {string}
+             */
+            cadence?: "weekly" | "monthly";
             recipients?: string[];
+            /**
+             * @description Omitted means enabled.
+             * @default true
+             */
+            enabled: boolean;
+            /** Format: date-time */
+            last_sent_at?: string;
+            /** Format: date-time */
+            created_at?: string;
+        };
+        ReportSchedule: {
+            id?: string;
+            /** @enum {string} */
+            report: "executive-summary" | "inventory" | "findings";
+            /** @enum {string} */
+            format: "csv" | "xlsx" | "pdf";
+            /**
+             * @default monthly
+             * @enum {string}
+             */
+            cadence: "weekly" | "monthly";
+            recipients: string[];
+            /** @default true */
+            enabled: boolean;
+            /** Format: date-time */
+            last_sent_at?: string;
+            /** Format: date-time */
+            created_at?: string;
         };
         MigrationWave: {
             id?: string;
@@ -3905,9 +7057,20 @@ export interface components {
             status?: "proposed" | "accepted" | "in_progress" | "done" | "regressed";
             members?: {
                 fingerprint?: string;
+                common_name?: string;
+                /**
+                 * @description Latest wave-execution delivery outcome; present only when the successor was issued but not delivered (W31-21).
+                 * @enum {string}
+                 */
+                delivery_status?: "delivery_unsupported" | "failed";
             }[];
             total?: number;
+            /** @description Members whose current certificate is PQC and not undelivered. */
             migrated?: number;
+            /** @description Members whose latest wave execution issued a successor that was not delivered to its endpoint (delivery_unsupported or failed); never counted as migrated, and the wave cannot reach done while any exist (W31-21, D-105). */
+            undelivered?: number;
+            /** @description Members whose current certificate is a PQC leaf under a classical chain (D-104); a wave with any never reports done. */
+            leaf_only?: number;
             progress_percent?: number;
         };
         Tenant: {
@@ -3926,7 +7089,164 @@ export interface components {
             expires_at?: string | null;
             /** Format: date-time */
             created_at?: string;
+            /**
+             * Format: date-time
+             * @description Stamped at most once a minute; omitted for a never-used key. Config-loaded keys lose it on restart.
+             */
+            last_used_at?: string | null;
             tenant?: string;
+        };
+        AccessReviewPrincipal: {
+            /** @enum {string} */
+            kind: "user" | "api_key";
+            /** @description User id, or the API key id (kid). */
+            id: string;
+            /** @description User email or API key name. */
+            name: string;
+            role: string;
+            /** @description The principal's own tenant (DefaultTenant when none was stamped). */
+            tenant: string;
+            /**
+             * @description Derived from the audit trail; API keys are always local.
+             * @enum {string}
+             */
+            source: "local" | "sso" | "scim";
+            /** @enum {string} */
+            status: "active" | "inactive";
+            created_at?: string;
+            created_by?: string;
+            /** @description RFC 3339; omitted when the principal has never been active. */
+            last_activity_at?: string;
+            /** @description Active, and idle for more than the dormant threshold (never-active accounts age from creation). */
+            dormant: boolean;
+            /** @description The role holds action.approve. */
+            approver_capable: boolean;
+        };
+        AccessReviewRoleChange: {
+            /** Format: date-time */
+            timestamp: string;
+            action: string;
+            actor: string;
+            resource_type: string;
+            resource_id: string;
+            outcome: string;
+        };
+        /** @description Outbound credentials flagged high-impact on the hosts they reach (W34-11, D-208), with those hosts. Flag and audit only; no approval gate. */
+        PrivilegedCredentialsSummary: {
+            count: number;
+            host_count: number;
+            credentials: {
+                id: string;
+                name: string;
+                reason?: string;
+                /** @enum {string} */
+                source: "auto" | "manual";
+                set_at?: string;
+                hosts: string[];
+                /** @description Latest scan of a target that uses the credential. */
+                last_used?: string;
+            }[];
+        };
+        AccessReviewReport: {
+            /** Format: date-time */
+            generated_at: string;
+            /** Format: date-time */
+            period_start: string;
+            /** Format: date-time */
+            period_end: string;
+            dormant_days: number;
+            principals: components["schemas"]["AccessReviewPrincipal"][];
+            role_changes: components["schemas"]["AccessReviewRoleChange"][];
+            totals: {
+                users: number;
+                api_keys: number;
+                dormant: number;
+                role_changes: number;
+            };
+            /** @description Role changes were capped at 5000 rows. */
+            truncated?: boolean;
+            privileged_credentials?: components["schemas"]["PrivilegedCredentialsSummary"];
+        };
+        AccessReviewEntry: components["schemas"]["AccessReviewPrincipal"] & {
+            /** @description kind:id, e.g. user:u1 or api_key:kid. */
+            entry_id: string;
+            /** @enum {string} */
+            decision?: "keep" | "revoke" | "modify";
+            new_role?: string;
+            note?: string;
+            /** @description Canonical human of the first reviewer. */
+            decided_by?: string;
+            /** Format: date-time */
+            decided_at?: string;
+            /** @description Set when a held revoke of an approver-capable user was completed by a different human. */
+            second_reviewer?: string;
+            executed: boolean;
+            /** @enum {string} */
+            decision_status: "undecided" | "pending_second" | "decided";
+        };
+        AccessReviewCampaign: {
+            id: string;
+            name: string;
+            /** @enum {string} */
+            status: "open" | "closing" | "closed";
+            /** @description Owning tenant, or '*' for an instance-wide campaign opened by an unscoped super-admin (visible to super-admins only). */
+            tenant: string;
+            /** Format: date-time */
+            period_start: string;
+            /** Format: date-time */
+            period_end: string;
+            opened_by: string;
+            /** Format: date-time */
+            opened_at: string;
+            closed_by?: string;
+            /** Format: date-time */
+            closed_at?: string;
+            /** @description SHA-256 of the CSV export, recorded in the access_review.close audit row. */
+            report_sha256?: string;
+            entries?: components["schemas"]["AccessReviewEntry"][];
+        };
+        BreakGlassActivation: {
+            id: string;
+            reason: string;
+            /** @enum {string} */
+            status: "pending" | "active" | "expired";
+            /** @description Canonical human of the first holder. */
+            requested_by: string;
+            /** @description Canonical human of the second, different holder. */
+            confirmed_by?: string;
+            /** Format: date-time */
+            requested_at: string;
+            /** Format: date-time */
+            activated_at?: string;
+            /**
+             * Format: date-time
+             * @description activated_at + 4 h.
+             */
+            expires_at?: string;
+        };
+        BreakGlassReview: {
+            id: string;
+            /** @description The review scope: act-<activation id>, or local-login for the break-glass local login. */
+            activation_id: string;
+            /** @enum {string} */
+            status: "open" | "completed";
+            /** Format: date-time */
+            opened_at: string;
+            /**
+             * Format: date-time
+             * @description opened_at + 24 h.
+             */
+            due_at: string;
+            completed_by?: string;
+            /** Format: date-time */
+            completed_at?: string;
+            /** @enum {string} */
+            outcome?: "justified" | "unjustified";
+            notes?: string;
+            use_count: number;
+            /** @description Principals whose use opened or extended the review; none of them may complete it. */
+            actors: string[];
+            overdue: boolean;
         };
     };
     responses: never;
@@ -3991,6 +7311,26 @@ export interface operations {
             };
         };
     };
+    getOpenAPISpec: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The OpenAPI 3.1 document */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/yaml": string;
+                };
+            };
+        };
+    };
     getServiceMeta: {
         parameters: {
             query?: never;
@@ -4009,8 +7349,71 @@ export interface operations {
                     "application/json": {
                         service?: string;
                         version?: string;
+                        /** @description Live FIPS 140-3 posture of this process (W23-32). */
+                        fips?: {
+                            mode_140_3?: boolean;
+                            enforced?: boolean;
+                            module_version?: string;
+                            root_hsm_required?: boolean;
+                        };
                     };
                 };
+            };
+        };
+    };
+    createCertificateRequestOnBehalf: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    ca_id: string;
+                    template_id: string;
+                    csr_pem: string;
+                    /** @description The delegator's principal id (also their team_id) */
+                    on_behalf_of: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Pending approval */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status?: "pending_approval";
+                        approval_id?: string;
+                        message?: string;
+                    };
+                };
+            };
+            /** @description Invalid body, or on_behalf_of names the caller */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No active delegation (obo_no_delegation), tenant visibility, or team policy / quota refusal */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -4024,8 +7427,12 @@ export interface operations {
                 status?: "active" | "revoked";
                 origin?: "internal" | "imported" | "discovered" | "synced";
                 management_state?: "managed" | "external" | "unmanaged";
+                /** @description `unassigned` keeps active certificates with no owner team (W22-24); the dashboard `certificates.unowned` count is the same predicate. */
+                owner?: "unassigned";
                 /** @description Keep certificates of one trust class. Served-chain intermediates and roots (discovery) are never listed. */
                 trust_class?: components["schemas"]["TrustClass"];
+                /** @description Keep the active certificates of one Algorithm Sunset group, by the `id` of a `groups[]` entry of GET /reports/algorithm-sunset. The list total equals that group's `count`. An unknown id is a 400. */
+                sunset_group?: "weak_signature" | "weak_rsa_key" | "rsa2048_post2030" | "ecc224_post2030" | "validity_397_days" | "pqc_vulnerable";
             };
             header?: never;
             path?: never;
@@ -4070,10 +7477,33 @@ export interface operations {
                      */
                     csr_pem: string;
                     team_id?: string;
+                    /**
+                     * @description Optional request metadata. With `KRYPTKEEPER_CODESIGN_PROTECTED=true`, a CSR for a
+                     *     code-signing template must carry `attestation` (FR-P92); the hub refuses it with 422
+                     *     unless the attestation chains to a trusted vendor root and attests the CSR's own key.
+                     */
+                    metadata?: {
+                        attestation?: {
+                            /** @enum {string} */
+                            format: "yubikey-piv";
+                            /** @description PIV slot attestation certificate (max 16 KiB). */
+                            certificate_pem: string;
+                            intermediates_pem?: string[];
+                        };
+                    } & {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
         responses: {
+            /** @description Idempotent repeat: the same public key, CA, template, team, subject CN and SAN set already has an unrevoked certificate with at least a third of its validity left, so that certificate is returned (same body shape as 201, no new serial). Audited as certificate.issue success with detail {"reused":true,"serial":...}. Policy checks run first; a refused request is still refused. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Certificate issued */
             201: {
                 headers: {
@@ -4081,7 +7511,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Pending approval (template requires an approval gate) */
+            /** @description Pending approval (template requires an approval gate). A repeat POST for the same CA, template, public key and requester returns the same approval_id instead of queuing a second one. */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -4102,8 +7532,89 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Team/tenant scope denied, the caller's role is not in the template's enrollment_permissions (audited as issuance.denied_template_role), or the team's policy or monthly quota refuses the request (W33-21). The body carries a non-empty `error_code` and a specific `message`. A policy refusal is audited as certificate.issue denied; an exhausted quota as request.quota_exceeded. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description The issuing CA is not active or has no signing key (imported without a private key) */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Refused by template or issuance policy (for example a key below min_key_size, a disallowed EKU or SAN). Body is {"error":"policy_violation","message":"..."} and the message names the rule. Nothing is signed. 422, not 400: the request is well-formed but policy refuses it. Includes a missing, forged or key-mismatched hardware attestation in protected code-signing mode. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Team policy or quota could not be evaluated; issuance is refused (fail closed). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getCertificateQuota: {
+        parameters: {
+            query?: {
+                /** @description Required for admins. */
+                team_id?: string;
+                /** @description Tenant-bypass principals only. */
+                tenant?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Quota usage */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            team_id: string;
+                            /** @description UTC month YYYY-MM */
+                            period: string;
+                            limit: number;
+                            used: number;
+                            /** @description Null when the quota is unlimited (limit 0). */
+                            remaining: number | null;
+                            /** @description True at or above 80 percent of the limit. */
+                            warn: boolean;
+                            /** Format: date-time */
+                            resets_at: string;
+                        };
+                    };
+                };
+            };
+            /** @description team_id missing for an admin */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Quota could not be read */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4222,12 +7733,16 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Revoked */
+            /** @description Revoked (see `data.revocation_scope`) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["CertificateRevokeResult"];
+                    };
+                };
             };
             /** @description Already revoked */
             409: {
@@ -4258,7 +7773,7 @@ export interface operations {
                             id?: string;
                             name?: string;
                             /** @enum {string} */
-                            type?: "internal" | "acme";
+                            type?: "internal" | "acme" | "digicert" | "scep" | "est" | "wstep";
                             config_json?: string;
                             credential_ref?: string;
                             tenant?: string;
@@ -4285,8 +7800,8 @@ export interface operations {
                 "application/json": {
                     name: string;
                     /** @enum {string} */
-                    type: "internal" | "acme";
-                    /** @description No secrets — credentials go in credential_ref (W5-10 store). For acme connectors with dns-01: optional dns_propagation (auto|authoritative|resolver|doh|none), dns_resolver, dns_doh_url, dns_propagation_timeout (max 10m), dns_propagation_delay; see docs/ops/ACME_UPSTREAM.md */
+                    type: "internal" | "acme" | "digicert" | "scep" | "est" | "wstep";
+                    /** @description No secrets — credentials go in credential_ref (W5-10 store). For acme connectors with dns-01: optional dns_propagation (auto|authoritative|resolver|doh|none), dns_resolver, dns_doh_url, dns_propagation_timeout (max 10m), dns_propagation_delay; see docs/ops/ACME_UPSTREAM.md. Upstream types (W27-35), all non-secret: digicert {base_url?, organization_id, product_name_id?, validity_years?}; scep {endpoint_url}; est {base_url, username}; wstep {endpoint_url, username, template_name}. api_key, password, secret or token anywhere in config_json is refused 400. */
                     config_json?: string;
                     credential_ref?: string;
                 };
@@ -4300,8 +7815,60 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Invalid name or type */
+            /** @description Invalid name, type, config (missing required field, forbidden secret key) or credential_ref (required for digicert, est and wstep; secrets - digicert {api_key}, est/wstep {password} - live only in the credential store) */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listDcvValidations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Validations visible to the caller's tenant */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            domain?: string;
+                            connector_id?: string;
+                            /** Format: date-time */
+                            validated_at?: string;
+                            /** Format: date-time */
+                            expires_at?: string;
+                            reuse_days?: number;
+                            days_remaining?: number;
+                            warn?: boolean;
+                        }[];
+                        schedule?: {
+                            /** Format: date */
+                            effective?: string;
+                            days?: number;
+                        }[];
+                        current_reuse_days?: number;
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description DCV store not configured */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4329,6 +7896,639 @@ export interface operations {
             };
             /** @description Connector not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listIssuancePolicies: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Every issuance policy row */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["IssuancePolicy"][];
+                    };
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a pki-admin (or, with multi-tenancy on, not the super-admin) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createIssuancePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IssuancePolicyWrite"];
+            };
+        };
+        responses: {
+            /** @description Created; enforced on the very next issuance, no restart */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["IssuancePolicy"];
+                    };
+                };
+            };
+            /** @description Invalid name, algorithm, min_rsa_bits or max_validity_days */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not permitted */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    dryRunIssuancePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    ca_id?: string;
+                    csr_pem?: string;
+                    algorithm?: string;
+                    rsa_bits?: number;
+                    validity_days?: number;
+                    is_ca?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Verdict with every violated rule */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            allowed: boolean;
+                            evaluated_policies: string[];
+                            violations: {
+                                policy_id?: string;
+                                policy?: string;
+                                rule?: string;
+                                detail?: string;
+                                observed?: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+            /** @description Neither csr_pem nor algorithm, or invalid input */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not permitted */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    draftIssuancePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    text: string;
+                    ca_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Parsed draft; nothing stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            policy: Record<string, never>;
+                            explanation: string[];
+                            unrecognized: string[];
+                            persisted: boolean;
+                        };
+                    };
+                };
+            };
+            /** @description Invalid body, name, text or ca_id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not permitted */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description ca_id not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Draft violates policy field limits */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitIssuancePolicyDraft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    text: string;
+                    ca_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Draft stored disabled; awaiting a second approver */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            policy_id?: string;
+                            pending_action_id?: string;
+                            /** @enum {string} */
+                            status?: "pending_approval";
+                            enabled?: boolean;
+                            unrecognized?: string[];
+                        };
+                    };
+                };
+            };
+            /** @description Invalid body, name, text or ca_id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not permitted */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description ca_id not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A policy with that name already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No rules recognized in the text, or draft violates field limits */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Policy or approval store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getIssuancePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The policy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["IssuancePolicy"];
+                    };
+                };
+            };
+            /** @description Unknown policy */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteIssuancePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown policy */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateIssuancePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IssuancePolicyWrite"];
+            };
+        };
+        responses: {
+            /** @description Updated policy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["IssuancePolicy"];
+                    };
+                };
+            };
+            /** @description Loosening queued for approval; the policy is unchanged */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            /** @enum {string} */
+                            status?: "pending_approval";
+                            pending_action_id?: string;
+                            reasons?: string[];
+                        };
+                    };
+                };
+            };
+            /** @description Invalid field, or revert_to combined with other fields */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown policy or version */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listIssuancePolicyVersions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Applied versions, oldest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["IssuancePolicyVersion"][];
+                    };
+                };
+            };
+            /** @description Unknown policy */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listTeamPolicies: {
+        parameters: {
+            query?: {
+                /** @description Honored only for an unscoped super-admin */
+                tenant?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Team policies */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["TeamPolicy"][];
+                    };
+                };
+            };
+            /** @description Missing or invalid token */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createTeamPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TeamPolicyWrite"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["TeamPolicy"];
+                    };
+                };
+            };
+            /** @description Invalid team, list entry, validity, quota, or a CA/template outside the tenant */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The team already has a policy */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTeamPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                team: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The policy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["TeamPolicy"];
+                    };
+                };
+            };
+            /** @description Unknown team, or a team of another tenant */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTeamPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                team: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deletion queued for approval; the policy is unchanged */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamPolicyPending"];
+                };
+            };
+            /** @description Not a pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown team, or a team of another tenant */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateTeamPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                team: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TeamPolicyWrite"];
+            };
+        };
+        responses: {
+            /** @description Updated policy */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["TeamPolicy"];
+                    };
+                };
+            };
+            /** @description Loosening queued for approval; the policy is unchanged */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeamPolicyPending"];
+                };
+            };
+            /** @description Invalid field or a CA/template outside the tenant */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown team, or a team of another tenant */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The policy changed concurrently */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4412,6 +8612,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description The template requires approval (require_approval): nothing is signed. Returns {status: pending_approval, approval_id, message}; a second principal approves via POST /approvals/{id}/approve (self-approval is refused, 403), which issues the certificate. Audited as ssh_certificate.issue with outcome pending_approval. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Invalid request, template/policy refusal, or TTL above the ceiling or template maximum */
             400: {
                 headers: {
@@ -4474,7 +8681,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Invalid name or type */
+            /** @description Invalid name, type, config (missing required field, forbidden secret key) or credential_ref (required for digicert, est and wstep; secrets - digicert {api_key}, est/wstep {password} - live only in the credential store) */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -4583,6 +8790,190 @@ export interface operations {
             };
         };
     };
+    estateTakeoverBulk: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    items: {
+                        fingerprint: string;
+                        owner_email?: string;
+                        owner_team?: string;
+                        service_name?: string;
+                        renewal_path: {
+                            /** @enum {string} */
+                            mode: "internal" | "connector";
+                            connector_id?: string;
+                        };
+                    }[];
+                };
+            };
+        };
+        responses: {
+            /** @description Per-row outcome */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            total: number;
+                            succeeded: number;
+                            failed: number;
+                            skipped: number;
+                            results: {
+                                fingerprint: string;
+                                /** @enum {string} */
+                                status: "ok" | "error" | "skipped";
+                                code?: string;
+                                error?: string;
+                                /** @enum {string} */
+                                reason?: "already_managed" | "other_tenant" | "not_permitted";
+                            }[];
+                        };
+                    };
+                };
+            };
+            /** @description Empty items, more than 500 items, invalid body or renewal_path, or unknown connector(s); nothing was changed */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    estateTakeoverSuggestions: {
+        parameters: {
+            query: {
+                /** @description Repeatable, 1 to 500 values. */
+                fingerprint: string[];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One suggestion per requested fingerprint */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            fingerprint: string;
+                            owner_email: string;
+                            owner_team: string;
+                            service_name: string;
+                            /** @enum {string} */
+                            source: "existing_ownership" | "sibling_certificate" | "none" | "unavailable";
+                            /** @enum {string} */
+                            confidence: "high" | "medium" | "low" | "none";
+                        }[];
+                    };
+                };
+            };
+            /** @description No fingerprint, a blank fingerprint, or more than 500 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    estateRevert: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    fingerprint: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Certificate is now external (origin synced) or unmanaged */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Fingerprint missing */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Certificate not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Certificate is not managed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getEstateReport: {
+        parameters: {
+            query?: {
+                format?: "json" | "pdf";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Estate report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["EstateReport"];
+                    };
+                    "application/pdf": string;
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     executeRenewal: {
         parameters: {
             query?: never;
@@ -4595,6 +8986,8 @@ export interface operations {
                 "application/json": {
                     fingerprint: string;
                     target_id: string;
+                    /** @description One-off sudo password for this run only. Held in process memory, zeroized when the job ends, never stored, logged or audited (the audit detail records privilege_source=jit). Used when the target's credential has sudo_mode none or password. */
+                    jit_sudo_password?: string;
                     /** @description Optional override of the target's stored install profile (install_server_type, install_cert_path, install_key_path, install_reload_method, verify_host_port). pki-admin only: any other caller gets 403 and the stored profile is used when this is omitted. */
                     install?: {
                         /** @enum {string} */
@@ -4620,6 +9013,7 @@ export interface operations {
                             new_fingerprint?: string;
                             renewed?: boolean;
                             install_outcome?: string;
+                            /** @description Install failure detail, redacted then truncated to 1 KB (config-test stack traces are ~4 KB). */
                             install_detail?: string;
                             verified?: boolean;
                         };
@@ -4654,8 +9048,92 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Certificate already has a successor */
+            /** @description Certificate already has a successor (body names it as successor_fingerprint) */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        error?: "conflict";
+                        message?: string;
+                        /** @description The successor an earlier (halted or rolled-back) attempt already minted. The hub never re-mints or reuses key material implicitly; roll this certificate out instead. */
+                        successor_fingerprint?: string;
+                    };
+                };
+            };
+            /** @description The issuing connector is rate limited (upstream 429 or the hub's per-connector throttle); retry after the Retry-After interval */
+            429: {
+                headers: {
+                    /** @description Seconds to wait before retrying */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    retryRenewalNow: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    fingerprint: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Retry queued */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            fingerprint?: string;
+                            /** @enum {string} */
+                            status?: "queued";
+                        };
+                    };
+                };
+            };
+            /** @description fingerprint is required */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Certificate not visible to the caller (team or tenant), or caller lacks certificate.renew */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Certificate not found, or no failed renewal is queued for it */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Certificate store, failure queue or audit log unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4812,6 +9290,181 @@ export interface operations {
             };
         };
     };
+    importOwnershipFromCMDB: {
+        parameters: {
+            query?: {
+                /** @description Count what would be assigned; change nothing and write no audit row. */
+                dry_run?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    rules: {
+                        /** @enum {string} */
+                        match: "host" | "ip" | "cidr" | "fingerprint";
+                        /** @description host: DNS name or leading `*.suffix`; ip: address; cidr: network; fingerprint: SHA-256 hex. */
+                        value: string;
+                        owner_team: string;
+                        /** Format: email */
+                        owner_email?: string;
+                    }[];
+                };
+                "text/csv": string;
+            };
+        };
+        responses: {
+            /** @description Import report. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            rules?: number;
+                            matched?: number;
+                            assigned?: number;
+                            skipped_manual?: number;
+                            skipped_other?: number;
+                            failed?: number;
+                            dry_run?: boolean;
+                            rejected?: {
+                                /** @description 1-based rule position */
+                                row?: number;
+                                reason?: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+            /** @description Bad match type, unparseable IP/CIDR, empty owner_team, bad email, bad CSV header, or over 1000 rules. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks a certificate-admin role. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listOrphanedOwners: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Orphaned owners (possibly empty). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            user_id: string;
+                            owner_email: string;
+                            cert_count: number;
+                        }[];
+                    };
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks a certificate-admin role. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description User store or inventory unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    reassignOrphanedOwner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    from_email: string;
+                    to_team: string;
+                    /** @description Optional new owner email. */
+                    to_email?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Number of certificates moved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            reassigned?: number;
+                        };
+                    };
+                };
+            };
+            /** @description Missing to_team, or from_email is not an orphaned owner. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks a certificate-admin role. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     bulkRevokeCertificates: {
         parameters: {
             query?: never;
@@ -4828,12 +9481,24 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Bulk revoke result (per-item outcomes) */
+            /** @description Bulk revoke result (per-item outcomes). Each `succeeded` item carries `revocation_scope` (`ca` or `inventory_only`). */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        succeeded?: {
+                            fingerprint?: string;
+                            /** @enum {string} */
+                            revocation_scope?: "ca" | "inventory_only";
+                        }[];
+                        failed?: {
+                            fingerprint?: string;
+                            error?: string;
+                        }[];
+                    };
+                };
             };
         };
     };
@@ -4883,8 +9548,22 @@ export interface operations {
                             display_name?: string;
                             /** @enum {string} */
                             type?: "root" | "intermediate" | "issuing";
-                            status?: string;
-                            key_storage_type?: string;
+                            /** @enum {string} */
+                            status?: "active" | "suspended" | "revoked" | "expired" | "pending_ceremony" | "pending_certificate";
+                            /** @description PKCS#10 request of an issuing CA in status pending_certificate; absent otherwise. */
+                            csr_pem?: string;
+                            /**
+                             * @description Key backend that holds the CA key; immutable after creation (PATCH returns 422).
+                             * @enum {string}
+                             */
+                            key_storage_type?: "software" | "pkcs11" | "vault" | "cloud_kms" | "external";
+                            /**
+                             * @description How this CA signs its CRLs and OCSP responses: ml-dsa when the CA key is ML-DSA (hand-encoded, signed with the ML-DSA key), otherwise classical. OpenSSL interop for ML-DSA responses is not guaranteed.
+                             * @enum {string}
+                             */
+                            revocation_signing?: "classical" | "ml-dsa";
+                            /** @description Advisory compatibility notes, e.g. Ed25519 chains are not validated by Windows/ADCS clients. Omitted when empty. */
+                            warnings?: string[];
                             parent_ca_id?: string | null;
                             certificate_fingerprint_sha256?: string;
                             active_issued_certificates?: number;
@@ -4911,21 +9590,91 @@ export interface operations {
                      * @description CA key algorithm; case and separators are ignored (ML-DSA-65, mldsa65 and ml-dsa-65 are equivalent). ML-DSA CAs require the software key backend (HSM-held ML-DSA keys are refused, see ADR_PQC_KEYS_SOFTWARE_ONLY).
                      * @enum {string}
                      */
-                    algorithm?: "ECDSA-P256" | "ECDSA-P384" | "RSA-2048" | "RSA-4096" | "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87";
+                    algorithm?: "ECDSA-P256" | "ECDSA-P384" | "RSA-2048" | "RSA-3072" | "RSA-4096" | "Ed25519" | "ML-DSA-44" | "ML-DSA-65" | "ML-DSA-87";
                     subject_cn: string;
+                    /**
+                     * @description Key backend for this CA's key (optional; empty uses the hub default). Only backends enabled through KRYPTKEEPER_KEY_BACKENDS can be selected; otherwise 422.
+                     * @enum {string}
+                     */
+                    key_storage_type?: "software" | "pkcs11" | "vault" | "cloud_kms";
                 };
             };
         };
         responses: {
-            /** @description CA created */
+            /** @description CA created. An intermediate whose parent is an imported keyless root is created `pending_certificate`: the hub generates the key and the body carries `csr_pem` to sign offline (see `/cas/{id}/certificate`). */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description Unsupported algorithm or the engine refused the request */
+            /** @description Unsupported or unknown algorithm (e.g. DSA). The body carries `supported_algorithms`, the full list the hub accepts. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The engine or key backend refused the request (e.g. Ed25519 on a PKCS#11 or cloud KMS backend) */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    importCA: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name?: string;
+                    /** @enum {string} */
+                    type: "root";
+                    /** @enum {string} */
+                    key_storage_type: "external";
+                    certificate_pem: string;
+                    approved_action_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Root imported (or a previously removed trust anchor reactivated) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Proposal filed; body carries `data.action_id` */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a self-signed CA certificate (use chain import for intermediates), or bad type/key_storage_type */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Admin role required, or the approved action is not redeemable by this caller */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description This root certificate is already imported */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4962,7 +9711,9 @@ export interface operations {
     };
     deleteCA: {
         parameters: {
-            query?: never;
+            query?: {
+                approved_action_id?: string;
+            };
             header?: never;
             path: {
                 id: string;
@@ -4971,15 +9722,43 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Deleted */
+            /** @description Trust-anchor removal proposed; body carries `data.action_id` */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Deleted / trust anchor removed */
             204: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description CA has active certificates */
+            /** @description Admin role required, or the approved action is not redeemable by this caller */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description CA has active certificates, or the trust anchor still has active child CAs */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Only an imported keyless root CA can be removed as a trust anchor */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5007,6 +9786,244 @@ export interface operations {
             };
             /** @description Attempted to modify an immutable field */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revokeCA: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    reason?: "cACompromise";
+                    rationale?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Proposal filed; awaiting a second approver. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            status?: string;
+                            action_id?: string;
+                            message?: string;
+                        };
+                    };
+                };
+            };
+            /** @description Unsupported reason */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not an admin, or CA not visible to the tenant */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description CA not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description CA is already revoked */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rotateCAKey: {
+        parameters: {
+            query?: {
+                mode?: "rekey" | "cross-sign";
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description Optional new key algorithm; defaults to the current one. */
+                    algorithm?: string;
+                    approved_action_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Rotated. `data` carries the rotation result; with `mode=cross-sign` also `cross_cert_pem`, `old_cert_pem`, `old_key_id`. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            id?: string;
+                            status?: string;
+                            key_id?: string;
+                            rotated_at?: string;
+                            ledger_id?: string;
+                            ledger_persisted?: boolean;
+                            cross_cert_pem?: string;
+                            old_cert_pem?: string;
+                            old_key_id?: string;
+                        };
+                    };
+                };
+            };
+            /** @description Rotation proposed; body carries `data.action_id` */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description mode must be rekey or cross-sign, or invalid body */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Admin role required, or the approved action is not redeemable by this caller */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Rotation not supported by this provider, or rotation failed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getCACSR: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description `data.ca_id` and `data.csr_pem` (PKCS#10) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The CA is not awaiting a certificate */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    completeCA: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    certificate_pem: string;
+                };
+            };
+        };
+        responses: {
+            /** @description CA activated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Certificate rejected (key mismatch, wrong issuer, expired, bad path length, not a CA) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The CA is not awaiting a certificate */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5217,7 +10234,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Template has issued certificates */
+            /** @description Template has issued certificates, or is referenced by an in-flight (pending) approval request - disable it with PATCH active=false instead */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5246,6 +10263,51 @@ export interface operations {
             };
             /** @description Attempted to modify an immutable field */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listTemplateRevisions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revisions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["TemplateRevision"][];
+                    };
+                };
+            };
+            /** @description Template not visible to the caller's tenant */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revision history not supported by this provider */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5306,6 +10368,296 @@ export interface operations {
             };
         };
     };
+    getApprovalDelegation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Delegation or null */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ApprovalDelegation"] | null;
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller cannot approve */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    setApprovalDelegation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Principal id of the delegate */
+                    delegate: string;
+                    /** Format: date-time */
+                    starts_at: string;
+                    /** Format: date-time */
+                    ends_at: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Delegation stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ApprovalDelegation"];
+                    };
+                };
+            };
+            /** @description Bad body, bad times, range over 30 days, or delegate is the caller */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller cannot approve, or the delegate lacks approve capability */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    clearApprovalDelegation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Cleared */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller cannot approve */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listApprovalInbox: {
+        parameters: {
+            query?: {
+                type?: "certificate_approval" | "pending_action";
+                /** @description Go duration (for example 24h); keeps items at least this old. */
+                min_age?: string;
+                /** @description Honoured only for an unscoped (super-admin) caller; a tenant principal always sees only its own tenant. */
+                tenant?: string;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Inbox page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ApprovalInboxItem"][];
+                        meta?: {
+                            total?: number;
+                            limit?: number;
+                            offset?: number;
+                        };
+                    };
+                };
+            };
+            /** @description Bad type or min_age */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    approveInboxItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                type: "certificate_approval" | "pending_action";
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Approved and executed (pending action) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Certificate issued (certificate approval) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Approval recorded, quorum not yet met */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bootstrap credential, self-approval, role or tenant refusal */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown item or type, or item in another tenant */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not pending */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rejectInboxItem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                type: "certificate_approval" | "pending_action";
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rejected */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown item or type, or item in another tenant */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not pending */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getApproval: {
         parameters: {
             query?: never;
@@ -5342,10 +10694,24 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description Optional. on_behalf_of names a delegator whose active delegation to the caller authorises this decision. */
+        requestBody?: {
+            content: {
+                "application/json": {
+                    on_behalf_of?: string;
+                };
+            };
+        };
         responses: {
-            /** @description Certificate issued */
+            /** @description Certificate issued. For an approval with kind "ssh" the body is {data: SSH certificate record} (as POST /ssh/certificates 201) and Location points at /ssh/certificates?subject_fingerprint=... */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Role, self-approval or tenant refusal, or (W33-21) the requester's team policy no longer allows the request at approval time. The body carries `error_code` (see Error); the request stays pending. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5353,6 +10719,13 @@ export interface operations {
             };
             /** @description Not pending */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Team policy could not be re-evaluated; the request stays pending. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5385,6 +10758,222 @@ export interface operations {
                 content?: never;
             };
             /** @description Not pending */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listExceptions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exceptions visible to the caller's tenant */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["Exception"][];
+                    };
+                };
+            };
+        };
+    };
+    proposeException: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExceptionRequest"];
+            };
+        };
+        responses: {
+            /** @description Queued for approval */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            /** @enum {string} */
+                            status?: "pending";
+                            pending_action_id?: string;
+                        };
+                    };
+                };
+            };
+            /** @description Invalid request, wildcard target, or expiry beyond the maximum */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target is outside the caller's tenant or team scope */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An active or pending exception already exists for this target and finding */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteException: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            /** @enum {string} */
+                            status?: "deleted";
+                        };
+                    };
+                };
+            };
+            /** @description Not found (or in another tenant) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listAnomalyRemediations: {
+        parameters: {
+            query?: {
+                status?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pending actions whose type is anomaly.* */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: Record<string, never>[];
+                    };
+                };
+            };
+            /** @description Role may not read anomaly remediations */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    proposeAnomalyRemediation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    action: "suspend_ca" | "reactivate_ca" | "disable_template" | "enable_template" | "revoke_batch";
+                    ca_id?: string;
+                    template_id?: string;
+                    requester?: string;
+                    finding_kind?: string;
+                    rationale?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Proposed; awaiting a second approver */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            /** @enum {string} */
+                            status?: "proposed";
+                            pending_action_id?: string;
+                            blast_radius?: {
+                                cas?: number;
+                                templates?: number;
+                                certificates?: number;
+                            };
+                        };
+                    };
+                };
+            };
+            /** @description Unknown action, missing target id, or invalid body */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Role may not propose remediations */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target not found (or in another tenant) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No recent issuance by that requester (revoke_batch) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5455,7 +11044,14 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        /** @description Optional. on_behalf_of names a delegator whose active delegation to the caller authorises this decision. */
+        requestBody?: {
+            content: {
+                "application/json": {
+                    on_behalf_of?: string;
+                };
+            };
+        };
         responses: {
             /** @description Approved and executed */
             200: {
@@ -5464,6 +11060,22 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Approval recorded but the quorum is not yet met; the action stays pending */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            /** @enum {string} */
+                            status?: "pending";
+                            approvals?: number;
+                            required?: number;
+                        };
+                    };
+                };
+            };
             /** @description Proposer cannot approve their own action */
             403: {
                 headers: {
@@ -5471,7 +11083,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Not pending */
+            /** @description Not pending, or this approver (human) has already approved */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5647,10 +11259,12 @@ export interface operations {
         parameters: {
             query?: {
                 protocol?: string;
-                /** @description Keep risky endpoints: one with a currently-active certificate that scores 70 or more or carries EXPIRED, SELF_SIGNED, WEAK_KEY, WEAK_SIGNATURE or UNTRUSTED_ROOT, or with a NOT_TLS, TLS_HANDSHAKE_FAILED, POSTGRES_TLS_DISABLED or DEPRECATED_TLS_VERSION finding. `risky_endpoints` in the summaries counts the same set. */
+                /** @description Keep risky endpoints: one with a currently-active certificate that scores 70 or more or carries EXPIRED, SELF_SIGNED, WEAK_KEY, WEAK_SIGNATURE or UNTRUSTED_ROOT, or with a NOT_TLS, TLS_HANDSHAKE_FAILED, POSTGRES_TLS_DISABLED, MSSQL_TLS_DISABLED, MYSQL_TLS_DISABLED or DEPRECATED_TLS_VERSION finding. `risky_endpoints` in the summaries counts the same set. */
                 risky_only?: boolean;
                 /** @description Keep endpoints currently presenting a leaf certificate of this trust class. An unknown value is a 400. */
                 trust_class?: components["schemas"]["TrustClass"];
+                /** @description Keep endpoints currently presenting a leaf certificate of this inventory class. An unknown value is a 400. */
+                inventory_class?: components["schemas"]["InventoryClass"];
             };
             header?: never;
             path?: never;
@@ -5677,6 +11291,48 @@ export interface operations {
                                 server_tech?: string;
                                 /** @description install_mode the fingerprint or service protocol implies. */
                                 recommended_install_mode?: string;
+                                inventory_class?: components["schemas"]["InventoryClass"];
+                                /** @description Technology behind the endpoint (W34-01): a closed vocabulary (apache, nginx, iis, tomcat, mssql, postfix, openssh, …), `other:<token>` for an unrecognised product, or `unknown`. Absent for an endpoint no network scan has fingerprinted. `server_tech` equals this when it is a web server. */
+                                tech?: string;
+                                /**
+                                 * @description How sure the scan is. An endpoint backed only by its port number is `low` and never gets a `recommended_install_mode`.
+                                 * @enum {string}
+                                 */
+                                tech_confidence?: "high" | "medium" | "low";
+                                /** @enum {string} */
+                                platform?: "windows" | "linux" | "java" | "appliance" | "unknown";
+                                /** @description schannel, openssl, jsse, go, boringssl, gnutls, nss or unknown. */
+                                tls_stack?: string;
+                                /** @description The observations that voted for `tech`, heaviest first. Values are redacted to the header or banner line; no response body is stored. */
+                                tech_evidence?: {
+                                    /** @enum {string} */
+                                    signal: "listener" | "http_header" | "banner" | "rootdse" | "tds_prelogin" | "cert_issuer" | "cert_subject" | "cert_ext" | "tls_stack" | "port";
+                                    value: string;
+                                    tech: string;
+                                    weight: number;
+                                    /** @description Explicit platform vote, when the row names one. */
+                                    platform?: string;
+                                }[];
+                                /** @description Install posture of the discovered file that holds this endpoint's served leaf (an agentless SSH scan statted it). Absent when no host scan has seen the file. When several files hold the leaf, the most severe is shown. */
+                                install_posture?: {
+                                    /** @description discovered_files id; the target_id of a target_file exception. */
+                                    file_id?: string;
+                                    /** @description Finding codes with an active accepted-risk exception on this file. */
+                                    accepted_findings?: string[];
+                                    /**
+                                     * @description privileged = the file is root- or other-owned and the service runs as a non-root account that cannot replace it; root_service = the application server runs as uid 0.
+                                     * @enum {string}
+                                     */
+                                    posture: "standard" | "privileged" | "root_service" | "unknown";
+                                    path: string;
+                                    host: string;
+                                    owner?: string;
+                                    /** @description Octal permission bits. */
+                                    mode?: string;
+                                    service_tech?: string;
+                                    /** @description PRIVILEGED_INSTALL_PATH, SERVICE_RUNS_AS_ROOT, KEY_WORLD_READABLE, HOME_DIR_KEYSTORE as "CODE: detail". */
+                                    findings?: string[];
+                                };
                                 /** @description SSH server banner (SSH endpoints only). */
                                 ssh_banner?: string;
                                 /** @description SSH server's advertised host-key algorithms. */
@@ -5699,11 +11355,21 @@ export interface operations {
                                     fingerprint?: string;
                                     common_name?: string;
                                     valid_until?: string;
+                                    /** @description File the certificate was read from on the scanned host (agentless SSH discovery, W24-08); absent for network-scanned links. */
+                                    source_path?: string;
                                     /** @description The certificate's own score plus what serving it on THIS endpoint adds. */
                                     risk_score?: number;
                                     /** @description The certificate's own flags plus the endpoint-scoped ones observed here (HOSTNAME_MISMATCH, INCOMPLETE_CHAIN, UNTRUSTED_ROOT). */
                                     risk_flags?: string[];
                                     trust_class?: components["schemas"]["TrustClass"];
+                                    /**
+                                     * @description trust_class refined with the operator's authorized issuers (W34-06).
+                                     * @enum {string}
+                                     */
+                                    issuer_class?: "hub" | "authorized" | "public" | "private_unknown" | "self_signed" | "unknown";
+                                    inventory_class?: components["schemas"]["InventoryClass"];
+                                    /** @description The issuer as observed; what authorizing this certificate's issuer declares. */
+                                    issuer_dn?: string;
                                     /** @description An intermediate/root this endpoint served alongside its leaf. */
                                     chain_ca?: boolean;
                                     /** @description Absent when completeness could not be judged for this endpoint (a private chain whose issuer the hub does not hold). false only when an intermediate is provably missing from what the server sent; omitting the root is normal. */
@@ -5712,7 +11378,7 @@ export interface operations {
                                 }[];
                                 /** @description True when the endpoint matches the `risky_only` rule (score >= 70, a high-severity flag such as EXPIRED, SELF_SIGNED, WEAK_KEY, WEAK_SIGNATURE, UNTRUSTED_ROOT or HOSTNAME_MISMATCH, or a deprecated-TLS, not-TLS, failed-handshake or Postgres-TLS-disabled finding). An endpoint with such a finding scores at least 20. The UI badge reads this rather than re-deriving it from `risk_score`. */
                                 risky?: boolean;
-                                /** @description Endpoint findings: NOT_TLS, TLS_HANDSHAKE_FAILED, POSTGRES_TLS_DISABLED (the server declined the SSLRequest) or DEPRECATED_TLS_VERSION ("CODE: detail") for a port that answered but could not be read as modern TLS; otherwise cipheraudit findings for a real (port != 0) TLS endpoint, or -- a port-less source (e.g. a mesh/K8s-secret certificate source) -- a "discovery-error: ..." entry recording a reachability or permission failure (W19-22). */
+                                /** @description Endpoint findings: NOT_TLS, TLS_HANDSHAKE_FAILED, POSTGRES_TLS_DISABLED (the server declined the SSLRequest), MSSQL_TLS_DISABLED (ENCRYPT_NOT_SUP), MYSQL_TLS_DISABLED (no SSL capability) or DEPRECATED_TLS_VERSION ("CODE: detail") for a port that answered but could not be read as modern TLS; otherwise cipheraudit findings for a real (port != 0) TLS endpoint, or -- a port-less source (e.g. a mesh/K8s-secret certificate source) -- a "discovery-error: ..." entry recording a reachability or permission failure (W19-22). */
                                 issues?: string[];
                             }[];
                         };
@@ -5750,6 +11416,229 @@ export interface operations {
             };
         };
     };
+    listDiscoverySchedules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Schedules */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DiscoverySchedule"][];
+                    };
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Schedule store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateDiscoverySchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    key: string;
+                    interval_seconds: number | null;
+                };
+            };
+        };
+        responses: {
+            /** @description The updated row */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["DiscoverySchedule"];
+                    };
+                };
+            };
+            /** @description interval_seconds must be between 60 and 2592000, or null to use the global interval */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown schedule key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listAuthorizedIssuers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Authorized issuers */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AuthorizedIssuer"][];
+                    };
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createAuthorizedIssuer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    /** @enum {string} */
+                    kind: "ca_cert" | "issuer_dn" | "spki_sha256";
+                    value: string;
+                    notes?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["AuthorizedIssuer"];
+                    };
+                };
+            };
+            /** @description Invalid name */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description That issuer is already authorized in this tenant */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteAuthorizedIssuer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found (or another tenant's) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     createDiscoveryScan: {
         parameters: {
             query?: never;
@@ -5761,12 +11650,14 @@ export interface operations {
             content: {
                 "application/json": {
                     /**
-                     * @description Network scans (full/targeted/fast) require a target. Cloud scans (W5-12) take no target — their scope is the account the connector's credentials see. A winrm scan (W18-12) takes a managed target id whose discovery_mode is winrm and enumerates the host's machine certificate stores with its stored credential. A k8s-certmanager scan (W19-17) takes no target either — its scope is the cluster the KRYPTKEEPER_K8S_* env vars point at (see internal/certmanager.ConfigFromEnv) — and lists cert-manager Certificate resources.
+                     * @description Network scans (full/targeted/fast) require a target. Cloud scans (W5-12) take no target — their scope is the account the connector's credentials see. A winrm scan (W18-12) takes a managed target id whose discovery_mode is winrm and enumerates the host's machine certificate stores with its stored credential. An ssh scan (W24-08) takes a managed target id whose install_mode is ssh (discovery_mode not none); it reads certificates and keystores over SSH with the target's ssh_key credential. Unreadable paths are warnings, not failures. 404 for an unknown or other-tenant target, 400 for a target that is not ssh-mode or a ports list. A k8s-certmanager scan (W19-17) takes no target either — its scope is the cluster the KRYPTKEEPER_K8S_* env vars point at (see internal/certmanager.ConfigFromEnv) — and lists cert-manager Certificate resources.
                      * @enum {string}
                      */
-                    scan_type: "full" | "targeted" | "fast" | "deep" | "winrm" | "k8s-certmanager" | "cloud_acm" | "cloud_azure_kv" | "cloud_gcp_cm";
+                    scan_type: "full" | "targeted" | "fast" | "deep" | "winrm" | "ssh" | "k8s-certmanager" | "cloud_acm" | "cloud_azure_kv" | "cloud_gcp_cm";
                     /** @description Host or CIDR; required for network scan types, forbidden for cloud and k8s-certmanager types */
                     target?: string;
+                    /** @description One-off sudo password for this run only. Held in process memory, zeroized when the job ends, never stored, logged or audited (the audit detail records privilege_source=jit). ssh scans only. */
+                    jit_sudo_password?: string;
                     /** @description Optional custom ports merged with the scan type's port list — for a service standardized on a non-standard port. Ignored when target pins an explicit host:port. */
                     ports?: number[];
                 };
@@ -6096,17 +11987,38 @@ export interface operations {
             content: {
                 "application/json": {
                     name: string;
-                    /** @enum {integer} */
-                    threshold_days: 7 | 14 | 30 | 60 | 90;
+                    /** @description Absolute days before expiry. Never fires for a certificate whose lifetime is not longer than this. */
+                    threshold_days?: number;
+                    /** @description Percent of the certificate's lifetime remaining; 0 means EXPIRED. */
+                    threshold_pct?: number;
+                    /** @description Create the four default rules (50% */
+                    use_defaults?: boolean;
+                    /** @description Scope the rule to one template; template-scoped rules override global ones for that template. */
+                    template_id?: string;
                     /** @enum {string} */
-                    channel: "email" | "slack" | "pagerduty" | "webhook";
+                    channel: "email" | "slack" | "pagerduty" | "webhook" | "itsm";
+                    /** @description Destination for the channel (for itsm, the id of an existing ITSM connection visible to the caller tenant), or the literal @owner_team to route each alert to the certificate owner team's /notifications/team-routes on this channel, else the global inbox (owner_team *), else the dashboard queue with nothing sent externally. */
                     target: string;
                 };
             };
         };
         responses: {
-            /** @description Created rule */
+            /** @description Created rule (with use_defaults, the 50% rule plus meta.created listing all four ids) */
             201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["NotificationRule"];
+                        meta?: {
+                            created?: string[];
+                        };
+                    };
+                };
+            };
+            /** @description Invalid request body, or channel itsm with a target that is not an existing ITSM connection visible to the caller tenant */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6229,6 +12141,105 @@ export interface operations {
         };
     };
     deleteNotificationSilence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listNotificationTeamRoutes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Route list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            items?: components["schemas"]["NotificationTeamRoute"][];
+                        };
+                        meta?: {
+                            total?: number;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    createNotificationTeamRoute: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    owner_team: string;
+                    /** @enum {string} */
+                    channel: "email" | "slack" | "pagerduty" | "webhook";
+                    target: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Route created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["NotificationTeamRoute"];
+                    };
+                };
+            };
+            /** @description Invalid request body */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A route with the same owner_team, channel and target exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteNotificationTeamRoute: {
         parameters: {
             query?: never;
             header?: never;
@@ -6395,7 +12406,10 @@ export interface operations {
     getComplianceEvidenceReport: {
         parameters: {
             query?: {
+                /** @description One of all (default), soc2, pci, nist, dora, nis2, fedramp. Any other value is a 400. */
                 framework?: string;
+                /** @description pdf returns the branded evidence pack, including the Accepted risks section */
+                format?: "json" | "pdf";
             };
             header?: never;
             path?: never;
@@ -6405,6 +12419,105 @@ export interface operations {
         responses: {
             /** @description Compliance evidence */
             200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ComplianceEvidenceReport"];
+                    };
+                };
+            };
+            /** @description Unknown framework */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listComplianceAttestations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest attestations */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ComplianceAttestation"][];
+                    };
+                };
+            };
+            /** @description Missing report.read, or a tenant-scoped principal (fleet-wide report, D-102) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    attestComplianceControl: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description A manual control ID from the evidence pack */
+                    control_id: string;
+                    attester_name: string;
+                    note?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Attestation recorded */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ComplianceAttestation"];
+                    };
+                };
+            };
+            /** @description Unknown control_id or invalid attester_name or note */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not an administrator, or a tenant-scoped principal */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Attestation store unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -6499,7 +12612,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["PQCMigrationRoadmap"];
+                    };
+                };
             };
         };
     };
@@ -6677,6 +12794,8 @@ export interface operations {
             content: {
                 "application/json": {
                     template_id: string;
+                    /** @description Optional re-issue algorithm (e.g. ECDSA-P384). Must appear verbatim in the template's allowed_algorithms and be a supported transition target; omitted keeps the PQC-only behaviour. */
+                    target_algorithm?: string;
                 };
             };
         };
@@ -6692,7 +12811,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description Invalid body, unknown template, or a template without a PQC algorithm */
+            /** @description Invalid body, unknown template, or no allowed algorithm usable as the wave target */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -6738,12 +12857,21 @@ export interface operations {
                             results?: {
                                 fingerprint?: string;
                                 /** @enum {string} */
-                                status?: "migrated" | "failed";
+                                status?: "migrated" | "failed" | "skipped" | "delivery_unsupported";
                                 new_fingerprint?: string;
                                 error?: string;
+                                reason?: string;
+                                /** @enum {string} */
+                                delivery?: "none" | "verified" | "failed" | "unsupported";
+                                /** @description Present only when delivery was attempted and rolled back; true when the target still serves the previous certificate. */
+                                old_serial_served?: boolean;
                             }[];
                             migrated?: number;
                             failed?: number;
+                            skipped?: number;
+                            unsupported?: number;
+                            regressed?: boolean;
+                            wave_status?: string;
                         };
                     };
                 };
@@ -6780,12 +12908,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Renewal SLO */
+            /** @description Renewal SLO. failed_renewals is one list of agent-reported failures (type agent_result) and the scheduler's durable failure queue (type execute_failure with attempt, max_attempts, next_attempt_at, gave_up; type notification_dead_letter once the notification retry budget is spent). Queue entries survive a hub restart. The queue object (W27-33) reports the sweep backlog: depth, eta_seconds (eta_known=false until one job has finished), workers, and per connector the throttle state (connectors: in_flight, max_concurrent, waiting, rate_limited_total, blocked_until, daily_budget, daily_used) repeated compactly as connector_budgets (connector_id, in_flight, cap, daily_used, daily_limit). Upstream 429/Retry-After responses back a connector off exponentially (30 s doubling, capped at 1 h) and are audited as connector.rate_limited; a throttled renewal is audited as certificate.renew_execute_deferred and does not consume an attempt. slos (W30-05) is the per-SLO 30-day error budget and 1h/6h burn rates. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["RenewalSloReport"];
+                    };
+                };
             };
             /** @description Tenant-scoped principals cannot read this aggregate report */
             403: {
@@ -6860,6 +12992,98 @@ export interface operations {
             };
         };
     };
+    listReportSchedules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Schedule list */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ReportSchedule"][];
+                    };
+                };
+            };
+            /** @description Tenant-scoped principals cannot use fleet-wide report schedules */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createReportSchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportSchedule"];
+            };
+        };
+        responses: {
+            /** @description Schedule created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid report/format/cadence/recipients */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Tenant-scoped principals cannot use fleet-wide report schedules */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteReportSchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Schedule not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     sendEvidencePack: {
         parameters: {
             query?: never;
@@ -6882,6 +13106,520 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    listItsmConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Connections visible to the caller's tenant */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            items?: components["schemas"]["ItsmConnection"][];
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description ITSM integration not available */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    createItsmConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    kind: "servicenow" | "jira";
+                    name: string;
+                    base_url: string;
+                    credential_ref: string;
+                    /** @description Only these event classes create tickets, each with its ticket type; empty means all classes with the connector default. The array is stored and returned verbatim. */
+                    event_classes?: components["schemas"]["ItsmEventClass"][];
+                    /** @default true */
+                    enabled?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ItsmConnection"];
+                    };
+                };
+            };
+            /** @description Invalid kind, name or base_url, or unknown credential_ref */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description ITSM integration or credential store not available */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    getItsmConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The connection */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ItsmConnection"];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Connection not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    deleteItsmConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Connection not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The connection has ticket history; disable it instead */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    listItsmEvents: {
+        parameters: {
+            query?: {
+                status?: "pending" | "created" | "resolved" | "failed";
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            items?: components["schemas"]["ItsmEvent"][];
+                        };
+                    };
+                };
+            };
+            /** @description Invalid status or limit */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description ITSM integration not available */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    listItsmPrincipalMap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Mappings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            items?: components["schemas"]["ItsmPrincipalMapping"][];
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description ITSM integration not available */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    createItsmPrincipalMapping: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    kind: "servicenow" | "jira";
+                    external_id: string;
+                    user_id: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ItsmPrincipalMapping"];
+                    };
+                };
+            };
+            /** @description Invalid kind or external_id, or user_id is not an active user in the caller's tenant */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Admin role required, or the mapping belongs to another tenant */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description ITSM integration not available */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    deleteItsmPrincipalMapping: {
+        parameters: {
+            query: {
+                kind: "servicenow" | "jira";
+                external_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            /** @enum {string} */
+                            status?: "deleted";
+                        };
+                    };
+                };
+            };
+            /** @description Invalid kind or external_id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Mapping not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description ITSM integration not available */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -6910,6 +13648,12 @@ export interface operations {
                                 tenant?: string;
                                 created_at?: string;
                                 updated_at?: string;
+                                /** @description High-impact account on the hosts it reaches (W34-11). */
+                                privileged?: boolean;
+                                privileged_reason?: string;
+                                /** @description auto:<source> or manual:<principal> */
+                                privileged_set_by?: string;
+                                privileged_set_at?: string;
                             }[];
                         };
                     };
@@ -6951,8 +13695,21 @@ export interface operations {
                     name: string;
                     /** @enum {string} */
                     credential_type: "ssh_key" | "api_token" | "cloud_iam" | "windows_password";
-                    /** @description Consumer-shaped secret material. Never echoed back. */
-                    payload: Record<string, never>;
+                    /** @description Consumer-shaped secret material. Never echoed back. For ssh_key the privilege fields are validated on create: sudo_password is required for, and only allowed with, sudo_mode password; helper_sha256 is required for, and only allowed with, sudo_mode helper. */
+                    payload: {
+                        /**
+                         * @description ssh_key only. How the SSH account is elevated on the target (none = no elevation).
+                         * @default none
+                         * @enum {string}
+                         */
+                        sudo_mode?: "none" | "nopasswd" | "password" | "helper";
+                        /** @description ssh_key with sudo_mode password only. Stored encrypted, never returned. */
+                        sudo_password?: string;
+                        /** @description ssh_key with sudo_mode helper only. Pinned sha256 of the installed helper. */
+                        helper_sha256?: string;
+                    } & {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };
@@ -6964,7 +13721,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Missing fields or unknown credential type */
+            /** @description Missing fields */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -7035,6 +13792,79 @@ export interface operations {
             };
         };
     };
+    setCredentialPrivileged: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    privileged: boolean;
+                    reason?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The updated credential metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            id?: string;
+                            name?: string;
+                            privileged?: boolean;
+                            privileged_reason?: string;
+                            privileged_set_by?: string;
+                            privileged_set_at?: string;
+                        };
+                    };
+                };
+            };
+            /** @description privileged is required */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Credential not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Credential store not configured or cannot carry the flag */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     preflightCredential: {
         parameters: {
             query?: never;
@@ -7065,7 +13895,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description Not a windows_password credential */
+            /** @description Not a windows_password credential, or its payload lacks base_url/username */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -7328,7 +14158,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["Ceremony"][];
+                    };
+                };
             };
         };
     };
@@ -7354,12 +14188,16 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Ceremony created. The root CA exists but is parked pending_ceremony — every issuance path refuses it until the quorum of distinct approvals flips it active. */
+            /** @description Ceremony created. The root CA exists but is parked pending_ceremony — every issuance path refuses it until the quorum of distinct approvals flips it active. Ceremonies still pending after `expires_at` (created_at + 72h, configurable via KRYPTKEEPER_CEREMONY_TTL) auto-abort to status `expired`. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["Ceremony"];
+                    };
+                };
             };
             /** @description Invalid quorum/approvers or CA creation failed */
             400: {
@@ -7386,7 +14224,11 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["Ceremony"];
+                    };
+                };
             };
             /** @description Not found */
             404: {
@@ -7564,6 +14406,264 @@ export interface operations {
             };
         };
     };
+    listMigrationSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Importer names, sorted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: string[];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    dryRunMigration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MigrationRequest"];
+            };
+        };
+        responses: {
+            /** @description Create, skip and conflict per source object, with per-field mapping status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["MigrationDiff"];
+                    };
+                };
+            };
+            /** @description Unknown source, empty or unparseable export */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description ca.manage required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    applyMigration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MigrationRequest"];
+            };
+        };
+        responses: {
+            /** @description Nothing to apply */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            /** @enum {string} */
+                            status?: "nothing_to_apply";
+                            diff?: components["schemas"]["MigrationDiff"];
+                        };
+                    };
+                };
+            };
+            /** @description Queued for approval */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            /** @enum {string} */
+                            status?: "pending_approval";
+                            pending_action_id?: string;
+                            diff?: components["schemas"]["MigrationDiff"];
+                        };
+                    };
+                };
+            };
+            /** @description Bad export, or content over 48 KiB (split it) */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description ca.manage required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listMigrationBatches: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Batches, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["MigrationBatch"][];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getMigrationReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The batch and its report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            batch?: components["schemas"]["MigrationBatch"];
+                            report?: components["schemas"]["MigrationReport"];
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown batch */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rollbackMigration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                batch: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rollback outcome per template */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["MigrationRollbackResult"];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description ca.manage required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown batch */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listWorkloadSelectors: {
         parameters: {
             query?: never;
@@ -7700,7 +14800,7 @@ export interface operations {
                     "application/json": components["schemas"]["DualControlProposal"];
                 };
             };
-            /** @description Missing fields */
+            /** @description Missing fields, or a provider this build cannot wrap for */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -7714,7 +14814,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Approver role required */
+            /** @description Approver role required, or dual control not satisfied */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7779,7 +14879,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Tenant has not opted in */
+            /** @description Tenant has not opted in, or dual control not satisfied */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7830,7 +14930,7 @@ export interface operations {
                     "application/json": components["schemas"]["DualControlProposal"];
                 };
             };
-            /** @description Bundle missing */
+            /** @description Bundle missing, malformed, or dual control not satisfied */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -8091,6 +15191,203 @@ export interface operations {
             };
         };
     };
+    getKeyPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The policy. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["KeyPolicy"];
+                    };
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No policy for this key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    setKeyPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    owner: string;
+                    acl?: string[];
+                    max_age_days?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description The stored policy. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["KeyPolicy"];
+                    };
+                };
+            };
+            /** @description owner missing or max_age_days negative */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Key not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    markKeyCompromised: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Proposal filed; awaiting a second approver. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            status?: string;
+                            action_id?: string;
+                            message?: string;
+                        };
+                    };
+                };
+            };
+            /** @description Not an admin, or not the owner / on the ACL */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Key not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The key has no policy */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    cancelKeyDeletion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Dual control is off - the deletion was cancelled and the key is Enabled again. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Dual control is on - a proposal was filed and nothing changed yet. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DualControlProposal"];
+                };
+            };
+            /** @description Admin role required. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Malformed key id. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The backend has no scheduled deletions (e.g. a software key), or the key is not inside a cancellable pending-deletion window (never deleted, or the provider window has passed). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The deletion status or the approval queue is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     exportKey: {
         parameters: {
             query?: never;
@@ -8138,6 +15435,7 @@ export interface operations {
     listAuditEntries: {
         parameters: {
             query?: {
+                /** @description An exact action, or a dotted prefix that also matches every action under it (certificate matches certificate.issue). */
                 action?: string;
                 actor_id?: string;
                 limit?: number;
@@ -8168,6 +15466,126 @@ export interface operations {
             };
             /** @description The caller's role lacks the audit.read permission (pki-admin, auditor, pki-auditor, or a custom role granted it) */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    exportAuditEntries: {
+        parameters: {
+            query?: {
+                format?: "csv" | "json";
+                action?: string;
+                actor_id?: string;
+                actor_type?: string;
+                resource_type?: string;
+                outcome?: string;
+                /** @description RFC 3339 lower bound (exclusive). */
+                after?: string;
+                /** @description RFC 3339 upper bound (exclusive). */
+                before?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Attachment stream (audit-evidence-<UTC timestamp>.csv|json) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                    "application/json": components["schemas"]["AuditEntry"][];
+                };
+            };
+            /** @description format is not csv or json, or unknown outcome filter */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The caller's role lacks the audit.read permission */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audit store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    proposeAuditArchive: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: date-time
+                     * @description RFC 3339 cutoff; rows strictly older are archived.
+                     */
+                    before?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Proposal filed; awaiting a second approver */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["PendingAction"];
+                    };
+                };
+            };
+            /** @description before is malformed or inside the retention window */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not a pki-admin, or (multi-tenancy on) not an unscoped super-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Audit archiving unavailable (audit trail not in the hub database) */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8206,6 +15624,91 @@ export interface operations {
             };
         };
     };
+    getMyPrefs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Preferences (defaults when none stored) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["UserPrefs"];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Prefs store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    setMyPrefs: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    onboarding_dismissed: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Stored preferences */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["UserPrefs"];
+                    };
+                };
+            };
+            /** @description Unknown field, missing field or malformed body */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Prefs store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     inviteUser: {
         parameters: {
             query?: never;
@@ -8220,6 +15723,8 @@ export interface operations {
                     email: string;
                     /** @default pki-operator */
                     role?: string;
+                    /** @description Super-admin only; a tenant-scoped caller invites into its own tenant. */
+                    tenant?: string;
                 };
             };
         };
@@ -8474,6 +15979,63 @@ export interface operations {
             };
         };
     };
+    previewRoleMap: {
+        parameters: {
+            query?: {
+                /** @description Comma-separated IdP group values (at most 50, each at most 256 characters). */
+                groups?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Mapping preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            groups: string[];
+                            mapped: boolean;
+                            /** @description Role of the matching map entry, or empty when none matches. */
+                            role: string;
+                            matched_claim_value: string;
+                            /** @enum {string} */
+                            unmapped_policy: "deny" | "read-only";
+                            /** @description The mapped role, else the opt-in fallback (viewer), else empty. */
+                            effective_role: string;
+                            would_login: boolean;
+                        };
+                    };
+                };
+            };
+            /** @description Too many groups or a group value is too long */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller lacks role-management permission */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     oidcLogin: {
         parameters: {
             query?: never;
@@ -8687,7 +16249,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The key could not be saved to the database, so none was issued; retry */
+            /** @description Key minting is off (APP_API_KEY_PEPPER unset), or the key could not be saved to the database so none was issued; retry */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -9369,12 +16931,62 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Key-custody report */
+            /** @description Key-custody report: per-key custody facts plus targets[], the effective key-handling mode of every target visible to the caller (W23-46). */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        data?: {
+                            /** Format: date-time */
+                            generated_at: string;
+                            backend: string;
+                            dual_control_escrow: boolean;
+                            keys: {
+                                key_id: string;
+                                algorithm: string;
+                                backend: string;
+                                created_at?: string;
+                                /** @description Tombstone for a key no longer in the keystore (super-admin only) */
+                                deleted?: boolean;
+                                imported?: boolean;
+                                rotation_count: number;
+                                last_rotated_at?: string;
+                                access_count: number;
+                                last_accessed_at?: string;
+                                events: {
+                                    /** @enum {string} */
+                                    action: "key.export" | "key.escrow" | "key.escrow_recover" | "key.rotate" | "key.delete";
+                                    occurred_at: string;
+                                    requester: string;
+                                    /** @description Empty only when dual control was off */
+                                    approver: string;
+                                    redeemer: string;
+                                    dual_control: boolean;
+                                    approval_id?: string;
+                                }[];
+                            }[];
+                            /** @description Count per custody action over the keys visible to the caller; all five actions always present. */
+                            event_counts: {
+                                [key: string]: number;
+                            };
+                            /** @description Audit trail exceeded the read limit */
+                            truncated?: boolean;
+                            pqc_custody_statement?: string;
+                            targets: {
+                                target_id: string;
+                                name: string;
+                                host: string;
+                                install_mode: string;
+                                /** @enum {string} */
+                                mode: "client_csr" | "hub_generated" | "hsm_resident_ca" | "macos_non_extractable";
+                                /** @enum {string} */
+                                source: "explicit" | "derived";
+                            }[];
+                        };
+                    };
+                };
             };
             /** @description No keystore configured */
             503: {
@@ -9457,7 +17069,18 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": {
+                        data?: {
+                            name: string;
+                            description?: string;
+                            permissions?: string[];
+                            builtin: boolean;
+                            /** @description Owning tenant; absent for built-in and global roles (global roles are writable by super-admin only). */
+                            tenant_id?: string;
+                        }[];
+                    };
+                };
             };
         };
     };
@@ -9562,7 +17185,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The caller does not hold every permission it is granting */
+            /** @description The caller does not hold every permission it is granting, or the role belongs to another tenant (or is global and the caller is not super-admin) */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9584,6 +17207,13 @@ export interface operations {
         responses: {
             /** @description Deleted */
             204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The role belongs to another tenant, or is global and the caller is not super-admin */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9680,7 +17310,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Integration status */
+            /** @description Integration status. scep_enabled is true only when SCEP is serving; scep_off_reason (additive, omitted when empty) says why it is not when it was requested or cannot run, for example a non-RSA SCEP CA. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -9779,6 +17409,403 @@ export interface operations {
                 content?: never;
             };
             /** @description No unused challenge with that id (a used one stays as a record) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listACMEEABKeys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Keys, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            kid?: string;
+                            label?: string;
+                            provisioner?: string;
+                            template_id?: string;
+                            created_by?: string;
+                            /** Format: date-time */
+                            created_at?: string;
+                            /** Format: date-time */
+                            revoked_at?: string | null;
+                            /** Format: date-time */
+                            last_used_at?: string | null;
+                            uses?: number;
+                        }[];
+                    };
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createACMEEABKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    label?: string;
+                    /** @description Lowercase letters, digits, hyphens */
+                    provisioner?: string;
+                    template_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Key minted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            kid: string;
+                            /** @description Shown once */
+                            hmac_key: string;
+                            label?: string;
+                            provisioner?: string;
+                            template_id?: string;
+                            /** Format: date-time */
+                            created_at: string;
+                        };
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No credential store passphrase configured, or the store is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revokeACMEEABKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                kid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already revoked */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listACMEProvisioners: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provisioners by name */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ACMEProvisioner"][];
+                    };
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createACMEProvisioner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ACMEProvisionerInput"];
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ACMEProvisioner"];
+                    };
+                };
+            };
+            /** @description Invalid request; the message names the bad field or entry */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Name already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getACMEProvisioner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The provisioner */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ACMEProvisioner"];
+                    };
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such provisioner */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateACMEProvisioner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ACMEProvisionerInput"];
+            };
+        };
+        responses: {
+            /** @description Updated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ACMEProvisioner"];
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such provisioner */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteACMEProvisioner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such provisioner */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -10119,6 +18146,13 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description An sso.oidc_* key was refused because no enabled local admin exists, or the OIDC discovery test failed; nothing was saved */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Config store unavailable */
             503: {
                 headers: {
@@ -10208,6 +18242,13 @@ export interface operations {
                     "application/json": {
                         data?: {
                             group?: string;
+                            /**
+                             * @description staged = two-phase stage-then-flip with cluster-atomic rollback (ssh nginx/apache/haproxy groups); sequential = node-by-node.
+                             * @enum {string}
+                             */
+                            mode?: "staged" | "sequential";
+                            /** @description SHA-256 of the one renewed leaf every node received; empty when deferred. */
+                            new_fingerprint?: string;
                             /** @description Outside the maintenance window; nothing was touched. */
                             deferred?: boolean;
                             halted?: boolean;
@@ -10223,7 +18264,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description Missing fingerprint or nodes */
+            /** @description Missing fingerprint or nodes, or too many nodes */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -10250,6 +18291,21 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description The certificate already has a successor, typically minted by an earlier halted or rolled-back rollout that no node kept. Nothing was minted or pushed; roll out successor_fingerprint instead. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        error?: "conflict";
+                        message?: string;
+                        /** @description The successor an earlier (halted or rolled-back) attempt already minted. The hub never re-mints or reuses key material implicitly; roll this certificate out instead. */
+                        successor_fingerprint?: string;
+                    };
+                };
             };
             /** @description Renewal failed or credential store unconfigured */
             503: {
@@ -10373,6 +18429,12 @@ export interface operations {
                                 [key: string]: string[];
                             };
                             graph_size?: string;
+                            edge_coverage?: {
+                                certs_total?: number;
+                                certs_with_ca_edge?: number;
+                                certs_with_service_edge?: number;
+                                basis?: string;
+                            };
                         };
                     };
                 };
@@ -10386,6 +18448,20 @@ export interface operations {
             };
             /** @description Unauthenticated */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target belongs to another tenant */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10433,7 +18509,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Checkpoint signing not configured */
+            /** @description Checkpoint signing key unavailable (invalid seed, or the data directory is not writable) */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -10563,6 +18639,10 @@ export interface operations {
                                 rotation_enabled?: boolean;
                                 created_at?: string;
                                 pqc_readiness?: string;
+                                /** @description Empty for cloud KMS keys; `host` or `user` for SSH keys. */
+                                key_type?: string;
+                                /** @description Past its rotation window (SSH user keys). */
+                                stale?: boolean;
                             }[];
                             /** @description Per-provider failures as generic strings ("cloud key inventory unavailable: <provider>"); the raw cloud error is logged server-side only. Presence means a partial result. */
                             errors?: string[];
@@ -10579,6 +18659,351 @@ export interface operations {
             };
             /** @description Requires the key.manage or report.read permission (mcp-agent is refused) */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    issueCodesignCertificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    oidc_token: string;
+                    csr_pem: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Issued (Cache-Control no-store) */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            certificate_pem?: string;
+                            chain_pem?: string;
+                            serial_number?: string;
+                            fingerprint_sha256?: string;
+                            /** Format: date-time */
+                            not_before?: string;
+                            /** Format: date-time */
+                            not_after?: string;
+                            repo?: string;
+                            ref?: string;
+                        };
+                    };
+                };
+            };
+            /** @description Invalid body, CSR, or unsupported key type */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Token refused (generic body; the reason is audit-only) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Refused by issuance policy */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Code-signing issuance unavailable, or the certificate could not be recorded */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listCodesignTrustRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Trust rules */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["CodesignTrustRule"][];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trust store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    proposeCodesignTrustRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    provider: "github" | "gitlab";
+                    issuer: string;
+                    audience: string;
+                    repo_pattern: string;
+                    ref_pattern: string;
+                    ca_id: string;
+                    rationale?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Pending approval */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            action_id?: string;
+                            status?: string;
+                        };
+                    };
+                };
+            };
+            /** @description Invalid or overly broad rule, or unknown CA */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Requires pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trust store or approval queue unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteCodesignTrustRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Requires pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such rule in the caller's tenant */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trust store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    timestampRFC3161: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/timestamp-query": string;
+            };
+        };
+        responses: {
+            /** @description TimeStampResp (granted or rejected in-band) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/timestamp-reply": string;
+                };
+            };
+            /** @description Authentication required (anonymous access is off by default) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Request body too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Content-Type is not application/timestamp-query */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Time-stamp authority not configured, or signing failed */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createCodeSigningRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    ca_id: string;
+                    template_id: string;
+                    common_name: string;
+                    team_id?: string;
+                    /**
+                     * @default ECDSA-P256
+                     * @enum {string}
+                     */
+                    algorithm?: "RSA-3072" | "RSA-4096" | "ECDSA-P256" | "ECDSA-P384";
+                };
+            };
+        };
+        responses: {
+            /** @description Queued for approval; no certificate exists yet */
+            202: {
+                headers: {
+                    Location?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status?: "pending_approval";
+                        approval_id?: string;
+                        key_id?: string;
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing or invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Role, team or tenant scope refused */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a code-signing template, policy violation, or no protected key store */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10686,6 +19111,148 @@ export interface operations {
             };
         };
     };
+    listCTFindings: {
+        parameters: {
+            query?: {
+                status?: "open" | "acknowledged" | "known_issuer";
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Findings visible to the caller's tenant */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            findings: components["schemas"]["CTFinding"][];
+                            /** @description Matching findings before the limit */
+                            total: number;
+                        };
+                    };
+                };
+            };
+            /** @description Invalid status or limit */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read operational summaries */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description CT findings store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    acknowledgeCTFinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Finding id (source:entry-id, e.g. crtsh:12345) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The finding, now acknowledged */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["CTFinding"];
+                    };
+                };
+            };
+            /** @description Caller may not triage CT findings (pki-admin, pki-operator, or the ops:write scope); audited as denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown finding, or one that belongs to another tenant */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description CT findings store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    markCTFindingKnownIssuer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Finding id (source:entry-id, e.g. crtsh:12345) */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The finding, now known_issuer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["CTFinding"];
+                    };
+                };
+            };
+            /** @description Caller may not triage CT findings; audited as denied */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown finding, or one that belongs to another tenant */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description CT findings store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listManagedTargets: {
         parameters: {
             query?: never;
@@ -10737,6 +19304,11 @@ export interface operations {
                     renewal_threshold_days?: number;
                     /** @description Delivery plugin for install_mode=plugin (W20-20); required then, refused otherwise */
                     plugin_id?: string;
+                    /**
+                     * @description W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode.
+                     * @enum {string}
+                     */
+                    key_handling_mode?: "client_csr" | "hub_generated" | "hsm_resident_ca" | "macos_non_extractable";
                     /** @description The plugin's target_schema values; no secrets */
                     plugin_settings?: {
                         [key: string]: string;
@@ -10749,6 +19321,8 @@ export interface operations {
                     install_reload_method?: string;
                     /** @description Optional host:port that scheduled renewals dial to verify the served leaf after install; default <host>:443. */
                     verify_host_port?: string;
+                    /** @description Operator-confirmed SSH host key pin in authorized_keys format (W24-09); only for install_mode ssh or keychain. Obtain and confirm it via POST /targets/hostkey. Empty falls back to the credential's host_public_key. A later dial seeing a different key is refused (audit target.hostkey.mismatch). */
+                    ssh_host_key?: string;
                     auto_renew?: boolean;
                 };
             };
@@ -10781,6 +19355,59 @@ export interface operations {
             };
             /** @description Managed target store unavailable */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    probeTargetHostKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    host: string;
+                    /** @default 22 */
+                    port?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Observed host key */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            host?: string;
+                            port?: number;
+                            /** @example ssh-ed25519 */
+                            algorithm?: string;
+                            /** @description authorized_keys format */
+                            ssh_host_key?: string;
+                            /** @example SHA256:... */
+                            fingerprint_sha256?: string;
+                        };
+                    };
+                };
+            };
+            /** @description Missing or forbidden host (loopback/link-local) or bad port */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The host could not be reached or did not complete an SSH handshake */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10884,6 +19511,11 @@ export interface operations {
                     renewal_threshold_days?: number;
                     /** @description Delivery plugin for install_mode=plugin (W20-20); required then, refused otherwise */
                     plugin_id?: string;
+                    /**
+                     * @description W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode.
+                     * @enum {string}
+                     */
+                    key_handling_mode?: "client_csr" | "hub_generated" | "hsm_resident_ca" | "macos_non_extractable";
                     /** @description The plugin's target_schema values; no secrets */
                     plugin_settings?: {
                         [key: string]: string;
@@ -10896,6 +19528,8 @@ export interface operations {
                     install_reload_method?: string;
                     /** @description Optional host:port that scheduled renewals dial to verify the served leaf after install; default <host>:443. */
                     verify_host_port?: string;
+                    /** @description Operator-confirmed SSH host key pin in authorized_keys format (W24-09); only for install_mode ssh or keychain. Obtain and confirm it via POST /targets/hostkey. Empty falls back to the credential's host_public_key. A later dial seeing a different key is refused (audit target.hostkey.mismatch). */
+                    ssh_host_key?: string;
                     auto_renew?: boolean;
                 };
             };
@@ -10935,6 +19569,259 @@ export interface operations {
             };
         };
     };
+    getPrivilegeBundleForProfile: {
+        parameters: {
+            query?: {
+                mode?: "helper" | "nopasswd" | "password";
+                /** @description Account name for the drop-in (default kkscan) */
+                user?: string;
+                server_type?: "nginx" | "apache" | "haproxy" | "tomcat";
+                cert_path?: string;
+                key_path?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The privilege bundle */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["PrivilegeBundle"];
+                    };
+                };
+            };
+            /** @description Unknown mode */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing discovery or certificate.renew permission */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTargetPrivilegeBundle: {
+        parameters: {
+            query?: {
+                mode?: "helper" | "nopasswd" | "password";
+                /** @description Account name for the drop-in (default kkscan) */
+                user?: string;
+                /** @description Comma-separated directories or files a scan reads in addition to the target's install paths (for example /opt/ssl). The raw (nopasswd) allowlist covers only the install directory and these; at most 16. */
+                scan_paths?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The privilege bundle */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["PrivilegeBundle"];
+                    };
+                };
+            };
+            /** @description Unknown mode */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing discovery or certificate.renew permission */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    unblockTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unblocked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Permission required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target state storage unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTargetPreflight: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Last report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["PrivilegePreflight"];
+                    };
+                };
+            };
+            /** @description Missing permission or different tenant */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    preflightTarget: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Preflight report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["PrivilegePreflight"];
+                    };
+                };
+            };
+            /** @description Not an ssh target */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing permission or different tenant */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Credential or preflight storage unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getManagedTargetEndpoints: {
         parameters: {
             query?: never;
@@ -10966,6 +19853,303 @@ export interface operations {
             };
             /** @description Target not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listTargetBindings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bindings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["CertTargetBinding"][];
+                    };
+                };
+            };
+            /** @description Forbidden (different tenant) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Binding store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createTargetBinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description SHA-256 fingerprint (64 hex) */
+                    cert_fingerprint: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Bound */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["CertTargetBinding"];
+                    };
+                };
+            };
+            /** @description Malformed fingerprint or body */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden (different tenant, certificate.renew missing, or the target's tenant cannot use the certificate's CA) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target or certificate not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already bound */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Binding store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTargetBinding: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                fingerprint: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unbound */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Malformed fingerprint */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden (different tenant) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Target or binding not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Binding store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listTargetGroups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Groups visible to the caller's tenant */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["TargetGroup"][];
+                    };
+                };
+            };
+            /** @description Group store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    putTargetGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    renewal_threshold_days: number;
+                    target_ids?: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Saved */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["TargetGroup"];
+                    };
+                };
+            };
+            /** @description Threshold outside 1..398, malformed name, or an unknown or other-tenant target id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Group store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteTargetGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted; former members fall back to their own threshold or the default */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Group not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Group store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTargetPolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One row per target visible to the caller's tenant */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["TargetPolicyRow"][];
+                    };
+                };
+            };
+            /** @description Store unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11038,6 +20222,10 @@ export interface operations {
                     name: string;
                     /** @enum {string} */
                     type?: "linux" | "mac" | "windows";
+                    /** @description W29-06 single-use token (preferred); or X-Enrollment-Token header. When present, the shared secret is not tried. */
+                    enrollment_token?: string;
+                    /** @description Deprecated shared secret (transition path; startup warning); or X-Enrollment-Secret header */
+                    enrollment_secret?: string;
                 };
             };
         };
@@ -11053,6 +20241,179 @@ export interface operations {
                         token?: string;
                     };
                 };
+            };
+            /** @description No enrollment credential presented */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Enrollment refused (wrong, expired, revoked or already-redeemed evidence) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Rate limit exceeded */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listAgentEnrollmentTokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Enrollment tokens */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            id?: string;
+                            label?: string;
+                            created_by?: string;
+                            /** Format: date-time */
+                            created_at?: string;
+                            /** Format: date-time */
+                            expires_at?: string;
+                            redeemed_at?: string;
+                            redeemed_agent_id?: string;
+                            revoked_at?: string;
+                        }[];
+                    };
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden (admin role required) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    mintAgentEnrollmentToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    label?: string;
+                    /** @description Defaults to 86400 */
+                    ttl_seconds?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Token minted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            id?: string;
+                            token?: string;
+                            /** Format: date-time */
+                            expires_at?: string;
+                            label?: string;
+                        };
+                    };
+                };
+            };
+            /** @description Invalid body or ttl_seconds out of range */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden (admin role required) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revokeAgentEnrollmentToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Token revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden (admin role required) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Token not found (a token of another tenant is reported identically) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Token already redeemed or revoked */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -11108,6 +20469,54 @@ export interface operations {
                         source?: string;
                         auto_renewable?: boolean;
                     }[];
+                    /** @description W34-09 marker that the agent ran the host pass. A pre-W34 agent omits it and every field below; the hub then records posture as unknown, not standard. */
+                    host_scanned?: boolean;
+                    /**
+                     * @description KRYPTKEEPER_PRIVILEGE_MODE the walk ran with; password mode is not offered to the agent.
+                     * @enum {string}
+                     */
+                    privilege_mode?: "none" | "nopasswd" | "helper";
+                    scan_user?: string;
+                    /** @description Paths the walk could not open for lack of privilege (capped agent-side at 50). */
+                    unreadable_paths?: {
+                        path?: string;
+                        error?: string;
+                    }[];
+                    /** @description The true count when unreadable_paths was capped. */
+                    unreadable_total?: number;
+                    /** @description Certificate, key and keystore files with ownership. Keys are described by stat only; no key bytes are ever sent. */
+                    files?: {
+                        path?: string;
+                        /** @enum {string} */
+                        kind?: "pem" | "jks" | "p12" | "key";
+                        owner?: string;
+                        group?: string;
+                        /** @description Octal permission bits. */
+                        mode?: string;
+                        /** @description -1 when unknown. */
+                        uid?: number;
+                        gid?: number;
+                        cert_fingerprints?: string[];
+                    }[];
+                    /** @description Listening TCP sockets with their owning process (the W34-07 shape); the command line is never sent. */
+                    listeners?: {
+                        port?: number;
+                        pid?: number;
+                        /** @description -1 when the owner could not be read. */
+                        uid?: number;
+                        gid?: number;
+                        user?: string;
+                        exe?: string;
+                        comm?: string;
+                        cwd?: string;
+                        tech?: string;
+                        config_refs?: string[];
+                        app_dirs?: string[];
+                    }[];
+                    /** @description Paths a service's configuration names, mapped to the technology that uses them. */
+                    config_refs?: {
+                        [key: string]: string;
+                    };
                 };
             };
         };
@@ -11192,6 +20601,47 @@ export interface operations {
             };
         };
     };
+    removeAgent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Agent removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Forbidden (admin role required) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getAgentTaskResults: {
         parameters: {
             query?: never;
@@ -11240,6 +20690,2003 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    getAccessReviewReport: {
+        parameters: {
+            query?: {
+                /** @description Length of the role-change window ending now. */
+                period_days?: number;
+                /** @description Overrides ACCESS_REVIEW_DORMANT_DAYS (default 90). */
+                dormant_days?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["AccessReviewReport"];
+                    };
+                };
+            };
+            /** @description Bad period_days or dormant_days */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Requires audit.read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listAccessReviewCampaigns: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Campaigns (without entries) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            items?: components["schemas"]["AccessReviewCampaign"][];
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Requires audit.read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    openAccessReviewCampaign: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    /** @default 90 */
+                    period_days?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Campaign opened */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["AccessReviewCampaign"];
+                    };
+                };
+            };
+            /** @description Invalid name or period_days */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Administrator required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAccessReviewCampaign: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The campaign */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["AccessReviewCampaign"];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Requires audit.read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown campaign, or another tenant's */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    decideAccessReviewEntry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    entry_id: string;
+                    /** @enum {string} */
+                    decision: "keep" | "revoke" | "modify";
+                    /** @description Required for modify (users only). */
+                    new_role?: string;
+                    note?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Decision recorded and executed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["AccessReviewEntry"];
+                    };
+                };
+            };
+            /** @description First revoke of an approver-capable user is held for a second reviewer */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["AccessReviewEntry"];
+                    };
+                };
+            };
+            /** @description Bad decision, missing or unknown new_role, or modify on an API key */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not an administrator, same reviewer twice, bootstrap as second reviewer, or role above the caller */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown campaign, entry, user or key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Campaign closed, entry already decided, or SCIM-managed user */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    closeAccessReviewCampaign: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    allow_undecided?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Closed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["AccessReviewCampaign"];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Administrator required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown campaign */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Entries undecided, or already closed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    exportAccessReviewCampaign: {
+        parameters: {
+            query?: {
+                format?: "csv";
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description CSV */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/csv": string;
+                };
+            };
+            /** @description Unsupported format */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Requires audit.read */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown campaign */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    requestBreakGlassActivation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    reason: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Pending activation */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["BreakGlassActivation"];
+                    };
+                };
+            };
+            /** @description Reason missing or too long */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a break-glass holder, or bootstrap token / API key */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description An activation is already pending or active */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    confirmBreakGlassActivation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active for 4 hours; audited as breakglass.activate naming both holders */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["BreakGlassActivation"];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not a holder, or the same human as the requester */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown activation */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Activation is not pending */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The request lapsed (older than 15 minutes) */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getBreakGlassStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            active: boolean;
+                            activation?: components["schemas"]["BreakGlassActivation"];
+                            open_reviews: number;
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Neither a holder nor an administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listBreakGlassReviews: {
+        parameters: {
+            query?: {
+                status?: "open" | "completed";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reviews, each with a derived overdue flag */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            items?: components["schemas"]["BreakGlassReview"][];
+                        };
+                    };
+                };
+            };
+            /** @description Bad status filter */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Neither a holder nor an administrator */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    completeBreakGlassReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    outcome: "justified" | "unjustified";
+                    notes?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Completed review */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["BreakGlassReview"];
+                    };
+                };
+            };
+            /** @description Bad outcome or notes */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not an eligible reviewer */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown review */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already completed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    breakGlassLogin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    email: string;
+                    password: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Session token, same shape as /auth/login */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not the break-glass account, or account inactive */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Rate limited */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Break-glass login is not configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    overridePendingAction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    reason: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Executed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            /** @enum {string} */
+                            status?: "approved";
+                            overridden?: boolean;
+                            result?: Record<string, never>;
+                        };
+                    };
+                };
+            };
+            /** @description Reason missing or too long */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No live window, caller is not one of its holders, bootstrap token / API key, or own proposal */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown action, or another tenant's */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not pending, or quorum is still reachable */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Execution failed, or the use could not be recorded (nothing executed) */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listESTUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Users */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ESTUser"][];
+                    };
+                };
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createESTUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description No colon: it would break HTTP Basic parsing */
+                    username: string;
+                    /** @description Each starts with a dot, e.g. .devices.example.com */
+                    allowed_dns_suffixes: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description User created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ESTUserSecret"];
+                    };
+                };
+            };
+            /** @description Invalid username or suffixes */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already stored, or defined in the users file */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getESTUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The user */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ESTUser"];
+                    };
+                };
+            };
+            /** @description No such stored user */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteESTUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such stored user */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateESTUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    disabled?: boolean;
+                    allowed_dns_suffixes?: string[];
+                };
+            };
+        };
+        responses: {
+            /** @description Updated user */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ESTUser"];
+                    };
+                };
+            };
+            /** @description Nothing to change, or invalid suffixes */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such stored user */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rotateESTUserPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description New password, shown once */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ESTUserSecret"];
+                    };
+                };
+            };
+            /** @description No such stored user */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listESTLabels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Labels */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ESTLabel"][];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createESTLabel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Not an EST operation name (cacerts, simpleenroll, simplereenroll, csrattrs, serverkeygen, fullcmc) */
+                    label: string;
+                    template_id: string;
+                    description?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Label created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ESTLabel"];
+                    };
+                };
+            };
+            /** @description Invalid label, or the template does not exist */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Label already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getESTLabel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                label: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The label */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ESTLabel"];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such label */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    updateESTLabel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                label: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Optional; must equal the path label */
+                    label?: string;
+                    template_id: string;
+                    description?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Updated label */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ESTLabel"];
+                    };
+                };
+            };
+            /** @description The template does not exist, or the body label differs from the path */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such label */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteESTLabel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                label: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such label */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listCMPCredentials: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Credentials, newest first; revoked ones keep revoked_at */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            id: string;
+                            /** @enum {string} */
+                            kind: "pbm" | "trust_anchor";
+                            label?: string;
+                            reference?: string;
+                            cert_sha256?: string;
+                            enforced?: boolean;
+                            allowed_dns_suffixes?: string[];
+                            created_by?: string;
+                            /** Format: date-time */
+                            created_at: string;
+                            /** Format: date-time */
+                            rotated_at?: string | null;
+                            /** Format: date-time */
+                            revoked_at?: string | null;
+                            /** Format: date-time */
+                            last_used_at?: string | null;
+                        }[];
+                    };
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createCMPCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    kind: "pbm" | "trust_anchor";
+                    label?: string;
+                    /** @description pbm only */
+                    allowed_dns_suffixes?: string[];
+                    /** @description trust_anchor only; exactly one unexpired CERTIFICATE */
+                    certificate_pem?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            id: string;
+                            /** @enum {string} */
+                            kind: "pbm" | "trust_anchor";
+                            label?: string;
+                            /** @description pbm: the senderKID */
+                            reference?: string;
+                            /** @description pbm: shown once */
+                            secret?: string;
+                            allowed_dns_suffixes?: string[];
+                            /** @description trust_anchor */
+                            subject?: string;
+                            /**
+                             * Format: date-time
+                             * @description trust_anchor
+                             */
+                            not_after?: string;
+                            /** @description trust_anchor */
+                            cert_sha256?: string;
+                            /** @description trust_anchor: always false */
+                            enforced?: boolean;
+                            /** Format: date-time */
+                            created_at: string;
+                        };
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trust anchor already registered */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No credential store passphrase configured, or the store is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    revokeCMPCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such credential */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already revoked */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    rotateCMPCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Rotated */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            id: string;
+                            reference: string;
+                            /** @description Shown once */
+                            secret: string;
+                            /** Format: date-time */
+                            rotated_at: string;
+                        };
+                    };
+                };
+            };
+            /** @description Not a PBM secret */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such credential */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Revoked */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No credential store passphrase configured, or the store is unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    testItsmConnection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Test result (a failed test is still 200 with ok=false) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            ok: boolean;
+                            detail: string;
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description No such connection for this tenant */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description ITSM integration not available */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    slackChatopsInteraction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/x-www-form-urlencoded": {
+                    /** @description Slack block_actions interaction JSON. The action_id is approve or reject and the value is approval:ID or action:ID. */
+                    payload: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Decision applied */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionResult"];
+                };
+            };
+            /** @description Approval recorded but the n-of-m quorum is not yet met; no state changed yet beyond recording this approval. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PendingDecision"];
+                };
+            };
+            /** @description Unreadable body, invalid interaction payload or action */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Missing, invalid, stale (over 5 minutes) or replayed Slack signature */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Slack user unmapped or deprovisioned, proposer cannot approve, or lacks the approver capability */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Approval or pending action not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Request is no longer pending */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Request body too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The approve route answered unexpectedly */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Identity map or user directory unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    teamsChatopsActivity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Decision applied, or a non-message activity ignored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionResult"];
+                };
+            };
+            /** @description Approval recorded but the n-of-m quorum is not yet met; no state changed yet beyond recording this approval. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PendingDecision"];
+                };
+            };
+            /** @description Invalid interaction action */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Invalid, missing, stale or replayed Bot Framework token or activity */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Teams user unmapped or deprovisioned, proposer cannot approve, or lacks the approver capability */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Approval or pending action not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Request is no longer pending */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Request body too large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The approve route answered unexpectedly */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Identity map or user directory unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    listChatopsIdentityMap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Mappings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ChatopsMapping"][];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Identity map unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    setChatopsIdentityMapping: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    platform: "slack" | "teams";
+                    workspace: string;
+                    external_id: string;
+                    kryptkeeper_user: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Mapping stored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ChatopsMapping"];
+                    };
+                };
+            };
+            /** @description Invalid JSON, platform, workspace or external_id, or unknown user in this tenant */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Admin role required, or the mapping belongs to another tenant */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Identity map or user directory unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    deleteChatopsIdentityMapping: {
+        parameters: {
+            query: {
+                platform: "slack" | "teams";
+                workspace: string;
+                external_id: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            /** @enum {string} */
+                            status?: "deleted";
+                        };
+                    };
+                };
+            };
+            /** @description Invalid platform, workspace or external_id */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Mapping not found (including another tenant's) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Identity map unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };

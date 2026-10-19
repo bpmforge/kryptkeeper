@@ -112,6 +112,10 @@ func (s *PKCS11Store) GenerateKey(id string, algo Algorithm) (KeyMetadata, error
 		if _, err := s.ctx.GenerateRSAKeyPairWithLabel(label, label, 2048); err != nil {
 			return KeyMetadata{}, fmt.Errorf("pkcs11 generate RSA-2048 key %q: %w", id, err)
 		}
+	case RSA3072:
+		if _, err := s.ctx.GenerateRSAKeyPairWithLabel(label, label, 3072); err != nil {
+			return KeyMetadata{}, fmt.Errorf("pkcs11 generate RSA-3072 key %q: %w", id, err)
+		}
 	case RSA4096:
 		if _, err := s.ctx.GenerateRSAKeyPairWithLabel(label, label, 4096); err != nil {
 			return KeyMetadata{}, fmt.Errorf("pkcs11 generate RSA-4096 key %q: %w", id, err)
@@ -125,7 +129,7 @@ func (s *PKCS11Store) GenerateKey(id string, algo Algorithm) (KeyMetadata, error
 			return KeyMetadata{}, fmt.Errorf("pkcs11 generate ECDSA-P384 key %q: %w", id, err)
 		}
 	default:
-		return KeyMetadata{}, fmt.Errorf("pkcs11 store does not support algorithm %q; supported: RSA-2048, RSA-4096, ECDSA-P256, ECDSA-P384", algo)
+		return KeyMetadata{}, fmt.Errorf("%w: pkcs11 store does not support %q; supported: RSA-2048, RSA-3072, RSA-4096, ECDSA-P256, ECDSA-P384", ErrUnsupportedAlgo, algo)
 	}
 
 	return KeyMetadata{
@@ -207,10 +211,7 @@ func (s *PKCS11Store) List() ([]KeyMetadata, error) {
 func inferAlgorithmFromPublicKey(pub crypto.PublicKey) Algorithm {
 	switch k := pub.(type) {
 	case *rsa.PublicKey:
-		if k.N.BitLen() >= 4096 {
-			return RSA4096
-		}
-		return RSA2048
+		return rsaAlgorithmForBits(k.N.BitLen())
 	case *ecdsa.PublicKey:
 		switch k.Curve {
 		case elliptic.P384():

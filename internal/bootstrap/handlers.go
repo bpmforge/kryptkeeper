@@ -98,6 +98,7 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	}
 
 	approvalStore, _ := newApprovalStoreFromEnv()
+	approvalStore = withApprovalPendingNotifier(approvalStore, notificationProvider) // W32-26
 	postureSnapshotStore, _ := NewPostureSnapshotStoreFromEnv()
 	// eventBus is process-local, in-memory state constructed here rather
 	// than threaded in as a RegisterHandlers parameter (CLAUDE.md: no new
@@ -109,14 +110,29 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	auth.roleStore = roleStore
 	eventBus := NewEventBus(sseMaxStreamsPerPrincipalFromEnv())
 
-	registerMetaHandlers(mux, readinessProbeFromDependencies(certSummaryProvider, keys))
+	baseReady := readinessProbeFromDependencies(certSummaryProvider, keys)
+	registerMetaHandlers(mux, withDrainProbe(cfg.draining, func(ctx context.Context) error {
+		if err := baseReady(ctx); err != nil {
+			return err
+		}
+		if err := auth.requiredStoresReady(); err != nil {
+			return fmt.Errorf("required store down: %w", err)
+		}
+		for _, p := range cfg.extraReadiness {
+			if err := p(ctx); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+	registerOpenAPIHandlers(mux)
 	registerAuthHandlers(mux, auth, auditProvider)
 	registerProtocolHandlers(mux, auth, protocolProvider, auditProvider)
 	registerSSEHandlers(mux, auth, eventBus, auditProvider, sseConfigFromEnv())
 	registerDiscoveryHandlers(mux, auth, discoveryProvider, eventBus, auditProvider)
 	// W6-05: the always-current CycloneDX CBOM export.
 	RegisterCBOMHandlers(mux, auth, certificateProvider, keys, discoveryProvider, auditProvider)
-	registerNotificationHandlers(mux, auth, notificationProvider, auditProvider)
+	registerNotificationHandlers(mux, auth, notificationProvider, auditProvider, newITSMConnectionVisible(cfg.itsm), newSilenceTargetVisible(certificateProvider, caProvider, templateProvider))
 	registerDashboardHandlers(mux, auth, certSummaryProvider, discoveryProvider, notificationProvider, dashboardActionProvider, auditProvider)
 	registerAuditHandlers(mux, auth, roleStore, auditProvider, auditNameSources{
 		certs: certificateProvider, cas: caProvider, templates: templateProvider,
@@ -128,20 +144,38 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	registerTenantHandlers(mux, auth, tenantStore, auditProvider)
 	managedTargetStore := newManagedTargetStoreFromEnv()
 	RegisterTargetHandlers(mux, auth, managedTargetStore, tenantStore, auditProvider, newOutboundCredentialStoreFromEnv(), cfg.plugins)
+	// W27-02: explicit cert-to-target bindings drive auto-renew.
+	RegisterCertTargetBindingHandlers(mux, auth, managedTargetStore, certificateProvider, newCertTargetBindingStoreFromEnv(), auditProvider)
+	// W27-04: fleet-level renewal thresholds by target group.
+	RegisterTargetGroupHandlers(mux, auth, managedTargetStore, newTargetGroupStoreFromEnv(), auditProvider)
+	// W24-19: CT findings triage API.
+	RegisterCTFindingsHandlers(mux, auth, newCTStoreFromEnv(), caProvider, auditProvider)
 	// W18-12: give the discovery provider its WinRM runner, so a "winrm"
 	// scan of a managed target reaches the host with its stored credential.
 	if s, ok := discoveryProvider.(winRMScanSetter); ok {
 		s.SetWinRMScanner(newWinRMTargetScanner(managedTargetStore, newOutboundCredentialStoreFromEnv(), liveWinRMEnumerator))
+	}
+	// W24-08: and its SSH runner, for "ssh" scans of ssh-mode managed targets.
+	if s, ok := discoveryProvider.(sshScanSetter); ok {
+		s.SetSSHScanner(newSSHTargetScanner(managedTargetStore, newOutboundCredentialStoreFromEnv(), auditProvider, liveSSHDial))
 	}
 	// Discovered chains are classified against this hub's own CAs, so the
 	// scan store needs to read them through the CA provider.
 	if s, ok := discoveryProvider.(hubCASetter); ok {
 		s.SetHubCASource(hubCAsFromProvider(caProvider))
 	}
+	// W24-06: scan-to-scan certificate changes go out through the notification provider.
+	if s, ok := discoveryProvider.(scanDiffNotifierSetter); ok {
+		s.SetScanDiffNotifier(newProviderScanDiffNotifier(notificationProvider, auditProvider))
+	}
 	// W5-13: hub-side renewal execution — key/CSR hub-side, renew, SSH install.
 	registerRenewalExecuteHandler(mux, auth, certificateProvider, managedTargetStore, newOutboundCredentialStoreFromEnv(), auditProvider, cfg.plugins)
-	registerTemplateHandlers(mux, auth, templateProvider, auditProvider)
+	registerTemplateHandlers(mux, auth, templateProvider, auditProvider, approvalStore)
+	if activeTeamEnforcer != nil {
+		activeTeamEnforcer.templates = templateProvider // W33-21
+	}
 	registerCertificateHandlers(mux, auth, certificateProvider, auditProvider, approvalStore)
+	registerCertificateOBOHandlers(mux, auth, auditProvider, approvalStore) // W33-23
 	registerBulkHandlers(mux, auth, certificateProvider, auditProvider)
 	// W11-02: bulk import — a cert pile becomes a risk-scored estate in one call.
 	RegisterBulkImportHandler(mux, auth, certificateProvider, auditProvider)
@@ -168,20 +202,23 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 		userProvider = NewUserProviderFromEnv()
 	}
 	registerUserHandlers(mux, auth, userProvider, roleStore, auditProvider)
-	registerIntegrationsHandlers(mux, auth, auditProvider, siemRouter)
+	registerIntegrationsHandlers(mux, auth, auditProvider, siemRouter, cfg.scepOffReason)
 	registerConfigHandlers(mux, auth, newConfigStoreFromEnv(), auditProvider)
+	registerUserPrefsHandlers(mux, auth, newUserPrefsStoreFromEnv(), auditProvider)
 	registerReportsHandlers(mux, auth, certificateProvider, caProvider, templateProvider, keys, auditProvider)
 	registerPostureTrendHandler(mux, auth, postureSnapshotStore, auditProvider)
 	registerSchedulerStatusHandler(mux, auth, auditProvider)
 	registerCodeSigningHandler(mux, auth, certificateProvider, auditProvider)
+	initCodesignAttestation(approvalStore, auditProvider)
+	registerCodeSigningIssueHandler(mux, auth, certificateProvider, templateProvider, approvalStore, keys, auditProvider)
 	// W17-03: unified cloud KMS key inventory — the PQC denominator for
 	// KEYS, completing the cert-side inventory story.
-	registerKeyInventoryHandler(mux, auth, roleStore, auditProvider)
+	registerKeyInventoryHandler(mux, auth, roleStore, auditProvider, discoveryProvider)
 	// W17-04: RFC 6962 transparency surface over the audit trail — a plain
 	// log proves nothing to anyone who can edit the rows.
 	registerAuditTrustHandlers(mux, auth, roleStore, auditProvider)
 	// W17-05: what-breaks-if pre-flight over the live inventory.
-	registerBlastRadiusHandler(mux, auth, certificateProvider, auditProvider)
+	registerBlastRadiusHandler(mux, auth, certificateProvider, caProvider, auditProvider)
 	// W17-06: crypto-agility roadmap — PQC is one instance of the
 	// transition pattern, not a special case.
 	WarnIfKeyDualControlDisabled()
@@ -189,9 +226,19 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	// W17-07: cluster-atomic rollout — ONE renewal pushed to every node.
 	registerRolloutHandler(mux, auth, certificateProvider, managedTargetStore, newOutboundCredentialStoreFromEnv(), auditProvider, cfg.plugins)
 	agentStore := NewAgentStoreFromEnv()
-	registerAgentHandlers(mux, auth, agentStore, auditProvider)
-	registerRenewalSLOHandler(mux, auth, agentStore, certificateProvider, auditProvider)
+	// W24-15: out-of-band replacements and silent agents go out via the scan-diff notifier.
+	if s, ok := agentStore.(agentChangeSinkSetter); ok {
+		s.SetAgentChangeSink(agentChangeSinkFrom(newProviderScanDiffNotifier(notificationProvider, auditProvider)))
+	}
+	auth.requireStore(agentStore)
+	agentRoutes := gateRoutes(mux, agentStore)
+	registerAgentHandlers(agentRoutes, auth, agentStore, auditProvider)
+	registerRenewalSLOHandler(agentRoutes, auth, agentStore, certificateProvider, auditProvider)
 	registerEvidenceHandlers(mux, auth, certificateProvider, caProvider, NewEvidenceScheduleStoreFromEnv(), NewEvidenceMailerFromEnv(), auditProvider)
+	RegisterComplianceAttestationHandlers(mux, auth, NewComplianceAttestationStoreFromEnv(), auditProvider)
+	RegisterReportScheduleHandlers(mux, auth, NewReportScheduleStoreFromEnv(), auditProvider)
+	// W24-38: template migration; registers its approval executor, so it runs before the queue.
+	registerMigrationHandlers(cfg, mux, auth, templateProvider, newOutboundCredentialStoreFromEnv(), NewPendingActionStoreFromEnv(), auditProvider)
 	// v2.0: generalized approval queue for AI-proposed (and other) writes.
 	registerPendingActionHandlers(mux, auth, certificateProvider, NewPendingActionStoreFromEnv(), auditProvider, cfg.actionExecutors, keys)
 	// W20-20: community certificate delivery plugins.
@@ -211,7 +258,7 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	registerCustomRoleHandlers(mux, auth, roleStore, auditProvider)
 	// W15-02: key-custody evidence report (keystore backend + rotation/
 	// access from the audit trail).
-	registerKeyCustodyHandler(mux, auth, keys, auditProvider)
+	registerKeyCustodyHandler(mux, auth, keys, managedTargetStore, auditProvider, NewPendingActionStoreFromEnv())
 	// W17-08: leaf-escrow ceremonies (per-tenant opt-in, off by default).
 	registerKeyCustodyOpsHandlers(mux, auth, keys, auditProvider)
 	// W17-12: BYOK export of an escrow-recovered root into a customer KMS.
@@ -228,4 +275,8 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	// CREATE one outside tests, which dead-ended every credential_ref
 	// consumer (push installs, adcs_live, AD sync) for real deployments.
 	registerCredentialHandlers(mux, auth, newOutboundCredentialStoreFromEnv(), auditProvider, ProductionWinRMPreflighter)
+	// W32-10: ITSM connections and ticket-link queue.
+	registerITSMHandlers(mux, auth, cfg.itsm, newOutboundCredentialStoreFromEnv(), auditProvider)
+	// W32-12: approve via ITSM ticket; maps external approvers to hub users.
+	registerITSMApprovalHandlers(mux, auth, cfg.itsm, auditProvider)
 }

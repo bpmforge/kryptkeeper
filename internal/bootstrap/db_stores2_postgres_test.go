@@ -23,8 +23,17 @@ import (
 func TestAgentStore_Postgres_RoundTrip(t *testing.T) {
 	migratedPostgresForTest(t)
 	s := NewAgentStoreFromEnv()
-	if _, ok := s.(*dbAgentStore); !ok {
-		t.Fatalf("expected the DB agent store, got %T", s)
+	// D-290: a configured database is wrapped in the fail-closed lazy store.
+	lazy, ok := s.(*lazyAgentStore)
+	if !ok {
+		t.Fatalf("expected the lazy DB agent store, got %T", s)
+	}
+	inner, err := lazy.get()
+	if err != nil {
+		t.Fatalf("lazy agent store did not open the database: %v", err)
+	}
+	if _, ok := inner.(*dbAgentStore); !ok {
+		t.Fatalf("expected the DB agent store inside the lazy wrapper, got %T", inner)
 	}
 	id, token, err := s.register("host-1", AgentTypeLinux)
 	if err != nil {

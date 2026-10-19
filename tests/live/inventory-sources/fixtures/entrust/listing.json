@@ -1,0 +1,5 @@
+{"certificates": [
+  {"trackingId": 10, "status": "ACTIVE"},
+  {"trackingId": 11, "status": "REVOKED"},
+  {"trackingId": 12, "status": "PENDING"}
+]}

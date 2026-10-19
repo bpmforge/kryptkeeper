@@ -1,9 +1,12 @@
 import { useState } from "react";
+import { scrollableProps } from "../lib/scrollable";
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { extractList } from "../lib/models";
 import type { CaRecord } from "../lib/models";
-import { Badge, Panel, Select, StateMessage } from "../components/ui";
+import { Badge, formatDateTime, Panel, Select, StateMessage } from "../components/ui";
+import { humanizeEnum } from "../lib/utils";
 import { PageHeader } from "../components/PageHeader";
 import { ReportSkeleton } from "../components/Skeletons";
 
@@ -64,6 +67,7 @@ export default function RevocationActivity() {
         description="What was revoked, whose certificate it was, and why (the revoking actor is in the audit log)."
         actions={
           <Select
+            aria-label="Time range"
             className="w-36"
             value={days}
             onChange={(e) => setDays(Number(e.target.value))}
@@ -89,7 +93,7 @@ export default function RevocationActivity() {
       {report && (
         <>
           <div className="glass rounded-2xl p-5 gradient-border">
-            <div className="text-5xl font-black text-state-over count-up">
+            <div className="text-5xl font-black text-foreground count-up">
               {report.total_revoked}
             </div>
             <div className="text-sm text-muted-foreground mt-1">
@@ -110,9 +114,9 @@ export default function RevocationActivity() {
                     className="flex items-center justify-between py-2 border-b border-border/50 last:border-0"
                   >
                     <span className="text-sm text-foreground">
-                      {REASON_LABELS[reason] ?? reason}
+                      {REASON_LABELS[reason] ?? humanizeEnum(reason)}
                     </span>
-                    <span className="text-sm font-bold text-state-over">
+                    <span className="text-sm font-bold text-foreground">
                       {count}
                     </span>
                   </div>
@@ -135,9 +139,18 @@ export default function RevocationActivity() {
                       className="text-sm text-foreground truncate"
                       title={ca}
                     >
-                      {caNames.get(ca) || ca}
+                      {ca === "unknown" ? (
+                        "Unknown CA"
+                      ) : (
+                        <Link
+                          to={`/certificates?status=revoked&ca_id=${encodeURIComponent(ca)}`}
+                          className="hover:text-primary hover:underline"
+                        >
+                          {caNames.get(ca) || ca}
+                        </Link>
+                      )}
                     </span>
-                    <span className="text-sm font-bold text-state-attn">
+                    <span className="text-sm font-bold text-foreground">
                       {count}
                     </span>
                   </div>
@@ -154,11 +167,11 @@ export default function RevocationActivity() {
               />
             )}
             {report.recent_revocations.length > 0 && (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+              <div className="overflow-x-auto" {...scrollableProps}>
+                <table className="w-full min-w-[40rem] text-sm">
                   <thead>
                     <tr className="border-b border-border text-left">
-                      {["Common Name", "Reason", "Revoked At", "Owner"].map(
+                      {["Common Name", "CA", "Reason", "Revoked At", "Owner"].map(
                         (h) => (
                           <th
                             key={h}
@@ -177,15 +190,32 @@ export default function RevocationActivity() {
                         className="hover:bg-foreground/[0.02] transition"
                       >
                         <td className="py-3 pr-4 text-foreground">
-                          {r.common_name}
+                          <Link
+                            to={`/certificates/${encodeURIComponent(r.fingerprint_sha256)}`}
+                            className="hover:text-primary hover:underline"
+                          >
+                            {r.common_name}
+                          </Link>
+                        </td>
+                        <td className="py-3 pr-4 text-xs">
+                          {r.ca_id ? (
+                            <Link
+                              to={`/certificates?status=revoked&ca_id=${encodeURIComponent(r.ca_id)}`}
+                              className="text-muted-foreground hover:text-primary hover:underline"
+                            >
+                              {caNames.get(r.ca_id) || r.ca_id}
+                            </Link>
+                          ) : (
+                            "—"
+                          )}
                         </td>
                         <td className="py-3 pr-4">
                           <Badge tone="warning">
-                            {REASON_LABELS[r.reason_label] ?? r.reason_label}
+                            {REASON_LABELS[r.reason_label] ?? humanizeEnum(r.reason_label)}
                           </Badge>
                         </td>
                         <td className="py-3 pr-4 text-muted-foreground text-xs">
-                          {new Date(r.revoked_at).toLocaleString()}
+                          {formatDateTime(r.revoked_at)}
                         </td>
                         <td className="py-3 pr-4 text-muted-foreground text-xs">
                           {r.owner_email || r.owner_team || "—"}

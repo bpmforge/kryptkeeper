@@ -1,0 +1,93 @@
+{
+  "comment": "Maps TLS 1.2 ServerHello features (the server_name echo, 0000, is dropped before matching because it depends on whether the client sent SNI) to the TLS library that produced them. Entries are predictions read from the implementations until the W34-20 corpus observes them; verified:true means a real server of that stack produced exactly these features. schannel, boringssl, gnutls and nss remain unverified (no such server in the corpus). Unverified entries may not claim more than weight 25 (the TestTLSStackTable guard).",
+  "entries": [
+    {
+      "stack": "openssl",
+      "extensions": "ff01,000b,0023,0017",
+      "ticket": true,
+      "verified": true,
+      "weight": 25,
+      "note": "Verified W34-20: OpenLDAP 2.6 LDAPS, Dovecot 2.3 IMAPS/POP3S and Redis 7 TLS (Alpine/Debian OpenSSL 3), suites c02f/c030"
+    },
+    {
+      "stack": "openssl",
+      "extensions": "ff01,000b,0023,0010,0017",
+      "ticket": true,
+      "verified": true,
+      "weight": 25,
+      "note": "Verified W34-20: nginx 1.x and Apache httpd 2.4 (OpenSSL 3); the extra 0010 is the ALPN echo for the scan's http/1.1 offer"
+    },
+    {
+      "stack": "openssl",
+      "extensions": "ff01,000b,0017",
+      "ticket": false,
+      "verified": false,
+      "weight": 25,
+      "note": "OpenSSL with tickets disabled"
+    },
+    {
+      "stack": "go",
+      "extensions": "0023,ff01,0017,000b",
+      "ticket": true,
+      "verified": true,
+      "weight": 25,
+      "note": "Verified W34-20: crypto/tls (Go 1.26) servers without an ALPN offer"
+    },
+    {
+      "stack": "go",
+      "extensions": "0023,ff01,0017,0010,000b",
+      "ticket": true,
+      "verified": true,
+      "weight": 25,
+      "note": "Verified W34-20: HashiCorp Vault 1.17 and two crypto/tls stand-ins; 0010 is the ALPN echo"
+    },
+    {
+      "stack": "schannel",
+      "extensions": "ff01,0017",
+      "ticket": false,
+      "verified": false,
+      "weight": 25,
+      "note": "SChannel sends no ec_point_formats"
+    },
+    {
+      "stack": "schannel",
+      "extensions": "ff01,0017,0023",
+      "ticket": true,
+      "verified": false,
+      "weight": 25,
+      "note": "SChannel with session tickets"
+    },
+    {
+      "stack": "jsse",
+      "extensions": "0017,0023,ff01",
+      "ticket": true,
+      "verified": true,
+      "weight": 25,
+      "note": "Verified W34-20: Tomcat 10.1 / OpenJDK 17 forced to JSSE (sslImplementationName); the earlier prediction (0017,ff01,000b) was wrong"
+    },
+    {
+      "stack": "boringssl",
+      "extensions": "ff01,0017,0023,0010",
+      "ticket": true,
+      "verified": false,
+      "weight": 25,
+      "note": "BoringSSL negotiates ALPN first-class"
+    },
+    {
+      "stack": "gnutls",
+      "extensions": "0017,ff01,0023",
+      "ticket": true,
+      "verified": false,
+      "weight": 25,
+      "note": "GnuTLS priority default"
+    },
+    {
+      "stack": "nss",
+      "extensions": "ff01,0017,0023,000b,0010",
+      "ticket": true,
+      "verified": false,
+      "weight": 25,
+      "note": "NSS selfserv with ALPN"
+    }
+  ]
+}

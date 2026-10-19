@@ -1,0 +1,115 @@
+{
+  "task": "U-58b",
+  "title": "Forward security events: SIEM webhook configured (SIEM_WEBHOOK_URL)",
+  "sourceStory": "STORIES.md#u-58b",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/settings"
+      },
+      "caption": "Open /settings",
+      "slug": "siem-configured",
+      "expect": {
+        "role": "button",
+        "name": "Send test event"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-58b/01-siem-configured.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Send test event"
+      },
+      "caption": "Click **Send test event**",
+      "slug": "siem-test-event-sent",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-58b/02-siem-test-event-sent.png",
+        "annotated": "docs/guide/screenshots/U-58b/02-siem-test-event-sent-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 373,
+          "y": 399,
+          "w": 153,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "flags": "CONFIG + EXTERNAL (events go to a local webhook receiver standing in for the SIEM)",
+  "principal": "cfgada",
+  "lastRun": {
+    "at": "2026-10-18T12:53:15.888Z",
+    "base": "http://127.0.0.1:14182",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-58b",
+    "steps": 2,
+    "shots": 2,
+    "annotated": 1,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/settings"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-58b/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-58b/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

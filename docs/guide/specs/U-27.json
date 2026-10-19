@@ -1,0 +1,487 @@
+{
+  "task": "U-27",
+  "title": "Set up ACME for a server (provisioner, EAB key, client)",
+  "sourceStory": "STORIES.md#u-27",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/acme"
+      },
+      "caption": "Open /acme",
+      "slug": "acme-eab-keys",
+      "expect": {
+        "role": "button",
+        "name": "New key"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/01-acme-eab-keys.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "tab",
+        "name": "Provisioners"
+      },
+      "caption": "Click **Provisioners**",
+      "slug": "provisioners-tab",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/02-provisioners-tab.png",
+        "annotated": "docs/guide/screenshots/U-27/02-provisioners-tab-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 332,
+          "y": 131,
+          "w": 85,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New provisioner"
+      },
+      "caption": "Click **New provisioner**",
+      "slug": "new-provisioner-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "New provisioner"
+      },
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/03-new-provisioner-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Name",
+        "within": "[role=dialog]"
+      },
+      "value": "internal-acme-2",
+      "caption": "Fill **Name** with \"internal-acme-2\"",
+      "slug": "Name",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/04-name.png",
+        "annotated": "docs/guide/screenshots/U-27/04-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 258,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "CA",
+        "within": "[role=dialog]"
+      },
+      "value": "Acme Issuing CA",
+      "caption": "Select \"Acme Issuing CA\" in **CA**",
+      "slug": "CA",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/05-ca.png",
+        "annotated": "docs/guide/screenshots/U-27/05-ca-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 328,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Allowed names",
+        "within": "[role=dialog]"
+      },
+      "value": "*.acme.test",
+      "caption": "Fill **Allowed names** with \"*.acme.test\"",
+      "slug": "Allowed names",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/06-allowed-names.png",
+        "annotated": "docs/guide/screenshots/U-27/06-allowed-names-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 468,
+          "w": 630,
+          "h": 98
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "label": "http-01",
+        "within": "[role=dialog]"
+      },
+      "caption": "Tick **http-01**",
+      "slug": "http-01",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/07-http-01.png",
+        "annotated": "docs/guide/screenshots/U-27/07-http-01-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 639,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "screenshot",
+      "caption": "The filled provisioner dialog",
+      "slug": "provisioner-filled",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/08-provisioner-filled.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Save",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Save**",
+      "slug": "provisioner-saved",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/09-provisioner-saved.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "role": "button",
+        "name": "Copy directory URL for internal-acme-2"
+      },
+      "caption": "Locate **Copy directory URL for internal-acme-2**",
+      "slug": "copy-directory-url",
+      "optional": true,
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/10-copy-directory-url.png",
+        "annotated": "docs/guide/screenshots/U-27/10-copy-directory-url-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 695,
+          "y": 451,
+          "w": 76,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "tab",
+        "name": "EAB keys"
+      },
+      "caption": "Click **EAB keys**",
+      "slug": "eab-tab",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/11-eab-tab.png",
+        "annotated": "docs/guide/screenshots/U-27/11-eab-tab-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 247,
+          "y": 131,
+          "w": 85,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New key",
+        "exact": true
+      },
+      "caption": "Click **New key**",
+      "slug": "new-eab-dialog",
+      "expect": {
+        "role": "button",
+        "name": "Create key"
+      },
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/12-new-eab-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Label",
+        "within": "[role=dialog]"
+      },
+      "value": "cert-manager-prod",
+      "caption": "Fill **Label** with \"cert-manager-prod\"",
+      "slug": "Label",
+      "n": 13,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/13-label.png",
+        "annotated": "docs/guide/screenshots/U-27/13-label-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 378,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Create key"
+      },
+      "caption": "Click **Create key**",
+      "slug": "eab-key-shown-once",
+      "redact": [
+        "code",
+        "pre",
+        "[data-secret]",
+        "input[readonly]"
+      ],
+      "n": 14,
+      "capture": {
+        "file": "docs/guide/screenshots/U-27/14-eab-key-shown-once.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Done",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Done**",
+      "slug": "Done",
+      "capture": false,
+      "n": 15
+    }
+  ],
+  "flags": "LAB (certbot/lego run on a client host is not captured; hub UI steps only)",
+  "lastRun": {
+    "at": "2026-10-18T12:43:18.654Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-27",
+    "steps": 15,
+    "shots": 14,
+    "annotated": 8,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/acme"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-27/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-27/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

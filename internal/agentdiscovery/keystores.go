@@ -5,15 +5,19 @@
 package agentdiscovery
 
 import (
+	"bytes"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 
 	"golang.org/x/crypto/pkcs12"
+	sslmatepkcs12 "software.sslmate.com/src/go-pkcs12"
 
 	"kryptkeeper/internal/agentclient"
 )
@@ -34,6 +38,64 @@ var defaultP12Passwords = []string{"changeit", ""}
 
 // jksMagic identifies a Java keystore.
 const jksMagic = 0xFEEDFEED
+
+const (
+	// jceksMagic identifies a JCEKS keystore (JKS layout, different magic).
+	jceksMagic uint32 = 0xCECECECE
+
+	// reasonPasswordUnknown is the reason recorded for a password-protected
+	// store we could not open with any default or configured password.
+	reasonPasswordUnknown = "keystore, password unknown"
+
+	// jceksChainSearchWindow bounds the forward search past a serialized key.
+	jceksChainSearchWindow = 64 * 1024
+)
+
+// sniffKeystore classifies a Java-family keystore by CONTENT, not extension
+// (users routinely name JCEKS files .jks). It returns "jks", "jceks", "bcfks"
+// or "" when the bytes match none of them.
+func sniffKeystore(content []byte) string {
+	if len(content) >= 4 {
+		switch binary.BigEndian.Uint32(content) {
+		case jksMagic:
+			return "jks"
+		case jceksMagic:
+			return "jceks"
+		}
+	}
+	if looksLikeBCFKS(content) {
+		return "bcfks"
+	}
+	return ""
+}
+
+// looksLikeBCFKS reports whether content is a DER SEQUENCE whose leading
+// elements nest SEQUENCEs down to an OBJECT IDENTIFIER, which is the shape of
+// a BCFKS ObjectStore (encrypted store data led by an AlgorithmIdentifier).
+// An X.509 certificate, PKCS#12 PFX or arbitrary text does not match: their
+// leading nested element is a tag or INTEGER, not an OID.
+func looksLikeBCFKS(content []byte) bool {
+	cur := content
+	for depth := 0; depth < 4; depth++ {
+		var seq asn1.RawValue
+		if _, err := asn1.Unmarshal(cur, &seq); err != nil ||
+			seq.Class != asn1.ClassUniversal || seq.Tag != asn1.TagSequence || !seq.IsCompound {
+			return false
+		}
+		var first asn1.RawValue
+		if _, err := asn1.Unmarshal(seq.Bytes, &first); err != nil || first.Class != asn1.ClassUniversal {
+			return false
+		}
+		if first.Tag == asn1.TagOID {
+			return depth > 0
+		}
+		if first.Tag != asn1.TagSequence {
+			return false
+		}
+		cur = seq.Bytes
+	}
+	return false
+}
 
 // ParseJKSCerts extracts the CLEAR-text certificates from a JKS blob:
 // trusted-cert entries and the cert chains of key entries. The
@@ -81,6 +143,90 @@ func ParseJKSCerts(data []byte) ([]*x509.Certificate, error) {
 		return certs, p.err
 	}
 	return certs, nil
+}
+
+// ParseJCEKSCerts extracts the CLEAR-text certificates from a JCEKS blob. The
+// layout matches JKS except that a key entry carries a Java-serialized
+// SealedObject (not a length-prefixed blob) before its chain. Serialization
+// cannot be length-skipped, so the chain is located by searching forward for
+// a chain count followed by an "X.509" cert that parses; the sealed bytes are
+// never interpreted. A partial result accompanies any error.
+func ParseJCEKSCerts(data []byte) ([]*x509.Certificate, error) {
+	p := &jksReader{b: data}
+	if p.u32() != jceksMagic {
+		return nil, fmt.Errorf("not a JCEKS keystore (bad magic)")
+	}
+	_ = p.u32() // version
+	count := p.u32()
+	if p.err != nil {
+		return nil, p.err
+	}
+	var certs []*x509.Certificate
+	readCert := func() {
+		_ = p.utf() // cert type ("X.509")
+		if c := p.certBytes(); c != nil {
+			if cert, err := x509.ParseCertificate(c); err == nil {
+				certs = append(certs, cert)
+			}
+		}
+	}
+	for i := uint32(0); i < count && p.err == nil; i++ {
+		tag := p.u32()
+		_ = p.utf() // alias
+		_ = p.i64() // creation timestamp
+		if p.err != nil {
+			break
+		}
+		switch tag {
+		case 1: // key entry: [serialized SealedObject][chain]
+			at := locateJCEKSChain(p.b, p.off)
+			if at < 0 {
+				return certs, fmt.Errorf("jceks: key entry chain not located")
+			}
+			p.off = at
+			chainLen := p.u32()
+			for j := uint32(0); j < chainLen && p.err == nil; j++ {
+				readCert()
+			}
+		case 2: // trusted cert entry
+			readCert()
+		case 3: // secret-key entry: serialized object only, no chain
+			return certs, fmt.Errorf("jceks: secret-key entry, remaining entries not scanned")
+		default:
+			return certs, fmt.Errorf("unknown JCEKS entry tag %d", tag)
+		}
+	}
+	return certs, p.err
+}
+
+// jceksChainMarker is the UTF "X.509" cert-type string that opens each chain
+// element (u16 length 5 + bytes).
+var jceksChainMarker = []byte{0x00, 0x05, 'X', '.', '5', '0', '9'}
+
+// locateJCEKSChain returns the offset of the chain-count word of a key entry,
+// searching at most jceksChainSearchWindow bytes from start, or -1. A hit needs
+// a count in 1..16, the marker, and a length-prefixed DER that x509 accepts;
+// the bare byte pattern alone is never trusted.
+func locateJCEKSChain(b []byte, start int) int {
+	end := min(len(b), start+jceksChainSearchWindow)
+	for i := start; i+4+len(jceksChainMarker)+4 <= end; i++ {
+		if n := binary.BigEndian.Uint32(b[i:]); n < 1 || n > 16 {
+			continue
+		}
+		m := i + 4
+		if !bytes.Equal(b[m:m+len(jceksChainMarker)], jceksChainMarker) {
+			continue
+		}
+		l := m + len(jceksChainMarker)
+		derLen := int(binary.BigEndian.Uint32(b[l:]))
+		if derLen <= 0 || l+4+derLen > len(b) {
+			continue
+		}
+		if _, err := x509.ParseCertificate(b[l+4 : l+4+derLen]); err == nil {
+			return i
+		}
+	}
+	return -1
 }
 
 // jksReader is a bounds-checked big-endian reader over the JKS blob.
@@ -152,8 +298,16 @@ func ParsePKCS12Certs(data []byte, passwords []string) ([]*x509.Certificate, err
 	for _, pw := range passwords {
 		blocks, err := pkcs12.ToPEM(data, pw)
 		if err != nil {
-			lastErr = err
-			continue
+			// golang.org/x/crypto/pkcs12 predates SHA-256 MACs and PBES2, which
+			// is what keytool on JDK 11+ writes; "unknown digest algorithm
+			// 2.16.840.1.101.3.4.2.1" was every modern Java keystore (W34-20).
+			// The maintained library reads those.
+			var modernErr error
+			blocks, modernErr = sslmatepkcs12.ToPEM(data, pw)
+			if modernErr != nil {
+				lastErr = err
+				continue
+			}
 		}
 		var certs []*x509.Certificate
 		for _, blk := range blocks {
@@ -189,9 +343,7 @@ func ParseKubeconfigCerts(data []byte) []*x509.Certificate {
 				continue
 			}
 			// Value is usually PEM; fall back to raw DER.
-			for _, c := range certsFromDERorPEM(raw) {
-				certs = append(certs, c)
-			}
+			certs = append(certs, certsFromDERorPEM(raw)...)
 		}
 	}
 	return certs
@@ -219,8 +371,9 @@ func certsFromDERorPEM(raw []byte) []*x509.Certificate {
 	return out
 }
 
-// ScanKeystoreFile classifies a file by extension and extracts its
-// certs. isKeystore is false for files this scanner does not handle.
+// ScanKeystoreFile classifies a file by content (Java stores) or extension
+// and extracts its certs. isKeystore is false for files this scanner does not
+// handle.
 func ScanKeystoreFile(path string, content []byte, configPasswords []string, res *KeystoreScanResult) (isKeystore bool) {
 	ext := strings.ToLower(filepath.Ext(path))
 	base := strings.ToLower(filepath.Base(path))
@@ -229,19 +382,52 @@ func ScanKeystoreFile(path string, content []byte, configPasswords []string, res
 			res.Certs = append(res.Certs, certToDiscovered(c, format+":"+path))
 		}
 	}
+	unreadable := func(reason string) {
+		res.UnreadableStores = append(res.UnreadableStores, path+": "+reason)
+	}
 	switch {
-	case ext == ".jks" || ext == ".keystore":
-		certs, err := ParseJKSCerts(content)
-		if err != nil {
-			res.UnreadableStores = append(res.UnreadableStores, path+": "+err.Error())
+	case ext == ".jks" || ext == ".keystore" || ext == ".jceks" || ext == ".bcfks":
+		format := sniffKeystore(content)
+		if format == "" {
+			// Unrecognised bytes keep the extension's historical parser, so a
+			// corrupt .jks still surfaces its own error text.
+			if ext == ".jceks" {
+				format = "jceks"
+			} else if ext == ".bcfks" {
+				format = "bcfks"
+			} else {
+				format = "jks"
+			}
 		}
-		add(certs, "jks")
+		switch format {
+		case "jceks":
+			certs, err := ParseJCEKSCerts(content)
+			if err != nil {
+				unreadable(err.Error())
+			}
+			add(certs, "jceks")
+		case "bcfks":
+			// BCFKS encrypts the whole store, certificates included, so cert
+			// extraction needs a decryptor we do not ship. Inventory it as
+			// unreadable rather than drop it.
+			unreadable(reasonPasswordUnknown)
+		default:
+			certs, err := ParseJKSCerts(content)
+			if err != nil {
+				unreadable(err.Error())
+			}
+			add(certs, "jks")
+		}
 		return true
 	case ext == ".p12" || ext == ".pfx":
 		pws := append(append([]string{}, defaultP12Passwords...), configPasswords...)
 		certs, err := ParsePKCS12Certs(content, pws)
 		if err != nil {
-			res.UnreadableStores = append(res.UnreadableStores, path+": "+err.Error())
+			if errors.Is(err, pkcs12.ErrIncorrectPassword) {
+				unreadable(reasonPasswordUnknown)
+			} else {
+				unreadable(err.Error())
+			}
 		}
 		add(certs, "pkcs12")
 		return true

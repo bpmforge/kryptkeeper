@@ -20,12 +20,14 @@ export KIND_EXPERIMENTAL_PROVIDER=podman
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
+. "$HERE/../lib/podman.sh"
 WORK="$(mktemp -d /tmp/kk-uat-mesh.XXXXXX)"
 HUB_DIR=/tmp/kk-uat-mesh-hub
 HUB_PORT=8097
 HUB_BASE="http://127.0.0.1:${HUB_PORT}"
 TOKEN=uat-token
 CLUSTER=kk-uat
+CLUSTER_B=kk-uat-b   # W24-24 second cluster (Linkerd only)
 NAMESPACE=uat
 
 ISTIO_INSTALLED=0
@@ -40,7 +42,13 @@ cleanup() {
   STEP "cleanup"
   [ -n "$HUB_PID" ] && kill "$HUB_PID" 2>/dev/null || true
   kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
-  rm -rf "$WORK" "$HUB_DIR"
+  # retried and verified: a leaked kind cluster survived one run's cleanup
+  for _ in 1 2 3; do
+    kind delete cluster --name "$CLUSTER_B" >/dev/null 2>&1
+    kind get clusters 2>/dev/null | grep -qx "$CLUSTER_B" || break
+    sleep 2
+  done
+  rm -rf "$WORK" "$HUB_DIR" /tmp/kk-uat-mesh-multi-hub
 }
 trap cleanup EXIT
 
@@ -375,7 +383,7 @@ fi
 STEP "negative: RBAC without linkerd namespace -> clear permission error, not silent empty result"
 kill "$HUB_PID" 2>/dev/null; wait "$HUB_PID" 2>/dev/null; HUB_PID=""
 NEG_HUB_DIR=/tmp/kk-uat-mesh-neg-hub
-NEG_PORT=8098
+NEG_PORT="$(kk_free_port)"
 rm -rf "$NEG_HUB_DIR"
 mkdir -p "$NEG_HUB_DIR/data"
 cp "$HUB_DIR/kryptkeeper" "$NEG_HUB_DIR/kryptkeeper" 2>/dev/null || ( cd "$REPO_ROOT" && go build -o "$NEG_HUB_DIR/kryptkeeper" ./cmd/kryptkeeper )
@@ -447,6 +455,148 @@ if echo "$NEG_LOG_LINE" | grep -qE "sweep completed with [1-9][0-9]* source erro
 else
   FAIL "no nonzero source-error count logged for the RBAC-denied sweep -- looks like a silent empty result, not a clear permission error: $WORK/neg-hub.log"
 fi
+
+# ---------------------------------------------------------------------------
+# W24-24: second kind cluster (Linkerd only), both clusters registered via the
+# config store (discovery.kube_clusters). Additive: runs after every original
+# check. Every kubectl/linkerd call passes --context.
+# ---------------------------------------------------------------------------
+STEP "W24-24: second kind cluster ($CLUSTER_B) with Linkerd only"
+CTX_B="kind-${CLUSTER_B}"
+kind delete cluster --name "$CLUSTER_B" >/dev/null 2>&1 || true
+kind create cluster --name "$CLUSTER_B" \
+  && PASS "kind cluster $CLUSTER_B up (podman provider)" || DIE "kind create cluster $CLUSTER_B failed"
+kubectl --context "$CTX_B" create namespace "$NAMESPACE" >/dev/null 2>&1 || true
+kubectl --context "$CTX_B" apply --server-side -f "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml" >"$WORK/gatewayapi-apply-b.log" 2>&1 \
+  && PASS "Gateway API CRDs applied on B" || DIE "Gateway API apply on B failed, see $WORK/gatewayapi-apply-b.log"
+linkerd --context "$CTX_B" install --crds 2>"$WORK/linkerd-crds-b.log" | kubectl --context "$CTX_B" apply -f - >"$WORK/linkerd-crds-apply-b.log" 2>&1 \
+  && PASS "linkerd CRDs applied on B" || DIE "linkerd install --crds on B failed"
+linkerd --context "$CTX_B" install 2>"$WORK/linkerd-install-b.log" | kubectl --context "$CTX_B" apply -f - >"$WORK/linkerd-apply-b.log" 2>&1 \
+  && PASS "linkerd control plane applied on B" || DIE "linkerd install on B failed, see $WORK/linkerd-install-b.log"
+linkerd --context "$CTX_B" check --wait 5m >"$WORK/linkerd-check-b.log" 2>&1 \
+  && PASS "linkerd check green on B" || DIE "linkerd check on B never went green, see $WORK/linkerd-check-b.log"
+
+# Minimal RBAC for B (no istio-system there): one SA that can read linkerd secrets.
+cat > "$WORK/rbac-b.yaml" <<EOF
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kk-uat-mesh-reader
+  namespace: ${NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kk-uat-secret-reader
+  namespace: linkerd
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kk-uat-mesh-reader-linkerd
+  namespace: linkerd
+subjects:
+- kind: ServiceAccount
+  name: kk-uat-mesh-reader
+  namespace: ${NAMESPACE}
+roleRef:
+  kind: Role
+  name: kk-uat-secret-reader
+  apiGroup: rbac.authorization.k8s.io
+EOF
+kubectl --context "$CTX_B" apply -f "$WORK/rbac-b.yaml" >/dev/null && PASS "RBAC applied on B" || DIE "RBAC apply on B failed"
+SA_TOKEN_B="$(kubectl --context "$CTX_B" create token kk-uat-mesh-reader -n "$NAMESPACE" --duration=2h)" \
+  && PASS "minted SA token for B" || DIE "create token on B failed"
+kubectl config view --raw -o yaml --context "$CTX_B" --minify > "$WORK/kubeconfig-view-b.yaml"
+APISERVER_URL_B="$(python3 - "$WORK/kubeconfig-view-b.yaml" "$WORK/cluster-ca-b.pem" <<'PYEOF'
+import base64, re, sys
+text = open(sys.argv[1]).read()
+open(sys.argv[2], 'wb').write(base64.b64decode(re.search(r'certificate-authority-data:\s*(\S+)', text).group(1)))
+print(re.search(r'server:\s*(\S+)', text).group(1))
+PYEOF
+)"
+[ -n "$APISERVER_URL_B" ] && [ "$APISERVER_URL_B" != "$APISERVER_URL" ] && PASS "API server B: $APISERVER_URL_B (differs from A)" || DIE "bad API server URL for B"
+
+STEP "W24-24: independent ground truth for cluster B"
+kubectl --context "$CTX_B" get secret -n linkerd linkerd-identity-issuer -o jsonpath='{.data.crt\.pem}' | base64 -d > "$WORK/linkerd-issuer-b.crt" 2>/dev/null
+WANT_LINKERD_FP_B="$(openssl x509 -in "$WORK/linkerd-issuer-b.crt" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f')"
+[ -n "$WANT_LINKERD_FP_B" ] && [ "$WANT_LINKERD_FP_B" != "$WANT_LINKERD_FP" ] \
+  && PASS "linkerd issuer fingerprint B: $WANT_LINKERD_FP_B (differs from A)" || DIE "could not read a distinct linkerd issuer cert on B"
+
+STEP "W24-24: register both clusters, restart, poll"
+MULTI_DIR=/tmp/kk-uat-mesh-multi-hub
+MULTI_PORT=8099
+MULTI_BASE="http://127.0.0.1:${MULTI_PORT}"
+rm -rf "$MULTI_DIR"; mkdir -p "$MULTI_DIR/data"
+cp "$HUB_DIR/kryptkeeper" "$MULTI_DIR/kryptkeeper"
+start_multi_hub() {
+  env -u KRYPTKEEPER_MESH_K8S_URL -u KRYPTKEEPER_MESH_K8S_TOKEN -u KRYPTKEEPER_MESH_K8S_CA_CERT_FILE -u KRYPTKEEPER_K8S_CLUSTERS \
+    APP_BOOTSTRAP_TOKEN="$TOKEN" AUTH_MODE=bootstrap APP_CERTIFICATE_PROVIDER=ca \
+    KRYPTKEEPER_TLS_DISABLE=true APP_DISCOVERY_PROVIDER=db APP_NOTIFICATION_PROVIDER=file \
+    APP_CREDENTIAL_STORE_PASSPHRASE='uat-mesh-cred-passphrase-32-byte' \
+    KRYPTKEEPER_KEYSTORE_PASSPHRASE='uat-mesh-keystore-passphrase-32b' \
+    KRYPTKEEPER_DATA_DIR="$MULTI_DIR/data" KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT=true KRYPTKEEPER_CA_NAME="UAT Root CA" \
+    KRYPTKEEPER_MESH_SWEEP_MINUTES=1 APP_BIND_ADDR=127.0.0.1 PORT="$MULTI_PORT" \
+    "$MULTI_DIR/kryptkeeper" >>"$WORK/multi-hub.log" 2>&1 &
+  HUB_PID=$!
+  local t=30
+  until curl -sS -f -o /dev/null "${MULTI_BASE}/api/v1/cas" -H "Authorization: Bearer ${TOKEN}"; do
+    t=$((t - 1)); [ $t -le 0 ] && DIE "multi-cluster hub never answered, see $WORK/multi-hub.log"
+    sleep 1
+  done
+}
+start_multi_hub
+mkcred() {
+  python3 - "$@" <<'CREDPY'
+import json, sys
+name, apiserver, token, capath = sys.argv[1:5]
+print(json.dumps({'name': name, 'credential_type': 'api_token', 'payload': {
+  'base_url': apiserver, 'bearer_token': token.strip(), 'namespace': 'uat', 'ca_cert': open(capath).read()}}))
+CREDPY
+}
+cred_id() { python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])' 2>/dev/null; }
+CRED_A="$(curlj -X POST "${MULTI_BASE}/api/v1/credentials" -d "$(mkcred uat-mesh-a "$APISERVER_URL" "$SA_TOKEN" "$WORK/cluster-ca.pem")" | cred_id)"
+CRED_B="$(curlj -X POST "${MULTI_BASE}/api/v1/credentials" -d "$(mkcred uat-mesh-b "$APISERVER_URL_B" "$SA_TOKEN_B" "$WORK/cluster-ca-b.pem")" | cred_id)"
+[ -n "$CRED_A" ] && [ -n "$CRED_B" ] || DIE "credential create failed (A='$CRED_A' B='$CRED_B')"
+python3 -c '
+import json, sys
+print(json.dumps({"value": json.dumps([{"name": "a", "credential_ref": sys.argv[1]}, {"name": "b", "credential_ref": sys.argv[2]}])}))' "$CRED_A" "$CRED_B" > "$WORK/clusters-put.json"
+PUT_CODE="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' -d @"$WORK/clusters-put.json" "${MULTI_BASE}/api/v1/config/discovery.kube_clusters")"
+case "$PUT_CODE" in 2??) PASS "PUT discovery.kube_clusters -> HTTP $PUT_CODE" ;; *) DIE "PUT discovery.kube_clusters -> HTTP $PUT_CODE" ;; esac
+# The mesh scheduler is created at startup only if a cluster is already
+# configured, so restart now that the config value is stored.
+kill "$HUB_PID" 2>/dev/null; wait "$HUB_PID" 2>/dev/null; HUB_PID=""
+start_multi_hub
+PASS "hub restarted with discovery.kube_clusters stored (no KRYPTKEEPER_MESH_K8S_URL)"
+
+multi_endpoints() { curlj "${MULTI_BASE}/api/v1/discovery/endpoints?limit=100"; }
+ep_report() { # prints "<hostprefix>=<fp>" per linkerd-mesh endpoint
+  python3 -c '
+import json, sys
+for ep in json.load(sys.stdin).get("data", {}).get("endpoints", []):
+    if ep.get("protocol") == "linkerd-mesh":
+        certs = ep.get("mapped_certs") or []
+        print("%s=%s" % (ep.get("hostname", "").split("/")[0], (certs[0]["fingerprint"] if certs else "").lower()))'
+}
+tries=100; REPORT=""
+while [ $tries -gt 0 ]; do
+  REPORT="$(multi_endpoints | ep_report)"
+  echo "$REPORT" | grep -q '^a=' && echo "$REPORT" | grep -q '^b=' && break
+  tries=$((tries - 1)); sleep 1
+done
+echo "  linkerd-mesh endpoints: $(echo "$REPORT" | tr '\n' ' ')"
+echo "$REPORT" | grep -qx "a=${WANT_LINKERD_FP}" && PASS "cluster a endpoint (hostname a/...) carries the A issuer fingerprint" || FAIL "cluster a fingerprint missing/wrong: $REPORT (want a=$WANT_LINKERD_FP)"
+echo "$REPORT" | grep -qx "b=${WANT_LINKERD_FP_B}" && PASS "cluster b endpoint (hostname b/...) carries the B issuer fingerprint" || FAIL "cluster b fingerprint missing/wrong: $REPORT (want b=$WANT_LINKERD_FP_B)"
+COUNT1="$(multi_endpoints | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["endpoints"]))')"
+STEP "W24-24: next sweep adds no duplicates"
+sleep 65
+COUNT2="$(multi_endpoints | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["data"]["endpoints"]))')"
+[ "$COUNT1" = "$COUNT2" ] && PASS "endpoint count unchanged after the next sweep ($COUNT1)" || FAIL "endpoint count changed $COUNT1 -> $COUNT2 (duplicates?)"
+kill "$HUB_PID" 2>/dev/null; wait "$HUB_PID" 2>/dev/null; HUB_PID=""
 
 STEP "result"
 if [ "$FAILED" -eq 0 ]; then

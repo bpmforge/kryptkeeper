@@ -1,0 +1,33 @@
+name: license-check
+
+# W25-21: deny GPL/AGPL/SSPL in Go and npm dependencies and keep
+# THIRD_PARTY_LICENSES.md complete. Supersedes the "License policy check
+# (placeholder)" step in ci-main.yml, which the W20-01 owner can now remove.
+on:
+  pull_request:
+  merge_group:
+  schedule:
+    # Weekly: a dependency's published licence can change without a PR here.
+    - cron: "17 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: license-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  license-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - name: Checker self-test (offline fixtures)
+        run: bash scripts/check-licenses.test.sh
+      - name: Deny GPL/AGPL/SSPL in Go and npm dependencies
+        run: bash scripts/check-licenses.sh check
+      - name: THIRD_PARTY_LICENSES.md lists every dependency and is current
+        run: bash scripts/check-licenses.sh verify-count

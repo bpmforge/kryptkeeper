@@ -18,13 +18,15 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
-	"log"
 	"os"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 //go:embed migrations/postgres/*.sql migrations/sqlite/*.sql
@@ -59,8 +61,6 @@ func RunMigrations(db *sql.DB, engine string) error {
 		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 
-	repairPreExistingNarrowDiscoverySchema(db, engine)
-
 	migrations, err := loadMigrations(engine)
 	if err != nil {
 		return err
@@ -70,6 +70,16 @@ func RunMigrations(db *sql.DB, engine string) error {
 	if err != nil {
 		return err
 	}
+
+	// W25-06/FR-P52: an older binary must not boot against a schema it does not
+	// understand. It would run stores written for the old shape on top of
+	// tables a newer release has since changed, and fail later and obscurely.
+	// Checked before repairPreExisting... because that repair issues ALTERs.
+	if dbMax, binMax := maxVersion(applied), maxEmbeddedVersion(migrations); dbMax > binMax {
+		return &SchemaNewerError{DBVersion: dbMax, BinaryVersion: binMax}
+	}
+
+	repairPreExistingNarrowDiscoverySchema(db, engine)
 
 	warnIfCISeedDataPresent(db, engine, applied)
 
@@ -88,7 +98,7 @@ func RunMigrations(db *sql.DB, engine string) error {
 		// the runner keys off a version set rather than a contiguous sequence,
 		// so leaving 7 unapplied is safe.
 		if isCISeedMigration(m) && !ciSeedDataEnabled() {
-			log.Printf("migration %s skipped: CI seed data is off by default; set %s=true to apply it",
+			logging.Infof("migration %s skipped: CI seed data is off by default; set %s=true to apply it",
 				migrationLabel(m), ciSeedEnvVar)
 			continue
 		}
@@ -100,8 +110,9 @@ func RunMigrations(db *sql.DB, engine string) error {
 			apply = applyUpTolerant
 		}
 		if err := apply(db, engine, m); err != nil {
-			return fmt.Errorf("apply migration %s: %w", migrationLabel(m), err)
+			return &MigrationError{Version: m.version, Name: m.name, Err: err}
 		}
+		recordApplied(m.version)
 	}
 	return nil
 }
@@ -244,7 +255,7 @@ func applyUp(db *sql.DB, engine string, m migrationFile) error {
 // duplicate-failed here (UPGRADE_TEST_v0.9 finding 1). Its other statements
 // are CREATE ... IF NOT EXISTS, so the tolerance is equally unambiguous.
 var migrationsTolerateAlreadySatisfied = map[int]bool{
-	59: true, 11: true, 20: true, 21: true, 23: true, 24: true, 32: true, 47: true, 53: true, 55: true, 56: true, 57: true,
+	341: true, 83: true, 59: true, 11: true, 20: true, 21: true, 23: true, 24: true, 32: true, 47: true, 53: true, 55: true, 56: true, 57: true,
 }
 
 // isAlreadySatisfiedDDLError reports whether err is a duplicate-column or
@@ -361,7 +372,7 @@ func applyUpTolerant(db *sql.DB, engine string, m migrationFile) error {
 			if !isAlreadySatisfiedDDLError(err) {
 				return fmt.Errorf("statement %q: %w", stmt, err)
 			}
-			log.Printf("migration %s: statement already satisfied, skipping (%v): %s",
+			logging.Infof("migration %s: statement already satisfied, skipping (%v): %s",
 				migrationLabel(m), err, stmt)
 		}
 	}
@@ -552,7 +563,7 @@ func warnIfCISeedDataPresent(db *sql.DB, engine string, applied map[int]bool) {
 	if err := db.QueryRow(q, ciSeedUserIDs[0], ciSeedUserIDs[1]).Scan(&n); err != nil || n == 0 {
 		return
 	}
-	log.Printf("WARNING: this database contains CI seed data from migration %06d_%s "+
+	logging.Warnf("this database contains CI seed data from migration %06d_%s "+
 		"(%d seeded user account(s), plus a seeded root CA, certificate and API key). "+
 		"It inflates certificate counts and compliance reports. Remove it with: %s",
 		ciSeedVersion, ciSeedMigrationName, n, ciSeedRemovalCommand)
@@ -765,4 +776,217 @@ func loadMigrations(engine string) ([]migrationFile, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
 	return out, nil
+}
+
+// SchemaNewerError is returned by RunMigrations when the database records a
+// migration this binary does not embed: the database was upgraded by a newer
+// release and this one must not run against it.
+type SchemaNewerError struct{ DBVersion, BinaryVersion int }
+
+func (e *SchemaNewerError) Error() string {
+	return fmt.Sprintf("database schema version %06d is newer than this binary's schema version %06d: refusing to start; run a newer kryptkeeper release, or restore a backup taken before the upgrade (docs/deployment.md, 'Upgrade and rollback')",
+		e.DBVersion, e.BinaryVersion)
+}
+
+// MigrationError wraps a failed apply. Its text is parsed by
+// bootstrap.failedMigrationRe, so it must keep starting "apply migration
+// NNNNNN_name".
+type MigrationError struct {
+	Version int
+	Name    string
+	Err     error
+}
+
+func (e *MigrationError) Error() string {
+	return "apply migration " + migrationLabel(migrationFile{version: e.Version, name: e.Name}) + ": " + e.Err.Error()
+}
+
+func (e *MigrationError) Unwrap() error { return e.Err }
+
+// DowngradeRefusedError is returned by PlanDowngrade when rolling back
+// Version would destroy data the older schema cannot represent.
+type DowngradeRefusedError struct {
+	Version int
+	Reason  string
+	Rows    int
+}
+
+func (e *DowngradeRefusedError) Error() string {
+	return fmt.Sprintf("refusing to roll back migration %06d: %s", e.Version, e.Reason)
+}
+
+// MigrationStatus is the read-only comparison of a database to this binary.
+type MigrationStatus struct {
+	Engine        string
+	DBVersion     int
+	BinaryVersion int
+	Pending       []int
+	State         string // "current" | "pending" | "newer"
+}
+
+// Status never migrates and never fails on a newer schema: it exists so an
+// operator can ask the question that boot would answer with a refusal.
+func Status(db *sql.DB, engine string) (MigrationStatus, error) {
+	st := MigrationStatus{Engine: engine}
+	migrations, err := loadMigrations(engine)
+	if err != nil {
+		return st, err
+	}
+	applied, err := appliedVersionsIfPresent(db, engine)
+	if err != nil {
+		return st, err
+	}
+	st.DBVersion = maxVersion(applied)
+	st.BinaryVersion = maxEmbeddedVersion(migrations)
+	for _, m := range migrations {
+		// 000007 is never recorded unless the CI seed flag is on, so counting
+		// it would report a permanent phantom "pending".
+		if m.version > 0 && !applied[m.version] && !isCISeedMigration(m) {
+			st.Pending = append(st.Pending, m.version)
+		}
+	}
+	switch {
+	case st.DBVersion > st.BinaryVersion:
+		st.State = "newer"
+	case len(st.Pending) > 0:
+		st.State = "pending"
+	default:
+		st.State = "current"
+	}
+	return st, nil
+}
+
+// downgradeGuards veto a rollback of one migration when rows exist that only
+// that migration's schema can hold. rows > 0 means refuse.
+var downgradeGuards = map[int]func(*sql.DB, string) (rows int, reason string, err error){
+	76: guardAuditVocabulary,
+}
+
+// guardAuditVocabulary mirrors the predicate in the 000076 down files, which
+// refuse independently as a backstop. The audit log is append-only, so the
+// only safe answer to such rows is to refuse, never to delete or rewrite them.
+func guardAuditVocabulary(db *sql.DB, engine string) (int, string, error) {
+	present, err := tableExists(db, engine, "audit_log")
+	if err != nil || !present {
+		return 0, "", err
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM audit_log
+		WHERE outcome NOT IN ('success','failure','denied')
+		   OR actor_type NOT IN ('user','api_key','system','agent')`).Scan(&n); err != nil {
+		return 0, "", fmt.Errorf("count audit_log rows using the 000076 vocabulary: %w", err)
+	}
+	return n, fmt.Sprintf("audit_log has %d rows using the migration 000076 vocabulary; they cannot be represented after rollback (audit is append-only, rows are never deleted)", n), nil
+}
+
+// PlanDowngrade returns the applied versions RollbackMigration(toVersion)
+// would roll back, descending, after running every guard. Nothing is changed.
+func PlanDowngrade(db *sql.DB, engine string, toVersion int) ([]int, error) {
+	if toVersion < 0 {
+		return nil, fmt.Errorf("rollback target %d is negative", toVersion)
+	}
+	migrations, err := loadMigrations(engine)
+	if err != nil {
+		return nil, err
+	}
+	embedded := make(map[int]bool, len(migrations))
+	for _, m := range migrations {
+		embedded[m.version] = true
+	}
+	applied, err := appliedVersionsIfPresent(db, engine)
+	if err != nil {
+		return nil, err
+	}
+	plan := []int{}
+	for v := range applied {
+		if v > toVersion {
+			plan = append(plan, v)
+		}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(plan)))
+	for _, v := range plan {
+		// This binary has no down.sql for a version it does not embed; the
+		// newer release that applied it is the one that can undo it.
+		if !embedded[v] {
+			return nil, fmt.Errorf("migration %06d is applied but not embedded in this binary; roll back with the release that applied it", v)
+		}
+		guard, ok := downgradeGuards[v]
+		if !ok {
+			continue
+		}
+		rows, reason, err := guard(db, engine)
+		if err != nil {
+			return nil, err
+		}
+		if rows > 0 {
+			return nil, &DowngradeRefusedError{Version: v, Reason: reason, Rows: rows}
+		}
+	}
+	return plan, nil
+}
+
+func tableExists(db *sql.DB, engine, name string) (bool, error) {
+	q := `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`
+	if engine == "postgres" {
+		q = `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = $1`
+	}
+	var n int
+	if err := db.QueryRow(q, name).Scan(&n); err != nil {
+		return false, fmt.Errorf("check table %s: %w", name, err)
+	}
+	return n > 0, nil
+}
+
+// appliedVersionsIfPresent treats a missing schema_migrations table as an
+// empty database so read-only callers need not create it.
+func appliedVersionsIfPresent(db *sql.DB, engine string) (map[int]bool, error) {
+	present, err := tableExists(db, engine, "schema_migrations")
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return map[int]bool{}, nil
+	}
+	return appliedVersions(db)
+}
+
+func maxVersion(applied map[int]bool) int {
+	max := 0
+	for v := range applied {
+		if v > max {
+			max = v
+		}
+	}
+	return max
+}
+
+func maxEmbeddedVersion(migrations []migrationFile) int {
+	max := 0
+	for _, m := range migrations {
+		if m.version > max {
+			max = m.version
+		}
+	}
+	return max
+}
+
+var (
+	appliedMu          sync.Mutex
+	appliedThisProcess []int
+)
+
+// recordApplied feeds the boot-time schema.migrate.up audit entry: migrations
+// run before an audit provider exists, so what they applied is remembered.
+func recordApplied(version int) {
+	appliedMu.Lock()
+	defer appliedMu.Unlock()
+	appliedThisProcess = append(appliedThisProcess, version)
+}
+
+// AppliedThisProcess returns the versions RunMigrations applied since process
+// start, as a copy.
+func AppliedThisProcess() []int {
+	appliedMu.Lock()
+	defer appliedMu.Unlock()
+	return append([]int(nil), appliedThisProcess...)
 }

@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { scrollableProps } from "../lib/scrollable";
 import { useState } from "react";
 import {
   RefreshCw,
@@ -11,6 +12,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { extractList } from "../lib/models";
+import { useOperationEvents } from "../hooks/useOperationEvents";
 import type { TemplateRecord } from "../lib/models";
 import { api, downloadAuthedFile } from "../lib/api";
 import type {
@@ -26,8 +28,138 @@ import {
   Panel,
   StateMessage,
 } from "../components/ui";
+import { opLabel, opTone } from "../lib/operationStatus";
 import { PageHeader } from "../components/PageHeader";
 import { Wizard, type WizardStepDef } from "../components/Wizard";
+
+const PQC_LABEL_EXPLANATIONS: Record<
+  string,
+  { title: string; text: string }
+> = {
+  quantum_safe: {
+    title: "Quantum safe",
+    text: "Leaf key and every signature up to the root use post-quantum algorithms.",
+  },
+  quantum_safe_leaf_only: {
+    title: "Leaf-only PQC",
+    text: "The certificate's own key is post-quantum, but a classical signature remains somewhere in its chain, so the chain can still be forged by a quantum attacker. This is NOT quantum safe.",
+  },
+  migration_ready: {
+    title: "Migration ready",
+    text: "Classical, but short-lived (100 days or less) or hybrid, so it can be rotated to post-quantum before the deadline.",
+  },
+  vulnerable: {
+    title: "Vulnerable",
+    text: "Long-lived classical certificate that needs active migration planning.",
+  },
+  not_applicable: {
+    title: "Not applicable",
+    text: "Key type not recognised or not subject to this assessment.",
+  },
+};
+
+// Mirrors pqc.Timeline (GET /reports/pqc-migration). Optional so the UI
+// degrades honestly against a hub that predates the field.
+type PQCTimeline = {
+  quarters: { quarter: string; due: number; migrated: number }[];
+  expire_before_2030: number;
+  expire_after_2030: number;
+};
+
+function TimelinePanel({ timeline }: { timeline?: PQCTimeline }) {
+  return (
+    <Panel
+      title="Migration timeline to 2030"
+      subtitle="Certificates by the quarter their validity ends, through the CNSA 2.0 deadline"
+    >
+      {!timeline ? (
+        <p className="text-sm text-muted-foreground">
+          Timeline not reported by this hub version.
+        </p>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <MetricCard
+              label="Expire before 2030"
+              value={timeline.expire_before_2030}
+              hint="still to migrate; rotate at renewal"
+            />
+            <MetricCard
+              label="Expire after 2030"
+              value={timeline.expire_after_2030}
+              hint="still to migrate; must be replaced early"
+              tone={timeline.expire_after_2030 > 0 ? "danger" : "success"}
+            />
+          </div>
+          <div className="overflow-x-auto" {...scrollableProps}>
+          <table className="w-full min-w-[20rem] text-sm">
+            <thead>
+              <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                <th className="py-2 pr-4">Quarter</th>
+                <th className="py-2 pr-4">Due</th>
+                <th className="py-2 pr-4">Migrated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {timeline.quarters.map((q) => (
+                <tr
+                  key={q.quarter}
+                  data-testid="pqc-quarter"
+                  className="border-b border-border"
+                >
+                  <td className="py-2 pr-4 text-foreground">{q.quarter}</td>
+                  <td className="py-2 pr-4 text-foreground">{q.due}</td>
+                  <td className="py-2 pr-4 text-foreground">{q.migrated}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function ByAlgorithmPanel() {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["crypto-posture"],
+    queryFn: api.cryptoPosture,
+    staleTime: 60_000,
+  });
+  const breakdown = data?.data?.algorithm_breakdown;
+  const rows = Object.entries(breakdown ?? {}).sort((a, b) => b[1] - a[1]);
+
+  return (
+    <Panel
+      title="By algorithm"
+      subtitle="Certificates per public-key algorithm"
+    >
+      {isLoading ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : error || !breakdown ? (
+        <p className="text-sm text-muted-foreground">
+          Algorithm breakdown unavailable.
+        </p>
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No certificates.</p>
+      ) : (
+        <div className="space-y-1.5">
+          {rows.map(([algo, count]) => (
+            <div
+              key={algo}
+              data-testid="pqc-algorithm-row"
+              className="flex items-center justify-between gap-2 text-sm"
+            >
+              <span className="text-foreground">{algo}</span>
+              <span className="text-muted-foreground">{count}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
 
 function priorityTone(
   p: PQCMigrationItem["priority"],
@@ -160,6 +292,12 @@ function MigrationWavesPanel() {
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["pqc-waves"] });
 
+  const { latest: migrateEvents } = useOperationEvents({
+    kinds: ["migrate"],
+    onEvent: () => void invalidate(),
+    onResync: () => void invalidate(),
+  });
+
   const deriveMutation = useMutation({
     mutationFn: api.autoDerivePqcWaves,
     onSuccess: invalidate,
@@ -235,6 +373,11 @@ function MigrationWavesPanel() {
                       {wv.status}
                     </Badge>
                   ) : null}
+                  {migrateEvents[wv.id] ? (
+                    <Badge tone={opTone(migrateEvents[wv.id].status)}>
+                      {opLabel(migrateEvents[wv.id].status)}
+                    </Badge>
+                  ) : null}
                   {wv.owner ? (
                     <Badge tone="neutral">owner: {wv.owner}</Badge>
                   ) : null}
@@ -256,6 +399,7 @@ function MigrationWavesPanel() {
                   ) : null}
                   <Button
                     tone="danger"
+                    aria-label={`Delete wave ${wv.name}`}
                     onClick={() => deleteMutation.mutate(wv.id)}
                     disabled={deleteMutation.isPending}
                   >
@@ -522,9 +666,9 @@ function MigrationJourneyPanel({
                 Wave “{result.waveName}” created and execution proposed.
               </p>
               <p className="text-sm text-foreground">
-                Pending action <code>{result.actionId}</code> now needs
-                approval by a <strong>different</strong> administrator — the
-                proposer cannot approve their own action.
+                Pending action <code>{result.actionId}</code> now needs approval
+                by a <strong>different</strong> administrator — the proposer
+                cannot approve their own action.
               </p>
             </>
           ) : (
@@ -585,7 +729,10 @@ function MigrationJourneyPanel({
   );
 }
 
+const ROADMAP_PREVIEW = 15;
+
 export default function PQCMigration() {
+  const [showAllRoadmap, setShowAllRoadmap] = useState(false);
   const { data, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ["pqc-migration"],
     queryFn: api.pqcMigration,
@@ -596,6 +743,9 @@ export default function PQCMigration() {
   // Rendered as computed by the backend (pqc.ReadinessTally) so this tile,
   // the countdown card and Crypto Posture can never disagree.
   const pqcReady = roadmap?.pqc_score_percent ?? 0;
+  const timeline = (
+    roadmap as (PQCMigrationRoadmap & { timeline?: PQCTimeline }) | undefined
+  )?.timeline;
 
   return (
     <div className="space-y-6 p-6">
@@ -647,7 +797,7 @@ export default function PQCMigration() {
             <MetricCard
               label="Leaf-only PQC"
               value={roadmap.quantum_safe_leaf_only}
-              hint="classical issuing chain"
+              hint={PQC_LABEL_EXPLANATIONS.quantum_safe_leaf_only.title}
               tone="info"
             />
             <MetricCard
@@ -662,7 +812,23 @@ export default function PQCMigration() {
             />
           </div>
 
+          <dl
+            data-testid="pqc-label-explanations"
+            className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2"
+          >
+            {Object.entries(PQC_LABEL_EXPLANATIONS).map(([key, e]) => (
+              <div key={key}>
+                <dt className="font-medium text-foreground">{e.title}</dt>
+                <dd className="text-muted-foreground">{e.text}</dd>
+              </div>
+            ))}
+          </dl>
+
           <CountdownPanel />
+
+          <TimelinePanel timeline={timeline} />
+
+          <ByAlgorithmPanel />
 
           <MigrationJourneyPanel
             items={roadmap.items}
@@ -671,7 +837,7 @@ export default function PQCMigration() {
 
           <Panel
             title="Migration roadmap"
-            subtitle={`${roadmap.items.length} certificate(s) need action, highest priority first`}
+            subtitle={`${roadmap.items.length} certificate{roadmap.items.length === 1 ? "" : "s"} need{roadmap.items.length === 1 ? "s" : ""} action, highest priority first`}
           >
             {roadmap.items.length === 0 ? (
               <p className="text-sm text-state-auto">
@@ -679,18 +845,18 @@ export default function PQCMigration() {
                 quantum-safe.
               </p>
             ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+              <div className="overflow-x-auto" {...scrollableProps}>
+                <table className="w-full min-w-[44rem] text-sm">
                   <thead>
                     <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                       <th className="py-2 pr-4">Priority</th>
                       <th className="py-2 pr-4">Certificate</th>
-                      <th className="py-2 pr-4">Why</th>
-                      <th className="py-2 pr-4">Recommended action</th>
+                      <th className="py-2 pr-4 min-w-[14rem]">Why</th>
+                      <th className="py-2 pr-4 min-w-[14rem]">Recommended action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {roadmap.items.map((item) => (
+                    {(showAllRoadmap ? roadmap.items : roadmap.items.slice(0, ROADMAP_PREVIEW)).map((item) => (
                       <tr
                         key={item.fingerprint}
                         className="border-b border-border align-top"
@@ -713,6 +879,18 @@ export default function PQCMigration() {
                     ))}
                   </tbody>
                 </table>
+                {roadmap.items.length > ROADMAP_PREVIEW ? (
+                  <div className="pt-3">
+                    <Button
+                      tone="secondary"
+                      onClick={() => setShowAllRoadmap((v) => !v)}
+                    >
+                      {showAllRoadmap
+                        ? `Show first ${ROADMAP_PREVIEW}`
+                        : `Show all ${roadmap.items.length}`}
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             )}
           </Panel>

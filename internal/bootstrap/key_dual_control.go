@@ -10,7 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"os"
 	"strings"
@@ -34,6 +34,10 @@ const (
 	keyActionRotate = "key_rotate"
 	keyActionExport = "key_export"
 
+	// W23-22: un-schedule a provider-side key deletion. Executes on approval
+	// (it is not a grant): there is no secret to redeem, only a recovery.
+	keyActionCancelDelete = "key_cancel_delete"
+
 	// FG-2 / A2A7-001: the other private-key egress routes.
 	keyActionBackup            = "key_backup"
 	keyActionEscrow            = "key_escrow"
@@ -41,6 +45,12 @@ const (
 	keyActionLeafEscrow        = "key_leaf_escrow"
 	keyActionLeafEscrowRecover = "key_leaf_escrow_recover"
 	keyActionBYOKExport        = "key_byok_export"
+
+	// W23-03: trust-anchor import/removal. KeyID carries the certificate
+	// fingerprint (import) or the CA id (removal), not a keystore key.
+	keyActionCAImport            = "key_ca_import"
+	keyActionCARotate            = "key_ca_rotate" // W23-15: grant to re-key / cross-sign a CA
+	keyActionCATrustAnchorRemove = "key_ca_trust_anchor_remove"
 
 	// backupScope is the key_id of a whole-keystore backup grant.
 	backupScope = "all-keys"
@@ -58,16 +68,20 @@ var grantActions = map[string]bool{
 	keyActionExport: true, keyActionBackup: true, keyActionEscrow: true,
 	keyActionEscrowRecover: true, keyActionLeafEscrow: true,
 	keyActionLeafEscrowRecover: true, keyActionBYOKExport: true,
+	keyActionCAImport: true, keyActionCATrustAnchorRemove: true,
+	keyActionCARotate: true,
 }
 
 // isKeyAction reports whether an action type belongs to this guard.
 func isKeyAction(t string) bool {
-	return t == keyActionDelete || t == keyActionRotate || grantActions[t]
+	return t == keyActionDelete || t == keyActionRotate || t == keyActionCancelDelete || grantActions[t]
 }
 
 // keyActionParams is the params_json payload for all key actions.
 type keyActionParams struct {
 	KeyID string `json:"key_id"`
+	// OwnerTenant is shown to the approver so they can see whose key it is.
+	OwnerTenant string `json:"owner_tenant,omitempty"`
 	// BundleSHA256 binds a recover/BYOK grant to the exact escrow bundle the
 	// approver saw, so an approval for one bundle cannot unseal another.
 	BundleSHA256 string `json:"bundle_sha256,omitempty"`
@@ -109,7 +123,7 @@ func keyDualControlEnabledFromEnv() bool {
 // the guard off. Called once from the hub's wiring.
 func WarnIfKeyDualControlDisabled() {
 	if !keyDualControlEnabledFromEnv() {
-		log.Printf("WARNING: KRYPTKEEPER_KEY_DUAL_CONTROL=false - key delete/rotate/export, backup, escrow, recovery and BYOK export run on ONE admin's say-so; private key material can leave the hub without a second approver. Remove the setting to restore dual control (D-122).")
+		logging.Warnf("KRYPTKEEPER_KEY_DUAL_CONTROL=false - key delete/rotate/export, backup, escrow, recovery and BYOK export run on ONE admin's say-so; private key material can leave the hub without a second approver. Remove the setting to restore dual control (D-122).")
 	}
 }
 
@@ -128,7 +142,7 @@ func (d *KeyDualControl) Propose(ctx context.Context, actionType, keyID, princip
 	if grantActions[actionType] {
 		return PendingAction{}, fmt.Errorf("dual control: %q is a grant and must be proposed with ProposeGrant", actionType)
 	}
-	return d.propose(ctx, actionType, keyID, principal, keyActionParams{KeyID: keyID})
+	return d.propose(ctx, actionType, keyID, principal, "", keyActionParams{KeyID: keyID})
 }
 
 // ProposeGrant files an egress grant bound to pd's canonical human, auth
@@ -137,13 +151,13 @@ func (d *KeyDualControl) ProposeGrant(ctx context.Context, auth *Authenticator, 
 	if !grantActions[actionType] {
 		return PendingAction{}, fmt.Errorf("dual control: %q is not a grant action", actionType)
 	}
-	return d.propose(ctx, actionType, keyID, pd.ID, keyActionParams{
+	return d.propose(ctx, actionType, keyID, pd.ID, pd.Tenant, keyActionParams{
 		KeyID: keyID, BundleSHA256: bundleSHA256,
 		ProposerHuman: auth.canonicalHuman(pd), ProposerAuthType: pd.AuthType, ProposerKid: pd.Kid,
 	})
 }
 
-func (d *KeyDualControl) propose(ctx context.Context, actionType, keyID, principal string, p keyActionParams) (PendingAction, error) {
+func (d *KeyDualControl) propose(ctx context.Context, actionType, keyID, principal, proposerTenant string, p keyActionParams) (PendingAction, error) {
 	if d == nil || d.store == nil {
 		return PendingAction{}, fmt.Errorf("dual control: approval queue unavailable")
 	}
@@ -153,6 +167,21 @@ func (d *KeyDualControl) propose(ctx context.Context, actionType, keyID, princip
 	if keyID == "" || principal == "" {
 		return PendingAction{}, fmt.Errorf("dual control: key id and principal are required")
 	}
+	// The grant belongs to the tenant that owns the key, not the proposer's:
+	// otherwise a foreign-tenant approver sees (and can approve) it while the
+	// owner's approvers never do. Unattributable keys stay with the proposer.
+	tenant := ""
+	rationale := fmt.Sprintf("dual-control %s of key %s", strings.TrimPrefix(actionType, "key_"), keyID)
+	if multiTenancyEnabled() {
+		tenant = proposerTenant
+		if owner, ok := keyOwnerTenant(ctx, activeTenantStore, keyID); ok {
+			tenant = owner
+		}
+		if tenant != "" {
+			p.OwnerTenant = tenant
+			rationale += fmt.Sprintf(" (owning tenant: %s)", tenant)
+		}
+	}
 	params, err := json.Marshal(p)
 	if err != nil {
 		return PendingAction{}, fmt.Errorf("dual control: params marshal: %w", err)
@@ -161,8 +190,9 @@ func (d *KeyDualControl) propose(ctx context.Context, actionType, keyID, princip
 		ActionType: actionType,
 		Params:     params,
 		ProposedBy: principal,
-		Rationale:  fmt.Sprintf("dual-control %s of key %s", strings.TrimPrefix(actionType, "key_"), keyID),
+		Rationale:  rationale,
 		Status:     "pending",
+		Tenant:     tenant,
 	})
 }
 
@@ -196,6 +226,9 @@ func (d *KeyDualControl) authorize(ctx context.Context, auth *Authenticator, act
 	if err := json.Unmarshal(action.Params, &p); err != nil || p.KeyID != keyID || p.BundleSHA256 != bundleSHA256 {
 		return fmt.Errorf("dual control: action %s does not approve this %s of %s", actionID, strings.TrimPrefix(actionType, "key_"), keyID)
 	}
+	if err := grantTenantStillOwnsKey(ctx, action, p); err != nil {
+		return err
+	}
 	if action.ProposedBy != pd.ID || !grantBoundTo(auth, p, pd) {
 		// Generic on purpose: do not reveal which binding failed.
 		return fmt.Errorf("dual control: grant %s belongs to a different principal", actionID)
@@ -216,6 +249,34 @@ func (d *KeyDualControl) authorize(ctx context.Context, auth *Authenticator, act
 		return fmt.Errorf("dual control: grant %s was already redeemed - grants are single-use", actionID)
 	}
 	d.redeemed[actionID] = true
+	return nil
+}
+
+// grantTenantStillOwnsKey re-resolves the key's owning tenant at redemption.
+// The grant is stamped with the owner at proposal time; if the key's CA has
+// been remapped to another tenant since, or its owner can no longer be
+// resolved, the approval was given for a different tenant's key and must not
+// release it (deny by default).
+func grantTenantStillOwnsKey(ctx context.Context, action PendingAction, p keyActionParams) error {
+	if !multiTenancyEnabled() {
+		return nil
+	}
+	norm := func(t string) string {
+		if t == "" {
+			return DefaultTenant
+		}
+		return t
+	}
+	owner, ok := keyOwnerTenant(ctx, activeTenantStore, p.KeyID)
+	if !ok {
+		if p.OwnerTenant != "" {
+			return fmt.Errorf("dual control: grant %s cannot be redeemed: key ownership is no longer resolvable", action.ID)
+		}
+		return nil // never attributable to a tenant: the grant stayed with its proposer
+	}
+	if norm(owner) != norm(action.Tenant) {
+		return fmt.Errorf("dual control: grant %s was approved for a different tenant than the one that now owns the key", action.ID)
+	}
 	return nil
 }
 
@@ -244,6 +305,13 @@ type egressGate struct {
 // with the proposed action id, 403 for a bad grant, or 503 when the queue is
 // down: fail closed, never an unguarded export.
 func (d *KeyDualControl) gate(w http.ResponseWriter, r *http.Request, auth *Authenticator, audit AuditProvider, pd AuthPrincipal, g egressGate) bool {
+	// Ownership is enforced even when dual control is off: egress of a key the
+	// caller's tenant does not own is a cross-tenant export either way.
+	if !keyVisibleToTenant(r.Context(), activeTenantStore, pd, g.keyID) {
+		emitAuditEvent(r, audit, pd.ID, g.auditAction, "key", g.keyID, AuditOutcomeDenied)
+		writeForbidden(w, "key is not owned by the caller's tenant")
+		return false
+	}
 	if !d.Enabled() {
 		return true
 	}
@@ -307,10 +375,35 @@ func executeKeyAction(ctx context.Context, keys keystore.Store, action PendingAc
 
 	switch action.ActionType {
 	case keyActionDelete:
+		// Same rule as the propose path, re-checked here: a CA may have been
+		// issued onto this key between proposal and approval.
+		if activeCAStore != nil {
+			if caID, found, err := ca.KeyInUseByCA(activeCAStore, p.KeyID); err == nil && found {
+				return nil, fmt.Errorf("key %s backs CA %s; refusing to delete", p.KeyID, caID)
+			}
+		}
 		if err := keys.Delete(p.KeyID); err != nil {
 			return nil, fmt.Errorf("approved delete of %s: %w", p.KeyID, err)
 		}
 		return json.Marshal(map[string]any{"deleted": p.KeyID})
+
+	case keyActionCancelDelete:
+		c, ok := keys.(keystore.DeletionCanceller)
+		if !ok {
+			return nil, fmt.Errorf("approved cancel of %s: this keystore backend has no scheduled deletions", p.KeyID)
+		}
+		// The window may have closed while the proposal waited for approval.
+		can, err := c.CanCancelDeletion(p.KeyID, time.Now())
+		if err != nil {
+			return nil, fmt.Errorf("approved cancel of %s: %w", p.KeyID, err)
+		}
+		if !can {
+			return nil, fmt.Errorf("approved cancel of %s: %w", p.KeyID, keystore.ErrNotCancellable)
+		}
+		if err := c.CancelDeletion(ctx, p.KeyID); err != nil {
+			return nil, fmt.Errorf("approved cancel of %s: %w", p.KeyID, err)
+		}
+		return json.Marshal(map[string]any{"cancelled": p.KeyID})
 
 	case keyActionRotate:
 		// Same G-35 rule as the direct endpoint: a key backing a CA must
@@ -331,7 +424,8 @@ func executeKeyAction(ctx context.Context, keys keystore.Store, action PendingAc
 		return json.Marshal(map[string]any{"rotated": p.KeyID, "previous_id": result.PreviousID})
 
 	case keyActionExport, keyActionBackup, keyActionEscrow, keyActionEscrowRecover,
-		keyActionLeafEscrow, keyActionLeafEscrowRecover, keyActionBYOKExport:
+		keyActionLeafEscrow, keyActionLeafEscrowRecover, keyActionBYOKExport,
+		keyActionCAImport, keyActionCATrustAnchorRemove, keyActionCARotate:
 		// Approval grants; it never exports. Key bytes and passphrases
 		// must not rest in the pending_actions table: the proposer
 		// redeems this grant at the originating endpoint.

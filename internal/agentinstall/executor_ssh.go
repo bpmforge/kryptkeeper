@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -16,6 +17,9 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"kryptkeeper/internal/egress"
+	"kryptkeeper/internal/privexec"
 )
 
 // sshOperationTimeout bounds Exists/ReadFile/WriteFile, which -- unlike Run --
@@ -68,7 +72,10 @@ type SSHExecutor struct {
 	client *ssh.Client
 }
 
-var _ Executor = (*SSHExecutor)(nil)
+var (
+	_ Executor             = (*SSHExecutor)(nil)
+	_ privexec.StdinRunner = (*SSHExecutor)(nil)
+)
 
 // NewSSHExecutor dials host and returns an SSHExecutor backed by that
 // connection. It refuses to dial without both a Signer and a
@@ -87,7 +94,9 @@ func NewSSHExecutor(ctx context.Context, cfg SSHTarget) (*SSHExecutor, error) {
 	}
 	addr := net.JoinHostPort(cfg.Host, fmt.Sprintf("%d", cfg.Port))
 
-	conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", addr)
+	// Host comes from the target credential: refuse metadata and link-local
+	// at connect time, as the reachability probe already does.
+	conn, err := (&net.Dialer{Timeout: timeout, Control: sshDialPolicy.DialControl()}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("ssh executor: dial %s: %w", addr, err)
 	}
@@ -141,13 +150,21 @@ func (e *SSHExecutor) ReadFile(path string) ([]byte, error) {
 		err error
 	}
 	done := make(chan result, 1)
-	// session.Output (not a manually-wired Stdout buffer) is used
-	// deliberately: it's the ssh package's own stdout-only helper, so there
-	// is no second goroutine touching this buffer the way there would be if
-	// Stderr were also wired up.
+	// Stdout and stderr go to separate buffers (each is written by its own
+	// copy goroutine, so neither is shared), and stderr is kept on failure:
+	// `cat: <path>: Permission denied` is how the caller tells a file the
+	// account may not read from one that is broken.
+	var stdout bytes.Buffer
+	stderr := &cappedBuffer{max: maxReadStderr}
+	session.Stdout, session.Stderr = &stdout, stderr
 	go func() {
-		out, err := session.Output(shellJoin("cat", []string{path}))
-		done <- result{out, err}
+		err := session.Run(shellJoin("cat", []string{path}))
+		if err != nil {
+			if msg := stderr.firstLine(); msg != "" {
+				err = fmt.Errorf("%w: %s", err, msg)
+			}
+		}
+		done <- result{stdout.Bytes(), err}
 	}()
 
 	select {
@@ -191,7 +208,7 @@ func (e *SSHExecutor) WriteFile(path string, content []byte, mode os.FileMode) e
 		_, _ = e.Run(cleanupCtx, "rm", "-f", tmp) // best-effort remote cleanup; install already succeeded or failed
 	}()
 
-	if _, err := e.runStdin(ctx, content, "sh", "-c", "umask 077; cat > "+shellQuote(tmp)); err != nil {
+	if _, err := e.RunStdin(ctx, content, "sh", "-c", "umask 077; cat > "+shellQuote(tmp)); err != nil {
 		return fmt.Errorf("ssh executor: stage %s: %w", path, err)
 	}
 
@@ -207,10 +224,12 @@ func (e *SSHExecutor) WriteFile(path string, content []byte, mode os.FileMode) e
 // for config-test/reload, where stderr belongs in the failure Detail). A
 // non-zero remote exit surfaces as a Go error via *ssh.ExitError.
 func (e *SSHExecutor) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return e.runStdin(ctx, nil, name, args...)
+	return e.RunStdin(ctx, nil, name, args...)
 }
 
-func (e *SSHExecutor) runStdin(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+// RunStdin is Run with bytes piped to the remote command's stdin; privexec password
+// mode uses it so a sudo password never appears in the command line.
+func (e *SSHExecutor) RunStdin(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
 	session, err := e.client.NewSession()
 	if err != nil {
 		return nil, fmt.Errorf("ssh executor: new session: %w", err)
@@ -273,4 +292,110 @@ func shellJoin(name string, args []string) string {
 		parts = append(parts, shellQuote(a))
 	}
 	return strings.Join(parts, " ")
+}
+
+// HostKeyMismatchError is returned (wrapped by the ssh handshake) when the
+// host presents a key other than the pinned one. Both fingerprints are in the
+// text so an operator can tell a rotated key from a hijacked address (W24-09).
+type HostKeyMismatchError struct {
+	Host, Pinned, Observed string // fingerprints are "SHA256:..."
+}
+
+func (e *HostKeyMismatchError) Error() string {
+	return fmt.Sprintf("ssh host key mismatch for %s: pinned %s, observed %s", e.Host, e.Pinned, e.Observed)
+}
+
+// HostKeyFingerprint is the OpenSSH-style SHA256 fingerprint of k.
+func HostKeyFingerprint(k ssh.PublicKey) string { return ssh.FingerprintSHA256(k) }
+
+// HostKeyLine renders k in authorized_keys format (no trailing newline).
+func HostKeyLine(k ssh.PublicKey) string {
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(k)))
+}
+
+// FingerprintOfLine returns the fingerprint of an authorized_keys-format key,
+// or "" when line is empty or does not parse.
+func FingerprintOfLine(line string) string {
+	if strings.TrimSpace(line) == "" {
+		return ""
+	}
+	k, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line))
+	if err != nil {
+		return ""
+	}
+	return HostKeyFingerprint(k)
+}
+
+// PinnedHostKeyCallback accepts only the pinned key (byte comparison) and
+// reports any other as a *HostKeyMismatchError naming both fingerprints.
+func PinnedHostKeyCallback(pinned ssh.PublicKey) ssh.HostKeyCallback {
+	return func(hostname string, _ net.Addr, key ssh.PublicKey) error {
+		if bytes.Equal(key.Marshal(), pinned.Marshal()) {
+			return nil
+		}
+		return &HostKeyMismatchError{Host: hostname, Pinned: HostKeyFingerprint(pinned), Observed: HostKeyFingerprint(key)}
+	}
+}
+
+var errProbeDone = errors.New("host key captured")
+
+// ProbeHostKey returns the host key host:port presents, without
+// authenticating (no credential leaves the hub). The dial goes through the
+// egress policy: private ranges stay reachable, loopback/link-local do not.
+func ProbeHostKey(ctx context.Context, host string, port int, timeout time.Duration) (ssh.PublicKey, error) {
+	return probeHostKeyWithPolicy(ctx, host, port, timeout, egress.PolicyFromEnv(egress.Policy{AllowPrivate: true}))
+}
+
+func probeHostKeyWithPolicy(ctx context.Context, host string, port int, timeout time.Duration, p egress.Policy) (ssh.PublicKey, error) {
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	conn, err := (&net.Dialer{Timeout: timeout, Control: p.DialControl()}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w", addr, err)
+	}
+	defer conn.Close()
+	var captured ssh.PublicKey
+	_, _, _, err = ssh.NewClientConn(conn, addr, &ssh.ClientConfig{
+		User: "kryptkeeper-hostkey-probe",
+		Auth: nil,
+		// Capture-and-abort: the only place a host key is accepted unverified.
+		// The handshake stops here, before any authentication is attempted.
+		HostKeyCallback: func(_ string, _ net.Addr, key ssh.PublicKey) error {
+			captured = key
+			return errProbeDone
+		},
+		Timeout: timeout,
+	})
+	if captured != nil {
+		return captured, nil
+	}
+	if err == nil {
+		err = errors.New("no host key presented")
+	}
+	return nil, fmt.Errorf("handshake %s: %w", addr, err)
+}
+
+var sshDialPolicy = egress.Policy{AllowPrivate: true, AllowLoopback: true}
+
+// maxReadStderr bounds the stderr kept from a failed remote read.
+const maxReadStderr = 512
+
+// cappedBuffer keeps the first max bytes written and discards the rest.
+type cappedBuffer struct {
+	max int
+	buf bytes.Buffer
+}
+
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if room := c.max - c.buf.Len(); room > 0 {
+		c.buf.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
+func (c *cappedBuffer) firstLine() string {
+	line, _, _ := strings.Cut(strings.TrimSpace(c.buf.String()), "\n")
+	return strings.TrimSpace(line)
 }

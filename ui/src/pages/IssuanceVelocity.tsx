@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle } from "lucide-react";
 import { api } from "../lib/api";
@@ -34,7 +35,8 @@ function resolveGroupLabel(
   sentinels: readonly string[],
   lookup: NameLookup,
 ): { label: string; isIdentifier: boolean } {
-  if (sentinels.includes(key)) return { label: key, isIdentifier: false };
+  if (sentinels.includes(key))
+    return { label: SENTINEL_LABELS[key] ?? key, isIdentifier: false };
   const name = lookup.names.get(key);
   if (name) return { label: name, isIdentifier: false };
   if (!lookup.ready) return { label: key, isIdentifier: false };
@@ -44,19 +46,52 @@ function resolveGroupLabel(
 const CA_SENTINELS = ["unknown"];
 const TEMPLATE_SENTINELS = ["none"];
 
+const SENTINEL_LABELS: Record<string, string> = {
+  unknown: "Unknown CA",
+  none: "No template",
+};
+
+// Day buckets are server-side UTC calendar days and cannot be re-bucketed in
+// the browser's zone, so labels say "UTC" instead of pretending to be local
+// (the Dashboard header date is browser-local).
+// Format without a spurious clock time.
+function formatDay(d: string): string {
+  const t = new Date(d);
+  if (Number.isNaN(t.getTime())) return d;
+  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeZone: "UTC" }).format(t);
+}
+
 function GroupRow({
   entryKey,
   count,
   label,
   isIdentifier,
   countCls,
+  to,
 }: {
   entryKey: string;
   count: number;
   label: string;
   isIdentifier: boolean;
   countCls: string;
+  to?: string;
 }) {
+  const labelEl = (
+    <span
+      className={
+        isIdentifier
+          ? "font-mono text-xs text-muted-foreground truncate"
+          : "text-foreground truncate"
+      }
+      title={
+        isIdentifier
+          ? "No display name on record — showing the raw identifier"
+          : undefined
+      }
+    >
+      {label}
+    </span>
+  );
   return (
     <div
       key={entryKey}
@@ -64,20 +99,13 @@ function GroupRow({
     >
       <span className="flex items-center gap-1.5 min-w-0">
         {isIdentifier && <Badge tone="neutral">ID</Badge>}
-        <span
-          className={
-            isIdentifier
-              ? "font-mono text-xs text-muted-foreground truncate"
-              : "text-foreground truncate"
-          }
-          title={
-            isIdentifier
-              ? "No display name on record — showing the raw identifier"
-              : undefined
-          }
-        >
-          {label}
-        </span>
+        {to ? (
+          <Link to={to} className="min-w-0 hover:text-primary hover:underline">
+            {labelEl}
+          </Link>
+        ) : (
+          labelEl
+        )}
       </span>
       <span className={`${countCls} font-semibold ml-2 shrink-0`}>{count}</span>
     </div>
@@ -158,7 +186,7 @@ export default function IssuanceVelocity() {
               {
                 label: "Last 90 days",
                 value: report.windows.last_90d,
-                cls: "text-foreground",
+                cls: "text-primary",
               },
             ].map(({ label, value, cls }) => (
               <div
@@ -184,19 +212,19 @@ export default function IssuanceVelocity() {
                 <p className="text-sm font-semibold text-state-attn">
                   Anomaly detected
                 </p>
-                <p className="text-xs text-state-attn/80 mt-0.5">
+                <p className="text-xs text-state-attn mt-0.5">
                   Unusual issuance spikes on:{" "}
-                  {report.anomaly_days.sort().join(", ")}
+                  {[...report.anomaly_days].sort().map(formatDay).join(", ")} (UTC)
                 </p>
                 {/* S-64: state the floor WHERE the warning renders, from
                     the payload — the S-47 detector requires it before
                     anything fires, and a reader deciding whether to trust
                     this panel needs that context here, not in the docs. */}
                 {report.anomaly_minimum_sample != null && (
-                  <p className="text-xs text-state-attn/60 mt-1">
-                    Detector floor: minimum sample of{" "}
-                    {report.anomaly_minimum_sample} certificates in the last 30
-                    days.
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Spikes are only flagged once at least{" "}
+                    {report.anomaly_minimum_sample} certificates were issued in
+                    the last 30 days.
                   </p>
                 )}
               </div>
@@ -217,30 +245,61 @@ export default function IssuanceVelocity() {
           {/* Sparkline bars */}
           <Panel
             title={`Daily Issuance — Last ${buckets.length} Day${buckets.length === 1 ? "" : "s"}`}
-            subtitle="Bar height proportional to daily count"
+            subtitle="Bar height proportional to daily count. Days are UTC calendar days."
           >
-            <div className="flex gap-0.5 h-24">
+            <div
+              role="img"
+              aria-label={`Bar chart: daily certificate issuance over the last ${buckets.length} day${buckets.length === 1 ? "" : "s"}, ${buckets.reduce((s, b) => s + b.count, 0)} in total, peak ${Math.max(0, ...buckets.map((b) => b.count))}${report.anomaly_days.length > 0 ? `, ${report.anomaly_days.length} anomaly day${report.anomaly_days.length === 1 ? "" : "s"}` : ""}. A table with the same data follows.`}
+              className="flex gap-0.5 h-24 overflow-x-auto"
+            >
               {buckets.map((b) => {
                 const isAnomaly = report.anomaly_days.includes(b.date);
                 const pct = (b.count / maxDay) * 100;
                 return (
                   <div
                     key={b.date}
-                    className="flex-1 h-full flex flex-col items-center justify-end group relative"
-                    title={`${b.date}: ${b.count}`}
+                    aria-hidden="true"
+                    className="flex-1 min-w-[5px] h-full flex flex-col items-center justify-end group relative"
+                    title={`${b.date} (UTC): ${b.count}`}
                   >
                     <div
                       data-testid="issuance-bar"
                       className={`w-full rounded-sm transition-all ${isAnomaly ? "bg-state-attn" : "bg-primary/60 group-hover:bg-primary"}`}
-                      style={{ height: `${Math.max(2, pct)}%` }}
+                      style={{ height: `${Math.max(4, pct)}%` }}
                     />
                     {/* Tooltip */}
                     <div className="absolute bottom-full mb-1 hidden group-hover:block bg-muted text-xs text-foreground px-2 py-1 rounded whitespace-nowrap z-10">
-                      {b.date}: {b.count}
+                      {b.date} (UTC): {b.count}
                     </div>
                   </div>
                 );
               })}
+            </div>
+            <div className="sr-only">
+              <table>
+                <caption>
+                  Daily certificate issuance over the last {buckets.length} day
+                  {buckets.length === 1 ? "" : "s"}; days with no issuance are omitted.
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Date (UTC)</th>
+                    <th scope="col">Issued</th>
+                    <th scope="col">Flag</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {buckets
+                    .filter((b) => b.count > 0)
+                    .map((b) => (
+                      <tr key={b.date}>
+                        <td>{b.date}</td>
+                        <td>{b.count}</td>
+                        <td>{report.anomaly_days.includes(b.date) ? "anomaly" : ""}</td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
             </div>
           </Panel>
 
@@ -268,6 +327,11 @@ export default function IssuanceVelocity() {
                       label={label}
                       isIdentifier={isIdentifier}
                       countCls="text-primary"
+                      to={
+                        CA_SENTINELS.includes(k)
+                          ? undefined
+                          : `/certificates?ca_id=${encodeURIComponent(k)}`
+                      }
                     />
                   );
                 })}
@@ -318,7 +382,7 @@ export default function IssuanceVelocity() {
                       count={v}
                       label={label}
                       isIdentifier={isIdentifier}
-                      countCls="text-state-auto"
+                      countCls="text-primary"
                     />
                   );
                 })}

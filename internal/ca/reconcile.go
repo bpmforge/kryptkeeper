@@ -9,8 +9,9 @@ import (
 	"crypto"
 	"errors"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"strings"
+	"time"
 
 	"kryptkeeper/internal/keystore"
 )
@@ -26,6 +27,11 @@ type KeyConsistencyFinding struct {
 	// at all (as opposed to producing a different one). The usual cause is a
 	// moved/unmounted keystore directory, and it makes the CA unable to sign.
 	Missing bool
+	// RetiredKeyID is set when the divergence matches an interrupted
+	// rotation: the CA's recorded certificate carries the public key of this
+	// retired sibling, so the keystore holds the NEW key and only the
+	// certificate write was lost. Such a CA is repairable (RepairRotationCrash).
+	RetiredKeyID string
 }
 
 // CheckKeyConsistency compares, for every active CA, the public key
@@ -73,7 +79,7 @@ func CheckKeyConsistency(keys keystore.Store, store Store) ([]KeyConsistencyFind
 			// left its PublicKey nil); it is now reserved for a certificate
 			// whose key type publicKeysEqual has no encoding for. Logged for
 			// visibility, not as an alarm.
-			log.Printf("CA key-consistency check: cannot verify CA %s (%q) -- certificate public key type is not comparable (keystore key %s); manual verification needed if a rotation on this CA was recently interrupted", c.ID, c.Name, c.KeyID)
+			logging.Warnf("CA key-consistency check: cannot verify CA %s (%q) -- certificate public key type is not comparable (keystore key %s); manual verification needed if a rotation on this CA was recently interrupted", c.ID, c.Name, c.KeyID)
 			continue
 		}
 		if !match {
@@ -150,7 +156,7 @@ func mldsaEncoding(k crypto.PublicKey) ([]byte, bool) {
 // under a CA whose keystore key no longer matches its recorded certificate.
 func LogKeyConsistencyFindings(findings []KeyConsistencyFinding) {
 	for _, f := range findings {
-		log.Printf(
+		logging.Infof(
 			"CA KEY INCONSISTENCY: CA %s (%q) keystore key %s: %s -- do NOT rotate or issue from this CA; "+
 				"recover it from a pre-rotation backup via the DR procedure (docs/ops/DR_RUNBOOK.md)",
 			f.CAID, f.CAName, f.KeyID, f.Detail,
@@ -158,28 +164,23 @@ func LogKeyConsistencyFindings(findings []KeyConsistencyFinding) {
 	}
 }
 
-// AllowMissingCAKeysEnv is the explicit opt-out for StartupKeyDecision.
+// AllowMissingCAKeysEnv is the explicit opt-out for StartupKeyCheckDecision.
 const AllowMissingCAKeysEnv = "KRYPTKEEPER_ALLOW_MISSING_CA_KEYS"
 
-// StartupKeyDecision decides whether boot may continue given the key
+// StartupKeyCheckDecision decides whether boot may continue given the key
 // consistency findings. A CA whose key is missing from the keystore cannot
 // sign: issuance returns 503 and CRL/OCSP come back empty, while the hub
 // looks healthy. That is almost always an operator error (KEYSTORE_DIR or
 // DATA_DIR changed, volume not mounted, wrong passphrase), so it is fatal
 // unless allowMissing is set for a deliberate recovery. A key that is present
 // but no longer matches the certificate (interrupted rotation) stays a loud
-// log line handled by LogKeyConsistencyFindings, not a boot veto.
-func StartupKeyDecision(findings []KeyConsistencyFinding, allowMissing bool) error {
-	return StartupKeyCheckDecision(findings, nil, allowMissing)
-}
-
-// StartupKeyCheckDecision is StartupKeyDecision that also covers the check
-// itself failing (checkErr). A check that could not run proves nothing about
+// log line handled by LogKeyConsistencyFindings, not a boot veto. It also
+// covers the check itself failing (checkErr). A check that could not run proves nothing about
 // the keys, so booting on it would fail open; it is fatal unless allowMissing.
 func StartupKeyCheckDecision(findings []KeyConsistencyFinding, checkErr error, allowMissing bool) error {
 	if checkErr != nil {
 		if allowMissing {
-			log.Printf("warning: CA key-consistency check failed to run (continuing: %s=true): %v", AllowMissingCAKeysEnv, checkErr)
+			logging.Warnf("CA key-consistency check failed to run (continuing: %s=true): %v", AllowMissingCAKeysEnv, checkErr)
 			return nil
 		}
 		return fmt.Errorf("refusing to start: CA key-consistency check failed to run: %w. "+
@@ -203,4 +204,129 @@ func StartupKeyCheckDecision(findings []KeyConsistencyFinding, checkErr error, a
 		"or KRYPTKEEPER_KEYSTORE_PASSPHRASE is wrong. Point the hub back at the directory that holds these key ids. "+
 		"To start anyway for recovery (issuance, CRL and OCSP for these CAs will not work), set %s=true.", AllowMissingCAKeysEnv)
 	return errors.New(b.String())
+}
+
+// ReconcileRotationCrash narrows CheckKeyConsistency to the crash window
+// RotateCA cannot undo (the process died between keystore.RotateKey and the
+// certificate write): active CAs whose recorded certificate carries the public
+// key of a "<KeyID>-retired-*" sibling in the keystore. Findings that do not
+// match that pattern stay manual DR cases and are not returned.
+func ReconcileRotationCrash(keys keystore.Store, store Store) ([]KeyConsistencyFinding, error) {
+	findings, err := CheckKeyConsistency(keys, store)
+	if err != nil {
+		return nil, err
+	}
+	var out []KeyConsistencyFinding
+	for _, f := range findings {
+		if f.Missing {
+			continue
+		}
+		c, err := store.Load(f.CAID)
+		if err != nil {
+			return nil, fmt.Errorf("load CA %s: %w", f.CAID, err)
+		}
+		retired, err := retiredSiblingMatching(keys, c)
+		if err != nil {
+			return nil, err
+		}
+		if retired == "" {
+			continue
+		}
+		f.RetiredKeyID = retired
+		f.Detail += fmt.Sprintf("; the recorded certificate matches retired key %s, so the rotation was interrupted before the certificate write (repair re-issues the CA certificate under the current key)", retired)
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// retiredSiblingMatching returns the "<KeyID>-retired-*" key whose public key
+// equals the one in c's certificate, or "".
+func retiredSiblingMatching(keys keystore.Store, c *CA) (string, error) {
+	all, err := keys.List()
+	if err != nil {
+		return "", fmt.Errorf("list keys: %w", err)
+	}
+	prefix := c.KeyID + "-retired-"
+	for _, m := range all {
+		if !strings.HasPrefix(m.ID, prefix) {
+			continue
+		}
+		pub, err := keys.PublicKey(m.ID)
+		if err != nil {
+			continue
+		}
+		if eq, comparable := publicKeysEqual(pub, c.Certificate.PublicKey); comparable && eq {
+			return m.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// RepairRotationCrash completes a rotation that was interrupted after the key
+// swap: it re-issues the CA certificate under the key the keystore now holds,
+// proves it with a probe leaf and records the ledger entry. It refuses any CA
+// that does not show the crash-window pattern, so it cannot paper over other
+// divergence.
+func (e *Engine) RepairRotationCrash(caID string) error {
+	e.mu.Lock()
+	err := e.repairRotationCrashLocked(caID)
+	e.mu.Unlock()
+	if err == nil {
+		e.fireOnRotate(caID)
+	}
+	return err
+}
+
+func (e *Engine) repairRotationCrashLocked(caID string) error {
+	target, ok := e.get(caID)
+	if !ok {
+		return ErrCANotFound
+	}
+	if target.Certificate == nil || target.KeyID == "" {
+		return fmt.Errorf("CA %s has no certificate or key on record", caID)
+	}
+	pub, err := e.keys.PublicKey(target.KeyID)
+	if err != nil {
+		return fmt.Errorf("keystore key for CA %s: %w", caID, err)
+	}
+	if eq, comparable := publicKeysEqual(pub, target.Certificate.PublicKey); !comparable || eq {
+		return fmt.Errorf("CA %s is not divergent; nothing to repair", caID)
+	}
+	retired, err := retiredSiblingMatching(e.keys, target)
+	if err != nil {
+		return err
+	}
+	if retired == "" {
+		return fmt.Errorf("CA %s diverges but matches no retired key: not an interrupted rotation, recover via docs/ops/DR_RUNBOOK.md", caID)
+	}
+	meta, err := e.keys.Metadata(target.KeyID)
+	if err != nil {
+		return err
+	}
+	signer, err := e.keys.Signer(target.KeyID)
+	if err != nil {
+		return err
+	}
+	cert, certPEM, err := e.buildRotatedCert(target, meta.Algorithm, signer)
+	if err != nil {
+		return err
+	}
+	updated := *target
+	updated.Certificate = cert
+	updated.CertPEM = certPEM
+	if err := e.saveCA(&updated); err != nil {
+		return fmt.Errorf("persist repaired CA record: %w", err)
+	}
+	if err := e.verifyProbeLocked(&updated); err != nil {
+		// Put the old record back: the CA is no worse off than before.
+		if rerr := e.saveCA(target); rerr != nil {
+			logging.Warnf("CA %s: restoring the pre-repair record failed: %v", caID, rerr)
+		}
+		return fmt.Errorf("repaired certificate failed its probe: %w", err)
+	}
+	return e.store.RecordKeyRotation(KeyRotation{
+		ID: newCAID(), CAID: caID, OldKeyID: retired, NewKeyID: target.KeyID,
+		NewCertSN: cert.SerialNumber.String(), Method: "rekey_reissue", RotatedAt: time.Now().UTC(),
+		OldCertPEM: target.CertPEM, // the record still holds the certificate the retired key signed
+	})
 }

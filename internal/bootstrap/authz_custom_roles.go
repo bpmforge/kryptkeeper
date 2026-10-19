@@ -9,10 +9,44 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	"modernc.org/sqlite"
+
+	"kryptkeeper/internal/logging"
 )
+
+var (
+	errCustomRoleExists  = errors.New("custom role already exists")
+	errCustomRolePersist = errors.New("custom role could not be saved")
+)
+
+// SQLite extended result codes for a duplicate key (sqlite3.h:
+// SQLITE_CONSTRAINT_PRIMARYKEY, SQLITE_CONSTRAINT_UNIQUE).
+const (
+	pgUniqueViolation          = "23505"
+	sqliteConstraintPrimaryKey = 1555
+	sqliteConstraintUnique     = 2067
+)
+
+// isUniqueViolation reports a duplicate-key refusal by driver error code, not
+// message text: Postgres unique_violation (23505) via pgx, or the SQLite
+// primary-key/unique extended codes via modernc.
+func isUniqueViolation(err error) bool {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) {
+		return pg.Code == pgUniqueViolation
+	}
+	var lite *sqlite.Error
+	if errors.As(err, &lite) {
+		return lite.Code() == sqliteConstraintUnique || lite.Code() == sqliteConstraintPrimaryKey
+	}
+	return false
+}
 
 // W6-08 (PE-10/D-049/FR-P11): admin-defined roles composed from a CLOSED
 // permission vocabulary, with separation-of-duties constraints enforced
@@ -48,6 +82,7 @@ var fixedRoles = map[string]bool{
 	"auditor":         true,
 	"approver":        true,
 	RoleMCPAgent:      true,
+	RoleRequester:     true,
 	"bootstrap":       true,
 }
 
@@ -61,6 +96,8 @@ type CustomRole struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Permissions []string `json:"permissions"`
+	// TenantID empty = GLOBAL role (super-admin-managed); otherwise owned by that tenant.
+	TenantID string `json:"tenant_id"`
 }
 
 // SoDConstraint is one persisted pair.
@@ -170,11 +207,16 @@ func (s *CustomRoleStore) CreateRole(role CustomRole) (CustomRole, error) {
 	}
 	now := s.now().UTC().Format(time.RFC3339)
 	_, err = s.db.Exec(s.rebind(`
-		INSERT INTO custom_roles (name, description, permissions, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?)`),
-		role.Name, role.Description, string(raw), now, now)
+		INSERT INTO custom_roles (name, description, permissions, tenant_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`),
+		role.Name, role.Description, string(raw), role.TenantID, now, now)
 	if err != nil {
-		return CustomRole{}, fmt.Errorf("custom role: persist: %w", err)
+		if isUniqueViolation(err) {
+			return CustomRole{}, fmt.Errorf("%w: a role named %q is already defined", errCustomRoleExists, role.Name)
+		}
+		// Driver text names tables and constraints: log it, never return it.
+		logging.Warnf("custom role persist failed: %v", err)
+		return CustomRole{}, errCustomRolePersist
 	}
 	return role, nil
 }
@@ -198,7 +240,8 @@ func (s *CustomRoleStore) UpdateRole(role CustomRole) (CustomRole, error) {
 		UPDATE custom_roles SET description = ?, permissions = ?, updated_at = ? WHERE name = ?`),
 		role.Description, string(raw), s.now().UTC().Format(time.RFC3339), role.Name)
 	if err != nil {
-		return CustomRole{}, fmt.Errorf("custom role: persist: %w", err)
+		logging.Warnf("custom role persist failed: %v", err)
+		return CustomRole{}, errCustomRolePersist
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return CustomRole{}, fmt.Errorf("custom role %q not found", role.Name)
@@ -208,10 +251,10 @@ func (s *CustomRoleStore) UpdateRole(role CustomRole) (CustomRole, error) {
 
 // GetRole loads one custom role.
 func (s *CustomRoleStore) GetRole(name string) (CustomRole, bool, error) {
-	row := s.db.QueryRow(s.rebind(`SELECT name, description, permissions FROM custom_roles WHERE name = ?`), name)
+	row := s.db.QueryRow(s.rebind(`SELECT name, description, permissions, tenant_id FROM custom_roles WHERE name = ?`), name)
 	var role CustomRole
 	var raw string
-	if err := row.Scan(&role.Name, &role.Description, &raw); err != nil {
+	if err := row.Scan(&role.Name, &role.Description, &raw, &role.TenantID); err != nil {
 		if err == sql.ErrNoRows {
 			return CustomRole{}, false, nil
 		}
@@ -225,7 +268,16 @@ func (s *CustomRoleStore) GetRole(name string) (CustomRole, bool, error) {
 
 // ListRoles returns every custom role.
 func (s *CustomRoleStore) ListRoles() ([]CustomRole, error) {
-	rows, err := s.db.Query(`SELECT name, description, permissions FROM custom_roles ORDER BY name`)
+	return s.listRoles(`SELECT name, description, permissions, tenant_id FROM custom_roles ORDER BY name`)
+}
+
+// ListRolesForTenant returns the tenant's own roles plus global ones.
+func (s *CustomRoleStore) ListRolesForTenant(tenant string) ([]CustomRole, error) {
+	return s.listRoles(`SELECT name, description, permissions, tenant_id FROM custom_roles WHERE tenant_id = ? OR tenant_id = '' ORDER BY name`, tenant)
+}
+
+func (s *CustomRoleStore) listRoles(query string, args ...any) ([]CustomRole, error) {
+	rows, err := s.db.Query(s.rebind(query), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +286,7 @@ func (s *CustomRoleStore) ListRoles() ([]CustomRole, error) {
 	for rows.Next() {
 		var role CustomRole
 		var raw string
-		if err := rows.Scan(&role.Name, &role.Description, &raw); err != nil {
+		if err := rows.Scan(&role.Name, &role.Description, &raw, &role.TenantID); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(raw), &role.Permissions); err != nil {

@@ -25,6 +25,9 @@ type EABKey struct {
 	MACKey    []byte // raw HMAC key material
 	Disabled  bool
 	CreatedAt time.Time
+	// Provisioner is the provisioner an API-minted key was bound to (W26-01);
+	// W26-02 enforces it. Empty for seed keys.
+	Provisioner string
 }
 
 // eabProtectedHeader is the protected header of the inner EAB JWS.
@@ -59,6 +62,7 @@ var (
 	errEABBadEncoding = errors.New("malformed eab binding")
 	errEABBadMAC      = errors.New("eab signature verification failed")
 	errEABKeyMismatch = errors.New("eab payload does not match the requesting account key")
+	errEABKeyReused   = errors.New("kid already bound to another account key")
 )
 
 // verifyExternalAccountBinding validates eab against the key store and the
@@ -183,4 +187,18 @@ func seedEABKeys(store Store, keys []EABKey) error {
 		}
 	}
 	return nil
+}
+
+// eabKIDFromProtected reads the kid out of a base64url EAB protected header,
+// returning "" when it is not decodable.
+func eabKIDFromProtected(protected string) string {
+	raw, err := base64.RawURLEncoding.DecodeString(protected)
+	if err != nil {
+		return ""
+	}
+	var hdr eabProtectedHeader
+	if json.Unmarshal(raw, &hdr) != nil {
+		return ""
+	}
+	return hdr.KID
 }

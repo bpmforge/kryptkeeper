@@ -68,6 +68,39 @@ func TestPQCMigrationHandler_RoadmapFromInventory(t *testing.T) {
 	}
 }
 
+func TestPQCMigrationHandler_TimelineInPayload(t *testing.T) {
+	auth := newReportsTestAuth(t)
+	now := time.Now().UTC()
+	certs := &reportCertProvider{items: []CertificateItem{
+		{FingerprintSHA256: "a", PQCReadiness: "vulnerable", ValidFrom: now.Format(time.RFC3339), ValidUntil: now.Add(30 * 24 * time.Hour).Format(time.RFC3339)},
+		{FingerprintSHA256: "b", PQCReadiness: "vulnerable", ValidFrom: now.Format(time.RFC3339), ValidUntil: time.Date(2035, 6, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)},
+	}}
+	mux := http.NewServeMux()
+	registerPQCMigrationHandler(mux, auth, certs, stubAuditProvider{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/reports/pqc-migration", nil)
+	req.Header.Set("Authorization", "Bearer reports-test-token")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var resp struct {
+		Data struct {
+			Timeline *pqc.Timeline `json:"timeline"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	tl := resp.Data.Timeline
+	if tl == nil || tl.Quarters == nil {
+		t.Fatalf("timeline missing from payload: %s", rec.Body.String())
+	}
+	if tl.ExpireAfter2030 != 1 {
+		t.Errorf("expire_after_2030 = %d, want 1", tl.ExpireAfter2030)
+	}
+	if tl.ExpireBefore2030+tl.ExpireAfter2030 != 2 {
+		t.Errorf("split does not cover inventory: %+v", tl)
+	}
+}
+
 func TestPQCMigrationHandler_RequiresAuth(t *testing.T) {
 	auth := newReportsTestAuth(t)
 	mux := http.NewServeMux()

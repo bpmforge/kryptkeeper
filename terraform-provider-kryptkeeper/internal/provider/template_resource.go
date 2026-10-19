@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -14,6 +16,7 @@ import (
 )
 
 var _ resource.Resource = &TemplateResource{}
+var _ resource.ResourceWithImportState = &TemplateResource{}
 
 func NewTemplateResource() resource.Resource { return &TemplateResource{} }
 
@@ -31,6 +34,7 @@ type TemplateResourceModel struct {
 	KeyUsage       types.List   `tfsdk:"key_usage"`
 	ExtKeyUsage    types.List   `tfsdk:"extended_key_usage"`
 	Algorithms     types.List   `tfsdk:"allowed_algorithms"`
+	MinKeySize     types.Int64  `tfsdk:"min_key_size"`
 	AutoEnroll     types.Bool   `tfsdk:"auto_enroll"`
 	Active         types.Bool   `tfsdk:"active"`
 }
@@ -78,6 +82,11 @@ func (r *TemplateResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				Computed:    true,
 				ElementType: types.StringType,
 				Description: "Allowed key algorithms. Empty means any.",
+			},
+			"min_key_size": schema.Int64Attribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "Minimum accepted key size in bits (0 = no minimum). A CSR below it is refused with a policy_violation naming the key_size rule.",
 			},
 			"auto_enroll": schema.BoolAttribute{
 				Optional:    true,
@@ -179,9 +188,21 @@ func (r *TemplateResource) Delete(ctx context.Context, req resource.DeleteReques
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if err := r.client.Delete(ctx, "/api/v1/templates/"+state.ID.ValueString()); err != nil {
-		resp.Diagnostics.AddError("Error deleting template", err.Error())
+	path := "/api/v1/templates/" + state.ID.ValueString()
+	err := r.client.Delete(ctx, path)
+	if err == nil {
+		return
 	}
+	// The hub refuses to delete a template that ever issued a certificate
+	// (even a revoked one). Disable it instead so it can issue no more, and say so.
+	if strings.Contains(err.Error(), ": 409:") {
+		if _, perr := r.client.Patch(ctx, path, map[string]any{"active": false}); perr == nil {
+			resp.Diagnostics.AddWarning("Template deactivated, not deleted",
+				"The hub does not delete templates that have issued certificates; the template was set active=false and removed from Terraform state. "+err.Error())
+			return
+		}
+	}
+	resp.Diagnostics.AddError("Error deleting template", err.Error())
 }
 
 func templateModelToMap(ctx context.Context, m TemplateResourceModel) map[string]any {
@@ -209,6 +230,9 @@ func templateModelToMap(ctx context.Context, m TemplateResourceModel) map[string
 		_ = m.Algorithms.ElementsAs(ctx, &algs, false)
 		body["allowed_algorithms"] = algs
 	}
+	if !m.MinKeySize.IsNull() && !m.MinKeySize.IsUnknown() {
+		body["min_key_size"] = m.MinKeySize.ValueInt64()
+	}
 	return body
 }
 
@@ -222,6 +246,7 @@ func applyTemplateResponse(ctx context.Context, respBody []byte, m *TemplateReso
 			KeyUsage       []string `json:"key_usage"`
 			ExtKeyUsage    []string `json:"extended_key_usage"`
 			Algorithms     []string `json:"allowed_algorithms"`
+			MinKeySize     int64    `json:"min_key_size"`
 			AutoEnroll     bool     `json:"auto_enroll"`
 			Active         bool     `json:"active"`
 		} `json:"data"`
@@ -234,6 +259,7 @@ func applyTemplateResponse(ctx context.Context, respBody []byte, m *TemplateReso
 	m.Name = types.StringValue(d.Name)
 	m.DisplayName = types.StringValue(d.DisplayName)
 	m.ValidityPeriod = types.StringValue(d.ValidityPeriod)
+	m.MinKeySize = types.Int64Value(d.MinKeySize)
 	m.AutoEnroll = types.BoolValue(d.AutoEnroll)
 	m.Active = types.BoolValue(d.Active)
 
@@ -255,4 +281,10 @@ func applyTemplateResponse(ctx context.Context, respBody []byte, m *TemplateReso
 	}
 	m.Algorithms = algs
 	return nil
+}
+
+// ImportState adopts an existing template: the import id is the template id. The Read that
+// follows fills every other attribute from the hub.
+func (r *TemplateResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
 }

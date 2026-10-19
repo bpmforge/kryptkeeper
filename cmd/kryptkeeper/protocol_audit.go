@@ -6,7 +6,7 @@ package main
 
 import (
 	"context"
-	"log"
+	"kryptkeeper/internal/logging"
 	"strings"
 	"time"
 
@@ -17,6 +17,12 @@ import (
 // EST) to the hub's audit log. The protocol packages each define their own
 // small event type; this is the one place they become audit rows.
 func appendProtocolAudit(ctx context.Context, audit bootstrap.AuditProvider, action, actor, outcome, sourceIP, detail string) {
+	appendProtocolAuditFor(ctx, audit, "protocol", strings.SplitN(action, ".", 2)[0], action, actor, outcome, sourceIP, detail)
+}
+
+// appendProtocolAuditFor is appendProtocolAudit with an explicit resource,
+// for outcomes that concern one object (a template) rather than the protocol.
+func appendProtocolAuditFor(ctx context.Context, audit bootstrap.AuditProvider, resourceType, resourceID, action, actor, outcome, sourceIP, detail string) {
 	if audit == nil {
 		return
 	}
@@ -29,12 +35,12 @@ func appendProtocolAudit(ctx context.Context, audit bootstrap.AuditProvider, act
 		Action:        action,
 		ActorType:     actorType,
 		ActorID:       actorID,
-		ResourceType:  "protocol",
-		ResourceID:    strings.SplitN(action, ".", 2)[0],
+		ResourceType:  resourceType,
+		ResourceID:    resourceID,
 		Outcome:       bootstrap.AuditOutcome(outcome),
 		SourceIP:      sourceIP,
 		ChangeSummary: detail,
 	}); err != nil {
-		log.Printf("audit append failed action=%s outcome=%s: %v", action, outcome, err)
+		logging.Warnf("audit append failed action=%s outcome=%s: %v", action, outcome, err)
 	}
 }

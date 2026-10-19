@@ -45,6 +45,7 @@ type scepFixture struct {
 	engine     ca.Service
 	challenges *DBChallengeStore
 	audited    []AuditEvent
+	lastRep    certRepResult // set by postForCert (renewal tests)
 }
 
 // mint creates a one-time challenge for cn (and dnsNames) on the fixture's
@@ -358,13 +359,13 @@ func TestSCEPGetCACaps(t *testing.T) {
 
 	body, _ := io.ReadAll(resp.Body)
 	caps := string(body)
-	for _, want := range []string{"SHA-256", "POSTPKIOperation", "AES", "SCEPStandard"} {
+	for _, want := range []string{"SHA-256", "POSTPKIOperation", "AES", "SCEPStandard", "Renewal"} {
 		if !strings.Contains(caps, want) {
 			t.Errorf("expected %s in capabilities, got %q", want, caps)
 		}
 	}
-	if strings.Contains(caps, "Renewal") {
-		t.Error("Renewal is not implemented and must not be advertised")
+	if !strings.Contains(caps, "Renewal") {
+		t.Errorf("Renewal must be advertised (W26-30), got %q", caps)
 	}
 }
 
@@ -756,5 +757,44 @@ func TestSCEPChallengeExpiredOrForAnotherCARefused(t *testing.T) {
 		if ev.Outcome != "denied" {
 			t.Errorf("unexpected audit row %+v", ev)
 		}
+	}
+}
+
+// W23-35: PKIOperation through a revoked CA answers a signed FAILURE CertRep
+// and records no certificate.
+func TestSCEPPKIOperationRefusedWhenCARevoked(t *testing.T) {
+	f := newSCEPFixture(t)
+	defer f.Close()
+	recorder := &fakeIssuedRecorder{}
+	f.srv.WithIssuedRecorder(recorder)
+
+	clientKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	clientCert := selfSignedRSACert(t, clientKey, "scep-revoked.example.com")
+	csrDER := buildCSRWithChallenge(t, clientKey, "scep-revoked.example.com", f.mint(t, "scep-revoked.example.com"))
+	msgDER, _, _ := buildPKIOperation(t, f.caObj.Certificate, clientKey, clientCert, csrDER)
+
+	if err := f.engine.UpdateCAStatus(f.caObj.ID, "revoked"); err != nil {
+		t.Fatal(err)
+	}
+	resp := postPKIOperation(t, f.ts, msgDER)
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	rep := parseCertRep(t, body)
+	if rep.pkiStatus != pkiStatusFailure {
+		t.Fatalf("pkiStatus = %q, want FAILURE", rep.pkiStatus)
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if recorder.calls != 0 {
+		t.Fatalf("a certificate was recorded through a revoked CA: %d", recorder.calls)
+	}
+	var sawRevoked bool
+	for _, ev := range f.audited {
+		if strings.Contains(ev.Detail, "ca revoked") {
+			sawRevoked = true
+		}
+	}
+	if !sawRevoked {
+		t.Fatalf("no audit event mentions ca revoked: %+v", f.audited)
 	}
 }

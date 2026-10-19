@@ -284,6 +284,7 @@ func newTestSCIMGroupStore(t *testing.T) scimGroupStore {
 }
 
 func TestSCIMGroups_CreateWithMembersAppliesRoleMapping(t *testing.T) {
+	t.Setenv(scimAllowAdminRolesEnv, "true") // these cases exercise admin role assignment (D-204 opt-in)
 	auth := newTestSCIMAuthenticator()
 	userProvider := &fileUserProvider{users: []UserRecord{
 		{ID: "user-1", Email: "frank@example.com", Role: "pki-viewer", Status: "active"},
@@ -309,6 +310,7 @@ func TestSCIMGroups_CreateWithMembersAppliesRoleMapping(t *testing.T) {
 }
 
 func TestSCIMGroups_PatchAddMemberAppliesRoleMapping(t *testing.T) {
+	t.Setenv(scimAllowAdminRolesEnv, "true") // these cases exercise admin role assignment (D-204 opt-in)
 	auth := newTestSCIMAuthenticator()
 	userProvider := &fileUserProvider{users: []UserRecord{
 		{ID: "user-2", Email: "grace@example.com", Role: "pki-viewer", Status: "active"},

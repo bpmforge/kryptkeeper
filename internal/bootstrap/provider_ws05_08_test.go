@@ -259,7 +259,20 @@ func TestFileNotificationProviderTestDelivery(t *testing.T) {
 	}
 }
 
+// UI finding 6: a real hub must not serve the canned sample rows.
+func TestFileDashboardActionProviderServesNoFixtureByDefault(t *testing.T) {
+	t.Setenv(dashboardActionDemoEnv, "")
+	result, err := newFileDashboardActionProvider().ListHistory(context.Background(), DashboardActionHistoryQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Total != 0 || len(result.History) != 0 {
+		t.Fatalf("default history must be empty, got %+v", result.History)
+	}
+}
+
 func TestFileDashboardActionProviderListHistory(t *testing.T) {
+	t.Setenv(dashboardActionDemoEnv, "true")
 	p := newFileDashboardActionProvider()
 
 	result, err := p.ListHistory(context.Background(), DashboardActionHistoryQuery{Limit: 10})

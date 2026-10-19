@@ -1,0 +1,13 @@
+{
+  "organizations": [
+    {"id": 112233, "name": "Example Corp", "status": "active"},
+    {"id": 445566, "name": "Acquired Co", "status": "inactive"}
+  ],
+  "products": [
+    {"name_id": "ssl_basic", "name": "Standard SSL", "type": "ssl_certificate", "allowed_validity_years": [1, 2],
+     "signature_hash_types": {"allowed_hash_types": [{"id": "sha256", "name": "SHA-256"}], "default_hash_type_id": "sha256"}},
+    {"name_id": "client_premium", "name": "Premium Client", "type": "client_certificate", "allowed_validity_years": [1, 2, 3]},
+    {"name_id": "code_signing", "name": "Code Signing", "type": "code_signing_certificate", "allowed_validity_years": [1, 3]},
+    {"name_id": "email_security_plus", "name": "Email Security Plus", "type": "email_security_plus", "allowed_validity_years": [1]}
+  ]
+}

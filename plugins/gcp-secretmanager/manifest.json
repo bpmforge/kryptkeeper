@@ -1,0 +1,23 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "id": "kryptkeeper.gcp-secretmanager",
+  "name": "GCP Secret Manager secret",
+  "version": "1.0.0",
+  "publisher": "Kryptkeeper Authors",
+  "license": "Apache-2.0",
+  "source": "https://github.com/bpmforge/kryptkeeper/tree/main/plugins/gcp-secretmanager",
+  "artifact": {"file": "plugin.wasm", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "verification": "readback",
+  "capabilities": {
+    "receive_private_key": true,
+    "network": {"hosts": ["secretmanager.googleapis.com", "oauth2.googleapis.com"]},
+    "tls_verify": true
+  },
+  "credential_schema": {
+    "service_account_json": {"type": "string", "required": true, "secret": true},
+    "project_id": {"type": "string", "required": true}
+  },
+  "target_schema": {
+    "secret_id": {"type": "string", "required": true}
+  }
+}

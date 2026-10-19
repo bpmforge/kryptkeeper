@@ -1,0 +1,74 @@
+# Hub as a plain Pod (single-node kind): sqlite, bootstrap auth, plain HTTP, and
+# the SPIFFE Workload API on a hostPath Unix socket the workload pods also mount.
+# Placeholders (__X__) are substituted by run.sh.
+#
+# The socket is created by the hub (uid 65534) with mode 0755, and connect(2)
+# on a Unix socket needs write permission, so a root sidecar widens it to 0666.
+# Finding: the hub does not chmod its Workload API socket.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lab-hub
+  namespace: uat
+  labels: {app: lab-hub}
+spec:
+  restartPolicy: Never
+  initContainers:
+    - name: prep
+      image: docker.io/library/busybox:1.36
+      command: ["sh", "-c", "mkdir -p /data /sock && chown 65534:65534 /data && chmod 0777 /sock"]
+      securityContext: {runAsUser: 0}
+      volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: sock, mountPath: /sock}
+  containers:
+    - name: hub
+      image: __HUB_IMAGE__
+      imagePullPolicy: Never
+      securityContext:
+        runAsUser: 65534
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+      ports: [{name: http, containerPort: 8080}]
+      env:
+        - {name: APP_BOOTSTRAP_TOKEN, valueFrom: {secretKeyRef: {name: lab-hub-secrets, key: token}}}
+        - {name: KRYPTKEEPER_KEYSTORE_PASSPHRASE, valueFrom: {secretKeyRef: {name: lab-hub-secrets, key: passphrase}}}
+        - {name: AUTH_MODE, value: bootstrap}
+        - {name: KRYPTKEEPER_DB_MODE, value: sqlite}
+        - {name: APP_CERTIFICATE_PROVIDER, value: ca}
+        - {name: APP_DISCOVERY_PROVIDER, value: db}
+        - {name: APP_NOTIFICATION_PROVIDER, value: file}
+        - {name: KRYPTKEEPER_TLS_DISABLE, value: "true"}
+        - {name: APP_BIND_ADDR, value: 0.0.0.0}
+        - {name: PORT, value: "8080"}
+        - {name: KRYPTKEEPER_KEYSTORE_DIR, value: /data}
+        - {name: KRYPTKEEPER_DATA_DIR, value: /data/data}
+        - {name: APP_TEMPLATE_FILE, value: /data/data/templates.json}
+        - {name: KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT, value: "true"}
+        - {name: KRYPTKEEPER_CA_NAME, value: UAT SPIFFE Root CA}
+        - {name: SPIFFE_TRUST_DOMAIN, value: kk-uat.example}
+        - {name: SPIFFE_SIGNING_CA_ID, value: "__SIGNING_CA_ID__"}
+        - {name: SPIFFE_SVID_TTL, value: 1h}
+        - {name: SPIFFE_WORKLOAD_SOCKET, value: /run/kk-spiffe/api.sock}
+      readinessProbe:
+        httpGet: {path: /healthz, port: http}
+        periodSeconds: 2
+      volumeMounts:
+        - {name: data, mountPath: /data}
+        - {name: sock, mountPath: /run/kk-spiffe}
+        - {name: tmp, mountPath: /tmp}
+    - name: sockperm
+      image: docker.io/library/busybox:1.36
+      command: ["sh", "-c", "while true; do chmod 0666 /run/kk-spiffe/api.sock 2>/dev/null; sleep 1; done"]
+      securityContext: {runAsUser: 0}
+      volumeMounts:
+        - {name: sock, mountPath: /run/kk-spiffe}
+  volumes:
+    - name: data
+      hostPath: {path: /var/lib/kk-uat-hub, type: DirectoryOrCreate}
+    - name: sock
+      hostPath: {path: /run/kk-spiffe, type: DirectoryOrCreate}
+    - name: tmp
+      emptyDir: {}

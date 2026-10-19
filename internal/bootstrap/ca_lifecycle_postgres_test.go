@@ -105,7 +105,16 @@ func TestCertificateLifecycle_Postgres(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertPolicy: %v", err)
 	}
-	if l, err := pe.ListPolicies(); err != nil || len(l) != 1 || !l[0].Enabled {
+	// Migration 000088 seeds pol-baseline, so look for this row by id rather
+	// than assuming an empty table.
+	l, err := pe.ListPolicies()
+	found := false
+	for _, p := range l {
+		if p.ID == pol.ID && p.Enabled {
+			found = true
+		}
+	}
+	if err != nil || !found {
 		t.Fatalf("ListPolicies: %+v %v", l, err)
 	}
 	if err := pe.DeletePolicy(pol.ID); err != nil {

@@ -64,7 +64,25 @@ type OutboundCredentialMeta struct {
 	Tenant         string `json:"tenant"`
 	CreatedAt      string `json:"created_at"`
 	UpdatedAt      string `json:"updated_at"`
+	// Privileged marks an account that is high-impact on the hosts it reaches
+	// (W34-11, D-208): set from the sudo preflight or by hand, audited, and
+	// shown wherever the credential is used. It gates nothing.
+	Privileged       bool   `json:"privileged"`
+	PrivilegedReason string `json:"privileged_reason,omitempty"`
+	// PrivilegedSetBy is "auto:<source>" or "manual:<principal>".
+	PrivilegedSetBy string `json:"privileged_set_by,omitempty"`
+	PrivilegedSetAt string `json:"privileged_set_at,omitempty"`
 }
+
+// credentialPrivilegeStore is implemented by the DB-backed stores; other
+// OutboundCredentialStore implementations simply never carry the flag.
+type credentialPrivilegeStore interface {
+	// SetPrivileged records the flag; clearing it clears reason, actor and time.
+	SetPrivileged(ctx context.Context, id string, privileged bool, reason, setBy string) error
+}
+
+const outboundCredentialMetaCols = `id, name, credential_type, tenant, created_at, updated_at,
+		COALESCE(privileged, FALSE), COALESCE(privileged_reason, ''), COALESCE(privileged_set_by, ''), COALESCE(privileged_set_at, '')`
 
 // OutboundCredentialStore persists outbound credentials (SSH keys, API
 // tokens, cloud IAM refs) encrypted at rest, referenced by id from a
@@ -183,6 +201,23 @@ CREATE TABLE IF NOT EXISTS outbound_credentials (
 );
 CREATE INDEX IF NOT EXISTS idx_outbound_credentials_tenant ON outbound_credentials(tenant);`
 
+// Privileged-flag columns (migration 000343) for a store whose table predates
+// them. Dialects differ in the boolean type and in ADD COLUMN IF NOT EXISTS.
+var (
+	outboundPrivilegedUpgradesSQLite = []string{
+		"ALTER TABLE outbound_credentials ADD COLUMN privileged INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE outbound_credentials ADD COLUMN privileged_reason TEXT",
+		"ALTER TABLE outbound_credentials ADD COLUMN privileged_set_by TEXT",
+		"ALTER TABLE outbound_credentials ADD COLUMN privileged_set_at TEXT",
+	}
+	outboundPrivilegedUpgradesPostgres = []string{
+		"ALTER TABLE outbound_credentials ADD COLUMN IF NOT EXISTS privileged BOOLEAN NOT NULL DEFAULT FALSE",
+		"ALTER TABLE outbound_credentials ADD COLUMN IF NOT EXISTS privileged_reason TEXT",
+		"ALTER TABLE outbound_credentials ADD COLUMN IF NOT EXISTS privileged_set_by TEXT",
+		"ALTER TABLE outbound_credentials ADD COLUMN IF NOT EXISTS privileged_set_at TEXT",
+	}
+)
+
 // --- SQLite implementation ---
 
 type sqliteOutboundCredentialStore struct {
@@ -191,8 +226,17 @@ type sqliteOutboundCredentialStore struct {
 }
 
 func (s *sqliteOutboundCredentialStore) EnsureSchema(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, outboundCredentialSchema)
-	return err
+	if _, err := s.db.ExecContext(ctx, outboundCredentialSchema); err != nil {
+		return err
+	}
+	for _, stmt := range outboundPrivilegedUpgradesSQLite {
+		_, _ = s.db.ExecContext(ctx, stmt) // best-effort upgrade: duplicate-column error = already migrated
+	}
+	return nil
+}
+
+func (s *sqliteOutboundCredentialStore) SetPrivileged(ctx context.Context, id string, privileged bool, reason, setBy string) error {
+	return setOutboundPrivileged(ctx, s.db, false, id, privileged, reason, setBy)
 }
 
 func (s *sqliteOutboundCredentialStore) Create(ctx context.Context, id, name, credentialType, tenant string, plaintext []byte) (OutboundCredentialMeta, error) {
@@ -201,13 +245,13 @@ func (s *sqliteOutboundCredentialStore) Create(ctx context.Context, id, name, cr
 
 func (s *sqliteOutboundCredentialStore) Get(ctx context.Context, id string) (OutboundCredentialMeta, error) {
 	return scanOutboundCredentialMeta(s.db.QueryRowContext(ctx, `
-		SELECT id, name, credential_type, tenant, created_at, updated_at
+		SELECT `+outboundCredentialMetaCols+`
 		FROM outbound_credentials WHERE id = ?`, id))
 }
 
 func (s *sqliteOutboundCredentialStore) List(ctx context.Context) ([]OutboundCredentialMeta, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, credential_type, tenant, created_at, updated_at
+		SELECT `+outboundCredentialMetaCols+`
 		FROM outbound_credentials ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -231,8 +275,19 @@ type postgresOutboundCredentialStore struct {
 }
 
 func (s *postgresOutboundCredentialStore) EnsureSchema(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, outboundCredentialSchema)
-	return err
+	if _, err := s.db.ExecContext(ctx, outboundCredentialSchema); err != nil {
+		return err
+	}
+	for _, stmt := range outboundPrivilegedUpgradesPostgres {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *postgresOutboundCredentialStore) SetPrivileged(ctx context.Context, id string, privileged bool, reason, setBy string) error {
+	return setOutboundPrivileged(ctx, s.db, true, id, privileged, reason, setBy)
 }
 
 func (s *postgresOutboundCredentialStore) Create(ctx context.Context, id, name, credentialType, tenant string, plaintext []byte) (OutboundCredentialMeta, error) {
@@ -241,13 +296,13 @@ func (s *postgresOutboundCredentialStore) Create(ctx context.Context, id, name, 
 
 func (s *postgresOutboundCredentialStore) Get(ctx context.Context, id string) (OutboundCredentialMeta, error) {
 	return scanOutboundCredentialMeta(s.db.QueryRowContext(ctx, `
-		SELECT id, name, credential_type, tenant, created_at, updated_at
+		SELECT `+outboundCredentialMetaCols+`
 		FROM outbound_credentials WHERE id = $1`, id))
 }
 
 func (s *postgresOutboundCredentialStore) List(ctx context.Context) ([]OutboundCredentialMeta, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, credential_type, tenant, created_at, updated_at
+		SELECT `+outboundCredentialMetaCols+`
 		FROM outbound_credentials ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -288,7 +343,7 @@ func createOutboundCredential(ctx context.Context, db *sql.DB, passphrase []byte
 
 func scanOutboundCredentialMeta(row *sql.Row) (OutboundCredentialMeta, error) {
 	var m OutboundCredentialMeta
-	err := row.Scan(&m.ID, &m.Name, &m.CredentialType, &m.Tenant, &m.CreatedAt, &m.UpdatedAt)
+	err := row.Scan(&m.ID, &m.Name, &m.CredentialType, &m.Tenant, &m.CreatedAt, &m.UpdatedAt, &m.Privileged, &m.PrivilegedReason, &m.PrivilegedSetBy, &m.PrivilegedSetAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OutboundCredentialMeta{}, errOutboundCredentialNotFound
 	}
@@ -303,7 +358,7 @@ func scanOutboundCredentialMetaRows(rows *sql.Rows) ([]OutboundCredentialMeta, e
 	items := []OutboundCredentialMeta{}
 	for rows.Next() {
 		var m OutboundCredentialMeta
-		if err := rows.Scan(&m.ID, &m.Name, &m.CredentialType, &m.Tenant, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		if err := rows.Scan(&m.ID, &m.Name, &m.CredentialType, &m.Tenant, &m.CreatedAt, &m.UpdatedAt, &m.Privileged, &m.PrivilegedReason, &m.PrivilegedSetBy, &m.PrivilegedSetAt); err != nil {
 			return nil, err
 		}
 		items = append(items, m)
@@ -403,4 +458,26 @@ func newOutboundCredentialStoreFromEnv() OutboundCredentialStore {
 		return nil
 	}
 	return state.store
+}
+
+func setOutboundPrivileged(ctx context.Context, db *sql.DB, postgres bool, id string, privileged bool, reason, setBy string) error {
+	var at any
+	if !privileged {
+		reason, setBy = "", ""
+	} else {
+		at = time.Now().UTC().Format(time.RFC3339)
+	}
+	q := `UPDATE outbound_credentials SET privileged = ?, privileged_reason = ?, privileged_set_by = ?, privileged_set_at = ? WHERE id = ?`
+	if postgres {
+		q = rebindPostgres(q)
+	}
+	res, err := db.ExecContext(ctx, q, boolArg(privileged, postgres),
+		nullString(reason), nullString(setBy), at, id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return errOutboundCredentialNotFound
+	}
+	return nil
 }

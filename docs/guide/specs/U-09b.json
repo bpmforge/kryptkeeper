@@ -1,0 +1,114 @@
+{
+  "task": "U-09b",
+  "title": "Run a root key ceremony (M-of-N): first approver (alice)",
+  "sourceStory": "STORIES.md#u-09b",
+  "persona": "alice (designated approver)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/ceremonies"
+      },
+      "caption": "Open /ceremonies",
+      "slug": "alice-sees-ceremony",
+      "expect": {
+        "role": "button",
+        "name": "Approve Root R3"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09b/01-alice-sees-ceremony.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Approve Root R3"
+      },
+      "caption": "Click **Approve Root R3**",
+      "slug": "alice-approved-1-of-2",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09b/02-alice-approved-1-of-2.png",
+        "annotated": "docs/guide/screenshots/U-09b/02-alice-approved-1-of-2-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1186,
+          "y": 236,
+          "w": 103,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "principal": "alice",
+  "lastRun": {
+    "at": "2026-10-18T12:48:43.469Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-09b",
+    "steps": 2,
+    "shots": 2,
+    "annotated": 1,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/ceremonies"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-09b/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-09b/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

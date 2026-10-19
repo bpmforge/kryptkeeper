@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"strings"
 	"time"
@@ -45,6 +45,10 @@ func RegisterSCEPChallengeHandlers(mux *http.ServeMux, auth *Authenticator, stor
 			writeForbidden(w, "pki-admin or pki-operator role required for SCEP challenges")
 			return "", false
 		}
+		// Challenges are minted against the one instance-wide SCEP CA.
+		if denyNonSuperAdminGlobal(w, r, auditProvider, pd, action, "scep_challenge", "-") {
+			return "", false
+		}
 		return pd.ID, true
 	}
 	writeData := func(w http.ResponseWriter, status int, v any) {
@@ -54,7 +58,7 @@ func RegisterSCEPChallengeHandlers(mux *http.ServeMux, auth *Authenticator, stor
 		if err := json.NewEncoder(w).Encode(struct {
 			Data any `json:"data"`
 		}{Data: v}); err != nil {
-			log.Printf("scep challenge response: %v", err)
+			logging.Infof("scep challenge response: %v", err)
 		}
 	}
 
@@ -66,7 +70,7 @@ func RegisterSCEPChallengeHandlers(mux *http.ServeMux, auth *Authenticator, stor
 			}
 			list, err := store.List(r.Context())
 			if err != nil {
-				log.Printf("scep challenge list: %v", err)
+				logging.Infof("scep challenge list: %v", err)
 				writeServiceUnavailable(w, "scep challenges unavailable")
 				return
 			}
@@ -99,7 +103,7 @@ func RegisterSCEPChallengeHandlers(mux *http.ServeMux, auth *Authenticator, stor
 			c.CAID, c.CreatedBy, c.CreatedAt, c.ExpiresAt = caID, principal, now, now.Add(ttl)
 			created, secret, err := store.Create(r.Context(), c)
 			if err != nil {
-				log.Printf("scep challenge create: %v", err)
+				logging.Infof("scep challenge create: %v", err)
 				emitAuditEvent(r, auditProvider, principal, "scep.challenge.create", "scep_challenge", "-", AuditOutcomeFailure)
 				writeServiceUnavailable(w, "scep challenges unavailable")
 				return

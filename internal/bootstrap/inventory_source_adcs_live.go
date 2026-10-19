@@ -89,22 +89,27 @@ func newADCSLiveSource(ctx context.Context, configJSON, credentialRef string, cr
 	}, nil
 }
 
-// adcsBindPassword unwraps the stored credential. POST /api/v1/credentials
-// keeps "payload" as raw JSON, so a password stored as a JSON string arrives
-// here still quoted; binding with the quotes included is an invalid-credentials
-// failure that the operator cannot diagnose. A bare (non-JSON) secret is still
-// accepted as-is.
+// adcsBindPassword unwraps the stored bind password; see credentialSecretString.
 func adcsBindPassword(secret []byte) string {
+	return credentialSecretString(secret, "password")
+}
+
+// credentialSecretString unwraps a stored single-secret credential.
+// POST /api/v1/credentials keeps "payload" as raw JSON, so a secret stored as
+// a JSON string arrives here still quoted; sending it with the quotes included
+// is an auth failure the operator cannot diagnose. An object payload is read
+// from field; a bare (non-JSON) secret is still accepted as-is.
+func credentialSecretString(secret []byte, field string) string {
 	trimmed := strings.TrimSpace(string(secret))
 	var str string
 	if json.Unmarshal([]byte(trimmed), &str) == nil {
 		return str
 	}
-	var obj struct {
-		Password string `json:"password"`
-	}
-	if json.Unmarshal([]byte(trimmed), &obj) == nil && obj.Password != "" {
-		return obj.Password
+	var obj map[string]any
+	if json.Unmarshal([]byte(trimmed), &obj) == nil {
+		if v, ok := obj[field].(string); ok && v != "" {
+			return v
+		}
 	}
 	return trimmed
 }

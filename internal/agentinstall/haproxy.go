@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 )
 
 // W5-02 (PE-4/D-044/FR-P5): the HAProxy install target. HAProxy's `crt`
@@ -55,10 +56,13 @@ func (in *Installer) installHAProxy(ctx context.Context, req InstallRequest) (In
 
 	// 1. Snapshot the current combined file for rollback. 0600: it holds
 	// the private key.
-	backups := []fileBackup{in.snapshot(req.CertPath, 0o600)}
+	backups := []fileBackup{in.snapshot(ctx, req.CertPath, 0o600)}
+	if err := snapshotError(backups); err != nil {
+		return InstallResult{Outcome: OutcomeWriteFailed, Detail: err.Error()}, err
+	}
 
 	// 2. Write the combined chain+key file.
-	if err := in.exec.WriteFile(req.CertPath, combineHAProxyPEM(req.CertPEM, req.KeyPEM), 0o600); err != nil {
+	if err := in.place(req.CertPath, combineHAProxyPEM(req.CertPEM, req.KeyPEM), 0o600, backups[0]); err != nil {
 		return InstallResult{}, fmt.Errorf("haproxy install: write combined file: %w", err)
 	}
 
@@ -111,4 +115,24 @@ func (in *Installer) installHAProxy(ctx context.Context, req InstallRequest) (In
 	}
 
 	return InstallResult{Installed: true, Reloaded: true, Outcome: OutcomeInstalled}, nil
+}
+
+// haproxyStageFiles validates a staged HAProxy request exactly as
+// installHAProxy does, registers the single combined 0600 file through add
+// and returns the config path the config test must use (W27-14).
+func haproxyStageFiles(req InstallRequest, add func(live string, content []byte, mode os.FileMode)) (string, error) {
+	if req.CertPath == "" || len(req.CertPEM) == 0 {
+		return "", fmt.Errorf("haproxy stage: cert path and PEM are required")
+	}
+	if len(req.KeyPEM) == 0 {
+		return "", fmt.Errorf("haproxy stage: key PEM is required (crt is a single combined file)")
+	}
+	if req.ReloadMethod == "binary" {
+		return "", fmt.Errorf("haproxy stage: reload method %q not supported — HAProxy binary reload requires master-socket plumbing; use systemctl (default)", req.ReloadMethod)
+	}
+	add(req.CertPath, combineHAProxyPEM(req.CertPEM, req.KeyPEM), 0o600)
+	if req.HAProxyConfigPath != "" {
+		return req.HAProxyConfigPath, nil
+	}
+	return defaultHAProxyConfigPath, nil
 }

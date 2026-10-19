@@ -1,0 +1,21 @@
+# Issuance-approval live proof (copy of the sshca image): a stock OpenSSH server that trusts only the hub's SSH CA.
+# No authorized_keys anywhere: a login works only with a hub-issued user
+# certificate, and the client trusts the host only through a hub-issued host
+# certificate. run.sh copies the CA line and the host certificate in after
+# start (both are generated per run, never baked into the image).
+FROM docker.io/library/ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-server \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/run/sshd \
+    && useradd -m -s /bin/bash deploy \
+    && passwd -l deploy >/dev/null
+
+COPY sshd_kk.conf /etc/ssh/sshd_config.d/kk.conf
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 22
+ENTRYPOINT ["/entrypoint.sh"]

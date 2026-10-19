@@ -61,7 +61,7 @@ describe("SPIFFE page", () => {
       screen.getByText("spiffe://example.org/ns/prod/sa/checkout"),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/1 certificate\(s\) with a spiffe/i),
+      screen.getByText(/1 certificate with a spiffe/i),
     ).toBeInTheDocument();
   });
 

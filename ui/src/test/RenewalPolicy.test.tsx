@@ -10,6 +10,8 @@ vi.mock("../lib/api", () => ({
     updateTarget: vi.fn(),
     renewalSchedulerStatus: vi.fn(),
     createDiscoveryScan: vi.fn(),
+    certificates: vi.fn(),
+    certTargetBindings: vi.fn(),
   },
 }));
 
@@ -249,5 +251,39 @@ describe("RenewalPolicy page — WinRM discover now (W18-12)", () => {
       }),
     );
     expect(await screen.findByText(/scan queued/i)).toBeInTheDocument();
+  });
+});
+
+describe("RenewalPolicy unbound host matches (UI finding 13)", () => {
+  const AUTO = { ...TARGET_NO_OVERRIDE, auto_renew: true };
+  const certs = [
+    { fingerprint_sha256: "fp-unbound", common_name: "db-01.internal.example.com", status: "active" },
+    { fingerprint_sha256: "fp-bound", common_name: "db-01.internal.example.com", status: "active" },
+    { fingerprint_sha256: "fp-revoked", common_name: "db-01.internal.example.com", revoked_at: "2026-01-01T00:00:00Z" },
+    { fingerprint_sha256: "fp-other", common_name: "other.example.com", status: "active" },
+  ];
+
+  it("warns that a host-matching certificate with no binding will not be renewed", async () => {
+    vi.mocked(api.targets).mockResolvedValue({ data: [AUTO] } as unknown as never);
+    vi.mocked(api.certificates).mockResolvedValue({ data: { items: certs } } as unknown as never);
+    vi.mocked(api.certTargetBindings).mockResolvedValue({
+      data: [{ target_id: "target-1", cert_fingerprint: "fp-bound" }],
+    } as unknown as never);
+    renderPage();
+    const note = (await screen.findByText(/Not auto-renewed/)).closest("div") as HTMLElement;
+    expect(note).toHaveTextContent(/Not auto-renewed: 1 certificate matches this host/);
+    expect(within(note).getByRole("link", { name: /Bind in Target Setup/ })).toHaveAttribute("href", "/targets/setup");
+  });
+
+  it("stays quiet when every matching certificate is bound, or the target is not auto-renew", async () => {
+    vi.mocked(api.targets).mockResolvedValue({ data: [AUTO, TARGET_WITH_OVERRIDE] } as unknown as never);
+    vi.mocked(api.certificates).mockResolvedValue({ data: { items: certs.slice(0, 1) } } as unknown as never);
+    vi.mocked(api.certTargetBindings).mockResolvedValue({
+      data: [{ target_id: "target-1", cert_fingerprint: "fp-unbound" }],
+    } as unknown as never);
+    renderPage();
+    await screen.findByText("db-01");
+    await waitFor(() => expect(api.certTargetBindings).toHaveBeenCalled());
+    expect(screen.queryByText(/Not auto-renewed/)).toBeNull();
   });
 });

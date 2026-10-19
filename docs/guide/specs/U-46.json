@@ -1,0 +1,265 @@
+{
+  "task": "U-46",
+  "title": "Issue an SSH user or host certificate",
+  "sourceStory": "STORIES.md#u-46",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/ssh-certificates"
+      },
+      "caption": "Open /ssh-certificates",
+      "slug": "ssh-ca-panel",
+      "expect": {
+        "role": "button",
+        "name": "Copy CA public key"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-46/01-ssh-ca-panel.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Copy CA public key"
+      },
+      "caption": "Click **Copy CA public key**",
+      "slug": "ca-key-copied",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-46/02-ca-key-copied.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Key ID"
+      },
+      "value": "alice@acme.test",
+      "caption": "Fill **Key ID** with \"alice@acme.test\"",
+      "slug": "key-id",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-46/03-key-id.png",
+        "annotated": "docs/guide/screenshots/U-46/03-key-id-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 859,
+          "y": 383,
+          "w": 536,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Principals"
+      },
+      "value": "deploy",
+      "caption": "Fill **Principals** with \"deploy\"",
+      "slug": "principals",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-46/04-principals.png",
+        "annotated": "docs/guide/screenshots/U-46/04-principals-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 859,
+          "y": 453,
+          "w": 536,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Public key"
+      },
+      "value": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA0ALTnwNHpmzOPFQrU4zB8utR1JSNgrLCbQCUsmMsLp alice@acme.test",
+      "caption": "Paste the **Public key** (authorized_keys line)",
+      "slug": "public-key",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-46/05-public-key.png",
+        "annotated": "docs/guide/screenshots/U-46/05-public-key-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 859,
+          "y": 523,
+          "w": 536,
+          "h": 78
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "TTL hours"
+      },
+      "value": "8",
+      "caption": "Fill **TTL hours** with \"8\"",
+      "slug": "ttl",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-46/06-ttl.png",
+        "annotated": "docs/guide/screenshots/U-46/06-ttl-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 859,
+          "y": 638,
+          "w": 536,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Issue certificate"
+      },
+      "caption": "Click **Issue certificate**",
+      "slug": "issued",
+      "expect": {
+        "text": "alice@acme.test"
+      },
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-46/07-issued.png",
+        "annotated": "docs/guide/screenshots/U-46/07-issued-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 859,
+          "y": 708,
+          "w": 137,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:45:58.007Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-46",
+    "steps": 7,
+    "shots": 7,
+    "annotated": 5,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/ssh-certificates"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-46/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-46/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

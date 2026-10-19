@@ -113,7 +113,8 @@ pkcs11 23/23, compose 5/5 (all 2026-09-11 regression run); WinRM/IIS 2026-09-10;
 | Email (SMTP), webhook, scheduled expiry alert | LIVE | `tests/live/notifications/run.sh` Mailpit + echo receiver; `notifications/delivery` tests |
 |---|---|---|
 | Slack, SIEM webhook | INTEGRATION | same harness asserts Slack/Splunk-shaped payload to a stand-in receiver; no real Slack/Splunk |
-| PagerDuty, Teams, syslog (RFC 5424) | UNIT-ONLY | README states PagerDuty not exercised (pinned to real endpoint); `siem_integration_test` |
+| PagerDuty (Events v2 shape), signed webhook, CEF | INTEGRATION | W32-09 `tests/live/notifications/run.sh`: PagerDuty Events v2 payload to stand-in receiver (no real account); signed webhook verified, unsigned and stale (>5 min) rejected 2 of 2; failing receiver -> `failed` within 60 s after 3 attempts; CEF output passes strict parser, 0 errors |
+| Teams, syslog (RFC 5424) | UNIT-ONLY | No Teams channel exists (SKIP in W32-09, prerequisite ticket); `siem_integration_test` |
 | Alert rules, silences, dedup, retry/ack | INTEGRATION | smoke `/notifications/*` (deliveries retry/ack, summary, test-delivery); `notification_*_test`, `handlers_notification_*_test` |
 
 ### 3.8 Reports, compliance, PQC

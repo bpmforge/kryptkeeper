@@ -1,0 +1,25 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "id": "kryptkeeper.cloudflare-custom-cert",
+  "name": "Cloudflare custom certificate",
+  "version": "1.0.0",
+  "publisher": "Kryptkeeper Authors",
+  "license": "Apache-2.0",
+  "source": "https://github.com/bpmforge/kryptkeeper/tree/main/plugins/cloudflare",
+  "artifact": {"file": "plugin.wasm", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "verify_propagation_seconds": 600,
+  "capabilities": {
+    "receive_private_key": true,
+    "network": {"hosts_from_credential": "api_base"},
+    "tls_verify": true
+  },
+  "credential_schema": {
+    "api_base": {"type": "url", "required": true},
+    "api_token": {"type": "string", "required": true, "secret": true}
+  },
+  "target_schema": {
+    "zone_id": {"type": "string", "required": true},
+    "hostname": {"type": "string", "required": true},
+    "bundle_method": {"type": "string", "default": "ubiquitous"}
+  }
+}

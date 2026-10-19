@@ -16,13 +16,13 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/acme"
+	"kryptkeeper/internal/logging"
 
 	"kryptkeeper/internal/connectors"
 	"kryptkeeper/internal/egress"
@@ -31,7 +31,9 @@ import (
 // W11-04: the ACME upstream connector — renewal executes AT the customer's
 // original CA (Let's Encrypt or any RFC 8555 CA, EAB included) and the
 // result lands in our inventory as a synced, managed certificate. Client is
-// golang.org/x/crypto/acme; no hand-rolled JWS anywhere (spec decision 1).
+// golang.org/x/crypto/acme; no hand-rolled JWS anywhere (spec decision 1)
+// except the single ES256 newOrder signer in connector_acme_ari.go, which
+// exists only to send the RFC 9773 "replaces" member the library lacks.
 //
 // Two solvers: http-01 on a configured listener (correct when the hub is
 // reachable at the certificate's name, and what tests against the in-repo
@@ -44,6 +46,12 @@ type acmeConnectorConfig struct {
 	// HTTP01Listen is where the connector serves key authorizations during
 	// an order, e.g. ":80" or "127.0.0.1:8123". Required for issuance.
 	HTTP01Listen string `json:"http01_listen"`
+	// HTTP01Mode is "hub" (default: the http01_listen listener) or "fleet"
+	// (W27-23: the key authorization is placed on the host that serves the
+	// name, over its managed target's SSH connection). See
+	// connector_acme_http01_fleet.go.
+	HTTP01Mode  string           `json:"http01_mode,omitempty"`
+	HTTP01Hosts []acmeHTTP01Host `json:"http01_hosts,omitempty"`
 	// Challenge is "http-01" (the default) or "dns-01".
 	Challenge string `json:"challenge,omitempty"`
 	// DNSProvider names the dns-01 provider; "cloudflare" is the only one.
@@ -72,6 +80,8 @@ type acmeCredentialPayload struct {
 	EABHmacB64    string `json:"eab_hmac_b64,omitempty"`
 	// CloudflareAPIToken is a token scoped to DNS edit on the zone (dns-01).
 	CloudflareAPIToken string `json:"cloudflare_api_token,omitempty"`
+	// DNS is the provider-specific credential object (route53, azure, gcp, ...).
+	DNS json.RawMessage `json:"dns,omitempty"`
 }
 
 type acmeIssuerConnector struct {
@@ -80,6 +90,12 @@ type acmeIssuerConnector struct {
 	credRef   string
 	creds     OutboundCredentialStore
 	inventory CertificateProvider
+	tenant    string
+
+	// fleet http-01 seams (W27-23); nil targets = the env store on first use,
+	// nil fleetDial = the real SSH dial.
+	targets   ManagedTargetStore
+	fleetDial sshDialFunc
 
 	// dns-01 seams; nil means the real Cloudflare API and DNS.
 	newDNS      func(acmeCredentialPayload) (dnsProvider, error)
@@ -100,7 +116,7 @@ func NewACMEIssuerConnector(rec ConnectorRecord, inventory CertificateProvider, 
 	_ = json.Unmarshal([]byte(rec.ConfigJSON), &cfg) // malformed config zeroes out; connector then fails clearly on use
 	return &acmeIssuerConnector{
 		id: rec.ID, cfg: cfg, credRef: rec.CredentialRef,
-		creds: creds, inventory: inventory,
+		creds: creds, inventory: inventory, tenant: rec.Tenant,
 	}
 }
 
@@ -114,14 +130,14 @@ func (c *acmeIssuerConnector) Health(ctx context.Context) connectors.Health {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.cfg.DirectoryURL, nil)
 	if err != nil {
-		log.Printf("acme connector %s: health: bad directory_url: %v", c.id, err)
+		logging.Infof("acme connector %s: health: bad directory_url: %v", c.id, err)
 		return connectors.Health{Status: "degraded", Detail: healthUnreachable}
 	}
 	resp, err := c.httpClient(5 * time.Second).Do(req)
 	if err != nil {
 		// The raw error stays in the server log: reflecting it would let a
 		// caller with discovery.manage map internal hosts and ports.
-		log.Printf("acme connector %s: health probe failed: %v", c.id, err)
+		logging.Warnf("acme connector %s: health probe failed: %v", c.id, err)
 		if errors.Is(err, egress.ErrBlockedDestination) {
 			return connectors.Health{Status: "degraded", Detail: healthBlocked}
 		}
@@ -129,7 +145,7 @@ func (c *acmeIssuerConnector) Health(ctx context.Context) connectors.Health {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		log.Printf("acme connector %s: directory returned %d", c.id, resp.StatusCode)
+		logging.Infof("acme connector %s: directory returned %d", c.id, resp.StatusCode)
 		return connectors.Health{Status: "degraded", Detail: healthErrorStatus}
 	}
 	return connectors.Health{Status: "healthy"}
@@ -171,7 +187,7 @@ func (c *acmeIssuerConnector) credential(ctx context.Context) (acmeCredentialPay
 	}
 	defer zeroize(plaintext)
 	if err := json.Unmarshal(plaintext, &payload); err != nil {
-		return payload, errors.New("acme connector credential payload is not the documented JSON shape (account_key_pem/eab_kid/eab_hmac_b64/cloudflare_api_token)")
+		return payload, errors.New("acme connector credential payload is not the documented JSON shape (account_key_pem/eab_kid/eab_hmac_b64/cloudflare_api_token/dns)")
 	}
 	return payload, nil
 }
@@ -204,7 +220,7 @@ func (c *acmeIssuerConnector) accountClient(ctx context.Context, payload acmeCre
 		key = generated
 	}
 
-	client := &acme.Client{Key: key, DirectoryURL: c.cfg.DirectoryURL, HTTPClient: c.httpClient(30 * time.Second)}
+	client := &acme.Client{Key: key, DirectoryURL: c.cfg.DirectoryURL, HTTPClient: c.httpClient(30 * time.Second), RetryBackoff: acmeRetryBackoff}
 	acct := &acme.Account{}
 	if c.cfg.Email != "" {
 		acct.Contact = []string{"mailto:" + c.cfg.Email}
@@ -223,6 +239,16 @@ func (c *acmeIssuerConnector) accountClient(ctx context.Context, payload acmeCre
 		}
 	}
 	return client, nil
+}
+
+// http01Responder publishes http-01 key authorizations for an order: the hub
+// listener by default, target hosts in fleet mode (W27-23).
+type http01Responder interface {
+	put(ctx context.Context, identifier, path, keyAuth string) error
+	// release runs right after WaitAuthorization, success or failure.
+	release(ctx context.Context, identifier string) error
+	// close is idempotent and removes anything still placed.
+	close()
 }
 
 // http01Solver serves key authorizations for the order's duration.
@@ -255,10 +281,15 @@ func newHTTP01Solver(listen string) (*http01Solver, error) {
 	return solver, nil
 }
 
-func (s *http01Solver) put(path, keyAuth string) { s.tokens[path] = keyAuth }
-func (s *http01Solver) close()                   { _ = s.srv.Close() }
+func (s *http01Solver) put(_ context.Context, _, path, keyAuth string) error {
+	s.tokens[path] = keyAuth
+	return nil
+}
+func (s *http01Solver) release(context.Context, string) error { return nil }
+func (s *http01Solver) close()                                { _ = s.srv.Close() }
 
-func (c *acmeIssuerConnector) Issue(ctx context.Context, req connectors.IssueRequest) (connectors.IssueResult, error) {
+// issueOnce is one un-gated issuance; Issue (connector_acme_ratelimit.go) wraps it.
+func (c *acmeIssuerConnector) issueOnce(ctx context.Context, req connectors.IssueRequest) (connectors.IssueResult, error) {
 	block, _ := pem.Decode([]byte(req.CSRPEM))
 	if block == nil {
 		return connectors.IssueResult{}, errors.New("acme connector: request carries no CSR PEM")
@@ -296,14 +327,22 @@ func (c *acmeIssuerConnector) Issue(ctx context.Context, req connectors.IssueReq
 	if challengeType == "" {
 		challengeType = "http-01"
 	}
-	var solver *http01Solver
+	var solver http01Responder
 	var dns dnsProvider
 	var propagation dnsPropagation
 	checkState := &dnsCheckState{}
 	switch challengeType {
 	case "http-01":
-		if solver, err = newHTTP01Solver(c.cfg.HTTP01Listen); err != nil {
-			return connectors.IssueResult{}, err
+		if c.cfg.HTTP01Mode == "fleet" {
+			if solver, err = newFleetHTTP01Solver(c); err != nil {
+				return connectors.IssueResult{}, err
+			}
+		} else {
+			hub, herr := newHTTP01Solver(c.cfg.HTTP01Listen)
+			if herr != nil {
+				return connectors.IssueResult{}, herr
+			}
+			solver = hub
 		}
 		defer solver.close()
 	case "dns-01":
@@ -324,20 +363,27 @@ func (c *acmeIssuerConnector) Issue(ctx context.Context, req connectors.IssueReq
 		defer cancel()
 		for _, cleanup := range cleanups {
 			if err := cleanup(cctx); err != nil {
-				log.Printf("acme connector %s: dns-01 cleanup: %v", c.id, err)
+				logging.Infof("acme connector %s: dns-01 cleanup: %v", c.id, err)
 			}
 		}
 	}()
 
-	order, err := client.AuthorizeOrder(ctx, ids)
+	// Park behind any Retry-After a sibling order just drew: the throttle
+	// cannot see a 429 the ACME client retries internally.
+	if err := connectors.UpstreamGateFrom(ctx).Wait(ctx); err != nil {
+		return connectors.IssueResult{}, fmt.Errorf("acme order: %w", err)
+	}
+	order, err := c.authorizeOrder(ctx, client, ids)
 	if err != nil {
 		return connectors.IssueResult{}, fmt.Errorf("acme order: %w", err)
 	}
+	logging.Infof("acme connector %s: order status=%s identifiers=%d", c.id, order.Status, len(ids))
 	for _, authzURL := range order.AuthzURLs {
 		authz, err := client.GetAuthorization(ctx, authzURL)
 		if err != nil {
 			return connectors.IssueResult{}, fmt.Errorf("acme authorization: %w", err)
 		}
+		logging.Infof("acme connector %s: authorization status=%s identifier=%s", c.id, authz.Status, authz.Identifier.Value)
 		if authz.Status == acme.StatusValid {
 			continue
 		}
@@ -356,7 +402,9 @@ func (c *acmeIssuerConnector) Issue(ctx context.Context, req connectors.IssueReq
 			if err != nil {
 				return connectors.IssueResult{}, fmt.Errorf("acme key authorization: %w", err)
 			}
-			solver.put(client.HTTP01ChallengePath(challenge.Token), keyAuth)
+			if err := solver.put(ctx, authz.Identifier.Value, client.HTTP01ChallengePath(challenge.Token), keyAuth); err != nil {
+				return connectors.IssueResult{}, fmt.Errorf("acme http-01 for %s: %w", authz.Identifier.Value, err)
+			}
 		} else {
 			cleanup, err := c.presentDNS01(ctx, client, dns, propagation, checkState, authz.Identifier.Value, challenge.Token)
 			if cleanup != nil {
@@ -369,22 +417,39 @@ func (c *acmeIssuerConnector) Issue(ctx context.Context, req connectors.IssueReq
 		if _, err := client.Accept(ctx, challenge); err != nil {
 			return connectors.IssueResult{}, fmt.Errorf("acme challenge accept: %w", err)
 		}
+		logging.Infof("acme connector %s: challenge accepted type=%s identifier=%s", c.id, challengeType, authz.Identifier.Value)
 		// WaitAuthorization surfaces the CA's problem detail on failure —
 		// never swallowed (spec decision 6).
-		if _, err := client.WaitAuthorization(ctx, authz.URI); err != nil {
-			return connectors.IssueResult{}, fmt.Errorf("acme challenge validation for %s: %w", authz.Identifier.Value, err)
+		validated, werr := client.WaitAuthorization(ctx, authz.URI)
+		if solver != nil {
+			if rerr := solver.release(ctx, authz.Identifier.Value); rerr != nil {
+				logging.Infof("acme connector %s: http-01 cleanup for %s: %v", c.id, authz.Identifier.Value, rerr)
+			}
 		}
+		if werr != nil {
+			// The error text can carry the CA's problem detail (URL, token);
+			// it goes to the caller, not the log.
+			logging.Infof("acme connector %s: authorization status=%s identifier=%s", c.id, acme.StatusInvalid, authz.Identifier.Value)
+			return connectors.IssueResult{}, fmt.Errorf("acme challenge validation for %s: %w", authz.Identifier.Value, werr)
+		}
+		logging.Infof("acme connector %s: authorization status=%s identifier=%s", c.id, validated.Status, authz.Identifier.Value)
 	}
-	if _, err := client.WaitOrder(ctx, order.URI); err != nil {
+	finalOrder, err := client.WaitOrder(ctx, order.URI)
+	if err != nil {
 		return connectors.IssueResult{}, fmt.Errorf("acme order wait: %w", err)
 	}
+	logging.Infof("acme connector %s: order status=%s", c.id, finalOrder.Status)
 	chainDER, _, err := client.CreateOrderCert(ctx, order.FinalizeURL, block.Bytes, true)
+	if err != nil {
+		chainDER, err = recoverFinalizedOrder(ctx, client, order.URI, err)
+	}
 	if err != nil {
 		return connectors.IssueResult{}, fmt.Errorf("acme finalize: %w", err)
 	}
 	if len(chainDER) == 0 {
 		return connectors.IssueResult{}, errors.New("acme finalize returned an empty chain")
 	}
+	logging.Infof("acme connector %s: certificate issued identifiers=%d", c.id, len(ids))
 
 	var chainPEM strings.Builder
 	for _, der := range chainDER {
@@ -415,7 +480,7 @@ func (c *acmeIssuerConnector) Issue(ctx context.Context, req connectors.IssueReq
 				Origin: "synced", ManagementState: "managed",
 				RenewalMethod: "acme", RenewalConnectorID: c.id,
 			}); err != nil {
-				log.Printf("acme connector: estate stamp failed for %s: %v", fingerprint, err)
+				logging.Warnf("acme connector: estate stamp failed for %s: %v", fingerprint, err)
 			}
 		}
 	}
@@ -430,17 +495,7 @@ func (c *acmeIssuerConnector) dnsProvider(payload acmeCredentialPayload) (dnsPro
 	if c.newDNS != nil {
 		return c.newDNS(payload)
 	}
-	switch c.cfg.DNSProvider {
-	case "cloudflare":
-		if payload.CloudflareAPIToken == "" {
-			return nil, errors.New("acme connector dns-01 via cloudflare needs cloudflare_api_token in its credential")
-		}
-		return newCloudflareDNS(payload.CloudflareAPIToken), nil
-	case "":
-		return nil, errors.New("acme connector challenge dns-01 needs config_json.dns_provider (cloudflare)")
-	default:
-		return nil, fmt.Errorf("acme connector dns_provider %q is not supported (cloudflare)", c.cfg.DNSProvider)
-	}
+	return newDNSProviderFromConfig(c.cfg, payload)
 }
 
 // presentDNS01 publishes the TXT record for one identifier and waits until
@@ -473,4 +528,28 @@ func agentFingerprintOfPEM(certPEM string) string {
 		return ""
 	}
 	return fmt.Sprintf("%x", sha256.Sum256(block.Bytes))
+}
+
+// recoverFinalizedOrder covers a CA (Pebble) whose finalize answer is
+// "processing" with no Location header: x/crypto/acme takes the order URL from
+// that header, so its internal WaitOrder("") fails with `Post ""` after the CA
+// has already accepted the CSR. The order URL we kept from AuthorizeOrder is
+// authoritative, so poll it and fetch the certificate only if the CA itself
+// reports the order valid. CA rejections (*acme.Error, *acme.OrderError) and
+// cancellation keep the original error; nothing here relaxes validation.
+func recoverFinalizedOrder(ctx context.Context, client *acme.Client, orderURL string, cause error) ([][]byte, error) {
+	var acmeErr *acme.Error
+	var orderErr *acme.OrderError
+	if orderURL == "" || ctx.Err() != nil || errors.As(cause, &acmeErr) || errors.As(cause, &orderErr) {
+		return nil, cause
+	}
+	o, err := client.WaitOrder(ctx, orderURL)
+	if err != nil || o.Status != acme.StatusValid {
+		return nil, cause
+	}
+	chain, err := client.FetchCert(ctx, o.CertURL, true)
+	if err != nil {
+		return nil, fmt.Errorf("%w (order %s valid, certificate fetch: %v)", cause, acme.StatusValid, err)
+	}
+	return chain, nil
 }

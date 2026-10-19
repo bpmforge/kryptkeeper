@@ -1,0 +1,122 @@
+{
+  "ifResourceExists": "SKIP",
+  "clients": [
+    {
+      "clientId": "kk-saml-sp",
+      "name": "kk-saml-sp (fixture)",
+      "enabled": true,
+      "protocol": "saml",
+      "frontchannelLogout": false,
+      "redirectUris": [
+        "https://127.0.0.1:18090/api/v1/auth/saml/acs"
+      ],
+      "baseUrl": "https://127.0.0.1:18090/api/v1/auth/saml/acs",
+      "attributes": {
+        "saml.client.signature": "false",
+        "saml.server.signature": "true",
+        "saml.assertion.signature": "true",
+        "saml.signature.algorithm": "RSA_SHA256",
+        "saml.authnstatement": "true",
+        "saml_name_id_format": "email",
+        "saml_force_name_id_format": "true",
+        "saml_assertion_consumer_url_post": "https://127.0.0.1:18090/api/v1/auth/saml/acs",
+        "saml_idp_initiated_sso_url_name": "kk-sp",
+        "saml.assertion.lifespan": "8"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "saml",
+          "protocolMapper": "saml-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "attribute.name": "groups",
+            "attribute.nameformat": "Basic",
+            "single": "false",
+            "full.path": "false"
+          }
+        },
+        {
+          "name": "email",
+          "protocol": "saml",
+          "protocolMapper": "saml-user-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "email",
+            "attribute.name": "email",
+            "attribute.nameformat": "Basic"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "kk-saml-other",
+      "name": "kk-saml-other (fixture)",
+      "enabled": true,
+      "protocol": "saml",
+      "frontchannelLogout": false,
+      "redirectUris": [
+        "https://127.0.0.1:18090/api/v1/auth/saml/acs"
+      ],
+      "baseUrl": "https://127.0.0.1:18090/api/v1/auth/saml/acs",
+      "attributes": {
+        "saml.client.signature": "false",
+        "saml.server.signature": "true",
+        "saml.assertion.signature": "true",
+        "saml.signature.algorithm": "RSA_SHA256",
+        "saml.authnstatement": "true",
+        "saml_name_id_format": "email",
+        "saml_force_name_id_format": "true",
+        "saml_assertion_consumer_url_post": "https://127.0.0.1:18090/api/v1/auth/saml/acs",
+        "saml_idp_initiated_sso_url_name": "kk-other",
+        "saml.assertion.lifespan": "8"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "saml",
+          "protocolMapper": "saml-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "attribute.name": "groups",
+            "attribute.nameformat": "Basic",
+            "single": "false",
+            "full.path": "false"
+          }
+        },
+        {
+          "name": "email",
+          "protocol": "saml",
+          "protocolMapper": "saml-user-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "email",
+            "attribute.name": "email",
+            "attribute.nameformat": "Basic"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "erin",
+      "enabled": true,
+      "email": "erin@sso.test",
+      "emailVerified": true,
+      "firstName": "Erin",
+      "lastName": "Fixture",
+      "requiredActions": [],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "erin-fixture-pw",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/kk-operators"
+      ]
+    }
+  ]
+}

@@ -3,6 +3,7 @@
 - **Status**: Accepted (W9-08, 2026-08-19)
 - **Decision id**: D-086 / FR-P48
 - **Owners**: platform / ca
+- **Reconciled with code**: W31-07 (2026-10-16)
 
 ## Context
 
@@ -57,9 +58,23 @@ Verified against the vendored module sources (not from memory):
 
 ## Consequences
 
-- `keystore.CheckHSMPQCSupport(backend, algo)` is the single refusal
-  surface; its message names this ADR so an operator hitting the wall
-  finds the reasoning.
-- The software store remains the only backend advertising ML-DSA/hybrid
-  in `SupportedAlgorithms` terms; documentation and the keygen policy do
-  not pretend otherwise.
+- `keystore.CheckHSMPQCSupport(backend, algo)` (`internal/keystore/pkcs11_pqc.go`) is the single
+  refusal surface. It returns an error wrapping the sentinel `keystore.ErrPQCHSMUnsupported`,
+  whose message ends "(see docs/ADR_PQC_KEYS_SOFTWARE_ONLY.md)", so an operator hitting the
+  wall finds the reasoning. Callers branch with `errors.Is`.
+- The refused backend set is `hardwareBackends = {pkcs11, cloudkms, vault}`; `software` passes.
+  Classical algorithms (including Ed25519) pass this check untouched; Ed25519 limits are a
+  separate check (`checkBackendAlgorithm`, `internal/ca/engine.go`).
+- Call sites: `POST /api/v1/keys` (`internal/bootstrap/handlers_keys.go`, W19-19, HTTP 422 before
+  `GenerateKey` runs, so no token object is created); `Engine.CreateRootCA`,
+  `Engine.CreateIntermediateCA` and `Engine.CreateIntermediateCSR` (`internal/ca/engine.go`).
+- Defence in depth: the pkcs11, Vault and cloud KMS stores also return `ErrUnsupportedAlgo` for
+  ML-DSA/hybrid if called directly (`pkcs11.go`, `vault.go`, `cloudkms*.go`).
+- The software store is the only backend that generates ML-DSA/hybrid keys (it has a dedicated
+  ML-DSA persistence path and hybrid pair storage in `internal/keystore/software.go`).
+  There is no `SupportedAlgorithms` registry in `internal/keystore`; the CA-creation API's
+  accepted list is `caSupportedAlgorithms` in `internal/bootstrap/ca_engine_provider.go`
+  (ML-DSA-44/65/87; it lists no hybrid algorithm).
+- Dependencies re-verified in `go.mod` (W31-07): `github.com/ThalesGroup/crypto11 v1.6.1`,
+  `github.com/miekg/pkcs11 v1.1.2` (indirect).
+- Encoding of hybrid certificates and ML-DSA CRL/OCSP behaviour: `docs/PQC_HYBRID_ENCODING.md`.

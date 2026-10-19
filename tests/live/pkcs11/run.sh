@@ -100,6 +100,20 @@ export KRYPTKEEPER_KEY_BACKEND=pkcs11
 export KRYPTKEEPER_PKCS11_LIB="$PKCS11_LIB" KRYPTKEEPER_PKCS11_TOKEN_LABEL="$TOKEN_LABEL" KRYPTKEEPER_PKCS11_PIN="$TOKEN_PIN"
 export KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT=true KRYPTKEEPER_CA_NAME="UAT PKCS11 Root CA"
 export APP_BIND_ADDR=127.0.0.1 PORT="$HUB_PORT"
+# D-122: key deletion is dual-controlled by default, so step 7 needs two named
+# humans: alice proposes the delete and bob approves it (the bootstrap token
+# may not approve).
+PEPPER="uat-pepper-32-characters-minimum!!"
+API_KEYS=""
+mkident() { # name -> sets T_<name>, a pki-admin API key
+  local secret verifier
+  secret="$(openssl rand -hex 24)"
+  verifier="$(printf '%s' "$secret" | openssl dgst -sha256 -hmac "$PEPPER" -hex | awk '{print $NF}')"
+  eval "T_$1=kk_uat$1_${secret}"
+  API_KEYS="${API_KEYS:+$API_KEYS,}{\"name\":\"$1\",\"kid\":\"uat$1\",\"secret_verifier\":\"$verifier\",\"principal_id\":\"$1\",\"role\":\"pki-admin\",\"active\":true}"
+}
+mkident alice; mkident bob
+export APP_API_KEY_AUTH_ENABLED=true APP_API_KEY_PEPPER="$PEPPER" APP_API_KEYS_JSON="[$API_KEYS]"
 
 "$HUB_DIR/kryptkeeper" >"$WORK/hub.log" 2>&1 &
 HUB_PID=$!
@@ -213,12 +227,20 @@ GEN_RESP="$(curlj -X POST "$HUB_BASE/api/v1/keys" -d '{"id":"uat-pkcs11-delete-m
 echo "$GEN_RESP" | grep -q '"id":"uat-pkcs11-delete-me"' && PASS "disposable key generated for deletion test" || DIE "could not generate disposable key: $GEN_RESP"
 
 PRIVKEY_COUNT_BEFORE_DELETE="$(pkcs11-tool --module "$PKCS11_LIB" --token-label "$TOKEN_LABEL" --login --pin "$TOKEN_PIN" --list-objects --type privkey 2>/dev/null | grep -c '^Private Key Object')"
-DELETE_STATUS="$(curlj -o "$WORK/delete.json" -w '%{http_code}' -X DELETE "$HUB_BASE/api/v1/keys/uat-pkcs11-delete-me")"
-if [ "$DELETE_STATUS" = "200" ] || [ "$DELETE_STATUS" = "204" ]; then
-  PASS "DELETE /api/v1/keys/{id} returned $DELETE_STATUS"
+DELETE_STATUS="$(curl -sS -o "$WORK/delete.json" -w '%{http_code}' -H "Authorization: Bearer $T_alice" -X DELETE "$HUB_BASE/api/v1/keys/uat-pkcs11-delete-me")"
+if [ "$DELETE_STATUS" = "202" ]; then
+  PASS "DELETE /api/v1/keys/{id} by alice is only proposed (202, dual control)"
 else
-  FAIL "DELETE /api/v1/keys/{id} returned $DELETE_STATUS: $(cat "$WORK/delete.json")"
+  FAIL "DELETE /api/v1/keys/{id} returned $DELETE_STATUS, want 202: $(cat "$WORK/delete.json")"
 fi
+ACTION_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["data"]["action_id"])' "$WORK/delete.json" 2>/dev/null)"
+PRIVKEY_COUNT_PENDING="$(pkcs11-tool --module "$PKCS11_LIB" --token-label "$TOKEN_LABEL" --login --pin "$TOKEN_PIN" --list-objects --type privkey 2>/dev/null | grep -c '^Private Key Object')"
+[ "$PRIVKEY_COUNT_PENDING" = "$PRIVKEY_COUNT_BEFORE_DELETE" ] && PASS "token object still present while the delete is pending" \
+  || FAIL "token private-key count changed before approval ($PRIVKEY_COUNT_BEFORE_DELETE -> $PRIVKEY_COUNT_PENDING)"
+SELF_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $T_alice" -X POST "$HUB_BASE/api/v1/pending-actions/$ACTION_ID/approve")"
+[ "$SELF_STATUS" = "403" ] && PASS "alice cannot approve her own delete (403)" || FAIL "self-approval returned $SELF_STATUS, want 403"
+APPROVE_STATUS="$(curl -sS -o "$WORK/approve.json" -w '%{http_code}' -H "Authorization: Bearer $T_bob" -X POST "$HUB_BASE/api/v1/pending-actions/$ACTION_ID/approve")"
+[ "$APPROVE_STATUS" = "200" ] && PASS "bob approves the delete (200)" || FAIL "bob's approval returned $APPROVE_STATUS: $(cat "$WORK/approve.json")"
 
 PRIVKEY_COUNT_AFTER_DELETE="$(pkcs11-tool --module "$PKCS11_LIB" --token-label "$TOKEN_LABEL" --login --pin "$TOKEN_PIN" --list-objects --type privkey 2>/dev/null | grep -c '^Private Key Object')"
 if [ "$PRIVKEY_COUNT_AFTER_DELETE" -lt "$PRIVKEY_COUNT_BEFORE_DELETE" ]; then

@@ -431,7 +431,7 @@ function PluginCard({
                   {v.status === "pending_approval" ? (
                     <Link
                       className="text-xs text-primary underline"
-                      to="/pending-actions"
+                      to="/inbox"
                     >
                       Awaiting approval
                     </Link>

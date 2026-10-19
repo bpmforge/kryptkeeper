@@ -34,10 +34,13 @@ func nodeID(kind NodeKind, id string) string { return string(kind) + ":" + id }
 type Graph struct {
 	kinds      map[string]NodeKind // nodeID -> kind
 	dependents map[string][]string // dependency nodeID -> dependent nodeIDs
+	// dependencies is the reverse index (dependent -> what it needs), kept so
+	// edge coverage can be disclosed without walking every dependent list.
+	dependencies map[string][]string
 }
 
 func NewGraph() *Graph {
-	return &Graph{kinds: map[string]NodeKind{}, dependents: map[string][]string{}}
+	return &Graph{kinds: map[string]NodeKind{}, dependents: map[string][]string{}, dependencies: map[string][]string{}}
 }
 
 func (g *Graph) addNode(kind NodeKind, id string) string {
@@ -52,6 +55,50 @@ func (g *Graph) AddDependency(depKind NodeKind, depID string, needsKind NodeKind
 	dep := g.addNode(depKind, depID)
 	needs := g.addNode(needsKind, needsID)
 	g.dependents[needs] = append(g.dependents[needs], dep)
+	g.dependencies[dep] = append(g.dependencies[dep], needs)
+}
+
+// AddNode registers a node with no edges, so a certificate that names no CA,
+// algorithm or service still counts in the coverage denominator.
+func (g *Graph) AddNode(kind NodeKind, id string) { g.addNode(kind, id) }
+
+// HasNode reports whether a node of that kind exists. A simulation against a
+// missing node is empty by construction, which is indistinguishable from "safe
+// to act" — callers use this to refuse unknown targets instead.
+func (g *Graph) HasNode(kind NodeKind, id string) bool {
+	k, ok := g.kinds[nodeID(kind, id)]
+	return ok && k == kind
+}
+
+// Coverage discloses how much of the inventory the graph can actually reason
+// about: a cert with no edges looks harmless in a simulation.
+type Coverage struct {
+	CertsTotal           int `json:"certs_total"`
+	CertsWithCAEdge      int `json:"certs_with_ca_edge"`      // cert depends on a CA node
+	CertsWithServiceEdge int `json:"certs_with_service_edge"` // >=1 service depends on the cert
+}
+
+func (g *Graph) Coverage() Coverage {
+	var c Coverage
+	for nid, kind := range g.kinds {
+		if kind != KindCert {
+			continue
+		}
+		c.CertsTotal++
+		for _, need := range g.dependencies[nid] {
+			if g.kinds[need] == KindCA {
+				c.CertsWithCAEdge++
+				break
+			}
+		}
+		for _, dep := range g.dependents[nid] {
+			if g.kinds[dep] == KindService {
+				c.CertsWithServiceEdge++
+				break
+			}
+		}
+	}
+	return c
 }
 
 // Impact is one simulation's result.

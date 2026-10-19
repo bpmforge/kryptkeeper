@@ -25,6 +25,16 @@ type fakeHub struct {
 	lastBody   string
 	status     int
 	body       string
+	// paths records every request as "METHOD /uri" so two-call flows
+	// (blast-radius lookup, then enqueue) are assertable (W29-09).
+	paths []string
+	// routes overrides status/body for a request path (no query).
+	routes map[string]fakeRoute
+}
+
+type fakeRoute struct {
+	status int
+	body   string
 }
 
 func newFakeHub(t *testing.T) *fakeHub {
@@ -34,8 +44,14 @@ func newFakeHub(t *testing.T) *fakeHub {
 		f.lastPath = r.URL.RequestURI()
 		f.lastAuth = r.Header.Get("Authorization")
 		f.lastMethod = r.Method
+		f.paths = append(f.paths, r.Method+" "+r.URL.RequestURI())
 		if b, err := io.ReadAll(r.Body); err == nil {
 			f.lastBody = string(b)
+		}
+		if rt, ok := f.routes[r.URL.Path]; ok {
+			w.WriteHeader(rt.status)
+			_, _ = w.Write([]byte(rt.body))
+			return
 		}
 		w.WriteHeader(f.status)
 		_, _ = w.Write([]byte(f.body))
@@ -100,7 +116,7 @@ func TestReadTools_AllRegistered(t *testing.T) {
 	want := []string{
 		"list_certificates", "get_certificate", "search", "crypto_posture",
 		"pqc_migration", "pqc_countdown", "renewal_slo", "compliance_evidence",
-		"list_cas", "ca_health",
+		"list_cas", "ca_health", "blast_radius",
 	}
 	for _, name := range want {
 		if findHandler(hub, name) == nil {
@@ -210,5 +226,92 @@ func TestAuditQueryNotExposedToAgent(t *testing.T) {
 	hub := NewHubClient("http://x", "tok")
 	if findToolHandler(hub, "audit_query") != nil {
 		t.Fatal("audit_query must not be registered: the agent role must not read the audit log (LLM-001)")
+	}
+}
+
+// --- W29-09: blast_radius ---
+
+const blastBody = `{"data":{"action":"revoke","target":"fp-1","total_affected":3,"severity":"high","affected_by_kind":{"service":["a.example","b.example"],"cert":["fp-2"]},"graph_size":9}}`
+
+func TestBlastRadius_Registered(t *testing.T) {
+	if findHandler(NewHubClient("http://x", "tok"), "blast_radius") == nil {
+		t.Fatal("blast_radius not registered as a read tool")
+	}
+}
+
+func TestBlastRadius_HitsHubPath(t *testing.T) {
+	f := newFakeHub(t)
+	f.body = blastBody
+	hub := NewHubClient(f.srv.URL, "tok")
+	res := call(t, findHandler(hub, "blast_radius"), map[string]any{"target": "fp-1"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", resultText(res))
+	}
+	if f.lastMethod != http.MethodGet || !strings.HasPrefix(f.lastPath, "/api/v1/blast-radius") ||
+		!strings.Contains(f.lastPath, "action=revoke") || !strings.Contains(f.lastPath, "target=fp-1") {
+		t.Fatalf("unexpected hub call: %s %s", f.lastMethod, f.lastPath)
+	}
+	if !strings.HasPrefix(rawResultText(res), UntrustedPreamble) {
+		t.Fatal("blast_radius output must be wrapped as untrusted")
+	}
+	if !strings.Contains(resultText(res), `"b.example"`) {
+		t.Fatalf("dependents missing from result: %s", resultText(res))
+	}
+}
+
+func TestBlastRadius_RejectsUnknownAction(t *testing.T) {
+	f := newFakeHub(t)
+	hub := NewHubClient(f.srv.URL, "tok")
+	res := call(t, findHandler(hub, "blast_radius"), map[string]any{"action": "delete", "target": "fp-1"})
+	if !res.IsError || f.lastPath != "" {
+		t.Fatalf("unknown action must error without a hub call (err=%v path=%q)", res.IsError, f.lastPath)
+	}
+}
+
+func TestBlastRadius_RequiresTarget(t *testing.T) {
+	f := newFakeHub(t)
+	hub := NewHubClient(f.srv.URL, "tok")
+	res := call(t, findHandler(hub, "blast_radius"), map[string]any{"action": "revoke"})
+	if !res.IsError || f.lastPath != "" {
+		t.Fatalf("missing target must error without a hub call (err=%v path=%q)", res.IsError, f.lastPath)
+	}
+}
+
+func TestBlastRadiusTool_BuildsQueryAndReturnsHubBody(t *testing.T) {
+	f := newFakeHub(t)
+	f.body = `{"data":{"action":"retire_ca","target":"ca:ca-1","total_affected":2,"severity":"low","affected_by_kind":{"cert":["fp1"],"service":["a.example.com"]},"graph_size":"1 certificates","edge_coverage":{"certs_total":1,"certs_with_ca_edge":1,"certs_with_service_edge":1,"basis":"b"}}}`
+	hub := NewHubClient(f.srv.URL, "tok")
+	res := call(t, findHandler(hub, "blast_radius"), map[string]any{"action": "retire_ca", "target": "ca-1"})
+	if !strings.HasPrefix(f.lastPath, "/api/v1/blast-radius?") ||
+		!strings.Contains(f.lastPath, "action=retire_ca") || !strings.Contains(f.lastPath, "target=ca-1") {
+		t.Errorf("path: %s", f.lastPath)
+	}
+	if f.lastMethod != http.MethodGet {
+		t.Errorf("method: %s", f.lastMethod)
+	}
+	if resultText(res) != f.body {
+		t.Errorf("result differs from hub body: %s", resultText(res))
+	}
+}
+
+func TestBlastRadiusTool_RequiresArgs(t *testing.T) {
+	f := newFakeHub(t)
+	hub := NewHubClient(f.srv.URL, "tok")
+	for _, args := range []map[string]any{{"action": "revoke"}, {}} {
+		if res := call(t, findHandler(hub, "blast_radius"), args); !res.IsError {
+			t.Errorf("args %v: expected error result", args)
+		}
+	}
+}
+
+func TestBlastRadiusTool_IsReadOnly(t *testing.T) {
+	hub := NewHubClient("http://x", "tok")
+	for _, w := range writeTools(hub) {
+		if w.tool.Name == "blast_radius" {
+			t.Fatal("blast_radius must not be a write tool")
+		}
+	}
+	if findHandler(hub, "blast_radius") == nil {
+		t.Fatal("blast_radius must be a read tool")
 	}
 }

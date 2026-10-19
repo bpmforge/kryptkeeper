@@ -1,0 +1,172 @@
+{
+  "task": "U-26",
+  "title": "Inspect an endpoint and accept a finding as risk",
+  "sourceStory": "STORIES.md#u-26",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/discovery"
+      },
+      "caption": "Open /discovery",
+      "slug": "discovery-overview",
+      "expect": {
+        "role": "button",
+        "name": "New scan"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-26/01-discovery-overview.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "css": "xpath=//tr[contains(., \"18493\")]//button[normalize-space()=\"127.0.0.1\"]"
+      },
+      "caption": "Click **xpath=//tr[contains(., \"18493\")]//button[normalize-space()=\"127.0.0.1\"]**",
+      "slug": "endpoint-detail",
+      "expect": {
+        "role": "button",
+        "name": "Accept risk for SELF_SIGNED"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-26/02-endpoint-detail.png",
+        "annotated": "docs/guide/screenshots/U-26/02-endpoint-detail-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 282,
+          "y": 428,
+          "w": 52,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "role": "button",
+        "name": "View →"
+      },
+      "caption": "**View →** opens the mapped certificate",
+      "slug": "view-certificate",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-26/03-view-certificate.png",
+        "annotated": "docs/guide/screenshots/U-26/03-view-certificate-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1338,
+          "y": 428,
+          "w": 44,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Accept risk for SELF_SIGNED"
+      },
+      "caption": "Click **Accept risk for SELF_SIGNED**",
+      "slug": "accept-risk-proposed",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-26/04-accept-risk-proposed.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:42:56.642Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-26",
+    "steps": 4,
+    "shots": 4,
+    "annotated": 2,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/discovery/endpoints/ep-0950954b7ebfe2e1"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-26/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-26/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

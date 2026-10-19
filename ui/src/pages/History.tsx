@@ -10,8 +10,16 @@ import {
   StateMessage,
 } from "../components/ops-ui";
 import { PageHeader } from "../components/PageHeader";
+import { formatDateTime } from "../components/ui";
+import { scrollableProps } from "../lib/scrollable";
+import { humanizeEnum } from "../lib/utils";
 import { extractList } from "../lib/models";
 import type { HistoryRecord } from "../lib/models";
+
+// "act-expired-certs" is a slug id, not a label.
+function actionLabel(id: string): string {
+  return humanizeEnum(id.replace(/^act-/, ""));
+}
 
 export default function History() {
   const navigate = useNavigate();
@@ -153,15 +161,15 @@ export default function History() {
             <div className="grid gap-3 md:grid-cols-2 text-sm">
               <div>
                 <div className="text-muted-foreground">Action</div>
-                <div className="text-foreground">{selected.action_id}</div>
+                <div className="text-foreground" title={selected.action_id}>{actionLabel(selected.action_id)}</div>
               </div>
               <div>
                 <div className="text-muted-foreground">Status</div>
-                <div className="text-foreground">{selected.status}</div>
+                <div className="text-foreground">{humanizeEnum(selected.status)}</div>
               </div>
               <div>
                 <div className="text-muted-foreground">Category</div>
-                <div className="text-foreground">{selected.category}</div>
+                <div className="text-foreground">{humanizeEnum(selected.category)}</div>
               </div>
               <div>
                 <div className="text-muted-foreground">Updated by</div>
@@ -170,9 +178,7 @@ export default function History() {
               <div>
                 <div className="text-muted-foreground">Updated</div>
                 <div className="text-foreground">
-                  {selected.updated_at
-                    ? new Date(selected.updated_at).toLocaleString()
-                    : "—"}
+                  {selected.updated_at ? formatDateTime(selected.updated_at) : "—"}
                 </div>
               </div>
               {selected.note ? (
@@ -182,6 +188,14 @@ export default function History() {
                 </div>
               ) : null}
             </div>
+          </div>
+        ) : selectedKey && !resolvedById.isLoading && !history.isLoading ? (
+          <div className="space-y-3">
+            <StateMessage
+              title="Action not found"
+              message="This action is not in the history, or it was removed."
+            />
+            <Button onClick={() => navigate("/history")}>Back to list</Button>
           </div>
         ) : (
           <StateMessage
@@ -195,7 +209,7 @@ export default function History() {
         title="Action history"
         subtitle="What happened, who changed it, and when"
       >
-        <div className="overflow-hidden rounded-xl border border-border">
+        <div className="overflow-x-auto rounded-xl border border-border" {...scrollableProps}>
           <table className="min-w-full divide-y divide-border">
             <thead className="bg-background/80">
               <tr>
@@ -249,11 +263,11 @@ export default function History() {
                         navigate(`/history/${row.action_id}`);
                       }}
                     >
-                      {row.action_id}
+                      <span title={row.action_id}>{actionLabel(row.action_id)}</span>
                     </button>
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {row.category}
+                    {humanizeEnum(row.category)}
                   </td>
                   <td className="px-4 py-3 text-sm">
                     <Badge
@@ -265,14 +279,14 @@ export default function History() {
                             : "warning"
                       }
                     >
-                      {row.status}
+                      {humanizeEnum(row.status)}
                     </Badge>
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
                     {row.updated_by}
                   </td>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {row.updated_at}
+                  <td className="whitespace-nowrap px-4 py-3 text-sm text-muted-foreground">
+                    {row.updated_at ? formatDateTime(row.updated_at) : "—"}
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
                     {row.note || "—"}

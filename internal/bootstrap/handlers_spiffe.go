@@ -13,7 +13,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"net/url"
 	"os"
@@ -131,6 +131,10 @@ func registerSPIFFEHandlers(mux *http.ServeMux, auth *Authenticator, caProvider 
 			writeForbidden(w, "your role is not authorized to mint SVIDs")
 			return
 		}
+		// D-203: one global signing CA and trust domain, no tenant mapping.
+		if denyNonSuperAdminGlobal(w, r, auditProvider, pd, "spiffe.svid_issue", "spiffe", "-") {
+			return
+		}
 		td := spiffeTrustDomain()
 		if td == "" || spiffeEngine == nil {
 			writeServiceUnavailable(w, "SPIFFE not configured (set SPIFFE_TRUST_DOMAIN and run with a CA engine)")
@@ -183,7 +187,7 @@ func registerSPIFFEHandlers(mux *http.ServeMux, auth *Authenticator, caProvider 
 		})
 		if err != nil {
 			emitAuditEvent(r, auditProvider, pd.ID, "spiffe.svid_issue", "spiffe", spiffeURI.String(), AuditOutcomeFailure)
-			log.Printf("spiffe svid issuance failed for %s: %v", spiffeURI, err)
+			logging.Warnf("spiffe svid issuance failed for %s: %v", spiffeURI, err)
 			writeServiceUnavailable(w, "svid issuance failed")
 			return
 		}

@@ -233,3 +233,13 @@ func TestCLIXMLStderrIsRenderedAsText(t *testing.T) {
 		t.Fatal("non-CLIXML stderr must pass through")
 	}
 }
+
+func TestPSQuoteDoublesTypographicQuotes(t *testing.T) {
+	for _, q := range []string{"\u2018", "\u2019", "\u201a", "\u201b"} {
+		in := `C:\a` + q + `; calc; ` + q
+		want := `'C:\a` + q + q + `; calc; ` + q + q + `'`
+		if got := psQuote(in); got != want {
+			t.Errorf("psQuote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

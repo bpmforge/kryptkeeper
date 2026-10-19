@@ -75,6 +75,37 @@ describe("AlgorithmSunset report page", () => {
     ).toBeInTheDocument();
   });
 
+  it("links '+N more' to the group's own certificates, not a label search", async () => {
+    const fps = Array.from({ length: 7 }, (_, i) => `fp${i}`);
+    vi.mocked(api.algorithmSunset).mockResolvedValue({
+      data: {
+        generated_at: "2026-07-31T21:34:25Z",
+        total_certs: 7,
+        groups: [
+          {
+            id: "pqc_vulnerable",
+            algorithm: "Classical algorithms (PQC-vulnerable)",
+            status: "sunset_2030",
+            urgency: "medium",
+            count: 7,
+            fingerprints: fps,
+          },
+        ],
+        summary: { banned_now: 0, sunset_2030: 7, compliant: 0 },
+      },
+    });
+
+    renderPage();
+
+    const more = await screen.findByRole("link", {
+      name: /search the inventory/,
+    });
+    expect(more).toHaveAttribute(
+      "href",
+      "/certificates?sunset_group=pqc_vulnerable",
+    );
+  });
+
   it("survives a response with no summary and no groups", async () => {
     // The generated type marks every field optional, so this is reachable.
     // Previously any such response threw and took the app shell down with it.

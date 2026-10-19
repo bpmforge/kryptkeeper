@@ -28,6 +28,9 @@ type RegisterRequest struct {
 	// EnrollmentSecret is the W5-07 enrollment evidence the hub requires
 	// unless registration is left open; omitted when empty.
 	EnrollmentSecret string `json:"enrollment_secret,omitempty"`
+	// EnrollmentToken is a single-use, admin-minted token (W33-24/25); when
+	// set it is the evidence and the secret is not sent.
+	EnrollmentToken string `json:"enrollment_token,omitempty"`
 }
 
 // RegisterResponse is returned by the Hub after successful registration.
@@ -48,6 +51,62 @@ type DiscoveredCert struct {
 	// DNSNames is the cert's SAN DNS list (W19-13). Omitted by pre-W19-13
 	// agents; the hub falls back to parsing Subject's CN for those.
 	DNSNames []string `json:"dns_names,omitempty"`
+}
+
+// UnreadablePath is a path the agent could not open for lack of privilege
+// (W34-09): the walk used to skip these silently.
+type UnreadablePath struct {
+	Path  string `json:"path"`
+	Error string `json:"error"`
+}
+
+// HostFile is one certificate, key or keystore file on the agent's host.
+// Keys are described by stat only; the agent never sends their bytes.
+type HostFile struct {
+	Path  string `json:"path"`
+	Kind  string `json:"kind"` // pem, jks, p12, key
+	Owner string `json:"owner,omitempty"`
+	Group string `json:"group,omitempty"`
+	Mode  string `json:"mode,omitempty"`
+	// UID/GID are -1 when the stat output carried names only.
+	UID              int      `json:"uid"`
+	GID              int      `json:"gid"`
+	CertFingerprints []string `json:"cert_fingerprints,omitempty"`
+}
+
+// HostListener is one process holding one listening TCP port (W34-07 shape).
+// The command line is reduced agent-side to keystore references and
+// application directories; it is never sent.
+type HostListener struct {
+	Port       int      `json:"port"`
+	PID        int      `json:"pid"`
+	UID        int      `json:"uid"` // -1 when unreadable
+	GID        int      `json:"gid"`
+	User       string   `json:"user,omitempty"`
+	Exe        string   `json:"exe,omitempty"`
+	Comm       string   `json:"comm,omitempty"`
+	Cwd        string   `json:"cwd,omitempty"`
+	Tech       string   `json:"tech,omitempty"`
+	ConfigRefs []string `json:"config_refs,omitempty"`
+	AppDirs    []string `json:"app_dirs,omitempty"`
+}
+
+// HostInventory is what a W34 agent adds to its inventory push. A pre-W34
+// agent sends none of it, and the hub then treats posture as unknown.
+type HostInventory struct {
+	// Scanned is the explicit marker that this agent ran the host pass; empty
+	// lists then mean "none found", not "not reported".
+	Scanned       bool   `json:"host_scanned"`
+	PrivilegeMode string `json:"privilege_mode,omitempty"`
+	User          string `json:"scan_user,omitempty"`
+	// UnreadablePaths is capped agent-side; UnreadableTotal is the true count.
+	UnreadablePaths []UnreadablePath `json:"unreadable_paths"`
+	UnreadableTotal int              `json:"unreadable_total"`
+	Files           []HostFile       `json:"files"`
+	Listeners       []HostListener   `json:"listeners"`
+	// ConfigRefs maps a file path named by a service's configuration to the
+	// technology that uses it (nginx/apache/haproxy confs, Tomcat server.xml).
+	ConfigRefs map[string]string `json:"config_refs,omitempty"`
 }
 
 // ServerType identifies the web server software serving a TLS endpoint.

@@ -6,7 +6,7 @@
 // certificate signing to the Kryptkeeper Hub.
 //
 // Deploy inside the same Kubernetes cluster as cert-manager. The controller
-// watches CertificateRequest resources where issuerRef.group equals
+// list+watches CertificateRequest resources where issuerRef.group equals
 // "certmanager.kryptkeeper.io" and issues certificates via the Hub API.
 //
 // Environment variables:
@@ -16,12 +16,14 @@
 //	KRYPTKEEPER_CA_ID      Default CA ID (required)
 //	KRYPTKEEPER_TEMPLATE_ID Default template ID (required)
 //	KRYPTKEEPER_NAMESPACES  Comma-separated namespaces to watch (default: all)
-//	KRYPTKEEPER_POLL_INTERVAL Poll interval in seconds (default: 15)
+//	KRYPTKEEPER_RESYNC_INTERVAL Safety-net full resync interval in seconds (default: 300);
+//	                          requests are normally picked up immediately via a watch
 package main
 
 import (
 	"context"
-	"log"
+	"kryptkeeper/internal/logging"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
@@ -30,6 +32,7 @@ import (
 	"time"
 
 	"kryptkeeper/internal/certmanagerissuer"
+	"kryptkeeper/internal/metrics"
 )
 
 // version/commit/date are injected by .goreleaser.yaml's ldflags at release
@@ -43,10 +46,12 @@ var (
 func main() {
 	for _, arg := range os.Args[1:] {
 		if arg == "--version" {
-			log.Printf("kryptkeeper-certmanager %s (commit %s, built %s)", version, commit, date)
+			logging.Infof("kryptkeeper-certmanager %s (commit %s, built %s)", version, commit, date)
 			os.Exit(0)
 		}
 	}
+
+	logging.Setup(logging.ConfigFromEnv(os.Getenv))
 
 	hubURL := mustEnv("KRYPTKEEPER_HUB_URL")
 	apiToken := mustEnv("KRYPTKEEPER_API_TOKEN")
@@ -58,16 +63,16 @@ func main() {
 		namespaces = strings.Split(raw, ",")
 	}
 
-	pollInterval := 15 * time.Second
-	if raw := os.Getenv("KRYPTKEEPER_POLL_INTERVAL"); raw != "" {
+	resyncInterval := 300 * time.Second
+	if raw := os.Getenv("KRYPTKEEPER_RESYNC_INTERVAL"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
-			pollInterval = time.Duration(n) * time.Second
+			resyncInterval = time.Duration(n) * time.Second
 		}
 	}
 
 	k8s, err := certmanagerissuer.NewInClusterClient()
 	if err != nil {
-		log.Fatalf("init k8s client: %v", err)
+		logging.Fatalf("init k8s client: %v", err)
 	}
 
 	ctrl := certmanagerissuer.NewController(k8s, certmanagerissuer.IssuerConfig{
@@ -76,20 +81,30 @@ func main() {
 		CAID:       caID,
 		TemplateID: templateID,
 	}, namespaces)
-	ctrl.PollInterval = pollInterval
+	ctrl.ResyncInterval = resyncInterval
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := ctrl.Run(ctx); err != nil && err != context.Canceled {
-		log.Fatalf("controller exited: %v", err)
+	go func() {
+		cfg := newOpsConfig(metrics.OpsAddrFromEnv(os.Getenv, defaultOpsAddr))
+		if err := metrics.ServeOps(ctx, cfg); err != nil {
+			slog.Warn("certmanager ops listener not started", "addr", cfg.Addr, "error", err)
+		}
+	}()
+
+	ready.Store(true)
+	err = ctrl.Run(ctx)
+	ready.Store(false)
+	if err != nil && err != context.Canceled {
+		logging.Fatalf("controller exited: %v", err)
 	}
 }
 
 func mustEnv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
-		log.Fatalf("required environment variable %s is not set", key)
+		logging.Fatalf("required environment variable %s is not set", key)
 	}
 	return v
 }

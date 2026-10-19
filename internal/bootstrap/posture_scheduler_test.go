@@ -6,6 +6,9 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -201,5 +204,149 @@ func TestPostureSchedulerCaptureRunsWhenLeader(t *testing.T) {
 	}
 	if len(got) != 1 {
 		t.Fatalf("expected leader capture to store a snapshot, got %d", len(got))
+	}
+}
+
+type failingCertProvider struct{ reportCertProvider }
+
+func (p *failingCertProvider) ListCertificates(context.Context, CertificateListQuery) (CertificateListResult, error) {
+	return CertificateListResult{}, errors.New("boom")
+}
+
+// blindLatestStore hides existing rows from the UTC-day dedupe so only the
+// HA lease can prevent a double write.
+type blindLatestStore struct{ PostureSnapshotStore }
+
+func (blindLatestStore) Latest(context.Context) (PostureSnapshot, bool, error) {
+	return PostureSnapshot{}, false, nil
+}
+
+type alertRecorder struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (r *alertRecorder) sink(_ context.Context, event, _ string) {
+	r.mu.Lock()
+	r.events = append(r.events, event)
+	r.mu.Unlock()
+}
+
+func TestPostureRetentionFloorRejectedAtStartup(t *testing.T) {
+	for _, bad := range []string{"399", "abc"} {
+		t.Setenv("POSTURE_RETENTION_DAYS", bad)
+		if err := ValidatePostureRetentionFromEnv(); err == nil {
+			t.Fatalf("POSTURE_RETENTION_DAYS=%q must be rejected", bad)
+		}
+	}
+	for env, want := range map[string]int{"400": 400, "730": 730, "": 400} {
+		t.Setenv("POSTURE_RETENTION_DAYS", env)
+		got, err := postureRetentionDaysFromEnv()
+		if err != nil || got != want {
+			t.Fatalf("env %q: got %d, %v; want %d", env, got, err, want)
+		}
+	}
+
+	store := newTestPostureStore(t)
+	certs := &reportCertProvider{items: []CertificateItem{{FingerprintSHA256: "fp-1", PublicKeyAlgorithm: "RSA"}}}
+	s := &PostureScheduler{certProvider: certs, store: store, pollInterval: time.Hour,
+		configErr: errors.New("bad retention"), stop: make(chan struct{})}
+	s.Start()
+	time.Sleep(50 * time.Millisecond)
+	s.Stop()
+	if got, _ := store.List(context.Background(), "2000-01-01T00:00:00Z", 10); len(got) != 0 {
+		t.Fatalf("disabled scheduler must not capture, got %d rows", len(got))
+	}
+}
+
+func TestPostureSchedulerPruneWritesAudit(t *testing.T) {
+	store := newTestPostureStore(t)
+	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	old := now.AddDate(0, 0, -401).Format(time.RFC3339)
+	if err := store.Save(context.Background(), snapshotFromReport("psn-old", old, sampleReport(1, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	audit := &recordingAuditProvider{}
+	s := &PostureScheduler{certProvider: &reportCertProvider{}, store: store, pollInterval: 24 * time.Hour,
+		retentionDays: 400, clock: func() time.Time { return now }}
+	s.WithAudit(audit)
+
+	s.capture()
+	prunes := func() []AuditEntry {
+		audit.mu.Lock()
+		defer audit.mu.Unlock()
+		var out []AuditEntry
+		for _, e := range audit.entries {
+			if e.Action == "posture.snapshot_prune" {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	got := prunes()
+	if len(got) != 1 {
+		t.Fatalf("expected 1 prune audit entry, got %d", len(got))
+	}
+	for _, want := range []string{"deleted=1", "oldest=" + old, "newest=" + old} {
+		if !strings.Contains(got[0].ChangeSummary, want) {
+			t.Fatalf("summary %q missing %q", got[0].ChangeSummary, want)
+		}
+	}
+	s.prune(context.Background(), now)
+	if len(prunes()) != 1 {
+		t.Fatal("prune with nothing to delete must not audit")
+	}
+}
+
+func TestPostureSchedulerMissedSnapshotEvent(t *testing.T) {
+	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	run := func(t *testing.T, age time.Duration, certs CertificateProvider, captures int) []string {
+		store := newTestPostureStore(t)
+		ts := now.Add(-age).Format(time.RFC3339)
+		if err := store.Save(context.Background(), snapshotFromReport("psn-1", ts, sampleReport(1, 1, 1))); err != nil {
+			t.Fatal(err)
+		}
+		rec := &alertRecorder{}
+		s := &PostureScheduler{certProvider: certs, store: store, pollInterval: 24 * time.Hour,
+			alerts: rec.sink, clock: func() time.Time { return now }}
+		for i := 0; i < captures; i++ {
+			s.capture()
+		}
+		return rec.events
+	}
+	if ev := run(t, 49*time.Hour, &reportCertProvider{}, 1); len(ev) != 1 || ev[0] != AlertEventPostureSnapshotMissed {
+		t.Fatalf("49h gap: got events %v", ev)
+	}
+	if ev := run(t, 47*time.Hour, &reportCertProvider{}, 1); len(ev) != 0 {
+		t.Fatalf("47h gap must not alert, got %v", ev)
+	}
+	if ev := run(t, 49*time.Hour, &failingCertProvider{}, 2); len(ev) != 1 {
+		t.Fatalf("repeated failing runs must alert once, got %v", ev)
+	}
+}
+
+func TestPostureSchedulersTwoReplicasProduceOneSnapshot(t *testing.T) {
+	at := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
+	haDB := newTestHADB(t)
+	store := newTestPostureStore(t)
+	certs := &reportCertProvider{items: []CertificateItem{{FingerprintSHA256: "fp-1", PublicKeyAlgorithm: "RSA"}}}
+	mk := func(replica string) *PostureScheduler {
+		return &PostureScheduler{certProvider: certs, store: blindLatestStore{store}, pollInterval: 24 * time.Hour,
+			haCoordinator: newTestHACoordinatorAt(t, haDB, replica, at), clock: func() time.Time { return at }}
+	}
+	count := func() int {
+		got, err := store.List(context.Background(), "2000-01-01T00:00:00Z", 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(got)
+	}
+	mk("replica-a").capture()
+	if count() != 1 {
+		t.Fatalf("leader must save 1 snapshot, got %d", count())
+	}
+	mk("replica-b").capture()
+	if count() != 1 {
+		t.Fatalf("non-holder must save nothing, got %d rows", count())
 	}
 }

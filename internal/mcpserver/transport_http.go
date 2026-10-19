@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +17,8 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/server"
+
+	"kryptkeeper/internal/logging"
 )
 
 // MinHTTPTokenLen is the minimum length of KRYPTKEEPER_MCP_HTTP_TOKEN.
@@ -154,7 +155,7 @@ func ServeHTTP(srv *server.MCPServer, addr string, cfg HTTPConfig) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("kryptkeeper-mcp: serving StreamableHTTP on %s (endpoint /mcp)", addr)
+		logging.Infof("kryptkeeper-mcp: serving StreamableHTTP on %s (endpoint /mcp)", addr)
 		err := httpServer.ListenAndServe()
 		if err != nil && err != http.ErrServerClosed {
 			errCh <- err
@@ -170,9 +171,9 @@ func ServeHTTP(srv *server.MCPServer, addr string, cfg HTTPConfig) error {
 
 		shutdownErr := httpServer.Shutdown(shutdownCtx)
 		if shutdownErr != nil {
-			log.Printf("graceful shutdown failed: %v", shutdownErr)
+			logging.Warnf("graceful shutdown failed: %v", shutdownErr)
 			if closeErr := httpServer.Close(); closeErr != nil {
-				log.Printf("force close failed: %v", closeErr)
+				logging.Warnf("force close failed: %v", closeErr)
 			}
 		}
 		if err := <-errCh; err != nil {
@@ -181,7 +182,7 @@ func ServeHTTP(srv *server.MCPServer, addr string, cfg HTTPConfig) error {
 		if shutdownErr != nil {
 			return fmt.Errorf("graceful shutdown failed: %w", shutdownErr)
 		}
-		log.Print("mcp http server stopped")
+		logging.Info("mcp http server stopped")
 		return nil
 	case err := <-errCh:
 		if err != nil {

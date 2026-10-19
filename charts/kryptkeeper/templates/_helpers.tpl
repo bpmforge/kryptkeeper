@@ -80,3 +80,38 @@ they cannot drift from tls.enabled (IAC-005).
 {{- define "kryptkeeper.portName" -}}
 {{- if .Values.tls.enabled -}}https{{- else -}}http{{- end -}}
 {{- end }}
+
+{{/*
+Name shared by every dashboard object. The fullname is cut to 53 first so the
+"-dashboard" suffix still fits the 63-char DNS label limit.
+*/}}
+{{- define "kryptkeeper.dashboardFullname" -}}
+{{- printf "%s-dashboard" (include "kryptkeeper.fullname" . | trunc 53 | trimSuffix "-") -}}
+{{- end }}
+
+{{/*
+Distinct app.kubernetes.io/name: the hub Service, Deployment and PDB select on
+name+instance alone, so sharing those labels would route hub traffic to nginx.
+*/}}
+{{- define "kryptkeeper.dashboardSelectorLabels" -}}
+app.kubernetes.io/name: {{ printf "%s-dashboard" (include "kryptkeeper.name" . | trunc 53 | trimSuffix "-") }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{/*
+Replica count the chart can reach: the autoscaler ceiling when it is on.
+*/}}
+{{- define "kryptkeeper.replicas" -}}
+{{- ternary .Values.autoscaling.maxReplicas .Values.replicaCount .Values.autoscaling.enabled | int -}}
+{{- end }}
+
+{{/*
+Refuse unsafe combinations at render time. SQLite is a single-writer file, so
+a second replica would corrupt or fork state; included from deployment.yaml,
+which always renders.
+*/}}
+{{- define "kryptkeeper.validate" -}}
+{{- if and (eq (lower .Values.config.dbMode) "sqlite") (gt (include "kryptkeeper.replicas" . | int) 1) -}}
+{{- fail (printf "config.dbMode=sqlite supports exactly one replica but the chart would run %s: set replicaCount=1 and autoscaling.enabled=false, or use config.dbMode=postgres (see docs/deployment.md)" (include "kryptkeeper.replicas" .)) -}}
+{{- end -}}
+{{- end }}

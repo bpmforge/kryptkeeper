@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,5 +77,27 @@ func TestMalformedResponseErrorsClearly(t *testing.T) {
 	_, err := c.Issue(context.Background(), IssueRequest{CSRPEM: testCSRPEM(t, "x")})
 	if err == nil || !strings.Contains(err.Error(), "neither a bare certificate nor a parseable PKCS#7") {
 		t.Fatalf("malformed response must error clearly: %v", err)
+	}
+}
+
+// TestESTClientRequestBodyEndsWithNewline: a single-line base64 body with no
+// trailing newline is refused by libest's estserver (W27-10 live finding); the
+// body must still decode with the plain TrimSpace + StdEncoding path our own
+// server uses.
+func TestESTClientRequestBodyEndsWithNewline(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		got = string(raw)
+		http.Error(w, "stop here", http.StatusTeapot)
+	}))
+	t.Cleanup(srv.Close)
+	c := NewESTClient("est-nl", ESTClientConfig{BaseURL: srv.URL}, srv.Client())
+	_, _ = c.Issue(context.Background(), IssueRequest{CSRPEM: testCSRPEM(t, "nl.example.com")})
+	if !strings.HasSuffix(got, "\n") || strings.Contains(strings.TrimSuffix(got, "\n"), "\n") {
+		t.Fatalf("body must be one base64 run followed by exactly one newline, got %q", got)
+	}
+	if _, err := base64.StdEncoding.DecodeString(strings.TrimSpace(got)); err != nil {
+		t.Fatalf("body is not decodable by TrimSpace+StdEncoding: %v", err)
 	}
 }

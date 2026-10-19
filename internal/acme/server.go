@@ -6,6 +6,7 @@ package acme
 
 import (
 	"bytes"
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/sha256"
@@ -17,7 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net"
 	"net/http"
 	"strings"
@@ -35,7 +36,8 @@ type Server struct {
 	caID      string // default CA for ACME issuance
 	nonces    *NonceService
 	store     Store
-	eabConfig eabConfig // W4-04: External Account Binding posture (APP_ACME_EAB_*)
+	eabConfig eabConfig   // W4-04: External Account Binding posture (APP_ACME_EAB_*)
+	eab       *eabRuntime // W26-01: admin-minted keys, reject audit, failure alerts
 	// lookupTXT resolves dns-01 records; nil is the system resolver.
 	lookupTXT func(name string) ([]string, error)
 	// http01Dial is the test-only dial override; nil uses the guarded dialer.
@@ -57,6 +59,7 @@ type Server struct {
 	// the pre-W18-16 behavior, and every existing test that builds a Server
 	// without WithIssuedRecorder keeps working unchanged.
 	issuedRecorder IssuedCertificateRecorder
+	enrollGate     EnrollmentGate
 	// ocspInvalidator tells a live OCSP responder that a just-revoked
 	// serial's cached "good" response is stale (W19-01: internal/ocsp.Responder
 	// caches per-serial for its full validity window and had no invalidation
@@ -64,7 +67,12 @@ type Server struct {
 	// until the cache aged out). Nil means "not wired" -- handleRevokeCert
 	// still updates revStore and the ACME-local map exactly as before.
 	ocspInvalidator ca.RevocationCacheInvalidator
-	mu              sync.Mutex // guards multi-step state transitions (challenge, finalize, key-change)
+	// mu is a pointer so a per-provisioner view (forProvisioner) shares it.
+	mu *sync.Mutex // guards multi-step state transitions (challenge, finalize, key-change)
+	// W26-02: provisioner directories. provisioner is set only on a view.
+	provisioners ProvisionerStore
+	provGate     func(templateID string) EnrollmentGate
+	provisioner  *Provisioner
 }
 
 // IssuedCertificateRecorder persists a certificate issued through this ACME
@@ -97,10 +105,10 @@ func NewServer(baseURL string, caEngine ca.Service, caID string) *Server {
 func NewServerWithStore(baseURL string, caEngine ca.Service, caID string, store Store, revStore ca.RevocationStore) *Server {
 	cfg, err := eabConfigFromEnv()
 	if err != nil {
-		log.Printf("warning: ACME EAB config invalid (%v) — EAB disabled", err)
+		logging.Warnf("ACME EAB config invalid (%v) — EAB disabled", err)
 		cfg = eabConfig{}
 	} else if err := seedEABKeys(store, cfg.seedKeys); err != nil {
-		log.Printf("warning: ACME EAB key seeding failed (%v)", err)
+		logging.Warnf("ACME EAB key seeding failed (%v)", err)
 	}
 	return &Server{
 		baseURL:   strings.TrimRight(baseURL, "/"),
@@ -109,8 +117,10 @@ func NewServerWithStore(baseURL string, caEngine ca.Service, caID string, store 
 		nonces:    NewNonceService(10000),
 		store:     store,
 		eabConfig: cfg,
+		eab:       newEABRuntime(),
 		revoked:   make(map[string]revocationRecord),
 		revStore:  revStore,
+		mu:        &sync.Mutex{},
 	}
 }
 
@@ -119,6 +129,20 @@ func NewServerWithStore(baseURL string, caEngine ca.Service, caID string, store 
 // configuration: finalize simply does not record.
 func (s *Server) WithIssuedRecorder(r IssuedCertificateRecorder) *Server {
 	s.issuedRecorder = r
+	return s
+}
+
+// EnrollmentGate decides whether this protocol may issue from its configured
+// template (W23-43). It is a function value because protocol packages must not
+// import internal/bootstrap. An error wrapping ca.ErrEnrollmentDenied is a
+// policy denial; any other error is a failure to evaluate, which also blocks
+// issuance (fail closed). Nil means no gate is configured.
+type EnrollmentGate func(ctx context.Context, actor string) error
+
+// WithEnrollmentGate wires the template enrollment gate and returns the server
+// for chaining.
+func (s *Server) WithEnrollmentGate(g EnrollmentGate) *Server {
+	s.enrollGate = g
 	return s
 }
 
@@ -147,6 +171,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/acme/renewalInfo/", s.handleRenewalInfo)
 	mux.HandleFunc("/acme/revoke-cert", s.handleRevokeCert)
 	mux.HandleFunc("/acme/key-change", s.handleKeyChange)
+	mux.HandleFunc("/acme/", s.handleProvisionerPath) // lowest precedence: named provisioners
 	return mux
 }
 
@@ -220,19 +245,12 @@ func (s *Server) handleNewAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	eabKID := ""
-	if req.ExternalAccountBinding != nil {
-		if err := verifyExternalAccountBinding(s.store, req.ExternalAccountBinding, s.baseURL+"/acme/new-account", thumbprint); err != nil {
-			s.writeACMEError(w, http.StatusUnauthorized, "urn:ietf:params:acme:error:unauthorized", "invalid externalAccountBinding: "+err.Error())
-			return
-		}
-		var hdr eabProtectedHeader
-		if raw, decErr := base64.RawURLEncoding.DecodeString(req.ExternalAccountBinding.Protected); decErr == nil {
-			_ = json.Unmarshal(raw, &hdr) // corrupt header degrades kid to empty; EAB already verified above
-		}
-		eabKID = hdr.KID
-	} else if s.eabConfig.required {
+	eabKID, err := s.checkNewAccountEAB(r, req.ExternalAccountBinding, thumbprint)
+	if errors.Is(err, errEABRequired) {
 		s.writeACMEError(w, http.StatusUnauthorized, "urn:ietf:params:acme:error:externalAccountRequired", "this server requires an externalAccountBinding")
+		return
+	} else if err != nil {
+		s.writeACMEError(w, http.StatusUnauthorized, "urn:ietf:params:acme:error:unauthorized", "invalid externalAccountBinding: "+err.Error())
 		return
 	}
 
@@ -247,7 +265,7 @@ func (s *Server) handleNewAccount(w http.ResponseWriter, r *http.Request) {
 	s.store.SaveAccount(acct)
 	if eabKID != "" {
 		if err := s.store.BindAccountEAB(acct.ID, eabKID); err != nil {
-			log.Printf("acme: record eab binding for account %s failed: %v", acct.ID, err)
+			logging.Warnf("acme: record eab binding for account %s failed: %v", acct.ID, err)
 		}
 	}
 
@@ -381,6 +399,16 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seen[value] = true
+		if s.provisioner != nil {
+			if !s.provisioner.Allows(value) {
+				s.writeACMEError(w, http.StatusBadRequest, "urn:ietf:params:acme:error:rejectedIdentifier", fmt.Sprintf("identifier %q is not permitted by this provisioner", value))
+				return
+			}
+			if wildcard && !s.provisioner.offers("dns-01") {
+				s.writeACMEError(w, http.StatusBadRequest, "urn:ietf:params:acme:error:rejectedIdentifier", fmt.Sprintf("identifier %q is a wildcard and needs dns-01, which this provisioner does not offer", value))
+				return
+			}
+		}
 		idents = append(idents, vetted{Identifier{Type: "dns", Value: value}, base, wildcard})
 	}
 
@@ -403,10 +431,12 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		// Both challenge types for one authz share the same token.
 		token := generateToken()
 		// RFC 8555 §8.3: http-01 must not validate a wildcard.
-		if !v.wildcard {
+		if !v.wildcard && (s.provisioner == nil || s.provisioner.offers("http-01")) {
 			authz.Challenges = append(authz.Challenges, Challenge{Type: "http-01", URL: s.baseURL + "/acme/challenge/" + authz.ID + "/http-01", Token: token, Status: "pending"})
 		}
-		authz.Challenges = append(authz.Challenges, Challenge{Type: "dns-01", URL: s.baseURL + "/acme/challenge/" + authz.ID + "/dns-01", Token: token, Status: "pending"})
+		if s.provisioner == nil || s.provisioner.offers("dns-01") {
+			authz.Challenges = append(authz.Challenges, Challenge{Type: "dns-01", URL: s.baseURL + "/acme/challenge/" + authz.ID + "/dns-01", Token: token, Status: "pending"})
+		}
 
 		s.store.SaveAuthz(authz)
 		authzURLs = append(authzURLs, s.baseURL+"/acme/authz/"+authz.ID)
@@ -672,14 +702,37 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	acctKey, _ := s.resolveAccountKey(vjws.KID)
 	dnsNames := sortedIdentifierValues(order.Identifiers)
 	if err := checkFinalizeCSR(csr, dnsNames, acctKey); err != nil {
-		log.Printf("acme finalize: order %q CSR rejected: %v", orderID, err)
+		logging.Infof("acme finalize: order %q CSR rejected: %v", orderID, err)
 		rejectCSR(err.Error())
 		return
 	}
 
+	if s.enrollGate != nil {
+		if gerr := s.enrollGate(r.Context(), accountID); gerr != nil {
+			s.mu.Lock()
+			order.Status = "invalid"
+			s.store.SaveOrder(order)
+			s.mu.Unlock()
+			metrics.ACMEOrdersInvalid.Inc()
+			if errors.Is(gerr, ca.ErrEnrollmentDenied) {
+				s.writeACMEError(w, http.StatusForbidden, "urn:ietf:params:acme:error:unauthorized", "enrollment not permitted for this template")
+				return
+			}
+			logging.Warnf("acme finalize: enrollment gate failed: %v", gerr)
+			s.writeACMEError(w, http.StatusInternalServerError, "urn:ietf:params:acme:error:serverInternal", "certificate issuance failed")
+			return
+		}
+	}
+
 	// The certificate carries exactly the validated identifiers; nothing is
 	// inherited from the CSR (OWASP-A04-001).
-	issued, err := s.caEngine.IssueCertificate(s.caID, ca.IssuanceRequest{
+	issuerID, rerr := ca.ResolveCAID(s.caEngine, s.caID)
+	if rerr != nil {
+		logging.Warnf("acme finalize: %v", rerr)
+		s.writeACMEError(w, http.StatusServiceUnavailable, "urn:ietf:params:acme:error:serverInternal", noCADetail(rerr))
+		return
+	}
+	issued, err := s.caEngine.IssueCertificate(issuerID, ca.IssuanceRequest{
 		CSR:             csr,
 		Validity:        90 * 24 * time.Hour,
 		DNSNames:        dnsNames,
@@ -689,12 +742,25 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	})
 	if err != nil {
-		log.Printf("acme finalize issuance failed: %v", err)
+		logging.Warnf("acme finalize issuance failed: %v", err)
+		// W22-14: an issuance-policy refusal is the requester's to fix, so it
+		// is a 400 badCSR citing the policy and rule (RFC 8555 7.4) instead of
+		// a generic 500. Only the message changes; a refusal stays a refusal
+		// and nothing was signed.
+		var pv *ca.PolicyViolationError
+		if errors.As(err, &pv) {
+			rejectCSR(pv.Error())
+			return
+		}
 		s.mu.Lock()
 		order.Status = "invalid"
 		s.store.SaveOrder(order)
 		s.mu.Unlock()
 		metrics.ACMEOrdersInvalid.Inc()
+		if errors.Is(err, ca.ErrCARevoked) {
+			s.writeACMEError(w, http.StatusForbidden, "urn:ietf:params:acme:error:unauthorized", "issuing CA revoked")
+			return
+		}
 		s.writeACMEError(w, http.StatusInternalServerError, "urn:ietf:params:acme:error:serverInternal", "certificate issuance failed")
 		return
 	}
@@ -708,10 +774,10 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	// still ships the leaf certificate the client is entitled to rather than
 	// failing an already-successful issuance).
 	chainPEM := issued.CertPEM
-	if issuerCA, caErr := s.caEngine.GetCA(s.caID); caErr == nil && len(issuerCA.CertPEM) > 0 {
+	if issuerCA, caErr := s.caEngine.GetCA(s.activeCAID()); caErr == nil && len(issuerCA.CertPEM) > 0 {
 		chainPEM = append(append([]byte(nil), issued.CertPEM...), issuerCA.CertPEM...)
 	} else if caErr != nil {
-		log.Printf("acme finalize: issuer CA chain unavailable for %s, serving leaf-only cert: %v", s.caID, caErr)
+		logging.Warnf("acme finalize: issuer CA chain unavailable for %s, serving leaf-only cert: %v", s.activeCAID(), caErr)
 	}
 
 	certID := generateID("cert")
@@ -731,8 +797,8 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	// nothing recorded these at all, matching the comment this replaces in
 	// handleRevokeCert's on-demand fallback).
 	if s.issuedRecorder != nil {
-		if err := s.issuedRecorder.RecordIssuedCertificate(r.Context(), s.caID, issued.Certificate, chainPEM, "acme"); err != nil {
-			log.Printf("acme: issued certificate %s not recorded: %v", issued.Fingerprint, err)
+		if err := s.issuedRecorder.RecordIssuedCertificate(r.Context(), s.activeCAID(), issued.Certificate, chainPEM, "acme"); err != nil {
+			logging.Infof("acme: issued certificate %s not recorded: %v", issued.Fingerprint, err)
 		}
 	}
 
@@ -868,7 +934,7 @@ func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 	if s.revStore != nil {
 		id, err := s.resolveIssuingCAID(cert)
 		if err != nil {
-			log.Printf("acme revoke-cert: cannot determine the issuing CA for serial=%s: %v", cert.SerialNumber, err)
+			logging.Warnf("acme revoke-cert: cannot determine the issuing CA for serial=%s: %v", cert.SerialNumber, err)
 			s.writeACMEError(w, http.StatusInternalServerError, "urn:ietf:params:acme:error:serverInternal", "unable to determine the issuing CA; retry later")
 			return
 		}
@@ -920,7 +986,7 @@ func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 				CertPEM:            pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}),
 			}
 			if err := s.revStore.Revoke(cert.SerialNumber, caID, reason, revokedAt, meta); err != nil {
-				log.Printf("acme revoke-cert: ca.RevocationStore.Revoke failed (caID=%s serial=%s): %v", caID, cert.SerialNumber, err)
+				logging.Warnf("acme revoke-cert: ca.RevocationStore.Revoke failed (caID=%s serial=%s): %v", caID, cert.SerialNumber, err)
 			} else if s.ocspInvalidator != nil {
 				// Without this, OCSP keeps answering "good" for this serial
 				// until its cached response's validity window (24h default)
@@ -940,7 +1006,7 @@ func (s *Server) handleRevokeCert(w http.ResponseWriter, r *http.Request) {
 // engine.issueLeafCertificate always sets AuthorityKeyId from the issuing
 // CA's own SubjectKeyId. A certificate without an AuthorityKeyId is matched
 // by verifying its signature against each CA instead. It never falls back to
-// s.caID: guessing would record the revocation against a CA that never issued
+// the default CA: guessing would record the revocation against a CA that never issued
 // the certificate, so that CA's CRL/OCSP would not show it (W1-14/G-91
 // acceptance #3, SEMGREP-014). A CA list that cannot be read, or a
 // certificate no CA claims, is an error.
@@ -1264,14 +1330,17 @@ func (s *Server) validateHTTP01(identifier, token string, ch *Challenge, authz *
 	defer s.mu.Unlock()
 
 	if kaErr != nil {
-		log.Printf("acme http-01 validation failed for %q: %v", identifier, kaErr)
+		logging.Warnf("acme http-01 validation failed for %q: %v", identifier, kaErr)
 		failChallenge(s.store, ch, authz, "urn:ietf:params:acme:error:connection", "could not compute key authorization")
 		return
 	}
 
 	if err != nil {
-		log.Printf("acme http-01 validation fetch failed for %q: %v", identifier, err)
-		failChallenge(s.store, ch, authz, "urn:ietf:params:acme:error:connection", fmt.Sprintf("connection failed fetching %s: %v", url, err))
+		logging.Warnf("acme http-01 validation fetch failed for %q: %v", identifier, err)
+		// The raw dial error (refused vs timeout vs TLS) would tell any ACME
+		// account holder which internal hosts and ports are live; it stays in
+		// the operator log above and the client gets a uniform detail.
+		failChallenge(s.store, ch, authz, "urn:ietf:params:acme:error:connection", fmt.Sprintf("could not fetch %s", url))
 		return
 	}
 	defer resp.Body.Close()
@@ -1282,7 +1351,7 @@ func (s *Server) validateHTTP01(identifier, token string, ch *Challenge, authz *
 	if resp.StatusCode != http.StatusOK || keyAuth != expectedKeyAuth {
 		// The body is attacker-controlled and the fetch is unauthenticated,
 		// so it is never logged.
-		log.Printf("acme http-01 validation failed for %q: status=%d body_len=%d", identifier, resp.StatusCode, len(body))
+		logging.Warnf("acme http-01 validation failed for %q: status=%d body_len=%d", identifier, resp.StatusCode, len(body))
 		failChallenge(s.store, ch, authz, "urn:ietf:params:acme:error:unauthorized", fmt.Sprintf("unexpected response fetching %s: status %d (a 200 with the exact key authorization is required)", url, resp.StatusCode))
 		return
 	}
@@ -1341,6 +1410,15 @@ func (s *Server) writeACMEError(w http.ResponseWriter, status int, errType strin
 	})
 }
 
+// noCADetail is the client-facing text for a failed default-CA resolution:
+// the actionable first-run message, or a generic one for a read failure.
+func noCADetail(err error) string {
+	if errors.Is(err, ca.ErrNoCAConfigured) {
+		return err.Error()
+	}
+	return "certificate authority unavailable"
+}
+
 func generateID(prefix string) string {
 	b := make([]byte, 12)
 	rand.Read(b)
@@ -1383,13 +1461,13 @@ func (s *Server) validateDNS01(identifier, token string, ch *Challenge, authz *A
 	defer s.mu.Unlock()
 
 	if kaErr != nil {
-		log.Printf("acme dns-01 validation failed for %q: %v", dnsName, kaErr)
+		logging.Warnf("acme dns-01 validation failed for %q: %v", dnsName, kaErr)
 		failChallenge(s.store, ch, authz, "urn:ietf:params:acme:error:dns", "could not compute key authorization")
 		return
 	}
 
 	if err != nil {
-		log.Printf("acme dns-01 validation lookup failed for %q: %v", dnsName, err)
+		logging.Warnf("acme dns-01 validation lookup failed for %q: %v", dnsName, err)
 		failChallenge(s.store, ch, authz, "urn:ietf:params:acme:error:dns", fmt.Sprintf("DNS lookup of %s failed: %v", dnsName, err))
 		return
 	}
@@ -1408,125 +1486,16 @@ func (s *Server) validateDNS01(identifier, token string, ch *Challenge, authz *A
 		}
 	}
 
-	log.Printf("acme dns-01 validation failed for %s: no TXT record matching expected digest", dnsName)
+	logging.Warnf("acme dns-01 validation failed for %s: no TXT record matching expected digest", dnsName)
 	failChallenge(s.store, ch, authz, "urn:ietf:params:acme:error:unauthorized", "no TXT record at "+dnsName+" matches the expected digest")
 }
 
-// handleRenewalInfo implements the ACME ARI (Renewal Information) endpoint.
-// Draft spec: draft-ietf-acme-ari
-// GET /acme/renewalInfo/{certID}
-// certID = base64url(issuerKeyHash) + "." + base64url(serialNumber)
-func (s *Server) handleRenewalInfo(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	certID := strings.TrimPrefix(r.URL.Path, "/acme/renewalInfo/")
-	if certID == "" {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
-	// The certID is <issuerKeyHashB64url>.<certSerialB64url>.
-	// We use it to look up the certificate and compute a per-cert renewal window.
-	// If the cert is not found, we return a default window to avoid fingerprinting.
-	window := computeARIWindow(certID, s.store)
-
-	nonce, _ := s.nonces.New()
-	w.Header().Set("Replay-Nonce", nonce)
-	w.Header().Set("Content-Type", "application/json")
-	// ARI recommends Retry-After with the start of the window.
-	w.Header().Set("Retry-After", window.SuggestedWindow.Start)
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(window)
-}
-
-// computeARIWindow returns a suggested renewal window for the given certID.
-// The window is calculated as: start = notAfter - (validity * 1/3), end = notAfter - 7 days.
-// This spreads renewals to prevent thundering-herd at expiry (critical at 47-day lifetimes).
-func computeARIWindow(certID string, store Store) RenewalInfoResponse {
-	now := time.Now().UTC()
-
-	// Try to find the cert in store by parsing the certID.
-	// certID format: base64url(issuerKeyHash).base64url(serial)
-	parts := strings.SplitN(certID, ".", 2)
-	if len(parts) == 2 {
-		serialB64 := parts[1]
-		serialBytes, err := base64.RawURLEncoding.DecodeString(serialB64)
-		if err == nil && len(serialBytes) > 0 {
-			serialHex := fmt.Sprintf("%X", serialBytes)
-			if cert := findCertBySerial(store, serialHex); cert != nil {
-				return ariWindowFromCert(cert, now)
-			}
-		}
-	}
-
-	// Default window: renew in the next 24h starting 1 hour from now.
-	return RenewalInfoResponse{
-		SuggestedWindow: RenewalWindow{
-			Start: now.Add(time.Hour).Format(time.RFC3339),
-			End:   now.Add(25 * time.Hour).Format(time.RFC3339),
-		},
-	}
-}
-
-func ariWindowFromCert(cert *x509.Certificate, now time.Time) RenewalInfoResponse {
-	validity := cert.NotAfter.Sub(cert.NotBefore)
-	// Start renewing at 1/3 of lifetime remaining before expiry.
-	windowStart := cert.NotAfter.Add(-validity / 3)
-	// End the renewal window 7 days before expiry (hard deadline).
-	windowEnd := cert.NotAfter.Add(-7 * 24 * time.Hour)
-
-	if windowEnd.Before(windowStart) {
-		windowEnd = windowStart.Add(24 * time.Hour)
-	}
-
-	// If the window has already passed, set a near-future window.
-	if windowEnd.Before(now) {
-		windowStart = now.Add(time.Hour)
-		windowEnd = now.Add(25 * time.Hour)
-	}
-
-	return RenewalInfoResponse{
-		SuggestedWindow: RenewalWindow{
-			Start: windowStart.UTC().Format(time.RFC3339),
-			End:   windowEnd.UTC().Format(time.RFC3339),
-		},
-	}
-}
-
-// findCertBySerial searches the store for a certificate matching the given serial number (hex).
-// Each Order holds a Certificate URL of the form "<baseURL>/acme/cert/<certID>".
-// We extract the certID suffix and look up the PEM via LoadCert.
-func findCertBySerial(store Store, serialHex string) *x509.Certificate {
-	orders := store.ListOrders()
-	for _, order := range orders {
-		if order.Certificate == "" {
-			continue
-		}
-		// Extract the certID from the certificate URL.
-		parts := strings.Split(order.Certificate, "/acme/cert/")
-		if len(parts) < 2 {
-			continue
-		}
-		certID := parts[len(parts)-1]
-		pemBytes, ok := store.LoadCert(certID)
-		if !ok || len(pemBytes) == 0 {
-			continue
-		}
-		block, _ := pem.Decode(pemBytes)
-		if block == nil {
-			continue
-		}
-		leaf, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			continue
-		}
-		if fmt.Sprintf("%X", leaf.SerialNumber.Bytes()) == serialHex {
-			return leaf
-		}
-	}
-	return nil
+// activeCAID returns the CA this server issues from: the configured id, else
+// the first stored CA resolved at request time so a root created after
+// startup (first-run onboarding) becomes the default without a restart. It
+// returns "" while no CA exists or the CA list cannot be read; callers that
+// issue check ca.ResolveCAID for the specific error.
+func (s *Server) activeCAID() string {
+	id, _ := ca.ResolveCAID(s.caEngine, s.caID)
+	return id
 }

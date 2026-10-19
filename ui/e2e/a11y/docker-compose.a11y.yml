@@ -1,0 +1,44 @@
+# Smoke stack for the a11y specs (W33-13): API-key auth for non-admin roles, the hub
+# creates its first root CA, engine-assigned loopback port, private subnet.
+#
+#   export APP_BOOTSTRAP_TOKEN=$(openssl rand -hex 32) KRYPTKEEPER_KEYSTORE_PASSPHRASE=$(openssl rand -hex 32) \
+#          APP_API_KEY_PEPPER=$(openssl rand -hex 32)
+#   # optional, enables the login journey (otherwise it skips with a named reason):
+#   export KK_E2E_LOGIN_EMAIL=a11y@example.test KK_E2E_LOGIN_PASSWORD=$(openssl rand -hex 16) \
+#          APP_AUTH_LOGIN_PASSWORD_PEPPER=$(openssl rand -hex 32) APP_AUTH_LOGIN_SIGNING_SECRET=$(openssl rand -hex 32)
+#   export APP_AUTH_LOGIN_PASSWORD_HASH=$(printf '%s\n' "$KK_E2E_LOGIN_PASSWORD" | go run ./cmd/kryptkeeper --hash-password)
+#   F=(-p kkw33-c -f docker-compose.yml -f ui/e2e/a11y/docker-compose.a11y.yml)
+#   docker compose "${F[@]}" up -d --build --wait
+#   PORT=$(docker compose "${F[@]}" port dashboard 8080 | awk -F: '{print $NF}')
+#   KK_E2E_BASE_URL=http://127.0.0.1:$PORT KK_E2E_BOOTSTRAP_TOKEN=$APP_BOOTSTRAP_TOKEN npm --prefix ui run e2e
+#   docker compose "${F[@]}" down -v
+services:
+  kryptkeeper:
+    image: kryptkeeper-a11y:local
+    ports: !reset []
+    environment:
+      APP_API_KEY_AUTH_ENABLED: "true"
+      APP_API_KEY_PEPPER: ${APP_API_KEY_PEPPER:?set APP_API_KEY_PEPPER}
+      KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT: "true"
+      # Password login for the keyboard "login" journey. The user, password, pepper and
+      # signing secret are generated per run and never committed; see the header.
+      APP_AUTH_LOGIN_ENABLED: "true"
+      APP_AUTH_LOGIN_EMAIL: ${KK_E2E_LOGIN_EMAIL:-a11y@example.test}
+      APP_AUTH_LOGIN_PASSWORD_HASH: ${APP_AUTH_LOGIN_PASSWORD_HASH:-}
+      APP_AUTH_LOGIN_PASSWORD_PEPPER: ${APP_AUTH_LOGIN_PASSWORD_PEPPER:-}
+      APP_AUTH_LOGIN_SIGNING_SECRET: ${APP_AUTH_LOGIN_SIGNING_SECRET:-}
+      APP_AUTH_LOGIN_SUBJECT: a11y-login
+      APP_AUTH_LOGIN_ROLE: pki-admin
+      APP_TRUSTED_PROXY_CIDRS: 172.29.251.10/32
+  dashboard:
+    image: kryptkeeper-dashboard-a11y:local
+    ports: !override
+      - "127.0.0.1::8080"
+    networks:
+      default:
+        ipv4_address: 172.29.251.10
+networks:
+  default:
+    ipam:
+      config: !override
+        - subnet: 172.29.251.0/24

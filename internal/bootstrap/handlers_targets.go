@@ -5,11 +5,18 @@
 package bootstrap
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/ssh"
+	"kryptkeeper/internal/logging"
+
+	"kryptkeeper/internal/agentinstall"
+	"kryptkeeper/internal/egress"
 )
 
 // RegisterTargetHandlers mounts the /api/v1/targets CRUD surface (W5-09,
@@ -71,7 +78,7 @@ func registerTargetHandlers(mux *http.ServeMux, auth *Authenticator, store Manag
 				writeServiceUnavailable(w, "list failed")
 				return
 			}
-			writeJSONData(w, filterManagedTargetsByTenant(pd, items))
+			writeJSONData(w, withTargetState(r.Context(), store, egressDeps.credentials, withCredentialPrivileged(r.Context(), egressDeps.credentials, withEffectiveModes(filterManagedTargetsByTenant(pd, items)))))
 
 		case http.MethodPost:
 			var req struct {
@@ -89,10 +96,13 @@ func registerTargetHandlers(mux *http.ServeMux, auth *Authenticator, store Manag
 				InstallReloadMethod  string `json:"install_reload_method"`
 				VerifyHostPort       string `json:"verify_host_port"`
 				AutoRenew            bool   `json:"auto_renew"`
+				SSHHostKey           string `json:"ssh_host_key"`
 				// W20-20: install_mode "plugin" targets name their plugin
 				// and its target_schema values.
 				PluginID       string            `json:"plugin_id"`
 				PluginSettings map[string]string `json:"plugin_settings"`
+				// W23-46: optional; empty = derived from install_mode.
+				KeyHandlingMode string `json:"key_handling_mode"`
 			}
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&req); err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "target.create", "target", "targets", AuditOutcomeFailure)
@@ -135,6 +145,18 @@ func registerTargetHandlers(mux *http.ServeMux, auth *Authenticator, store Manag
 				writeBadRequest(w, err.Error())
 				return
 			}
+			req.SSHHostKey = strings.TrimSpace(req.SSHHostKey)
+			if err := validateSSHHostKey(req.InstallMode, req.SSHHostKey); err != nil {
+				emitAuditEvent(r, auditProvider, pd.ID, "target.create", "target", "targets", AuditOutcomeFailure)
+				writeBadRequest(w, err.Error())
+				return
+			}
+			req.KeyHandlingMode = strings.TrimSpace(req.KeyHandlingMode)
+			if err := validateKeyHandlingMode(req.KeyHandlingMode, req.InstallMode); err != nil {
+				emitAuditEvent(r, auditProvider, pd.ID, "target.create", "target", "targets", AuditOutcomeFailure)
+				writeBadRequest(w, err.Error())
+				return
+			}
 
 			tenant := DefaultTenant
 			if !tenantBypass(pd) {
@@ -162,26 +184,29 @@ func registerTargetHandlers(mux *http.ServeMux, auth *Authenticator, store Manag
 			}
 			now := time.Now().UTC().Format(time.RFC3339)
 			newTarget := ManagedTarget{
-				ID:                   id,
-				Name:                 req.Name,
-				Host:                 req.Host,
-				DiscoveryMode:        req.DiscoveryMode,
-				InstallMode:          req.InstallMode,
-				RenewalMethod:        req.RenewalMethod,
-				RenewalThresholdDays: req.RenewalThresholdDays,
-				CredentialRef:        req.CredentialRef,
-				Schedule:             req.Schedule,
-				InstallServerType:    strings.TrimSpace(req.InstallServerType),
-				InstallCertPath:      strings.TrimSpace(req.InstallCertPath),
-				InstallKeyPath:       strings.TrimSpace(req.InstallKeyPath),
-				InstallReloadMethod:  strings.TrimSpace(req.InstallReloadMethod),
-				VerifyHostPort:       strings.TrimSpace(req.VerifyHostPort),
-				AutoRenew:            req.AutoRenew,
-				PluginID:             strings.TrimSpace(req.PluginID),
-				PluginSettings:       req.PluginSettings,
-				Tenant:               tenant,
-				CreatedAt:            now,
-				UpdatedAt:            now,
+				ID:                    id,
+				Name:                  req.Name,
+				Host:                  req.Host,
+				DiscoveryMode:         req.DiscoveryMode,
+				InstallMode:           req.InstallMode,
+				RenewalMethod:         req.RenewalMethod,
+				RenewalThresholdDays:  req.RenewalThresholdDays,
+				CredentialRef:         req.CredentialRef,
+				Schedule:              req.Schedule,
+				InstallServerType:     strings.TrimSpace(req.InstallServerType),
+				InstallCertPath:       strings.TrimSpace(req.InstallCertPath),
+				InstallKeyPath:        strings.TrimSpace(req.InstallKeyPath),
+				InstallReloadMethod:   strings.TrimSpace(req.InstallReloadMethod),
+				VerifyHostPort:        strings.TrimSpace(req.VerifyHostPort),
+				AutoRenew:             req.AutoRenew,
+				SSHHostKey:            req.SSHHostKey,
+				SSHHostKeyFingerprint: agentinstall.FingerprintOfLine(req.SSHHostKey),
+				PluginID:              strings.TrimSpace(req.PluginID),
+				PluginSettings:        req.PluginSettings,
+				KeyHandlingMode:       req.KeyHandlingMode,
+				Tenant:                tenant,
+				CreatedAt:             now,
+				UpdatedAt:             now,
 			}
 			fields, stamp, allowed, need := authorizeTargetEgress(pd, auth.roleStore, ManagedTarget{}, newTarget, req.AutoRenew)
 			if !allowed {
@@ -212,11 +237,68 @@ func registerTargetHandlers(mux *http.ServeMux, auth *Authenticator, store Manag
 			emitAuditEvent(r, auditProvider, pd.ID, "target.create", "target", created.ID, AuditOutcomeSuccess)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			writeJSONData(w, created)
+			writeJSONData(w, withEffectiveMode(created))
 
 		default:
 			writeMethodNotAllowed(w, "GET, POST")
 		}
+	})
+
+	// Exact pattern wins over the "/api/v1/targets/" subtree below; real ids
+	// are target-<hex>, so "hostkey" cannot collide with one.
+	mux.HandleFunc("/api/v1/targets/hostkey", func(w http.ResponseWriter, r *http.Request) {
+		pd, ok := authenticate(w, r)
+		if !ok {
+			return
+		}
+		if r.Method != http.MethodPost {
+			writeMethodNotAllowed(w, http.MethodPost)
+			return
+		}
+		var req struct {
+			Host string `json:"host"`
+			Port int    `json:"port"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4*1024)).Decode(&req); err != nil {
+			emitAuditEvent(r, auditProvider, pd.ID, "target.hostkey.probe", "target", "", AuditOutcomeFailure)
+			writeBadRequest(w, "invalid request body")
+			return
+		}
+		req.Host = strings.TrimSpace(req.Host)
+		if req.Port == 0 {
+			req.Port = 22
+		}
+		if req.Host == "" || req.Port < 1 || req.Port > 65535 || verifyHostForbidden(req.Host) {
+			emitAuditEvent(r, auditProvider, pd.ID, "target.hostkey.probe", "target", req.Host, AuditOutcomeFailure)
+			writeBadRequest(w, "a routable host and a port between 1 and 65535 are required")
+			return
+		}
+		key, err := probeTargetHostKey(r.Context(), req.Host, req.Port)
+		if err != nil {
+			emitAuditEvent(r, auditProvider, pd.ID, "target.hostkey.probe", "target", req.Host, AuditOutcomeFailure)
+			msg := err.Error()
+			if errors.Is(err, egress.ErrBlockedDestination) {
+				msg = "address is not permitted"
+			}
+			writeErrorEnvelope(w, http.StatusBadGateway, "bad_gateway", "host key probe failed: "+msg)
+			return
+		}
+		emitAuditEvent(r, auditProvider, pd.ID, "target.hostkey.probe", "target", req.Host, AuditOutcomeSuccess)
+		writeJSONData(w, map[string]any{
+			"host": req.Host, "port": req.Port, "algorithm": key.Type(),
+			"ssh_host_key":       agentinstall.HostKeyLine(key),
+			"fingerprint_sha256": agentinstall.HostKeyFingerprint(key),
+		})
+	})
+
+	// Wizard variant of the privilege bundle (no stored target yet). Exact
+	// pattern, so it cannot collide with a target id.
+	mux.HandleFunc("/api/v1/targets/privilege-bundle", func(w http.ResponseWriter, r *http.Request) {
+		pd, ok := authenticate(w, r)
+		if !ok {
+			return
+		}
+		handleTargetPrivilegeBundle(w, r, pd, "", store, auth.roleStore, auditProvider)
 	})
 
 	mux.HandleFunc("/api/v1/targets/", func(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +313,18 @@ func registerTargetHandlers(mux *http.ServeMux, auth *Authenticator, store Manag
 		}
 
 		tail := strings.TrimPrefix(r.URL.Path, "/api/v1/targets/")
+		if id, ok := strings.CutSuffix(tail, "/preflight"); ok && id != "" && !strings.Contains(id, "/") {
+			handleTargetPreflight(w, r, pd, id, store, egressDeps.credentials, auth.roleStore, auditProvider)
+			return
+		}
+		if id, ok := strings.CutSuffix(tail, "/unblock"); ok && id != "" && !strings.Contains(id, "/") {
+			handleTargetUnblock(w, r, pd, id, store, auth.roleStore, auditProvider)
+			return
+		}
+		if id, ok := strings.CutSuffix(tail, "/privilege-bundle"); ok && id != "" && !strings.Contains(id, "/") {
+			handleTargetPrivilegeBundle(w, r, pd, id, store, auth.roleStore, auditProvider)
+			return
+		}
 		if tail == "" || strings.Contains(strings.TrimSuffix(tail, "/endpoints"), "/") {
 			emitAuditEvent(r, auditProvider, pd.ID, "target.get", "target", tail, AuditOutcomeFailure)
 			writeNotFound(w, "target not found")
@@ -249,17 +343,22 @@ func registerTargetHandlers(mux *http.ServeMux, auth *Authenticator, store Manag
 				writeNotFound(w, "target not found")
 				return
 			}
-			// NFR-P2 (acceptance #3): endpoints/agent_endpoints have no
-			// tenant column of their own -- the ONLY thing enforcing
-			// tenant scope on this join is that it's reachable solely
-			// through a tenant-authorized target fetch. Do not expose an
+			// NFR-P2 (acceptance #3): agent_endpoints has no tenant column
+			// of its own -- for agent matches the ONLY thing enforcing tenant
+			// scope is that this join is reachable solely through a
+			// tenant-authorized target fetch. Scanned endpoints are further
+			// restricted to the target's tenant below. Do not expose an
 			// endpoints view that bypasses this check.
 			if !targetVisibleToTenant(pd, target) {
 				emitAuditEvent(r, auditProvider, pd.ID, "target.endpoints", "target", id, AuditOutcomeDenied)
 				writeForbidden(w, "forbidden")
 				return
 			}
-			matches, err := store.MatchEndpoints(r.Context(), target.Host)
+			matchCtx := r.Context()
+			if multiTenancyEnabled() {
+				matchCtx = context.WithValue(matchCtx, discoveryScopeKey{}, discoveryScope{tenant: discoveryTenantValue(target.Tenant), filter: true})
+			}
+			matches, err := store.MatchEndpoints(matchCtx, target.Host)
 			if err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "target.endpoints", "target", id, AuditOutcomeFailure)
 				writeServiceUnavailable(w, "endpoint match failed")
@@ -285,7 +384,7 @@ func registerTargetHandlers(mux *http.ServeMux, auth *Authenticator, store Manag
 				return
 			}
 			emitAuditEvent(r, auditProvider, pd.ID, "target.get", "target", id, AuditOutcomeSuccess)
-			writeJSONData(w, target)
+			writeJSONData(w, withTargetState(r.Context(), store, egressDeps.credentials, withCredentialPrivileged(r.Context(), egressDeps.credentials, []ManagedTarget{withEffectiveMode(target)}))[0])
 
 		case http.MethodPatch:
 			existing, err := store.Get(r.Context(), id)
@@ -314,8 +413,10 @@ func registerTargetHandlers(mux *http.ServeMux, auth *Authenticator, store Manag
 				InstallReloadMethod  *string            `json:"install_reload_method"`
 				VerifyHostPort       *string            `json:"verify_host_port"`
 				AutoRenew            *bool              `json:"auto_renew"`
+				SSHHostKey           *string            `json:"ssh_host_key"`
 				PluginID             *string            `json:"plugin_id"`
 				PluginSettings       *map[string]string `json:"plugin_settings"`
+				KeyHandlingMode      *string            `json:"key_handling_mode"`
 			}
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&req); err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "target.update", "target", id, AuditOutcomeFailure)
@@ -332,9 +433,23 @@ func registerTargetHandlers(mux *http.ServeMux, auth *Authenticator, store Manag
 				VerifyHostPort: req.VerifyHostPort,
 				AutoRenew:      req.AutoRenew,
 				PluginID:       req.PluginID, PluginSettings: req.PluginSettings,
+				SSHHostKey:      req.SSHHostKey,
+				KeyHandlingMode: req.KeyHandlingMode,
 			}
 			merged := existing
 			mergeManagedTargetUpdate(&merged, update)
+			if req.SSHHostKey != nil {
+				if err := validateSSHHostKey(merged.InstallMode, merged.SSHHostKey); err != nil {
+					emitAuditEvent(r, auditProvider, pd.ID, "target.update", "target", id, AuditOutcomeFailure)
+					writeBadRequest(w, err.Error())
+					return
+				}
+			}
+			if err := validateKeyHandlingMode(merged.KeyHandlingMode, merged.InstallMode); err != nil {
+				emitAuditEvent(r, auditProvider, pd.ID, "target.update", "target", id, AuditOutcomeFailure)
+				writeBadRequest(w, err.Error())
+				return
+			}
 			reaffirm := req.AutoRenew != nil && *req.AutoRenew
 			fields, stamp, allowed, need := authorizeTargetEgress(pd, auth.roleStore, existing, merged, reaffirm)
 			if !allowed {
@@ -375,7 +490,7 @@ func registerTargetHandlers(mux *http.ServeMux, auth *Authenticator, store Manag
 				return
 			}
 			emitAuditEvent(r, auditProvider, pd.ID, "target.update", "target", id, AuditOutcomeSuccess)
-			writeJSONData(w, updated)
+			writeJSONData(w, withEffectiveMode(updated))
 
 		case http.MethodDelete:
 			existing, err := store.Get(r.Context(), id)
@@ -394,6 +509,12 @@ func registerTargetHandlers(mux *http.ServeMux, auth *Authenticator, store Manag
 				writeServiceUnavailable(w, "delete failed")
 				return
 			}
+			// No FK: the bindings of a deleted target would otherwise outlive it.
+			if bs := activeCertTargetBindingStore; bs != nil {
+				if err := bs.DeleteByTarget(r.Context(), id); err != nil {
+					logging.Warnf("target %s deleted but removing its certificate bindings failed: %v", id, err)
+				}
+			}
 			emitAuditEvent(r, auditProvider, pd.ID, "target.delete", "target", id, AuditOutcomeSuccess)
 			w.WriteHeader(http.StatusNoContent)
 
@@ -403,10 +524,57 @@ func registerTargetHandlers(mux *http.ServeMux, auth *Authenticator, store Manag
 	})
 }
 
+// probeTargetHostKey is a test seam for the host-key probe dial.
+var probeTargetHostKey = func(ctx context.Context, host string, port int) (ssh.PublicKey, error) {
+	return agentinstall.ProbeHostKey(ctx, host, port, 10*time.Second)
+}
+
+// validateSSHHostKey checks an operator-supplied pin: only ssh/keychain targets
+// dial over SSH, and the value must be authorized_keys format. Empty = no pin.
+func validateSSHHostKey(installMode, line string) error {
+	if line == "" {
+		return nil
+	}
+	if installMode != "ssh" && installMode != "keychain" {
+		return errors.New("ssh_host_key is only valid for install_mode ssh or keychain")
+	}
+	if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line)); err != nil {
+		return errors.New("ssh_host_key must be authorized_keys format")
+	}
+	return nil
+}
+
 func writeTargetReferenceError(w http.ResponseWriter, err error) {
 	if errors.Is(err, errTargetStoreUnavailable) {
 		writeServiceUnavailable(w, "outbound credential or delivery plugin store not configured")
 		return
 	}
 	writeBadRequest(w, err.Error())
+}
+
+// pinnedHostKeyFor picks the key a dial must match: the operator-confirmed pin
+// stored on the target wins; a target with none (created before W24-09) falls
+// back to the credential's embedded host_public_key.
+func pinnedHostKeyFor(t ManagedTarget, credentialKey ssh.PublicKey) ssh.PublicKey {
+	if t.SSHHostKey != "" {
+		if k, _, _, _, err := ssh.ParseAuthorizedKey([]byte(t.SSHHostKey)); err == nil {
+			return k
+		}
+	}
+	return credentialKey
+}
+
+// recordHostKeyMismatch is written by the dial site (not the HTTP handler) so
+// scheduled scans and renewals leave the same trail as manual ones.
+func recordHostKeyMismatch(ctx context.Context, ap AuditProvider, targetID string, mm *agentinstall.HostKeyMismatchError) {
+	if ap == nil || mm == nil {
+		return
+	}
+	if err := ap.AppendEntry(ctx, AuditEntry{
+		Action: "target.hostkey.mismatch", ActorType: "system", ActorID: "discovery",
+		ResourceType: "target", ResourceID: targetID,
+		Outcome: AuditOutcomeFailure, ChangeSummary: mm.Error(),
+	}); err != nil {
+		logging.Infof("audit target.hostkey.mismatch %s: %v", targetID, err)
+	}
 }

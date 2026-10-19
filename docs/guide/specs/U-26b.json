@@ -1,0 +1,104 @@
+{
+  "task": "U-26b",
+  "title": "Inspect an endpoint and accept a finding as risk: after approval",
+  "sourceStory": "STORIES.md#u-26b",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/discovery"
+      },
+      "caption": "Open /discovery",
+      "slug": "accepted-risk-exceptions",
+      "expect": {
+        "role": "button",
+        "name": "New scan"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-26b/01-accepted-risk-exceptions.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "scroll",
+      "value": 500,
+      "caption": "scroll",
+      "slug": "exceptions-list",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-26b/02-exceptions-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:48:51.196Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-26b",
+    "steps": 2,
+    "shots": 2,
+    "annotated": 0,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/discovery"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-26b/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-26b/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

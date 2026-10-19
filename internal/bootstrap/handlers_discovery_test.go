@@ -5,13 +5,19 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"kryptkeeper/internal/agentinstall"
 )
 
 // TestDiscoverySummaryCarriesFindingFunnel is the W2-11 regression for
@@ -386,5 +392,368 @@ func TestDiscoveryScanCreate_K8sCertManagerRejectsTarget(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 rejecting a target for k8s-certmanager, got %d (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// W24-04: GET/PUT /api/v1/discovery/schedules.
+
+type scheduleHarness struct {
+	mux      *http.ServeMux
+	auth     *Authenticator
+	rec      *recordingDiscoveryProvider
+	store    *memoryDiscoveryScheduleStore
+	targetID string
+	audit    *scepRecordingAudit
+}
+
+func newScheduleHarness(t *testing.T) *scheduleHarness {
+	t.Helper()
+	t.Setenv("AUTH_MODE", "bootstrap")
+	t.Setenv("APP_BOOTSTRAP_TOKEN", "test-token")
+	t.Setenv("KRYPTKEEPER_DISCOVERY_SCAN_TARGETS", "10.0.0.0/24")
+	t.Setenv("KRYPTKEEPER_DISCOVERY_SCAN_INTERVAL", "12h")
+	t.Setenv("KRYPTKEEPER_DATA_DIR", t.TempDir())
+	t.Setenv("APP_API_KEY_PEPPER", "test-pepper-32-chars-minimum!!!!")
+	t.Setenv("APP_API_KEY_AUTH_ENABLED", "true")
+	targets, _ := winrmTestStores(t)
+	created, err := targets.Create(context.Background(), ManagedTarget{
+		Name: "win-1", Host: "win1.example.com", DiscoveryMode: "winrm", InstallMode: "agent", RenewalMethod: "manual", Tenant: "default",
+	})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	h := &scheduleHarness{
+		mux: http.NewServeMux(), auth: NewAuthenticatorFromEnv(), rec: &recordingDiscoveryProvider{},
+		store: newMemoryDiscoveryScheduleStore(), targetID: created.ID, audit: &scepRecordingAudit{},
+	}
+	registerDiscoveryScheduleHandlers(h.mux, h.auth, h.rec, h.store, targets, h.audit)
+	return h
+}
+
+func (h *scheduleHarness) do(method, token, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, "/api/v1/discovery/schedules", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, req)
+	return rec
+}
+
+func decodeScheduleRows(t *testing.T, rec *httptest.ResponseRecorder) []discoveryScheduleRow {
+	t.Helper()
+	var body struct {
+		Data []discoveryScheduleRow `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	return body.Data
+}
+
+func findScheduleRow(rows []discoveryScheduleRow, key string) *discoveryScheduleRow {
+	for i := range rows {
+		if rows[i].Key == key {
+			return &rows[i]
+		}
+	}
+	return nil
+}
+
+func TestDiscoverySchedulesHandler_ListShowsLastAndNextRun(t *testing.T) {
+	h := newScheduleHarness(t)
+	ran := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	_ = h.store.RecordRun(context.Background(), "10.0.0.0/24", "targeted", "10.0.0.0/24", "job-1", ran)
+
+	rec := h.do(http.MethodGet, "test-token", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	rows := decodeScheduleRows(t, rec)
+	env := findScheduleRow(rows, "10.0.0.0/24")
+	if env == nil || env.Source != "env" || env.LastRun == nil || *env.LastRun != ran.Format(time.RFC3339) {
+		t.Fatalf("env row: %+v", env)
+	}
+	wantNext := ran.Add(12 * time.Hour).Format(time.RFC3339)
+	if env.NextRun == nil || *env.NextRun != wantNext || env.IntervalSeconds != nil ||
+		env.EffectiveIntervalSeconds == nil || *env.EffectiveIntervalSeconds != 43200 {
+		t.Fatalf("env next/interval: %+v", env)
+	}
+	managed := findScheduleRow(rows, h.targetID)
+	if managed == nil || managed.Source != "managed" || managed.ScanType != scanTypeWinRM || managed.Name != "win-1" || managed.LastRun != nil || managed.NextRun == nil {
+		t.Fatalf("managed row (never run => last_run null, next_run now): %+v", managed)
+	}
+}
+
+func TestDiscoverySchedulesHandler_PutSetsAndClears(t *testing.T) {
+	h := newScheduleHarness(t)
+	rec := h.do(http.MethodPut, "test-token", `{"key":"10.0.0.0/24","interval_seconds":3600}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set: %d %s", rec.Code, rec.Body.String())
+	}
+	var one struct {
+		Data discoveryScheduleRow `json:"data"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &one)
+	if one.Data.IntervalSeconds == nil || *one.Data.IntervalSeconds != 3600 || *one.Data.EffectiveIntervalSeconds != 3600 {
+		t.Fatalf("set response: %+v", one.Data)
+	}
+	if got, _ := h.store.List(context.Background()); got["10.0.0.0/24"].Interval == nil {
+		t.Fatal("override not persisted")
+	}
+
+	rec = h.do(http.MethodPut, "test-token", `{"key":"10.0.0.0/24","interval_seconds":null}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear: %d %s", rec.Code, rec.Body.String())
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &one)
+	if one.Data.IntervalSeconds != nil || *one.Data.EffectiveIntervalSeconds != 43200 {
+		t.Fatalf("clear response should fall back to global: %+v", one.Data)
+	}
+
+	if rec = h.do(http.MethodPut, "test-token", `{"key":"nope","interval_seconds":3600}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown key: %d", rec.Code)
+	}
+}
+
+func TestDiscoverySchedulesHandler_PutRejectsOutOfRange(t *testing.T) {
+	h := newScheduleHarness(t)
+	for _, v := range []string{"59", "2592001", "0", "-5", `"abc"`} {
+		rec := h.do(http.MethodPut, "test-token", `{"key":"10.0.0.0/24","interval_seconds":`+v+`}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("interval %s: want 400, got %d", v, rec.Code)
+		}
+	}
+	for _, v := range []string{"60", "2592000"} {
+		if rec := h.do(http.MethodPut, "test-token", `{"key":"10.0.0.0/24","interval_seconds":`+v+`}`); rec.Code != http.StatusOK {
+			t.Fatalf("boundary %s: want 200, got %d", v, rec.Code)
+		}
+	}
+}
+
+func TestDiscoverySchedulesHandler_PutRequiresManage(t *testing.T) {
+	h := newScheduleHarness(t)
+	_, key, err := h.auth.CreateAPIKey("auditor", "auditor-svc", "pki-auditor", nil, "", "", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := h.do(http.MethodPut, key, `{"key":"10.0.0.0/24","interval_seconds":3600}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("read-only PUT: want 403, got %d", rec.Code)
+	}
+	if rec := h.do(http.MethodGet, key, ""); rec.Code != http.StatusOK {
+		t.Fatalf("read-only GET: want 200, got %d", rec.Code)
+	}
+	if got, _ := h.store.List(context.Background()); len(got) != 0 {
+		t.Fatalf("denied PUT must not write: %+v", got)
+	}
+}
+
+func TestDiscoverySchedulesHandler_RunningRowDoesNotAdvanceNextRun(t *testing.T) {
+	h := newScheduleHarness(t)
+	ran := time.Now().UTC().Add(-13 * time.Hour).Truncate(time.Second) // overdue
+	_ = h.store.RecordRun(context.Background(), "10.0.0.0/24", "targeted", "10.0.0.0/24", "job-1", ran)
+	h.rec.setRunning(DiscoveryScanJob{ID: "job-live", ScanType: "targeted", Target: "10.0.0.0/24", Status: "running"})
+
+	row := findScheduleRow(decodeScheduleRows(t, h.do(http.MethodGet, "test-token", "")), "10.0.0.0/24")
+	if row == nil || !row.Running || row.RunningJobID != "job-live" {
+		t.Fatalf("row should report the running job: %+v", row)
+	}
+	if want := ran.Add(12 * time.Hour).Format(time.RFC3339); row.NextRun == nil || *row.NextRun != want {
+		t.Fatalf("next_run must stay last_run+interval while running, got %v want %s", row.NextRun, want)
+	}
+}
+
+func TestDiscoverySchedulesHandler_PutAuditsEveryFailure(t *testing.T) {
+	for name, body := range map[string]string{
+		"malformed json":   `{`,
+		"missing key":      `{"interval_seconds":3600}`,
+		"missing interval": `{"key":"10.0.0.0/24"}`,
+		"out of range":     `{"key":"10.0.0.0/24","interval_seconds":1}`,
+		"unknown key":      `{"key":"nope","interval_seconds":3600}`,
+	} {
+		h := newScheduleHarness(t)
+		if rec := h.do(http.MethodPut, "test-token", body); rec.Code < 400 {
+			t.Fatalf("%s: want an error status, got %d", name, rec.Code)
+		}
+		if len(h.audit.entries) != 1 || h.audit.entries[0].Action != "discovery.schedule.update" || h.audit.entries[0].Outcome != AuditOutcomeFailure {
+			t.Fatalf("%s: want one failure audit row, got %+v", name, h.audit.entries)
+		}
+	}
+}
+
+// ---- W34-17: just-in-time sudo password ----
+
+func jitScanFixture(t *testing.T, pw string, credMode map[string]string) (post func(body string) *httptest.ResponseRecorder, db *sql.DB, exec *privFakeExec, audit *sshRecordingAudit, done chan struct{}, logs *bytes.Buffer) {
+	t.Helper()
+	logs = captureLogs(t, slog.LevelDebug)
+	t.Setenv("AUTH_MODE", "bootstrap")
+	t.Setenv("APP_BOOTSTRAP_TOKEN", "test-token")
+	t.Setenv("KRYPTKEEPER_DATA_DIR", t.TempDir())
+	t.Setenv("APP_API_KEY_PEPPER", "test-pepper-32-chars-minimum!!!!")
+	t.Setenv("APP_API_KEY_AUTH_ENABLED", "true")
+	targets, creds := winrmTestStores(t)
+	if _, err := creds.Create(context.Background(), "cred-jit", "kkscan", CredentialTypeSSHKey, "", sshPayloadWithPrivilege(t, credMode)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := targets.Create(context.Background(), ManagedTarget{ID: "t-jit", Name: "jit", Host: "192.0.2.77", DiscoveryMode: "network",
+		InstallMode: "ssh", RenewalMethod: "manual", CredentialRef: "cred-jit"}); err != nil {
+		t.Fatal(err)
+	}
+	exec = newPrivFake(t, pw)
+	audit = &sshRecordingAudit{}
+	db = setupDiscoveryTestDB(t)
+	store := &sqliteDiscoveryStore{db: db}
+	store.SetSSHScanner(newSSHTargetScanner(targets, creds, audit, func(context.Context, agentinstall.SSHTarget) (agentinstall.Executor, func() error, error) {
+		return exec, func() error { return nil }, nil
+	}))
+	done = make(chan struct{})
+	orig, origTLS := afterDiscoveryScanPersist, auditEndpointTLSIssues
+	afterDiscoveryScanPersist = func(string) { close(done) }
+	auditEndpointTLSIssues = func(string, int) []string { return nil } // no live TLS dial in a unit test
+	t.Cleanup(func() { afterDiscoveryScanPersist, auditEndpointTLSIssues = orig, origTLS })
+
+	auth := NewAuthenticatorFromEnv()
+	mux := http.NewServeMux()
+	registerDiscoveryHandlersWithTargets(mux, auth, store, nil, audit, targets)
+	_, key, err := auth.CreateAPIKey("adm", "adm", "pki-admin", nil, "", "", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	post = func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/discovery/scans", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+key)
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+	return
+}
+
+func dumpSQLite(t *testing.T, db *sql.DB) string {
+	t.Helper()
+	var sb strings.Builder
+	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type='table'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tables []string
+	for rows.Next() {
+		var n string
+		_ = rows.Scan(&n)
+		tables = append(tables, n)
+	}
+	rows.Close()
+	for _, tbl := range tables {
+		r, err := db.Query(`SELECT * FROM "` + tbl + `"`)
+		if err != nil {
+			continue
+		}
+		cols, _ := r.Columns()
+		for r.Next() {
+			vals := make([]any, len(cols))
+			ptrs := make([]any, len(cols))
+			for i := range vals {
+				ptrs[i] = &vals[i]
+			}
+			_ = r.Scan(ptrs...)
+			fmt.Fprintln(&sb, tbl, vals)
+		}
+		r.Close()
+	}
+	return sb.String()
+}
+
+func TestJITSudoPasswordScanIsMemoryOnly(t *testing.T) {
+	const pw = "Jit-Sudo-Pw-8842"
+	post, db, exec, audit, done, logs := jitScanFixture(t, pw, nil) // credential has no sudo of its own
+	w := post(`{"scan_type":"ssh","target":"t-jit","jit_sudo_password":"` + pw + `"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("scan never finished")
+	}
+	joined := strings.Join(exec.argv, "\n")
+	if !strings.Contains(joined, "sudo -S -p  -k -- cat /etc/ssl/certs/root.crt") {
+		t.Fatalf("the password must have been used for this run:\n%s", joined)
+	}
+	if strings.Contains(joined, pw) {
+		t.Fatal("password in argv")
+	}
+	if strings.Contains(w.Body.String(), pw) {
+		t.Fatal("password echoed in the response")
+	}
+	if strings.Contains(dumpSQLite(t, db), pw) {
+		t.Fatal("password reached the database")
+	}
+	if strings.Contains(logs.String(), pw) {
+		t.Fatalf("password in logs: %s", logs.String())
+	}
+	audit.mu.Lock()
+	defer audit.mu.Unlock()
+	var jit bool
+	for _, e := range audit.entries {
+		b, _ := json.Marshal(e)
+		if strings.Contains(string(b), pw) {
+			t.Fatalf("password in audit: %s", b)
+		}
+		if e.Action == "discovery.scan.create" && strings.Contains(e.ChangeSummary, "privilege_source=jit") {
+			jit = true
+		}
+	}
+	if !jit {
+		t.Fatalf("audit must record privilege_source=jit: %+v", audit.entries)
+	}
+}
+
+func TestJITSudoPasswordIsZeroizedAtJobEnd(t *testing.T) {
+	const pw = "Zero-Me-5531"
+	targets, creds := winrmTestStores(t)
+	_, _ = creds.Create(context.Background(), "c", "k", CredentialTypeSSHKey, "", sshPayloadWithPrivilege(t, nil))
+	_, _ = targets.Create(context.Background(), ManagedTarget{ID: "t", Name: "t", Host: "192.0.2.1", DiscoveryMode: "network", InstallMode: "ssh", RenewalMethod: "manual", CredentialRef: "c"})
+	run := newSSHTargetScanner(targets, creds, &sshRecordingAudit{}, func(context.Context, agentinstall.SSHTarget) (agentinstall.Executor, func() error, error) {
+		return newPrivFake(t, pw), func() error { return nil }, nil
+	})
+	j := newJITSudo(pw)
+	run(withJITSudo(context.Background(), j), "t")
+	if j.pw != nil {
+		t.Fatal("the secret must be wiped when the job ends")
+	}
+}
+
+func TestJITSudoPasswordValidation(t *testing.T) {
+	post, _, exec, _, _, _ := jitScanFixture(t, "x", nil)
+	if w := post(`{"scan_type":"full","target":"10.0.0.1","jit_sudo_password":"x"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("non-ssh scan: %d", w.Code)
+	}
+	if w := post(`{"scan_type":"ssh","target":"t-jit","jit_sudo_password":"` + strings.Repeat("a", 300) + `"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("too long: %d", w.Code)
+	}
+	if len(exec.argv) != 0 {
+		t.Fatalf("refused requests must not reach the host: %v", exec.argv)
+	}
+}
+
+func TestNonInteractiveRunWithoutSudoSaysItNeedsAPassword(t *testing.T) {
+	post, _, _, _, done, _ := jitScanFixture(t, "x", nil)
+	if w := post(`{"scan_type":"ssh","target":"t-jit"}`); w.Code != http.StatusCreated {
+		t.Fatalf("%d", w.Code)
+	}
+	<-done
+	targets, creds := winrmTestStores(t)
+	_, _ = creds.Create(context.Background(), "c", "k", CredentialTypeSSHKey, "", sshPayloadWithPrivilege(t, nil))
+	_, _ = targets.Create(context.Background(), ManagedTarget{ID: "t", Name: "t", Host: "192.0.2.1", DiscoveryMode: "network", InstallMode: "ssh", RenewalMethod: "manual", CredentialRef: "c"})
+	run := newSSHTargetScanner(targets, creds, &sshRecordingAudit{}, func(context.Context, agentinstall.SSHTarget) (agentinstall.Executor, func() error, error) {
+		return newPrivFake(t, "x"), func() error { return nil }, nil
+	})
+	res := run(context.Background(), "t")
+	found := false
+	for _, f := range res.Endpoints[0].Findings {
+		if strings.HasPrefix(f, "INSUFFICIENT_PRIVILEGE:") && strings.Contains(f, "run the scan once with a sudo password") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("findings: %v", res.Endpoints[0].Findings)
 	}
 }

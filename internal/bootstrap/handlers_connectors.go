@@ -33,7 +33,10 @@ func buildRuntimeConnector(rec ConnectorRecord, provider CertificateProvider, cr
 		return NewInternalIssuerConnector(rec.ID, provider, cfg.CAID)
 	case "acme":
 		// W11-04: the upstream RFC 8555 client.
-		return NewACMEIssuerConnector(rec, provider, creds)
+		return wrapWithDCVTracking(NewACMEIssuerConnector(rec, provider, creds), rec.Tenant, sharedDCVTracker())
+	case "digicert", "scep", "est", "wstep":
+		// W27-35: credentials resolve lazily per call from credential_ref.
+		return NewUpstreamIssuerConnector(rec, creds)
 	default:
 		return nil
 	}
@@ -67,6 +70,10 @@ type connectorListEntry struct {
 // RegisterConnectorHandlers mounts /api/v1/connectors (GET list+health,
 // POST create) and /api/v1/connectors/{id} (DELETE).
 func RegisterConnectorHandlers(mux *http.ServeMux, auth *Authenticator, store ConnectorStore, provider CertificateProvider, creds OutboundCredentialStore, auditProvider AuditProvider) {
+	registerDCVHandlers(mux, auth, sharedDCVTracker, auditProvider)
+	if store != nil {
+		startDCVWarnLoop(dcvWarnInterval(), sharedDCVTracker, auditProvider)
+	}
 	mux.HandleFunc("/api/v1/connectors", func(w http.ResponseWriter, r *http.Request) {
 		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
 		if err != nil {
@@ -87,6 +94,9 @@ func RegisterConnectorHandlers(mux *http.ServeMux, auth *Authenticator, store Co
 			}
 			entries := make([]connectorListEntry, 0, len(recs))
 			for _, rec := range recs {
+				if !stampedTenantVisible(pd, rec.Tenant) {
+					continue
+				}
 				entry := connectorListEntry{ConnectorRecord: rec}
 				if c := buildRuntimeConnector(rec, provider, creds); c != nil {
 					probeCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -160,6 +170,20 @@ func RegisterConnectorHandlers(mux *http.ServeMux, auth *Authenticator, store Co
 		}
 		if r.Method != http.MethodDelete {
 			writeMethodNotAllowed(w, http.MethodDelete)
+			return
+		}
+		// Look up first so another tenant's connector is indistinguishable from
+		// a missing one. A lookup failure is treated as not found (deny).
+		existing, gerr := store.Get(r.Context(), id)
+		if gerr != nil || !stampedTenantVisible(pd, existing.Tenant) {
+			// A lookup failure and a foreign tenant's row both answer 404 (no
+			// existence oracle) but must still leave a row (W22-06).
+			outcome := AuditOutcomeDenied
+			if gerr != nil {
+				outcome = AuditOutcomeFailure
+			}
+			emitAuditEvent(r, auditProvider, pd.ID, "connector.delete", "connector", id, outcome)
+			writeNotFound(w, "connector not found")
 			return
 		}
 		if err := store.Delete(r.Context(), id); err != nil {

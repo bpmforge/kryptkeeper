@@ -78,13 +78,40 @@ func hardenSpreadsheetCell(v string) string {
 	return v
 }
 
-func hardenRow(row []string) []string {
+// numericExportColumns are emitted by strconv.Itoa; a legitimate negative
+// value must not gain a "'" prefix, but only when the cell really is a
+// plain integer (so "-1+cmd" cannot be smuggled through a numeric column).
+var numericExportColumns = map[string]bool{"key_size_bits": true, "risk_score": true}
+
+func isPlainInteger(v string) bool {
+	v = strings.TrimPrefix(v, "-")
+	if v == "" {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		if v[i] < '0' || v[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// hardenRowFor hardens row positionally against header, exempting plain
+// integers in numeric columns.
+func hardenRowFor(header, row []string) []string {
 	out := make([]string, len(row))
 	for i, v := range row {
+		if i < len(header) && numericExportColumns[header[i]] && isPlainInteger(v) {
+			out[i] = v
+			continue
+		}
 		out[i] = hardenSpreadsheetCell(v)
 	}
 	return out
 }
+
+// hardenRow hardens every cell with no numeric exemption.
+func hardenRow(row []string) []string { return hardenRowFor(nil, row) }
 
 // writeCSV writes a header + hardened rows.
 func writeCSV(buf *bytes.Buffer, header []string, rows [][]string) error {
@@ -93,7 +120,7 @@ func writeCSV(buf *bytes.Buffer, header []string, rows [][]string) error {
 		return err
 	}
 	for _, row := range rows {
-		if err := w.Write(hardenRow(row)); err != nil {
+		if err := w.Write(hardenRowFor(header, row)); err != nil {
 			return err
 		}
 	}
@@ -164,7 +191,7 @@ func writeXLSX(buf *bytes.Buffer, sheetName string, header []string, rows [][]st
 	}
 	writeRow(header)
 	for _, row := range rows {
-		writeRow(hardenRow(row))
+		writeRow(hardenRowFor(header, row))
 	}
 	sheet.WriteString(`</sheetData></worksheet>`)
 	if err := add("xl/worksheets/sheet1.xml", sheet.String()); err != nil {

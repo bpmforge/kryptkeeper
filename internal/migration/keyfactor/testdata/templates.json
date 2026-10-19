@@ -1,0 +1,68 @@
+[
+  {
+    "Id": 1,
+    "CommonName": "Web Server",
+    "TemplateName": "WebServer",
+    "Oid": "1.3.6.1.4.1.311.21.8.100",
+    "KeySize": "2048",
+    "KeyType": "RSA",
+    "Curve": "",
+    "KeyUsage": 160,
+    "ExtendedKeyUsages": [{"Id": 1, "Oid": "1.3.6.1.5.5.7.3.1", "DisplayName": "Server Authentication"}],
+    "ForestRoot": "corp.example",
+    "ConfigurationTenant": "corp",
+    "EnrollmentFields": [],
+    "AllowedEnrollmentTypes": 1,
+    "RFCEnforcement": false,
+    "KeyRetention": "None",
+    "KeyRetentionDays": 0,
+    "TemplateRegexes": [],
+    "UseAllowedRequesters": true,
+    "AllowedRequesters": ["CORP\\pki-users"]
+  },
+  {
+    "Id": 2,
+    "CommonName": "Client Auth",
+    "TemplateName": "ClientAuth",
+    "Oid": "1.3.6.1.4.1.311.21.8.101",
+    "KeySize": 3072,
+    "KeyType": "RSA",
+    "KeyUsage": 160,
+    "ExtendedKeyUsages": [{"Id": 2, "Oid": "1.3.6.1.5.5.7.3.2", "DisplayName": "Client Authentication"}],
+    "AllowedEnrollmentTypes": 3
+  },
+  {
+    "Id": 3,
+    "CommonName": "EC Server",
+    "TemplateName": "ECServer",
+    "KeySize": "256",
+    "KeyType": "ECC",
+    "Curve": "P-256",
+    "KeyUsage": 136,
+    "ExtendedKeyUsages": [
+      {"Id": 1, "Oid": "1.3.6.1.5.5.7.3.1", "DisplayName": "Server Authentication"},
+      {"Id": 2, "Oid": "1.3.6.1.5.5.7.3.2", "DisplayName": "Client Authentication"}
+    ]
+  },
+  {
+    "Id": 4,
+    "CommonName": "Custom EKU",
+    "TemplateName": "CustomEKU",
+    "KeySize": "4096",
+    "KeyType": "RSA",
+    "KeyUsage": 224,
+    "ExtendedKeyUsages": [
+      {"Id": 1, "Oid": "1.3.6.1.5.5.7.3.1", "DisplayName": "Server Authentication"},
+      {"Id": 9, "Oid": "1.3.6.1.4.1.99999.7", "DisplayName": "Vendor EKU"}
+    ]
+  },
+  {
+    "Id": 5,
+    "CommonName": "Legacy DSA",
+    "TemplateName": "LegacyDSA",
+    "KeySize": "1024",
+    "KeyType": "DSA",
+    "KeyUsage": 128,
+    "ExtendedKeyUsages": [{"Id": 1, "Oid": "1.3.6.1.5.5.7.3.1", "DisplayName": "Server Authentication"}]
+  }
+]

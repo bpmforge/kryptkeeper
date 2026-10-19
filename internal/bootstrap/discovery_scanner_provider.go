@@ -7,7 +7,7 @@ package bootstrap
 import (
 	"context"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"sort"
 	"strings"
 	"sync"
@@ -39,35 +39,47 @@ func NewScannerDiscoveryProvider(defaultTargets []string, concurrency int) Disco
 	return &scannerDiscoveryProvider{scanner: s}
 }
 
-func (p *scannerDiscoveryProvider) GetSummary(_ context.Context) (DiscoverySummary, error) {
+func (p *scannerDiscoveryProvider) GetSummary(ctx context.Context) (DiscoverySummary, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	risky := 0
+	tenant, filter := discoveryFilterTenant(ctx)
+	risky, discovered := 0, 0
 	for _, ep := range p.endpoints {
+		if filter && ep.Tenant != tenant {
+			continue
+		}
+		discovered++
 		if endpointIsRisky(ep) {
 			risky++
 		}
 	}
 	active := 0
 	for _, j := range p.scanJobs {
+		if filter && j.Tenant != tenant {
+			continue
+		}
 		if j.Status == "running" || j.Status == "queued" {
 			active++
 		}
 	}
 	return DiscoverySummary{
-		DiscoveredEndpoints: len(p.endpoints),
+		DiscoveredEndpoints: discovered,
 		RiskyEndpoints:      risky,
 		ActiveScanJobs:      active,
 	}, nil
 }
 
-func (p *scannerDiscoveryProvider) ListEndpoints(_ context.Context, q DiscoveryEndpointQuery) (DiscoveryEndpointResult, error) {
+func (p *scannerDiscoveryProvider) ListEndpoints(ctx context.Context, q DiscoveryEndpointQuery) (DiscoveryEndpointResult, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
+	tenant, tenantFilter := discoveryFilterTenant(ctx)
 	filtered := make([]DiscoveryEndpoint, 0, len(p.endpoints))
 	for _, ep := range p.endpoints {
+		if tenantFilter && ep.Tenant != tenant {
+			continue
+		}
 		if q.Protocol != "" && !strings.EqualFold(ep.Protocol, q.Protocol) {
 			continue
 		}
@@ -87,12 +99,16 @@ func (p *scannerDiscoveryProvider) ListEndpoints(_ context.Context, q DiscoveryE
 	}, nil
 }
 
-func (p *scannerDiscoveryProvider) ListScanJobs(_ context.Context, q DiscoveryScanJobQuery) (DiscoveryScanJobResult, error) {
+func (p *scannerDiscoveryProvider) ListScanJobs(ctx context.Context, q DiscoveryScanJobQuery) (DiscoveryScanJobResult, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
+	tenant, tenantFilter := discoveryFilterTenant(ctx)
 	filtered := make([]DiscoveryScanJob, 0, len(p.scanJobs))
 	for _, j := range p.scanJobs {
+		if tenantFilter && j.Tenant != tenant {
+			continue
+		}
 		if q.Status != "" && !strings.EqualFold(j.Status, q.Status) {
 			continue
 		}
@@ -113,7 +129,9 @@ func (p *scannerDiscoveryProvider) CreateScan(ctx context.Context, scanType stri
 	now := time.Now().UTC()
 	jobID := fmt.Sprintf("scan-%d", now.UnixNano())
 
+	scanTenant := discoveryStampTenant(ctx)
 	job := DiscoveryScanJob{
+		Tenant:   scanTenant,
 		ID:       jobID,
 		ScanType: scanType,
 		Target:   target,
@@ -139,9 +157,9 @@ func (p *scannerDiscoveryProvider) CreateScan(ctx context.Context, scanType stri
 	// "must use its own context, not the (about-to-be-canceled) request
 	// context" comment) -- this brings the scanner provider in line.
 	if scanType == scanTypeK8sCertManager {
-		go p.runCertManagerScan(context.Background(), jobID, target)
+		go p.runCertManagerScan(context.Background(), jobID, scanTenant)
 	} else {
-		go p.runNetworkScan(context.Background(), jobID, target)
+		go p.runNetworkScan(context.Background(), jobID, target, scanTenant)
 	}
 
 	return DiscoveryScanCreateResult{
@@ -153,12 +171,16 @@ func (p *scannerDiscoveryProvider) CreateScan(ctx context.Context, scanType stri
 	}, nil
 }
 
-func (p *scannerDiscoveryProvider) CancelScanJob(_ context.Context, scanJobID string, reason string) (DiscoveryScanJobActionResult, error) {
+func (p *scannerDiscoveryProvider) CancelScanJob(ctx context.Context, scanJobID string, reason string) (DiscoveryScanJobActionResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	tenant, tenantFilter := discoveryFilterTenant(ctx)
 	for i := range p.scanJobs {
 		if p.scanJobs[i].ID == scanJobID {
+			if tenantFilter && p.scanJobs[i].Tenant != tenant {
+				return DiscoveryScanJobActionResult{}, errDiscoveryScanJobNotFound
+			}
 			p.scanJobs[i].Status = "cancelled"
 			return DiscoveryScanJobActionResult{
 				ScanJobID: scanJobID,
@@ -173,9 +195,15 @@ func (p *scannerDiscoveryProvider) CancelScanJob(_ context.Context, scanJobID st
 
 func (p *scannerDiscoveryProvider) RequeueScanJob(ctx context.Context, scanJobID string, reason string) (DiscoveryScanJobActionResult, error) {
 	p.mu.RLock()
-	var target, scanType string
+	var target, scanType, jobTenant string
+	tenant, tenantFilter := discoveryFilterTenant(ctx)
 	for _, j := range p.scanJobs {
 		if j.ID == scanJobID {
+			if tenantFilter && j.Tenant != tenant {
+				p.mu.RUnlock()
+				return DiscoveryScanJobActionResult{}, errDiscoveryScanJobNotFound
+			}
+			jobTenant = j.Tenant
 			target = j.Target
 			scanType = j.ScanType
 			break
@@ -187,7 +215,7 @@ func (p *scannerDiscoveryProvider) RequeueScanJob(ctx context.Context, scanJobID
 		return DiscoveryScanJobActionResult{}, fmt.Errorf("scan job %s not found", scanJobID)
 	}
 
-	result, err := p.CreateScan(ctx, scanType, target, nil)
+	result, err := p.CreateScan(withDiscoveryTenant(ctx, jobTenant), scanType, target, nil)
 	if err != nil {
 		return DiscoveryScanJobActionResult{}, err
 	}
@@ -201,7 +229,7 @@ func (p *scannerDiscoveryProvider) RequeueScanJob(ctx context.Context, scanJobID
 	}, nil
 }
 
-func (p *scannerDiscoveryProvider) runNetworkScan(ctx context.Context, jobID string, target string) {
+func (p *scannerDiscoveryProvider) runNetworkScan(ctx context.Context, jobID string, target string, tenant string) {
 	s := scanner.New(scanner.ScanConfig{
 		Targets:     []string{target},
 		Concurrency: 50,
@@ -227,6 +255,7 @@ func (p *scannerDiscoveryProvider) runNetworkScan(ctx context.Context, jobID str
 			riskScore = ep.Certs[0].RiskScore
 		}
 		p.upsertEndpointLocked(DiscoveryEndpoint{
+			Tenant:     tenant,
 			ID:         fmt.Sprintf("ep-%s-%d", ep.Host, ep.Port),
 			Hostname:   ep.Host,
 			Port:       ep.Port,
@@ -235,16 +264,16 @@ func (p *scannerDiscoveryProvider) runNetworkScan(ctx context.Context, jobID str
 			LastSeenAt: ep.ScannedAt.Format(time.RFC3339),
 		})
 	}
-	log.Printf("scan %s completed: %d endpoints, %d certs found", jobID, result.TotalScanned, result.CertsFound)
+	logging.Infof("scan %s completed: %d endpoints, %d certs found", jobID, result.TotalScanned, result.CertsFound)
 }
 
 // upsertEndpointLocked replaces an existing in-memory endpoint entry with
-// the same ID (re-scan of the same host:port) instead of appending a
+// the same ID and tenant (re-scan of the same host:port) instead of appending a
 // duplicate — W2-05/D-032/R-D2: a re-scan must dedup, not accumulate. Caller
 // must hold p.mu.
 func (p *scannerDiscoveryProvider) upsertEndpointLocked(ep DiscoveryEndpoint) {
 	for i := range p.endpoints {
-		if p.endpoints[i].ID == ep.ID {
+		if p.endpoints[i].ID == ep.ID && p.endpoints[i].Tenant == ep.Tenant {
 			p.endpoints[i] = ep
 			return
 		}
@@ -252,17 +281,17 @@ func (p *scannerDiscoveryProvider) upsertEndpointLocked(ep DiscoveryEndpoint) {
 	p.endpoints = append(p.endpoints, ep)
 }
 
-func (p *scannerDiscoveryProvider) runCertManagerScan(ctx context.Context, jobID string, _ string) {
+func (p *scannerDiscoveryProvider) runCertManagerScan(ctx context.Context, jobID string, tenant string) {
 	conn, err := certmanager.NewFromEnv()
 	if err != nil {
-		log.Printf("scan %s: cert-manager connector init failed: %v", jobID, err)
+		logging.Warnf("scan %s: cert-manager connector init failed: %v", jobID, err)
 		p.updateScanJobStatus(jobID, "failed")
 		return
 	}
 
 	certs, err := conn.ListCertificates(ctx)
 	if err != nil {
-		log.Printf("scan %s: cert-manager list failed: %v", jobID, err)
+		logging.Warnf("scan %s: cert-manager list failed: %v", jobID, err)
 		p.updateScanJobStatus(jobID, "failed")
 		return
 	}
@@ -279,6 +308,7 @@ func (p *scannerDiscoveryProvider) runCertManagerScan(ctx context.Context, jobID
 			riskScore = 60
 		}
 		p.upsertEndpointLocked(DiscoveryEndpoint{
+			Tenant:     tenant,
 			ID:         fmt.Sprintf("k8s-%s-%s", cert.Namespace, cert.Name),
 			Hostname:   cert.CommonName,
 			Port:       0,
@@ -289,7 +319,7 @@ func (p *scannerDiscoveryProvider) runCertManagerScan(ctx context.Context, jobID
 	}
 
 	p.updateScanJobStatusLocked(jobID, "completed")
-	log.Printf("scan %s (k8s-certmanager) completed: %d certs discovered", jobID, len(certs))
+	logging.Infof("scan %s (k8s-certmanager) completed: %d certs discovered", jobID, len(certs))
 }
 
 func (p *scannerDiscoveryProvider) updateScanJobStatus(jobID string, status string) {

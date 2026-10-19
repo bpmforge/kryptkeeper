@@ -203,16 +203,19 @@ func (k *JSONWebKey) publicKey() (crypto.PublicKey, error) {
 		if k.Crv != "P-256" {
 			return nil, fmt.Errorf("unsupported EC curve %q", k.Crv)
 		}
-		x, err := jwkBigInt(k.X)
+		x, err := jwkCoordinate(k.X, p256CoordinateSize)
 		if err != nil {
 			return nil, fmt.Errorf("x: %w", err)
 		}
-		y, err := jwkBigInt(k.Y)
+		y, err := jwkCoordinate(k.Y, p256CoordinateSize)
 		if err != nil {
 			return nil, fmt.Errorf("y: %w", err)
 		}
-		pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}
-		if !pub.Curve.IsOnCurve(pub.X, pub.Y) {
+		// ParseUncompressedPublicKey rejects off-curve points, coordinates
+		// at or above the field prime, and the point at infinity.
+		point := append(append([]byte{0x04}, x...), y...)
+		pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), point)
+		if err != nil {
 			return nil, errors.New("ec point not on curve")
 		}
 		return pub, nil
@@ -254,6 +257,23 @@ func (k *JSONWebKey) publicKey() (crypto.PublicKey, error) {
 	default:
 		return nil, fmt.Errorf("unsupported jwk kty %q", k.Kty)
 	}
+}
+
+const p256CoordinateSize = 32
+
+// jwkCoordinate decodes an EC JWK coordinate to exactly size big-endian
+// bytes. RFC 7518 §6.2.1.2 requires the full length, but a value that lost
+// its leading zero bytes is left-padded rather than refused, matching what
+// this server accepted before; anything longer than size is refused.
+func jwkCoordinate(s string, size int) ([]byte, error) {
+	v, err := jwkBigInt(s)
+	if err != nil {
+		return nil, err
+	}
+	if v.BitLen() > size*8 {
+		return nil, errors.New("coordinate too long")
+	}
+	return v.FillBytes(make([]byte, size)), nil
 }
 
 func jwkBigInt(s string) (*big.Int, error) {

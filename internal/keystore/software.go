@@ -617,10 +617,7 @@ func (s *SoftwareStore) detectAlgorithm(id string) (Algorithm, error) {
 func algorithmOfPublicKey(pub crypto.PublicKey) (Algorithm, error) {
 	switch k := pub.(type) {
 	case *rsa.PublicKey:
-		if k.N.BitLen() <= 2048 {
-			return RSA2048, nil
-		}
-		return RSA4096, nil
+		return rsaAlgorithmForBits(k.N.BitLen()), nil
 	case *ecdsa.PublicKey:
 		switch k.Curve {
 		case elliptic.P256():
@@ -862,6 +859,8 @@ func generatePrivateKey(algo Algorithm) (crypto.PrivateKey, error) {
 	switch algo {
 	case RSA2048:
 		return rsa.GenerateKey(rand.Reader, 2048)
+	case RSA3072:
+		return rsa.GenerateKey(rand.Reader, 3072)
 	case RSA4096:
 		return rsa.GenerateKey(rand.Reader, 4096)
 	case ECDSAP256:

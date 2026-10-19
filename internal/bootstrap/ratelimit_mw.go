@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 const (
@@ -70,6 +72,28 @@ func intFromEnvOrDefault(envVar string, fallback int) int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 0 {
+		return fallback
+	}
+	return n
+}
+
+// ProtocolRateLimitsFromEnv reads the ACME/EST protocol-mount limits (W22-39):
+// RATELIMIT_PROTOCOL_PER_CREDENTIAL (default 600) for verified credentials and
+// RATELIMIT_UNAUTH_PER_IP (default 30) for everything else, both per
+// rateLimitWindow. Unset, non-integer, zero or negative falls back to the
+// default: a limit of 0 would silently disable the limiter, which a typo must
+// not be able to do.
+func ProtocolRateLimitsFromEnv() (perCredential, unauthPerIP int) {
+	return positiveIntFromEnv("RATELIMIT_PROTOCOL_PER_CREDENTIAL", 600),
+		positiveIntFromEnv("RATELIMIT_UNAUTH_PER_IP", 30)
+}
+
+func positiveIntFromEnv(envVar string, fallback int) int {
+	n := intFromEnvOrDefault(envVar, fallback)
+	if n <= 0 {
+		if strings.TrimSpace(os.Getenv(envVar)) != "" {
+			logging.Warnf("%s must be a positive integer; using default %d", envVar, fallback)
+		}
 		return fallback
 	}
 	return n

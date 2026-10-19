@@ -7,9 +7,10 @@ package bootstrap
 import (
 	"crypto/subtle"
 	"fmt"
-	"log"
 	"os"
 	"strings"
+
+	"kryptkeeper/internal/logging"
 )
 
 // W5-07 (PE-7/D-061/FR-P23): agent enrollment is closed by default.
@@ -33,6 +34,9 @@ import (
 // handler contract.
 type AgentEnrollmentEvidence struct {
 	Secret string
+	// Token is a W29-06 per-agent, single-use enrollment token. It is
+	// redeemed by the register handler against the store, not by Check.
+	Token string
 }
 
 // AgentEnrollmentGate decides whether a registration may proceed.
@@ -52,11 +56,12 @@ func NewAgentEnrollmentGateFromEnv() *AgentEnrollmentGate {
 			gate.secrets = append(gate.secrets, []byte(s))
 		}
 	}
+	if len(gate.secrets) > 0 {
+		logging.Info("WARNING: KRYPTKEEPER_AGENT_ENROLLMENT_SECRETS is a shared, reusable secret; migrate to per-agent enrollment tokens (POST /api/v1/agent/enrollment-tokens)")
+	}
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("KRYPTKEEPER_AGENT_OPEN_REGISTRATION")), "true") {
 		gate.openRegistration = true
-		if len(gate.secrets) == 0 {
-			log.Print("WARNING: agent registration is OPEN (KRYPTKEEPER_AGENT_OPEN_REGISTRATION=true) — anyone reaching this hub can enrol an agent; configure KRYPTKEEPER_AGENT_ENROLLMENT_SECRETS and remove the flag (W5-07 migration path)")
-		}
+		logging.Info("WARNING: LOUD: agent registration is OPEN (KRYPTKEEPER_AGENT_OPEN_REGISTRATION=true) — anyone reaching this hub can enrol an agent; use per-agent enrollment tokens (POST /api/v1/agent/enrollment-tokens) and remove the flag")
 	}
 	return gate
 }

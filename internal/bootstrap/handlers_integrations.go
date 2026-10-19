@@ -6,7 +6,7 @@ package bootstrap
 
 import (
 	"encoding/json"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"os"
 	"strings"
@@ -24,7 +24,10 @@ func SCEPEnabledFromEnv() bool {
 
 // microsoftIntegrationStatus is the response body for GET /api/v1/integrations/microsoft.
 type microsoftIntegrationStatus struct {
-	SCEPEnabled    bool   `json:"scep_enabled"`
+	SCEPEnabled bool `json:"scep_enabled"`
+	// SCEPOffReason says why SCEP is not serving when it was asked for or
+	// cannot run (non-RSA CA, missing database, ...).
+	SCEPOffReason  string `json:"scep_off_reason,omitempty"`
 	SCEPEndpoint   string `json:"scep_endpoint,omitempty"`
 	XCEPEnabled    bool   `json:"xcep_enabled"`
 	XCEPEndpoint   string `json:"xcep_endpoint,omitempty"`
@@ -35,7 +38,7 @@ type microsoftIntegrationStatus struct {
 
 // siem is the same router instance the audit provider forwards through, so
 // Status/Test report on exactly what live events use.
-func registerIntegrationsHandlers(mux *http.ServeMux, auth *Authenticator, auditProvider AuditProvider, siem *SIEMRouter) {
+func registerIntegrationsHandlers(mux *http.ServeMux, auth *Authenticator, auditProvider AuditProvider, siem *SIEMRouter, scepOffReason string) {
 	mux.HandleFunc("/api/v1/integrations/microsoft", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w, http.MethodGet)
@@ -50,12 +53,13 @@ func registerIntegrationsHandlers(mux *http.ServeMux, auth *Authenticator, audit
 
 		baseURL := strings.TrimRight(os.Getenv("KRYPTKEEPER_BASE_URL"), "/")
 
-		scepEnabled := SCEPEnabledFromEnv()
+		scepEnabled := SCEPEnabledFromEnv() && scepOffReason == ""
 		wstepEnabled := wstep.EnabledFromEnv()
 		status := microsoftIntegrationStatus{
-			SCEPEnabled:  scepEnabled,
-			XCEPEnabled:  wstepEnabled,
-			WSTEPEnabled: wstepEnabled,
+			SCEPEnabled:   scepEnabled,
+			SCEPOffReason: scepOffReason,
+			XCEPEnabled:   wstepEnabled,
+			WSTEPEnabled:  wstepEnabled,
 			// SCEP is preferred for Intune BYOCA; XCEP+WSTEP handles Windows autoenrollment.
 			IntuneProtocol: "SCEP",
 		}
@@ -73,7 +77,7 @@ func registerIntegrationsHandlers(mux *http.ServeMux, auth *Authenticator, audit
 		if err := json.NewEncoder(w).Encode(struct {
 			Data microsoftIntegrationStatus `json:"data"`
 		}{Data: status}); err != nil {
-			log.Printf("failed to encode microsoft integration response: %v", err)
+			logging.Warnf("failed to encode microsoft integration response: %v", err)
 		}
 	})
 
@@ -96,7 +100,7 @@ func registerIntegrationsHandlers(mux *http.ServeMux, auth *Authenticator, audit
 		if err := json.NewEncoder(w).Encode(struct {
 			Data SIEMStatus `json:"data"`
 		}{Data: status}); err != nil {
-			log.Printf("failed to encode siem integration response: %v", err)
+			logging.Warnf("failed to encode siem integration response: %v", err)
 		}
 	})
 
@@ -128,7 +132,7 @@ func registerIntegrationsHandlers(mux *http.ServeMux, auth *Authenticator, audit
 		if err := json.NewEncoder(w).Encode(struct {
 			Data SIEMTestResult `json:"data"`
 		}{Data: result}); err != nil {
-			log.Printf("failed to encode siem test response: %v", err)
+			logging.Warnf("failed to encode siem test response: %v", err)
 		}
 	})
 }

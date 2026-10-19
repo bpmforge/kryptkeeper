@@ -105,10 +105,26 @@ closes the "direct-CA import" hole inside Tier-1 capability #1 of the competitiv
 | FR-P66 | T1 | **External-issuer connector framework**: an issuer interface the internal CA engine and upstream connectors both satisfy; per-connector config, health, and audit | a template/target can name a connector as its issuer; issuance routes through it; connector failure is a visible health state, not a silent drop | D-106 | shipped (W11-03 — 2026-08-18) |
 | FR-P67 | T1 | **ACME upstream connector** (RFC 8555 client incl. EAB): renew/issue *at* Let's Encrypt or any public ACME CA, then run the existing install/verify machinery | an ACME-sourced cert renews through the connector end-to-end (order→challenge→issue→install→verify) with no human step | D-106 | shipped (W11-04 — 2026-08-18) |
 | FR-P68 | T2 | **Direct-CA inventory sync**: ADCS sync-in first; a commercial-CA adapter interface (DigiCert/Sectigo/Entrust as adapters) pulling issued-cert inventory read-only | an ADCS environment's issued certs appear as origin=synced with issuer metadata; one commercial adapter demonstrates the interface | D-106 | shipped (W11-05 — 2026-08-18) |
-| FR-P69 | T1 | **Takeover flow**: from any unmanaged/external cert — assign owner → choose renewal path (internal CA or upstream connector) → managed; approval-gated, audited | a discovered cert becomes managed in one guided flow; its next renewal executes via the chosen path; the transition is in the audit log | D-106, NFR-P2 | shipped (W11-06 — 2026-08-18) |
+| FR-P69 | T1 | **Takeover flow**: from any unmanaged/external cert — assign owner → choose renewal path (internal CA or upstream connector) → managed; audit-logged, not approval-gated (D-127) | a discovered cert becomes managed in one guided flow; its next renewal executes via the chosen path; the transition is in the audit log | D-106, D-127, NFR-P2 | shipped (W11-06 — 2026-08-18) |
 | FR-P70 | T2 | **SSH certificate authority**: issue short-lived SSH certs (user + host) under the same template/approval/audit spine; extends the sshkeys inventory | an SSH cert is issued against a template, honors validity policy, appears in inventory, and is audit-reconstructable | D-106 | shipped (W11-07 — 2026-08-18) |
 
 Scope recorded (D-106): KMIP deferred until customer pull; PGP/OpenPGP out of scope.
+
+## Code-signing lifecycle (UC-B09)
+
+| ID | Tier | Requirement | Acceptance sketch | Traces | Status |
+|---|---|---|---|---|---|
+| FR-P90 | T1 | **Approval-gated code-signing issuance**: a template whose EKU includes codeSigning always requires approval (regardless of its `require_approval` flag), approver != requester, audited | a code-signing request yields 0 certs and HTTP 202 until a second user approves; approver == requester is refused; audit `certificate.issue` (template codeSigning) and `codesign.request.deny` | D-017, UC-B09 | planned (W26-22) |
+| FR-P91 | T1 | **Protected code-signing key generation**: in protected mode the key pair is generated in the HSM/KMS store (PKCS#11, cloud KMS) with CKA_EXTRACTABLE=false and the CSR is built there | the generated private key cannot be exported (export attempt fails; SoftHSM2 test behind the `pkcs11` tag); a software-store hub refuses protected mode | D-079, UC-B09, UC-M03 | planned (W26-22, W26-24) |
+| FR-P92 | T1 | **Key attestation for requester-supplied code-signing CSRs**: in protected mode a CSR is accepted only with a vendor attestation (e.g. YubiKey PIV attestation chaining to the vendor root) whose attested public key equals the CSR key; the attestation is stored on the request | valid attestation accepted and stored; missing, forged or mismatched attestation refused | UC-B09 | planned (W26-23) |
+
+Scope recorded (UC-B09): the v1.0 claim covers approval-gated issuance, protected key generation, attestation and the inventory policy check (`/inventory/code-signing*`, FR-P41 for the HSM backend). The code-signing SERVICE with per-use audit (SignServer-style) is carried only by UC-M08 and is NOT claimed by these requirements.
+
+User stories:
+
+- **US-CS1** As a publisher (Jordan) I request a code-signing certificate and receive it only after a second person approves, so that no single person can mint a signing identity. AC: maps to FR-P90.
+- **US-CS2** As a security owner I require the signing key to be generated inside the HSM/KMS and never exported, so that a compromised build host cannot steal it. AC: maps to FR-P91.
+- **US-CS3** As a publisher with a hardware token I submit my own CSR with the token's attestation, so that the hub can prove the key lives in hardware. AC: maps to FR-P92.
 
 ## Non-functional / positioning
 

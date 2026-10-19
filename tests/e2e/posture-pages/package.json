@@ -1,0 +1,13 @@
+{
+  "name": "kryptkeeper-e2e-posture-pages",
+  "private": true,
+  "version": "0.0.0",
+  "description": "W28-18: Playwright journey over the six posture and operations pages",
+  "scripts": {
+    "seed": "bash seed.sh",
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.59.1"
+  }
+}

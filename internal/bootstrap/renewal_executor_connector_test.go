@@ -24,6 +24,11 @@ func (h *hubRenewSpy) RenewCertificate(context.Context, string, CertificateRenew
 	return CertificateIssueResult{}, nil
 }
 
+// DownloadCertificate fails: the replaces lookup (W26-27) is best-effort.
+func (h *hubRenewSpy) DownloadCertificate(context.Context, string, string, bool) (CertificateDownloadResult, error) {
+	return CertificateDownloadResult{}, errors.New("hub spy: no download")
+}
+
 func pinnedDetail() CertificateDetail {
 	var d CertificateDetail
 	d.RenewalConnectorID = "conn-up"

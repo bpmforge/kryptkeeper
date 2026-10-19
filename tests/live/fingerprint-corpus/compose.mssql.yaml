@@ -1,0 +1,15 @@
+# W34-20: the SQL Server service, kept out of compose.yaml and added with a
+# second -f only when its image is present. A --profile flag would do the same
+# under docker compose but podman-compose 1.0.6 rejects it, so run.sh composes
+# files instead of profiles.
+name: kk-w34-corpus
+
+services:
+  mssql:
+    # SQL Server 2022 on amd64 runners; Azure SQL Edge (the same TDS engine,
+    # native arm64) elsewhere, because the amd64 image segfaults under
+    # emulation. run.sh sets MSSQL_IMAGE.
+    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2022-latest}
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Corpus-Pass-123"

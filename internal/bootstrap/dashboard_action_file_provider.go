@@ -6,19 +6,28 @@ package bootstrap
 
 import (
 	"context"
+	"os"
 	"sort"
 	"strings"
 	"time"
 )
 
-type fileDashboardActionProvider struct{}
+// dashboardActionDemoEnv opts the file provider into its canned sample rows.
+// Without it the history is empty: a real hub must never present fixture
+// data (dated April 2026) as its own activity (UI finding 6).
+const dashboardActionDemoEnv = "APP_DASHBOARD_ACTION_DEMO"
+
+type fileDashboardActionProvider struct{ demo bool }
 
 func newFileDashboardActionProvider() DashboardActionProvider {
-	return &fileDashboardActionProvider{}
+	return &fileDashboardActionProvider{demo: strings.EqualFold(strings.TrimSpace(os.Getenv(dashboardActionDemoEnv)), "true")}
 }
 
 func (p *fileDashboardActionProvider) ListHistory(_ context.Context, query DashboardActionHistoryQuery) (DashboardActionHistoryResult, error) {
-	history := seedDashboardActionHistory()
+	var history []DashboardActionHistoryRecord
+	if p.demo {
+		history = seedDashboardActionHistory()
+	}
 	filtered := make([]DashboardActionHistoryRecord, 0, len(history))
 	for _, rec := range history {
 		if query.Status != "" && !strings.EqualFold(rec.Status, query.Status) {

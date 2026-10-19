@@ -83,7 +83,7 @@ func TestSIEMHandlerStatusEndpoint(t *testing.T) {
 	t.Setenv("SIEM_SYSLOG_ADDR", "")
 
 	mux := http.NewServeMux()
-	registerIntegrationsHandlers(mux, auth, stubAuditProvider{}, NewSIEMRouterFromEnv())
+	registerIntegrationsHandlers(mux, auth, stubAuditProvider{}, NewSIEMRouterFromEnv(), "")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/integrations/siem", nil)
 	req.Header.Set("Authorization", "Bearer reports-test-token")
@@ -224,7 +224,7 @@ func TestSIEMTestHandlerRejectsWhenDisabled(t *testing.T) {
 	t.Setenv("SIEM_SYSLOG_ADDR", "")
 
 	mux := http.NewServeMux()
-	registerIntegrationsHandlers(mux, auth, stubAuditProvider{}, NewSIEMRouterFromEnv())
+	registerIntegrationsHandlers(mux, auth, stubAuditProvider{}, NewSIEMRouterFromEnv(), "")
 
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/integrations/siem/test", nil)
 	req.Header.Set("Authorization", "Bearer reports-test-token")
@@ -233,5 +233,49 @@ func TestSIEMTestHandlerRejectsWhenDisabled(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 when no SIEM target, got %d", rec.Code)
+	}
+}
+
+// CB-14: the SIEM test explains an egress refusal instead of echoing an address.
+func TestSIEMTestExplainsEgressRefusal(t *testing.T) {
+	withProductionEgress(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer srv.Close()
+	t.Setenv("SIEM_WEBHOOK_URL", srv.URL) // httptest listens on 127.0.0.1, which the guard always refuses
+	t.Setenv("SIEM_SYSLOG_ADDR", "")
+	result := NewSIEMRouterFromEnv().Test("admin")
+	if result.WebhookOK || !strings.Contains(result.WebhookError, "egress guard") {
+		t.Fatalf("want an egress-guard explanation, got %+v", result)
+	}
+}
+
+// CB-15: a requested-but-not-serving SCEP reports the reason instead of
+// looking enabled while the endpoint is not mounted.
+func TestMicrosoftIntegrationReportsWhySCEPIsOff(t *testing.T) {
+	auth := newReportsTestAuth(t)
+	t.Setenv("KRYPTKEEPER_SCEP_ENABLED", "true")
+	get := func(reason string) (enabled bool, off string) {
+		mux := http.NewServeMux()
+		registerIntegrationsHandlers(mux, auth, stubAuditProvider{}, NewSIEMRouterFromEnv(), reason)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/integrations/microsoft", nil)
+		req.Header.Set("Authorization", "Bearer reports-test-token")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		var resp struct {
+			Data struct {
+				SCEPEnabled   bool   `json:"scep_enabled"`
+				SCEPOffReason string `json:"scep_off_reason"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v: %s", err, rec.Body.String())
+		}
+		return resp.Data.SCEPEnabled, resp.Data.SCEPOffReason
+	}
+	if en, off := get(""); !en || off != "" {
+		t.Fatalf("serving SCEP: enabled=%v reason=%q", en, off)
+	}
+	if en, off := get("CA ca-1 does not have an RSA key"); en || off == "" {
+		t.Fatalf("a non-serving SCEP must not read as enabled: enabled=%v reason=%q", en, off)
 	}
 }

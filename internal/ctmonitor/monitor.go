@@ -11,7 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"net/url"
 	"os"
@@ -152,93 +152,174 @@ type ScanReport struct {
 	Errors      map[string]string
 }
 
-// Monitor ties source, inventory, store and notifier together.
+// haLockCT is the leader-lock name; with N replicas only the lease holder
+// polls CT in a given interval.
+const haLockCT = "ct-monitor"
+
+// LeaderLock is satisfied by *bootstrap.HACoordinator.
+type LeaderLock interface {
+	TryAcquire(ctx context.Context, name string, lease time.Duration) (bool, error)
+}
+
+// DomainProvider returns the domains to watch. It is called on every Scan so
+// a config-store change applies without a restart.
+type DomainProvider func(ctx context.Context) []string
+
+// ParseDomainList splits a CSV into trimmed, lowercased, de-duplicated,
+// non-empty domains (env and config-store values share this).
+func ParseDomainList(csv string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, d := range strings.Split(csv, ",") {
+		d = strings.ToLower(strings.TrimSpace(d))
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	return out
+}
+
+// Monitor ties sources, inventory, store and notifier together.
 type Monitor struct {
-	source    CTSource
-	inventory Inventory
-	store     *Store
-	notifier  Notifier
-	domains   []string
-	now       func() time.Time
+	sources        []CTSource
+	inventory      Inventory
+	store          *Store
+	notifier       Notifier
+	domains        []string
+	domainProvider DomainProvider
+	lock           LeaderLock
+	now            func() time.Time
 }
 
 func NewMonitor(source CTSource, inventory Inventory, store *Store, notifier Notifier, domains []string) (*Monitor, error) {
 	if source == nil || inventory == nil || store == nil {
 		return nil, fmt.Errorf("ct monitor requires a source, an inventory and a store")
 	}
-	return &Monitor{source: source, inventory: inventory, store: store, notifier: notifier, domains: domains, now: time.Now}, nil
+	return &Monitor{sources: []CTSource{source}, inventory: inventory, store: store, notifier: notifier, domains: domains, now: time.Now}, nil
 }
 
-// NewMonitorFromEnv reads KRYPTKEEPER_CT_DOMAINS (CSV); nil when unset —
-// CT monitoring is opt-in.
+// AddSource appends a further CT source, queried after the constructor's.
+func (m *Monitor) AddSource(s CTSource) {
+	if s != nil {
+		m.sources = append(m.sources, s)
+	}
+}
+
+// SetDomainProvider makes Scan resolve domains per call; nil restores the
+// static list given at construction.
+func (m *Monitor) SetDomainProvider(p DomainProvider) { m.domainProvider = p }
+
+// SetLeaderLock gates ticks behind a lease; nil = single replica.
+func (m *Monitor) SetLeaderLock(l LeaderLock) { m.lock = l }
+
+// NewMonitorFromEnv always returns a monitor (domains are resolved every
+// scan, so a runtime config-store entry can enable CT monitoring later; with
+// none configured a scan is a no-op). KRYPTKEEPER_CT_DOMAINS seeds the
+// static fallback list. A Cert Spotter second source is added unless
+// KRYPTKEEPER_CT_SECOND_SOURCE=off; it sends the monitored domain names to
+// SSLMate, as crt.sh already receives them.
 func NewMonitorFromEnv(inventory Inventory, store *Store, notifier Notifier) *Monitor {
-	var domains []string
-	for _, d := range strings.Split(os.Getenv("KRYPTKEEPER_CT_DOMAINS"), ",") {
-		if d = strings.TrimSpace(d); d != "" {
-			domains = append(domains, d)
-		}
-	}
-	if len(domains) == 0 {
-		return nil
-	}
+	domains := ParseDomainList(os.Getenv("KRYPTKEEPER_CT_DOMAINS"))
 	m, err := NewMonitor(NewCrtShSource(""), inventory, store, notifier, domains)
 	if err != nil {
-		log.Printf("ct monitor disabled: %v", err)
+		logging.Infof("ct monitor disabled: %v", err)
 		return nil
+	}
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("KRYPTKEEPER_CT_SECOND_SOURCE")), "off") {
+		m.AddSource(NewCertSpotterSource("", strings.TrimSpace(os.Getenv("KRYPTKEEPER_CT_CERTSPOTTER_KEY"))))
 	}
 	return m
 }
 
-// Scan sweeps every configured domain once. A CT entry whose serial the
-// inventory does not know becomes a persisted finding; only NEW findings
-// notify. Expired entries are skipped — the attack surface is live
-// certs. Per-domain errors are reported, never fatal to the sweep.
+func (m *Monitor) resolveDomains(ctx context.Context) []string {
+	if m.domainProvider != nil {
+		return m.domainProvider(ctx)
+	}
+	return m.domains
+}
+
+// Scan sweeps every configured domain through every source once. A CT entry
+// whose serial the inventory does not know becomes a persisted finding; only
+// NEW findings notify. A certificate already known by serial (from any source
+// or an earlier scan) is skipped, so two sources never double-report. Expired
+// entries are skipped — the attack surface is live certs. Per-source errors
+// are reported, never fatal to the sweep. Sources run sequentially: the
+// Errors map is single-goroutine.
 func (m *Monitor) Scan(ctx context.Context) (ScanReport, error) {
-	report := ScanReport{Domains: len(m.domains), Errors: map[string]string{}}
-	for _, domain := range m.domains {
-		entries, err := m.source.Search(ctx, domain)
-		if err != nil {
-			report.Errors[domain] = err.Error()
-			continue
+	domains := m.resolveDomains(ctx)
+	report := ScanReport{Domains: len(domains), Errors: map[string]string{}}
+	if len(domains) == 0 {
+		return report, nil
+	}
+	existing, err := m.store.List(ctx, "")
+	if err != nil {
+		return report, fmt.Errorf("ct monitor: load known findings: %w", err)
+	}
+	knownSerials := map[string]bool{}
+	for _, f := range existing {
+		if f.Serial != "" {
+			knownSerials[NormalizeSerial(f.Serial)] = true
 		}
-		report.Entries += len(entries)
-		for _, e := range entries {
-			if !e.NotAfter.IsZero() && e.NotAfter.Before(m.now()) {
-				continue
+	}
+	for _, domain := range domains {
+		for _, source := range m.sources {
+			errKey := domain
+			if len(m.sources) > 1 {
+				errKey = domain + "@" + source.Name()
 			}
-			known, err := m.inventory.HasSerial(ctx, e.Serial)
+			entries, err := source.Search(ctx, domain)
 			if err != nil {
-				report.Errors[domain] = fmt.Sprintf("inventory check: %v", err)
-				break
-			}
-			if known {
+				report.Errors[errKey] = err.Error()
 				continue
 			}
-			finding := Finding{
-				ID:         m.source.Name() + ":" + e.EntryID,
-				Domain:     domain,
-				CommonName: e.CommonName,
-				DNSNames:   e.DNSNames,
-				Issuer:     e.Issuer,
-				Serial:     e.Serial,
-				NotBefore:  e.NotBefore,
-				NotAfter:   e.NotAfter,
-				Source:     m.source.Name(),
-			}
-			created, err := m.store.Record(ctx, finding)
-			if err != nil {
-				report.Errors[domain] = err.Error()
-				continue
-			}
-			if !created {
-				continue // already raised — never re-alert
-			}
-			report.NewFindings = append(report.NewFindings, finding.ID)
-			if m.notifier != nil {
-				if err := m.notifier.NotifyFinding(ctx, finding); err != nil {
-					// Recorded, never silently dropped — but a broken
-					// channel must not stop detection.
-					report.Errors["notify:"+finding.ID] = err.Error()
+			report.Entries += len(entries)
+			for _, e := range entries {
+				if !e.NotAfter.IsZero() && e.NotAfter.Before(m.now()) {
+					continue
+				}
+				norm := NormalizeSerial(e.Serial)
+				if e.Serial != "" && knownSerials[norm] {
+					continue
+				}
+				known, err := m.inventory.HasSerial(ctx, e.Serial)
+				if err != nil {
+					report.Errors[errKey] = fmt.Sprintf("inventory check: %v", err)
+					break
+				}
+				if known {
+					continue
+				}
+				finding := Finding{
+					ID:         source.Name() + ":" + e.EntryID,
+					Domain:     domain,
+					CommonName: e.CommonName,
+					DNSNames:   e.DNSNames,
+					Issuer:     e.Issuer,
+					Serial:     e.Serial,
+					NotBefore:  e.NotBefore,
+					NotAfter:   e.NotAfter,
+					Source:     source.Name(),
+				}
+				created, err := m.store.Record(ctx, finding)
+				if err != nil {
+					report.Errors[errKey] = err.Error()
+					continue
+				}
+				if e.Serial != "" {
+					knownSerials[norm] = true
+				}
+				if !created {
+					continue // already raised — never re-alert
+				}
+				report.NewFindings = append(report.NewFindings, finding.ID)
+				if m.notifier != nil {
+					if err := m.notifier.NotifyFinding(ctx, finding); err != nil {
+						// Recorded, never silently dropped — but a broken
+						// channel must not stop detection.
+						report.Errors["notify:"+finding.ID] = err.Error()
+					}
 				}
 			}
 		}
@@ -246,12 +327,40 @@ func (m *Monitor) Scan(ctx context.Context) (ScanReport, error) {
 	return report, nil
 }
 
-// Start runs Scan every interval until ctx ends.
+// tick is one interval: the lock gate, then a Scan. A lock error fails
+// closed (skip); not holding the lease skips silently. The lease is
+// 2*interval so the holder keeps it between ticks and replicas do not flap.
+func (m *Monitor) tick(ctx context.Context, interval time.Duration) {
+	if m.lock != nil {
+		ok, err := m.lock.TryAcquire(ctx, haLockCT, 2*interval)
+		if err != nil {
+			logging.Warnf("ct monitor: ha lock check failed, skipping this tick: %v", err)
+			return
+		}
+		if !ok {
+			return
+		}
+	}
+	report, err := m.Scan(ctx)
+	if err != nil {
+		logging.Warnf("ct monitor scan failed: %v", err)
+		return
+	}
+	if len(report.NewFindings) > 0 || len(report.Errors) > 0 {
+		logging.Infof("ct monitor: %d new finding(s), errors=%v", len(report.NewFindings), report.Errors)
+	}
+}
+
+// Start runs a tick every interval until ctx ends.
 func (m *Monitor) Start(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = 12 * time.Hour
 	}
-	log.Printf("ct monitor: every %s — %d domain(s) via %s", interval, len(m.domains), m.source.Name())
+	names := make([]string, len(m.sources))
+	for i, src := range m.sources {
+		names[i] = src.Name()
+	}
+	logging.Infof("ct monitor: every %s via %s", interval, strings.Join(names, "+"))
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -260,14 +369,7 @@ func (m *Monitor) Start(ctx context.Context, interval time.Duration) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				report, err := m.Scan(ctx)
-				if err != nil {
-					log.Printf("ct monitor scan failed: %v", err)
-					continue
-				}
-				if len(report.NewFindings) > 0 || len(report.Errors) > 0 {
-					log.Printf("ct monitor: %d new finding(s), errors=%v", len(report.NewFindings), report.Errors)
-				}
+				m.tick(ctx, interval)
 			}
 		}
 	}()

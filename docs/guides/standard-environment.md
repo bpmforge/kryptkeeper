@@ -35,6 +35,11 @@ agent on a podman network and then only waits.
    scheduler pairs a certificate with a target.
 4. Issue the certificate for that name. From here the hub renews it.
 
+If root cannot log in on the host, give the SSH account privilege through the
+helper, a sudoers allowlist or a sudo password: see
+[agentless on a hardened Linux host](agentless-hardened-linux.md) and the
+[privilege bundle](#agentless-privilege-bundle).
+
 On every tick the scheduler finds certificates inside the renewal window,
 generates a new key and CSR on the hub, issues the successor, writes cert and
 key (key mode 0600), runs the server's config test, reloads, dials the host on
@@ -114,3 +119,13 @@ is still serving an older certificate. Each retry issues a fresh certificate,
 because the private key of a failed attempt is destroyed with it; the unused
 ones simply expire. Fix the cause (here, the nginx config) and the next retry
 installs it, with no action on the hub.
+
+## Agentless privilege bundle
+
+For Linux targets scanned or renewed over SSH without root login, each target
+offers a privilege bundle (`GET /api/v1/targets/{id}/privilege-bundle`): the
+sudoers drop-in, the hash-pinned helper and a checklist for the host owner.
+The agent's `--generate-sudoers [--sudoers-mode=helper|nopasswd|password]`
+renders the same drop-in. The full walkthrough, with the four privilege modes,
+the exact sudoers text, the helper verbs and the residual risk of each mode, is
+[agentless on a hardened Linux host](agentless-hardened-linux.md).

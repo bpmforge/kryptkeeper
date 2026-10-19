@@ -11,6 +11,8 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -365,5 +367,90 @@ func TestRecordIssuedCertificateWithTemplateWritesTemplateID(t *testing.T) {
 	}
 	if gotSource != "wstep" || gotTemplate != templateID {
 		t.Errorf("row source=%q template_id=%q, want wstep and %s", gotSource, gotTemplate, templateID)
+	}
+}
+
+// serialClashEngine forces the first n signings to report a serial that is
+// already stored, as a duplicate generated serial would.
+type serialClashEngine struct {
+	ca.Service
+	clashSerial *big.Int
+	clashes     int
+	calls       int
+}
+
+func (e *serialClashEngine) IssueCertificate(caID string, req ca.IssuanceRequest) (*ca.IssuedCertificate, error) {
+	e.calls++
+	issued, err := e.Service.IssueCertificate(caID, req)
+	if err != nil || e.clashes <= 0 {
+		return issued, err
+	}
+	e.clashes--
+	cp := *issued
+	cp.SerialNumber = e.clashSerial
+	return &cp, nil
+}
+
+// W23-25: a (CA, serial) collision is rejected by idx_cert_serial_ca and the
+// issuance is re-signed with a fresh serial, leaving no duplicate row.
+func TestIssuanceRetriesOnSerialCollision(t *testing.T) {
+	db := setupIntegrationDB(t)
+	base, engine := newIntegrationCAProvider(t, db)
+	ctx := context.Background()
+	caID := getFirstCAID(t, engine)
+
+	first, err := base.IssueCertificate(ctx, CertificateIssueRequest{
+		CAID: caID, CSRPEM: generateTestCSRPEM(t, "one.example.com", "one.example.com")})
+	if err != nil {
+		t.Fatalf("first issuance: %v", err)
+	}
+	taken, _ := new(big.Int).SetString(first.SerialNumber, 10)
+
+	clash := &serialClashEngine{Service: engine, clashSerial: taken, clashes: 2}
+	provider := NewCACertificateProvider(clash, ca.NewDBRevocationStore(db, false), db, false)
+	second, err := provider.IssueCertificate(ctx, CertificateIssueRequest{
+		CAID: caID, CSRPEM: generateTestCSRPEM(t, "two.example.com", "two.example.com")})
+	if err != nil {
+		t.Fatalf("issuance must recover from a serial collision: %v", err)
+	}
+	if clash.calls != 3 {
+		t.Fatalf("engine calls = %d, want 3", clash.calls)
+	}
+	if second.SerialNumber == first.SerialNumber {
+		t.Fatal("retry must produce a fresh serial")
+	}
+	var total, dupes int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM certificates`).Scan(&total)
+	_ = db.QueryRow(`SELECT COUNT(*) FROM (SELECT 1 FROM certificates GROUP BY serial_number, ca_id HAVING COUNT(*) > 1)`).Scan(&dupes)
+	if total != 2 || dupes != 0 {
+		t.Fatalf("rows=%d dupes=%d, want 2 and 0", total, dupes)
+	}
+}
+
+func TestIssuanceFailsClosedWhenEverySerialCollides(t *testing.T) {
+	db := setupIntegrationDB(t)
+	base, engine := newIntegrationCAProvider(t, db)
+	ctx := context.Background()
+	caID := getFirstCAID(t, engine)
+	first, err := base.IssueCertificate(ctx, CertificateIssueRequest{
+		CAID: caID, CSRPEM: generateTestCSRPEM(t, "one.example.com", "one.example.com")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taken, _ := new(big.Int).SetString(first.SerialNumber, 10)
+
+	clash := &serialClashEngine{Service: engine, clashSerial: taken, clashes: 100}
+	provider := NewCACertificateProvider(clash, ca.NewDBRevocationStore(db, false), db, false)
+	_, err = provider.IssueCertificate(ctx, CertificateIssueRequest{
+		CAID: caID, CSRPEM: generateTestCSRPEM(t, "two.example.com", "two.example.com")})
+	if !errors.Is(err, ca.ErrSerialCollision) {
+		t.Fatalf("err = %v, want ErrSerialCollision", err)
+	}
+	if clash.calls != 5 {
+		t.Fatalf("engine calls = %d, want 5", clash.calls)
+	}
+	list, _ := provider.ListCertificates(ctx, CertificateListQuery{})
+	if list.Total != 1 {
+		t.Fatalf("certificates listed = %d, want 1 (nothing stored from failed attempts)", list.Total)
 	}
 }

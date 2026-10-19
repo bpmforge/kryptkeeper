@@ -10,24 +10,53 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
+
+	"kryptkeeper/internal/egress"
 )
 
 var errJWKSKeyNotFound = errors.New("jwks key not found")
 
-// httpsOnlyRedirects stops a followed redirect from downgrading an OIDC
-// discovery, JWKS or token request to cleartext (SUP-A10-4). The initial URLs
-// are already required to be https (requireHTTPSURL), but net/http would
-// otherwise follow an https->http hop silently.
-func httpsOnlyRedirects(req *http.Request, via []*http.Request) error {
-	if req.URL.Scheme != "https" {
-		return fmt.Errorf("refusing redirect to non-https url")
+// oidcRuntimeClient is the client for the runtime IdP calls (discovery, JWKS,
+// token exchange). The save-time probe was already guarded, but these run
+// later against names the IdP controls, so they get the same dial-time address
+// policy: a host that rebinds to link-local/metadata after the probe, or an
+// IdP document pointing at one, is refused. Redirects are same-host only so the
+// client secret in a token POST is never replayed elsewhere.
+//
+// Loopback (and plain http, which requireHTTPSURL admits only for loopback)
+// is reachable only when the operator configured a loopback URL: an IdP on
+// the same host is a supported setup, but a remote IdP's discovery document
+// must not be able to steer the hub into its own loopback services.
+func oidcRuntimeClient(timeout time.Duration, operatorURL string) *http.Client {
+	loopback := egressAllowLoopback || isLoopbackURL(operatorURL)
+	return egress.NewClient(egress.PolicyFromEnv(egress.Policy{
+		AllowPrivate:          true, // on-prem IdPs live on private space
+		AllowLoopback:         loopback,
+		RequireHTTPS:          !loopback,
+		MaxRedirects:          3,
+		SameHostRedirectsOnly: true,
+		Timeout:               timeout,
+	}))
+}
+
+// isLoopbackURL reports whether raw names a loopback host, by the same rule
+// requireHTTPSURL uses to admit plain http.
+func isLoopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
 	}
-	if len(via) >= 5 {
-		return fmt.Errorf("stopped after 5 redirects")
+	switch h := u.Hostname(); h {
+	case "localhost":
+		return true
+	default:
+		ip := net.ParseIP(h)
+		return ip != nil && ip.IsLoopback()
 	}
-	return nil
 }
 
 func newManagedOIDCJWKSCache(discoveryURL string, timeout time.Duration, ttl time.Duration) (*managedOIDCJWKSCache, error) {
@@ -42,10 +71,7 @@ func newManagedOIDCJWKSCache(discoveryURL string, timeout time.Duration, ttl tim
 	}
 
 	return &managedOIDCJWKSCache{
-		client: &http.Client{
-			Timeout:       timeout,
-			CheckRedirect: httpsOnlyRedirects,
-		},
+		client:       oidcRuntimeClient(timeout, discoveryURL),
 		discoveryURL: discoveryURL,
 		ttl:          ttl,
 	}, nil

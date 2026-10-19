@@ -7,12 +7,16 @@ package delivery
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net"
 	"net/http"
 	"net/smtp"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -84,6 +88,20 @@ type Channel interface {
 	Send(ctx context.Context, event Event) error
 }
 
+// Configurable is implemented by channels that can report whether their
+// settings are currently complete, so callers (escalation, the alerts UI) can
+// tell an unconfigured channel from a failing one without sending.
+type Configurable interface {
+	Configured(ctx context.Context) bool
+}
+
+var urlPattern = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"']+`)
+
+// RedactURLs masks URLs in err text: Go's HTTP errors embed the request URL,
+// and webhook/Slack URLs carry bearer tokens that must not reach logs or
+// delivery messages.
+func RedactURLs(s string) string { return urlPattern.ReplaceAllString(s, "[redacted-url]") }
+
 // Worker processes notification events with retry and channel routing.
 type Worker struct {
 	channels   map[string]Channel
@@ -143,8 +161,8 @@ func (w *Worker) Deliver(ctx context.Context, event Event) Result {
 			return result
 		}
 		lastErr = err
-		log.Printf("delivery attempt %d/%d for event %s on channel %s failed: %v",
-			attempt, w.maxRetries, event.ID, event.Channel, err)
+		logging.Warnf("delivery attempt %d/%d for event %s on channel %s failed: %s",
+			attempt, w.maxRetries, event.ID, event.Channel, RedactURLs(err.Error()))
 
 		if attempt < w.maxRetries {
 			select {
@@ -315,20 +333,88 @@ func pagerDutySeverity(priority string) string {
 	}
 }
 
+// Webhook signing headers. The signature covers "<timestamp>.<body>" so a
+// captured delivery cannot be replayed outside the receiver's freshness window.
+const (
+	HeaderWebhookSignature = "X-Kryptkeeper-Signature"
+	HeaderWebhookTimestamp = "X-Kryptkeeper-Timestamp"
+	HeaderWebhookEventID   = "X-Kryptkeeper-Event-Id"
+)
+
+var warnUnsignedWebhook sync.Once
+
 // WebhookChannel posts the event as JSON to a generic HTTP endpoint.
 type WebhookChannel struct {
 	URL     string
 	Headers map[string]string
+	// Secret signs deliveries. Empty means unsigned: Timestamp and Event-Id
+	// are still sent so existing deployments keep working; receivers must
+	// treat a missing signature as a reject.
+	Secret         string
+	PreviousSecret string
+	// PreviousUntil bounds the rotation window: PreviousSecret also signs
+	// while now < PreviousUntil.
+	PreviousUntil time.Time
+	Now           func() time.Time // nil = time.Now; test seam
 }
 
 func (c *WebhookChannel) Name() string { return "webhook" }
+
+func (c *WebhookChannel) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
+}
 
 func (c *WebhookChannel) Send(ctx context.Context, event Event) error {
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("marshal webhook payload: %w", err)
 	}
-	return postJSON(ctx, c.URL, payload, c.Headers)
+	now := c.now()
+	// Fresh per attempt (Send runs once per retry); Event-Id stays stable.
+	ts := strconv.FormatInt(now.Unix(), 10)
+	eventID := event.ID
+	if eventID == "" {
+		sum := sha256.Sum256(payload)
+		eventID = "evt_" + hex.EncodeToString(sum[:])[:32]
+	}
+	headers := make(map[string]string, len(c.Headers)+3)
+	for k, v := range c.Headers {
+		headers[k] = v
+	}
+	headers[HeaderWebhookTimestamp] = ts
+	headers[HeaderWebhookEventID] = eventID
+	if sig := c.signWebhook(ts, payload, now); sig != "" {
+		headers[HeaderWebhookSignature] = sig
+	} else {
+		warnUnsignedWebhook.Do(func() {
+			logging.Infof("webhook unsigned: set notifications.webhook_secret")
+		})
+	}
+	return postJSON(ctx, c.URL, payload, headers)
+}
+
+// signWebhook returns "v1=<hex>[,v1=<hex-previous>]" (new secret first), or ""
+// when no secret is configured. The message is ts + "." + body.
+func (c *WebhookChannel) signWebhook(ts string, body []byte, now time.Time) string {
+	if c.Secret == "" {
+		return ""
+	}
+	sig := "v1=" + webhookMAC(c.Secret, ts, body)
+	if c.PreviousSecret != "" && now.Before(c.PreviousUntil) {
+		sig += ",v1=" + webhookMAC(c.PreviousSecret, ts, body)
+	}
+	return sig
+}
+
+func webhookMAC(secret, ts string, body []byte) string {
+	m := hmac.New(sha256.New, []byte(secret))
+	m.Write([]byte(ts))
+	m.Write([]byte("."))
+	m.Write(body)
+	return hex.EncodeToString(m.Sum(nil))
 }
 
 // postJSON POSTs a JSON body to url with the given extra headers, returning an

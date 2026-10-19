@@ -22,6 +22,7 @@
 # network alias "agenthost", the name its fixture certificate carries). The hub's ACME server refuses
 # localhost names and loopback http-01 targets, so a real private network is
 # the honest environment for the agent path (and needs no privileged ports).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/podman.sh"
 set -u
 set -o pipefail
 
@@ -60,7 +61,7 @@ DIE()  { FAIL "$*"; summary; exit 1; }
 hublog() { podman logs "$CTR_HUB" 2>&1; }
 cleanup() {
   log "cleanup"
-  podman rm -f "$CTR_HUB" "$CTR_A" "$CTR_B" "$CTR_C" >/dev/null 2>&1
+  kk_rm "$CTR_HUB" "$CTR_A" "$CTR_B" "$CTR_C"
   podman network rm "$NET" >/dev/null 2>&1
   podman rmi -f "$HUB_IMAGE" "$SSH_IMAGE" "$AGENT_BASE" "$AGENT_IMAGE" >/dev/null 2>&1
   rm -f "$SSH_CTX/authorized_keys" "$AGENT_CTX/kryptkeeper-agent"
@@ -107,7 +108,7 @@ audit_count() { audit_json "$1" | python3 -c 'import json,sys; print(len(json.lo
 fp_of() { openssl x509 -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f'; }
 
 # --- images / binaries -------------------------------------------------------
-case "$(podman info --format '{{.Host.Arch}}' 2>/dev/null)" in arm64|aarch64) GOARCH=arm64 ;; *) GOARCH=amd64 ;; esac
+GOARCH="$(kk_goarch)"
 log "building hub + agent (linux/$GOARCH)"
 mkdir -p "$WORK/hubctx"
 ( cd "$ROOT" && GOOS=linux GOARCH=$GOARCH CGO_ENABLED=0 go build -o "$WORK/hubctx/kryptkeeper" ./cmd/kryptkeeper ) || DIE "hub build failed"
@@ -128,7 +129,7 @@ PASS "images built"
 # --- hub ---------------------------------------------------------------------
 # Configured the way an operator would: a one-minute scheduler cadence and a
 # one-minute agent sweep. Nothing else is special.
-podman rm -f "$CTR_HUB" "$CTR_A" "$CTR_B" "$CTR_C" >/dev/null 2>&1
+kk_rm "$CTR_HUB" "$CTR_A" "$CTR_B" "$CTR_C"
 podman network rm "$NET" >/dev/null 2>&1
 podman network create "$NET" >/dev/null || DIE "network create"
 cat >"$WORK/hub.env" <<EOF
@@ -154,6 +155,7 @@ KRYPTKEEPER_AGENT_ENROLLMENT_SECRETS=uat-enrollment-secret
 KRYPTKEEPER_BASE_URL=https://$CTR_HUB:$HUB_PORT
 RENEWAL_POLL_MINUTES=1
 AGENT_RENEWAL_SWEEP_MINUTES=1
+RENEWAL_RETRY_BASE_MINUTES=1
 EOF
 podman run -d --name "$CTR_HUB" --network "$NET" -p "127.0.0.1:$HUB_PORT:$HUB_PORT" --env-file "$WORK/hub.env" "$HUB_IMAGE" >/dev/null || DIE "start hub"
 for _ in $(seq 1 40); do curl -fsSk "$BASE/healthz" >/dev/null 2>&1 && break; sleep 1; done
@@ -165,6 +167,12 @@ curl -sSk -o "$WORK/cacerts.b64" "$BASE/.well-known/est/cacerts" \
   && openssl base64 -d -A -in "$WORK/cacerts.b64" -out "$WORK/cacerts.p7" \
   && openssl pkcs7 -inform der -in "$WORK/cacerts.p7" -print_certs -out "$HUB_CA_PEM" \
   && [ -s "$HUB_CA_PEM" ] || DIE "could not export the hub CA via EST cacerts"
+# The scheduler's one-time CN/SAN->binding backfill runs on its first tick and
+# binds any cert whose CN equals a target host. Let it finish while there are no
+# certs, so the explicit bind below is the only binding (otherwise a first tick
+# landing after issuance binds and renews the cert behind the harness's back).
+for _ in $(seq 1 90); do hublog | grep -q "migrated 0 CN/SAN host match" && break; sleep 1; done
+hublog | grep -q "migrated 0 CN/SAN host match" || DIE "scheduler binding backfill did not run on the empty hub"
 CA_ID="$(api "$BASE/api/v1/cas" | jget data.0.id)"
 [ -n "$CA_ID" ] || DIE "no hub CA"
 # Short-lived: 72h. A renewal keeps its template's validity, so the successor is
@@ -221,17 +229,36 @@ A_TGT="$(mk_target ap-nginx "$CTR_A" "$A_CRED")"; C_TGT="$(mk_target ap-negative
 [ -n "$A_TGT" ] && [ -n "$C_TGT" ] || DIE "target create failed"
 A_FP0="$(issue_install a "$CTR_A" "$CTR_A")" || DIE "issue/install A"
 C_FP0="$(issue_install c "$CTR_C" "$CTR_C")" || DIE "issue/install C"
+# Since W27-02 the scheduler renews a certificate only onto targets an operator
+# bound it to; a CN == host match alone is never acted on (the hub pushes a
+# private key, so it must not guess). The first-tick backfill ran at hub start,
+# before these certs existed, so bind explicitly -- the operator step.
+# C's owner is set BEFORE the bindings: a binding makes the cert eligible for the
+# scheduler's very next tick, which reads certificates once. An owner patched
+# after the bind raced that tick (the tick saw no owner_email, so it neither
+# sent nor audited-as-skipped the owner reminder the leg asserts below).
+OWN_RESP="$(api -X PATCH "$BASE/api/v1/certificates/$C_FP0/ownership" -d '{"owner_email":"owner@example.test","owner_team":"uat","service_name":"negative"}')"
+bind_cert() { # target fp
+  local resp; resp="$(api -w '\nHTTP %{http_code}' -X POST "$BASE/api/v1/targets/$1/bindings" -d "{\"cert_fingerprint\":\"$2\"}")"
+  [ -n "$(printf '%s' "$resp" | sed '$d' | jget data.target_id)" ] && return 0
+  echo "bind target=$1 fp=$2 -> $(printf '%s' "$resp" | tr '\n' ' ')" >&2; return 1
+}
 # C's nginx reads its key from a path the install recipe does not know about (a
 # very common wrong-recipe misconfiguration): a renewed cert written beside the
 # old key at that path can never pass `nginx -t`.
 podman exec "$CTR_C" sh -c 'sed -i "s#/etc/ssl/kk/server.key#/etc/ssl/kk/other.key#" /etc/nginx/sites-enabled/kk.conf' || DIE "prepare C"
-podman exec "$CTR_A" nginx -s reload >/dev/null 2>&1 || DIE "reload A"
-podman exec "$CTR_C" nginx -s reload >/dev/null 2>&1 || DIE "reload C"
-wait_served 127.0.0.1:$A_TLS x "$A_FP0" 15 || DIE "A is not serving its initial cert"
+# nginx may still be starting in the container; retry the reload briefly.
+reload_nginx() { local c="$1" i out; for i in $(seq 1 20); do out="$(podman exec "$c" nginx -s reload 2>&1)" && return 0; sleep 1; done; echo "reload $c: $out"; return 1; }
+reload_nginx "$CTR_A" || DIE "reload A"
+reload_nginx "$CTR_C" || DIE "reload C"
+wait_served 127.0.0.1:$A_TLS x "$A_FP0" 15 || { echo "A served: $(served_fp 127.0.0.1:$A_TLS x) want $A_FP0"; podman logs --tail 15 "$CTR_A" 2>&1; DIE "A is not serving its initial cert"; }
 wait_served 127.0.0.1:$C_TLS x "$C_FP0" 15 || DIE "C is not serving its initial cert"
 A_SERIAL0="$(served_serial 127.0.0.1:$A_TLS x)"
 C_CRT_SUM0="$(podman exec "$CTR_C" sha256sum /etc/ssl/kk/server.crt | cut -d' ' -f1)"
-OWN_RESP="$(api -X PATCH "$BASE/api/v1/certificates/$C_FP0/ownership" -d '{"owner_email":"owner@example.test","owner_team":"uat","service_name":"negative"}')"
+# Bind only after both hosts are verified serving their initial certs: a binding
+# makes the cert eligible for the scheduler's next tick, which renews the 72h
+# cert at once and would otherwise race the initial-state checks above.
+bind_cert "$A_TGT" "$A_FP0" && bind_cert "$C_TGT" "$C_FP0" || DIE "binding cert to target failed"
 PASS "A+C: targets (auto_renew + install recipe) and 72h initial certs installed; A serves serial $A_SERIAL0"
 
 # --- B: agent container --------------------------------------------------------
@@ -314,7 +341,15 @@ C_FP1="$(wait_served_change 127.0.0.1:$C_TLS x "$C_FP0" "$AUTOPILOT_TIMEOUT")" \
 if [ -n "${C_FP1:-}" ]; then
   VOUT="$(echo | openssl s_client -connect 127.0.0.1:$C_TLS -servername "$CTR_C" -CAfile "$HUB_CA_PEM" -verify_return_error -verify_hostname "$CTR_C" 2>&1)"
   echo "$VOUT" | grep -q "Verify return code: 0 (ok)" && PASS "C: retried leaf verifies against the hub CA (openssl)" || FAIL "C: retried leaf does not verify"
-  CJ="$(audit_json "action=certificate.renew_execute&resource_id=$C_FP0")"
+  # The leaf is served as soon as nginx reloads; the success audit row follows
+  # the post-install verification, so poll for it instead of reading once.
+  for _ in $(seq 1 15); do
+    CJ="$(audit_json "action=certificate.renew_execute&resource_id=$C_FP0")"
+    printf '%s' "$CJ" | python3 -c 'import json,sys
+d=json.load(sys.stdin)["data"]
+sys.exit(0 if any(e["outcome"]=="success" and "install=installed_verified" in e.get("change_summary","") and "attempt=1" not in e.get("change_summary","") for e in d) else 1)' && break
+    sleep 2
+  done
   printf '%s' "$CJ" | python3 -c 'import json,sys
 d=json.load(sys.stdin)["data"]
 sys.exit(0 if any(e["outcome"]=="success" and "install=installed_verified" in e.get("change_summary","") and "attempt=1" not in e.get("change_summary","") for e in d) else 1)' \

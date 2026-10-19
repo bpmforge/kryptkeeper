@@ -1,0 +1,116 @@
+{
+  "task": "U-19x",
+  "title": "Approver decides a certificate request (approver role; template approval_roles name approver)",
+  "sourceStory": "STORIES.md#u-19x",
+  "persona": "dana.approver (approver role)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/inbox"
+      },
+      "caption": "Open /inbox",
+      "slug": "approver-inbox",
+      "expect": {
+        "role": "heading",
+        "name": "Approvals inbox"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-19x/01-approver-inbox.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Approve",
+        "within": "div.space-y-3 > div",
+        "withinText": "Production Wildcard"
+      },
+      "caption": "Click **Approve**",
+      "slug": "approver-approves-certificate-request",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-19x/02-approver-approves-certificate-request.png",
+        "annotated": "docs/guide/screenshots/U-19x/02-approver-approves-certificate-request-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1170,
+          "y": 430,
+          "w": 106,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "principal": "dana",
+  "lastRun": {
+    "at": "2026-10-18T12:48:12.595Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-19x",
+    "steps": 2,
+    "shots": 2,
+    "annotated": 1,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/inbox"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-19x/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-19x/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

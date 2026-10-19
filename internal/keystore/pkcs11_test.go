@@ -129,3 +129,16 @@ func TestPKCS11Store_TokenLabelOnly_OpensWithoutSlot(t *testing.T) {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 }
+
+// The token has no Ed25519 mechanism in this backend; the suite asserts the
+// refusal. Skips (naming KRYPTKEEPER_PKCS11_LIB) without a SoftHSM2 token.
+func TestConformance_PKCS11(t *testing.T) {
+	runStoreConformance(t, func(t *testing.T) Store {
+		pkcs11Token(t)
+		s, err := NewPKCS11StoreFromEnv()
+		if err != nil {
+			t.Fatalf("NewPKCS11StoreFromEnv: %v", err)
+		}
+		return s
+	}, withUnsupported(Ed25519))
+}

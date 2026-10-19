@@ -1,0 +1,206 @@
+{
+  "task": "U-49",
+  "title": "Escrow, recover and BYOK-export a root key (dual control)",
+  "sourceStory": "STORIES.md#u-49",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/keys"
+      },
+      "caption": "Open /keys",
+      "slug": "keys-list",
+      "expect": {
+        "role": "button",
+        "name": "Escrow"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-49/01-keys-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Escrow"
+      },
+      "caption": "Click **Escrow**",
+      "slug": "escrow-dialog",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-49/02-escrow-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "press",
+      "value": "Escape",
+      "caption": "press",
+      "slug": "press",
+      "capture": false,
+      "n": 3
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Recover"
+      },
+      "caption": "Click **Recover**",
+      "slug": "recover-dialog",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-49/04-recover-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "press",
+      "value": "Escape",
+      "caption": "press",
+      "slug": "press",
+      "capture": false,
+      "n": 5
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "BYOK export"
+      },
+      "caption": "Click **BYOK export**",
+      "slug": "byok-dialog",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-49/06-byok-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "press",
+      "value": "Escape",
+      "caption": "press",
+      "slug": "press",
+      "capture": false,
+      "n": 7
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/key-custody"
+      },
+      "caption": "Open /reports/key-custody",
+      "slug": "key-custody",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-49/08-key-custody.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "flags": "MULTI-USER + EXTERNAL KMS (dialogs and custody trail only; BYOK delivery needs a cloud KMS)",
+  "lastRun": {
+    "at": "2026-10-18T12:46:22.302Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-49",
+    "steps": 8,
+    "shots": 5,
+    "annotated": 0,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/reports/key-custody"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-49/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-49/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+Contact: mailto:security@kryptkeeper.io
+Contact: https://github.com/bpmforge/kryptkeeper/security/advisories/new
+Expires: 2027-04-16T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://kryptkeeper.io/.well-known/security.txt
+Policy: https://github.com/bpmforge/kryptkeeper/blob/main/SECURITY.md

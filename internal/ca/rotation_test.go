@@ -29,6 +29,15 @@ type saveFailsAfterStore struct {
 	saveCalls  int
 }
 
+// noSnapshotKeys models a backend that refuses key export (HSM/KMS): RotateCA
+// then cannot snapshot the old key and a mid-rotation failure stays
+// ErrCARotationInconsistent. These tests exercise exactly that path.
+type noSnapshotKeys struct{ keystore.Store }
+
+func (noSnapshotKeys) ExportEncryptedKey(string, []byte) ([]byte, error) {
+	return nil, errors.New("export refused by backend")
+}
+
 var errSimulatedSaveFailure = errors.New("simulated ca-store save failure")
 
 func (s *saveFailsAfterStore) Save(ca *CA) error {
@@ -305,7 +314,7 @@ func TestRotateCA_StoreSaveFailureIsLoudAndActionable(t *testing.T) {
 		t.Fatalf("create keystore: %v", err)
 	}
 	store := &saveFailsAfterStore{Store: NewMemStore(), allowSaves: 1}
-	engine := NewEngine(keys, store)
+	engine := NewEngine(noSnapshotKeys{keys}, store)
 
 	root, err := engine.CreateRootCA("Root", pkix.Name{CommonName: "Root"}, keystore.ECDSAP256, 10*365*24*time.Hour)
 	if err != nil {

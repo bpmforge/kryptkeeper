@@ -402,3 +402,208 @@ func TestOCSPCacheEviction(t *testing.T) {
 		}
 	}
 }
+
+// W23-26: a changed revocation stamp drops every cached response, so the next
+// request re-reads status from the (shared) store.
+func TestResponderSyncVersionDropsCacheOnChange(t *testing.T) {
+	ca := newTestCA(t)
+	leaf := issueTestCert(t, ca, 3100)
+	calls := 0
+	statusFunc := func(serial *big.Int, issuer *x509.Certificate) (bool, time.Time, int, error) {
+		calls++
+		return false, time.Time{}, 0, nil
+	}
+	issuerFunc := func(keyHash []byte) (*x509.Certificate, crypto.Signer, error) { return ca.cert, ca.key, nil }
+	responder := NewResponder(statusFunc, issuerFunc, 1*time.Hour, 100)
+	reqBytes := makeOCSPRequest(t, leaf, ca.cert)
+	handler := responder.Handler()
+	query := func() {
+		handler.ServeHTTP(httptest.NewRecorder(),
+			httptest.NewRequest(http.MethodPost, "/ocsp", strings.NewReader(string(reqBytes))))
+	}
+
+	query()
+	if responder.SyncVersion("0|") {
+		t.Fatal("first call only records the stamp")
+	}
+	query()
+	if calls != 1 {
+		t.Fatalf("status lookups = %d, want 1 (cached)", calls)
+	}
+	if responder.SyncVersion("0|") {
+		t.Fatal("an unchanged stamp must report false")
+	}
+	if !responder.SyncVersion("1|2026-01-01") {
+		t.Fatal("a changed stamp must report true")
+	}
+	query()
+	if calls != 2 {
+		t.Fatalf("status lookups = %d, want 2 (cache dropped)", calls)
+	}
+}
+
+// --- W23-51: Cache-Control max-age ---
+
+func ocspCacheControl(t *testing.T, r *Responder, leaf, issuer *x509.Certificate) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	r.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ocsp",
+		strings.NewReader(string(makeOCSPRequest(t, leaf, issuer)))))
+	return rec.Header().Get("Cache-Control")
+}
+
+func newDayResponder(t *testing.T, ca *testCA) *Responder {
+	t.Helper()
+	return NewResponder(
+		func(*big.Int, *x509.Certificate) (bool, time.Time, int, error) { return false, time.Time{}, 0, nil },
+		func([]byte) (*x509.Certificate, crypto.Signer, error) { return ca.cert, ca.key, nil },
+		24*time.Hour, 100)
+}
+
+func maxAgeSeconds(t *testing.T, cc string) int {
+	t.Helper()
+	var n int
+	if _, err := fmt.Sscanf(cc, "max-age=%d, public", &n); err != nil {
+		t.Fatalf("unparseable Cache-Control %q: %v", cc, err)
+	}
+	return n
+}
+
+func TestOCSPCacheControlDefaultMaxAge14400(t *testing.T) {
+	ca := newTestCA(t)
+	leaf := issueTestCert(t, ca, 5001)
+	if got := ocspCacheControl(t, newDayResponder(t, ca), leaf, ca.cert); got != "max-age=14400, public" {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+}
+
+func TestOCSPCacheControlHonoursConfiguredValue(t *testing.T) {
+	ca := newTestCA(t)
+	leaf := issueTestCert(t, ca, 5002)
+	r := newDayResponder(t, ca).WithMaxAge(90 * time.Minute)
+	if got := ocspCacheControl(t, r, leaf, ca.cert); got != "max-age=5400, public" {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+}
+
+func TestOCSPCacheControlClampedToRemainingValidity(t *testing.T) {
+	ca := newTestCA(t)
+	leaf := issueTestCert(t, ca, 5003)
+	r := newTestResponder(t, ca, nil) // 1h validity, default 4h max-age
+	if n := maxAgeSeconds(t, ocspCacheControl(t, r, leaf, ca.cert)); n > 3600 || n < 3590 {
+		t.Fatalf("max-age = %d, want <= 3600 (validity)", n)
+	}
+}
+
+func TestOCSPCacheControlClampOnCachedResponse(t *testing.T) {
+	ca := newTestCA(t)
+	leaf := issueTestCert(t, ca, 5004)
+	r := newDayResponder(t, ca)
+	_ = ocspCacheControl(t, r, leaf, ca.cert) // prime
+	r.mu.Lock()
+	for k, c := range r.cache {
+		c.expiresAt = time.Now().Add(10 * time.Minute)
+		r.cache[k] = c
+	}
+	r.mu.Unlock()
+	if n := maxAgeSeconds(t, ocspCacheControl(t, r, leaf, ca.cert)); n < 1 || n > 600 {
+		t.Fatalf("max-age = %d, want 1..600", n)
+	}
+}
+
+func TestOCSPCacheControlZeroMeansNoStore(t *testing.T) {
+	ca := newTestCA(t)
+	leaf := issueTestCert(t, ca, 5005)
+	r := newDayResponder(t, ca).WithMaxAge(0)
+	if got := ocspCacheControl(t, r, leaf, ca.cert); got != "no-cache, no-store" {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+}
+
+func TestOCSPNegativeMaxAgeKeepsDefault(t *testing.T) {
+	ca := newTestCA(t)
+	leaf := issueTestCert(t, ca, 5006)
+	r := newDayResponder(t, ca).WithMaxAge(-time.Second)
+	if got := ocspCacheControl(t, r, leaf, ca.cert); got != "max-age=14400, public" {
+		t.Fatalf("Cache-Control = %q", got)
+	}
+}
+
+func TestOCSPErrorResponsesCarryNoCacheControl(t *testing.T) {
+	ca := newTestCA(t)
+	rec := httptest.NewRecorder()
+	newDayResponder(t, ca).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ocsp", strings.NewReader("garbage")))
+	if got := rec.Header().Get("Cache-Control"); got != "" {
+		t.Fatalf("error response Cache-Control = %q, want none", got)
+	}
+}
+
+func TestMaxAgeFromEnv(t *testing.T) {
+	cases := []struct {
+		name, val string
+		set       bool
+		want      time.Duration
+	}{
+		{"unset", "", false, 4 * time.Hour},
+		{"duration", "2h", true, 2 * time.Hour},
+		{"seconds", "14400", true, 4 * time.Hour},
+		{"zero", "0", true, 0},
+		{"negative", "-5", true, 4 * time.Hour},
+		{"garbage", "abc", true, 4 * time.Hour},
+		{"bad unit", "1.5x", true, 4 * time.Hour},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.set {
+				t.Setenv("KRYPTKEEPER_OCSP_MAX_AGE", c.val)
+			} else {
+				t.Setenv("KRYPTKEEPER_OCSP_MAX_AGE", "")
+			}
+			if got := MaxAgeFromEnv(); got != c.want {
+				t.Fatalf("MaxAgeFromEnv(%q) = %v, want %v", c.val, got, c.want)
+			}
+		})
+	}
+}
+
+// Standard base64 contains '/', which nginx percent-encodes (%2F) and some
+// clients send raw. Both must reach the decoder intact.
+func TestOCSPGetRequestWithSlashInBase64(t *testing.T) {
+	ca := newTestCA(t)
+	responder := newTestResponder(t, ca, map[string]time.Time{})
+	handler := responder.Handler()
+
+	var encoded string
+	for serial := int64(6000); serial < 6400; serial++ {
+		leaf := issueTestCert(t, ca, serial)
+		e := base64.StdEncoding.EncodeToString(makeOCSPRequest(t, leaf, ca.cert))
+		if strings.Contains(e, "/") {
+			encoded = e
+			break
+		}
+	}
+	if encoded == "" {
+		t.Fatal("no OCSP request with '/' in its base64 among 400 serials")
+	}
+	escaped := strings.NewReplacer("/", "%2F", "+", "%2B", "=", "%3D").Replace(encoded)
+
+	for name, path := range map[string]string{
+		"percent-encoded": "/ocsp/" + escaped,
+		"raw":             "/ocsp/" + encoded,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", rec.Code)
+			}
+			resp, err := goocsp.ParseResponse(rec.Body.Bytes(), ca.cert)
+			if err != nil {
+				t.Fatalf("parse OCSP response: %v", err)
+			}
+			if resp.Status != goocsp.Good {
+				t.Errorf("expected Good, got %d", resp.Status)
+			}
+		})
+	}
+}

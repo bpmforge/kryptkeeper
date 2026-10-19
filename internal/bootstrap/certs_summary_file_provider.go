@@ -7,22 +7,17 @@ package bootstrap
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"os"
-	"strings"
-)
 
-const defaultCertsSummaryFile = "./var/certs-summary.json"
+	"kryptkeeper/internal/logging"
+)
 
 type fileCertSummaryProvider struct {
 	filePath string
 }
 
 func NewFileCertSummaryProviderFromEnv() CertSummaryProvider {
-	filePath := strings.TrimSpace(os.Getenv("APP_CERTS_SUMMARY_FILE"))
-	if filePath == "" {
-		filePath = defaultCertsSummaryFile
-	}
+	filePath := resolveStateFilePath(os.Getenv, "APP_CERTS_SUMMARY_FILE", "certs-summary.json")
 
 	return &fileCertSummaryProvider{filePath: filePath}
 }
@@ -30,7 +25,7 @@ func NewFileCertSummaryProviderFromEnv() CertSummaryProvider {
 func (s *fileCertSummaryProvider) LoadSummary(context.Context) (CertSummarySnapshot, error) {
 	body, err := os.ReadFile(s.filePath)
 	if err != nil {
-		log.Printf("cert summary file fallback: unreadable %q: %v", s.filePath, err)
+		logging.Infof("cert summary file fallback: unreadable %q: %v", s.filePath, err)
 		return defaultCertsSummarySnapshot(), nil
 	}
 
@@ -38,19 +33,20 @@ func (s *fileCertSummaryProvider) LoadSummary(context.Context) (CertSummarySnaps
 		Total          *int `json:"total"`
 		Expiring30Days *int `json:"expiring_30_days"`
 		Expired        *int `json:"expired"`
+		Unowned        int  `json:"unowned"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		log.Printf("cert summary file fallback: invalid JSON")
+		logging.Infof("cert summary file fallback: invalid JSON")
 		return defaultCertsSummarySnapshot(), nil
 	}
 
 	if parsed.Total == nil || parsed.Expiring30Days == nil || parsed.Expired == nil {
-		log.Printf("cert summary file fallback: missing fields")
+		logging.Infof("cert summary file fallback: missing fields")
 		return defaultCertsSummarySnapshot(), nil
 	}
 
 	if *parsed.Total < 0 || *parsed.Expiring30Days < 0 || *parsed.Expired < 0 {
-		log.Printf("cert summary file fallback: negative values")
+		logging.Infof("cert summary file fallback: negative values")
 		return defaultCertsSummarySnapshot(), nil
 	}
 
@@ -58,6 +54,7 @@ func (s *fileCertSummaryProvider) LoadSummary(context.Context) (CertSummarySnaps
 		Total:          *parsed.Total,
 		Expiring30Days: *parsed.Expiring30Days,
 		Expired:        *parsed.Expired,
+		Unowned:        max(parsed.Unowned, 0),
 		Source:         "file-store",
 	}, nil
 }

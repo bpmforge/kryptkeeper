@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"strings"
 	"time"
@@ -38,6 +38,9 @@ func registerDeliveryPluginHandlers(mux *http.ServeMux, auth *Authenticator, mgr
 			writeForbidden(w, "pki-admin role required to change delivery plugins")
 			return pd, false
 		}
+		if admin && denyNonSuperAdminGlobal(w, r, auditProvider, pd, action, "delivery_plugin", "-") {
+			return pd, false
+		}
 		if mgr == nil {
 			writeServiceUnavailable(w, errPluginsOff.Error())
 			return pd, false
@@ -55,7 +58,7 @@ func registerDeliveryPluginHandlers(mux *http.ServeMux, auth *Authenticator, mgr
 			strings.HasPrefix(err.Error(), "compile plugin"), strings.Contains(err.Error(), "does not export"):
 			writeBadRequest(w, err.Error())
 		default:
-			log.Printf("delivery plugins: %v", err)
+			logging.Infof("delivery plugins: %v", err)
 			writeServiceUnavailable(w, "delivery plugins unavailable")
 		}
 	}
@@ -90,27 +93,32 @@ func registerDeliveryPluginHandlers(mux *http.ServeMux, auth *Authenticator, mgr
 				if rejectOversizeBody(w, err) {
 					return
 				}
+				emitAuditEvent(r, auditProvider, pd.ID, "delivery_plugin.install", "delivery_plugin", "-", AuditOutcomeFailure)
 				writeBadRequest(w, "invalid request body (manifest object and wasm_base64)")
 				return
 			}
 			manifest := []byte(req.Manifest)
 			switch {
 			case req.ManifestBase64 != "" && len(req.Manifest) > 0:
+				emitAuditEvent(r, auditProvider, pd.ID, "delivery_plugin.install", "delivery_plugin", "-", AuditOutcomeFailure)
 				writeBadRequest(w, "send manifest or manifest_base64, not both")
 				return
 			case req.ManifestBase64 != "":
 				raw, err := base64.StdEncoding.DecodeString(req.ManifestBase64)
 				if err != nil || len(raw) == 0 {
+					emitAuditEvent(r, auditProvider, pd.ID, "delivery_plugin.install", "delivery_plugin", "-", AuditOutcomeFailure)
 					writeBadRequest(w, "manifest_base64 is not base64")
 					return
 				}
 				manifest = raw
 			case strings.TrimSpace(req.Signature) != "":
+				emitAuditEvent(r, auditProvider, pd.ID, "delivery_plugin.install", "delivery_plugin", "-", AuditOutcomeFailure)
 				writeBadRequest(w, "a signed install must send manifest.json's exact bytes as manifest_base64")
 				return
 			}
 			wasm, err := base64.StdEncoding.DecodeString(req.WasmBase64)
 			if err != nil || len(wasm) == 0 {
+				emitAuditEvent(r, auditProvider, pd.ID, "delivery_plugin.install", "delivery_plugin", "-", AuditOutcomeFailure)
 				writeBadRequest(w, "wasm_base64 is not base64")
 				return
 			}

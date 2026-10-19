@@ -27,8 +27,19 @@ defaults:
 # Namespaces to watch (empty = all namespaces).
 watchNamespaces: []
 
-# Poll interval in seconds.
-pollIntervalSeconds: 15
+# Safety-net full resync interval in seconds (requests are picked up via a watch).
+resyncIntervalSeconds: 300
+
+# By default the issuer is the approver for its own signer: it approves a
+# request when the hub issues, and denies it (Denied=True) on a policy
+# violation. cert-manager forbids Denied on an already-approved request, so
+# leave approverRBAC false unless another approver (approver-policy) owns
+# approval; true grants cert-manager's built-in approver approve rights on
+# this signer, which then auto-approves everything.
+certManager:
+  approverRBAC: false
+  namespace: cert-manager
+  serviceAccountName: cert-manager
 
 serviceAccount:
   create: true

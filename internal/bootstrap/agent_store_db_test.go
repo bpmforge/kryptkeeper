@@ -341,8 +341,8 @@ func TestDBAgentStore_InsertTaskTxOnConflictSkipsDuplicateWithoutError(t *testin
 // only assertion that catches it; comparing interface values would pass on two
 // stores that merely happen to be the same TYPE.
 func TestNewAgentStoreFromEnv_FallbackIsSharedAcrossCallers(t *testing.T) {
-	// Force the no-database fallback: postgres mode with no DSN of any kind, so
-	// newDBProviderState returns postgresMissingErr and both calls fall back.
+	// Force the explicit in-memory mode (the database is also unconfigured, to
+	// prove the name, not an outage, is what selects memory).
 	// KRYPTKEEPER_DB_MODE is the switch (dbModeEnv) — an invented name like
 	// DB_DRIVER is silently ignored, leaves the default sqlite mode in place,
 	// and quietly tests the DB path against a shared file instead. That is how
@@ -351,6 +351,8 @@ func TestNewAgentStoreFromEnv_FallbackIsSharedAcrossCallers(t *testing.T) {
 	t.Setenv("APP_AUDIT_DB_DSN", "")
 	t.Setenv("KRYPTKEEPER_DB_DSN", "")
 	t.Setenv("DATABASE_URL", "")
+	// D-290-A: memory is only ever chosen by name, never as a fallback.
+	t.Setenv("APP_AGENT_STORE_PROVIDER", "memory")
 
 	// sharedFallbackAgentStore is a sync.Once-guarded process singleton by
 	// design (S-35: it must be the SAME store across callers in production).
@@ -407,5 +409,59 @@ func TestEndpointCountDistinguishesFailureFromZero(t *testing.T) {
 	}
 	if _, err := s.endpointCount(); err == nil {
 		t.Fatal("a failed query must return an error, not a genuine-looking zero")
+	}
+}
+
+func TestDBAgentStore_VersionRemoveAndPrune(t *testing.T) {
+	s := newTestDBAgentStore(t)
+	id, tok, _ := s.register("a", AgentTypeLinux)
+	keepID, keepTok, _ := s.register("keep", AgentTypeLinux)
+	oldID, _, _ := s.register("old", AgentTypeLinux)
+	if err := s.submitInventory(id, tok, []AgentDiscoveredCert{{Fingerprint: "fp1"}}, []AgentEndpoint{{CertPath: "/x"}}); err != nil {
+		t.Fatalf("inventory: %v", err)
+	}
+	_ = s.heartbeat(keepID, keepTok)
+	s.setVersion(id, "2.0.0")
+	s.setVersion(id, "") // empty must not clobber
+	s.setVersion("unknown", "9")
+
+	for _, a := range s.list() {
+		if a.ID == id && a.Version != "2.0.0" {
+			t.Errorf("version = %q, want 2.0.0", a.Version)
+		}
+	}
+
+	// Prune: backdate "old" to registered 48h ago, never seen.
+	if _, err := s.db.Exec("UPDATE agents SET registered_at = ? WHERE id = ?",
+		time.Now().UTC().Add(-48*time.Hour).Format(time.RFC3339), oldID); err != nil {
+		t.Fatal(err)
+	}
+	removed := s.pruneSilent(time.Now().Add(-24 * time.Hour))
+	if len(removed) != 1 || removed[0] != oldID {
+		t.Fatalf("pruned %v, want [%s]", removed, oldID)
+	}
+
+	// Remove: parent and all child rows go in one transaction.
+	if err := s.remove(id); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := s.remove(id); err != ErrAgentNotFound {
+		t.Fatalf("second remove = %v, want ErrAgentNotFound", err)
+	}
+	for _, tbl := range append([]string{"agents"}, agentChildTables...) {
+		col := "agent_id"
+		if tbl == "agents" {
+			col = "id"
+		}
+		var n int
+		if err := s.db.QueryRow("SELECT COUNT(*) FROM "+tbl+" WHERE "+col+" = ?", id).Scan(&n); err != nil || n != 0 {
+			t.Errorf("%s still has %d rows for removed agent (err %v)", tbl, n, err)
+		}
+	}
+	if err := s.heartbeat(id, tok); err != ErrAgentUnauthorized {
+		t.Fatalf("heartbeat after remove = %v, want ErrAgentUnauthorized", err)
+	}
+	if total, _ := s.agentCounts(); total != 1 {
+		t.Fatalf("agentCounts total = %d, want 1 survivor", total)
 	}
 }

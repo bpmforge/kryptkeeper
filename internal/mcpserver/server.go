@@ -6,6 +6,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"net/url"
 	"strings"
 
@@ -55,6 +56,54 @@ func addQuery(req mcp.CallToolRequest, keys ...string) url.Values {
 		}
 	}
 	return q
+}
+
+func validBlastAction(a string) bool {
+	return a == "revoke" || a == "retire_ca" || a == "deprecate_algorithm"
+}
+
+// impactSummary is embedded in revoke proposals under params.impact so the
+// human approver sees the blast radius. AffectedEndpoints is the count of
+// the hub graph's "service" kind (SAN/CN names clients resolve); the graph has
+// no endpoint node kind yet (W29-09).
+type impactSummary struct {
+	Action            string `json:"action"`
+	Target            string `json:"target"`
+	AffectedEndpoints int    `json:"affected_endpoints"`
+	TotalAffected     int    `json:"total_affected"`
+	Severity          string `json:"severity"`
+	Available         bool   `json:"available"`
+	Error             string `json:"error,omitempty"`
+}
+
+// fetchImpact asks the hub's blast-radius route (which wraps
+// internal/blastradius) and never fails: a down simulator must not stop an
+// incident revoke, so a failure yields Available=false with a truncated error.
+func fetchImpact(ctx context.Context, hub *HubClient, action, target string) impactSummary {
+	out := impactSummary{Action: action, Target: target}
+	body, err := hub.get(ctx, "/blast-radius", url.Values{"action": {action}, "target": {target}})
+	if err == nil {
+		var env struct {
+			Data struct {
+				TotalAffected  int                 `json:"total_affected"`
+				Severity       string              `json:"severity"`
+				AffectedByKind map[string][]string `json:"affected_by_kind"`
+			} `json:"data"`
+		}
+		if err = json.Unmarshal(body, &env); err == nil {
+			out.Available = true
+			out.TotalAffected = env.Data.TotalAffected
+			out.Severity = env.Data.Severity
+			out.AffectedEndpoints = len(env.Data.AffectedByKind["service"])
+			return out
+		}
+	}
+	msg := err.Error()
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	out.Error = msg
+	return out
 }
 
 // readTools returns the read-only tool set wrapping Hub report/inventory APIs.
@@ -138,6 +187,24 @@ func readTools(hub *HubClient) []readTool {
 			),
 			func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return jsonResult(hub.get(ctx, "/reports/compliance-evidence", addQuery(req, "framework")))
+			},
+		},
+		{
+			mcp.NewTool("blast_radius",
+				mcp.WithDescription("Read-only impact simulation: what depends on a certificate or CA if it is revoked or retired. Returns JSON (total_affected, severity, affected_by_kind; the \"service\" kind is the affected-endpoint count used in proposal impact summaries)."),
+				mcp.WithString("action", mcp.Description("revoke (target = certificate fingerprint), retire_ca (target = CA id) or deprecate_algorithm (target = algorithm); default revoke")),
+				mcp.WithString("target", mcp.Required(), mcp.Description("certificate fingerprint, CA id or algorithm name")),
+			),
+			func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				target, err := req.RequireString("target")
+				if err != nil || strings.TrimSpace(target) == "" {
+					return mcp.NewToolResultError("target is required"), nil
+				}
+				action := strings.TrimSpace(req.GetString("action", "revoke"))
+				if !validBlastAction(action) {
+					return mcp.NewToolResultError("action must be revoke, retire_ca or deprecate_algorithm"), nil
+				}
+				return jsonResult(hub.get(ctx, "/blast-radius", url.Values{"action": {action}, "target": {strings.TrimSpace(target)}}))
 			},
 		},
 		{

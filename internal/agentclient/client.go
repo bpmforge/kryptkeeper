@@ -28,6 +28,12 @@ type Client struct {
 	// EnrollmentSecret is sent once, on Register. The hub refuses
 	// self-registration without it unless enrollment is left open.
 	EnrollmentSecret string
+	// EnrollmentToken is a single-use admin-minted token (W33-25). When set
+	// it is sent instead of EnrollmentSecret. Never log it.
+	EnrollmentToken string
+	// Version is the agent build, sent as X-Agent-Version so the hub can show
+	// it. Omitted when empty.
+	Version string
 }
 
 // New returns a Client configured for the given Hub. rootCAs, when non-nil,
@@ -100,7 +106,11 @@ func HubCACertPoolFromEnv() (*x509.CertPool, error) {
 // Register self-registers the agent with the Hub and stores the returned
 // credentials on the client for subsequent calls.
 func (c *Client) Register(ctx context.Context, name string, agentType AgentType) (*RegisterResponse, error) {
-	body, err := json.Marshal(RegisterRequest{Name: name, Type: agentType, EnrollmentSecret: c.EnrollmentSecret})
+	rr := RegisterRequest{Name: name, Type: agentType, EnrollmentSecret: c.EnrollmentSecret}
+	if c.EnrollmentToken != "" {
+		rr.EnrollmentToken, rr.EnrollmentSecret = c.EnrollmentToken, ""
+	}
+	body, err := json.Marshal(rr)
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +164,24 @@ func (c *Client) Heartbeat(ctx context.Context) error {
 // PostInventory reports the agent's discovered certificate inventory and
 // installable endpoints to the Hub. Returns the number of certs the Hub accepted.
 func (c *Client) PostInventory(ctx context.Context, certs []DiscoveredCert, endpoints []Endpoint) (int, error) {
+	return c.PostInventoryHost(ctx, certs, endpoints, nil)
+}
+
+// PostInventoryHost is PostInventory plus the W34-09 host pass: unreadable
+// paths, file ownership and listeners, flattened into the same push so the hub
+// can compute posture. A nil host sends the pre-W34 shape.
+func (c *Client) PostInventoryHost(ctx context.Context, certs []DiscoveredCert, endpoints []Endpoint, host *HostInventory) (int, error) {
 	payload := map[string]any{"certs": certs, "endpoints": endpoints}
+	if host != nil {
+		payload["host_scanned"] = host.Scanned
+		payload["privilege_mode"] = host.PrivilegeMode
+		payload["scan_user"] = host.User
+		payload["unreadable_paths"] = host.UnreadablePaths
+		payload["unreadable_total"] = host.UnreadableTotal
+		payload["files"] = host.Files
+		payload["listeners"] = host.Listeners
+		payload["config_refs"] = host.ConfigRefs
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return 0, err
@@ -243,4 +270,7 @@ func (c *Client) PostRenewalResult(ctx context.Context, result RenewalResult) er
 func (c *Client) setAgentHeaders(req *http.Request) {
 	req.Header.Set("X-Agent-ID", c.AgentID)
 	req.Header.Set("X-Agent-Token", c.Token)
+	if c.Version != "" {
+		req.Header.Set("X-Agent-Version", c.Version)
+	}
 }

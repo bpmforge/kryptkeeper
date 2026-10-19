@@ -95,7 +95,7 @@ func TestCountingRule_DashboardSummarySQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE certificates (valid_until TEXT NOT NULL, management_state TEXT, revoked_at TEXT, renewal_status TEXT, is_ca INTEGER NOT NULL DEFAULT 0)`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE certificates (valid_until TEXT NOT NULL, management_state TEXT, revoked_at TEXT, renewal_status TEXT, owner_team TEXT, is_ca INTEGER NOT NULL DEFAULT 0)`); err != nil {
 		t.Fatal(err)
 	}
 	for _, row := range []string{

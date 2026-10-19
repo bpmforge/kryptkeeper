@@ -1,0 +1,37 @@
+# First-run (zero-CA) stack for the onboarding E2E spec (W33-02).
+#
+# Layered over the root docker-compose.yml, and deliberately WITHOUT
+# KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT so the hub starts in first-run mode (W33-32)
+# with an empty CA list. Use a fresh project (fresh volumes) every run:
+#
+#   export APP_BOOTSTRAP_TOKEN=... KRYPTKEEPER_KEYSTORE_PASSPHRASE=... APP_API_KEY_PEPPER=...
+#   docker compose -p kkw33-onboarding \
+#     -f docker-compose.yml -f ui/e2e/onboarding/docker-compose.firstrun.yml up -d --build --wait
+#   docker compose -p kkw33-onboarding port dashboard 8080   # -> host:PORT for KK_E2E_BASE_URL
+#   docker compose -p kkw33-onboarding \
+#     -f docker-compose.yml -f ui/e2e/onboarding/docker-compose.firstrun.yml down -v
+#
+# Host ports are engine-assigned (loopback only) so this never collides with the
+# CA-root smoke stack or anything else on 8080/3000; the subnet differs from the
+# base file's 172.29.231.0/24 for the same reason.
+services:
+  kryptkeeper:
+    image: kryptkeeper-firstrun:local
+    ports: !reset []
+    environment:
+      APP_API_KEY_AUTH_ENABLED: "true"
+      APP_API_KEY_PEPPER: ${APP_API_KEY_PEPPER:?set APP_API_KEY_PEPPER}
+      KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT: ""
+      APP_TRUSTED_PROXY_CIDRS: ${KK_E2E_NET:-172.29.241}.10/32
+  dashboard:
+    image: kryptkeeper-dashboard-firstrun:local
+    ports: !override
+      - "127.0.0.1::8080"
+    networks:
+      default:
+        ipv4_address: ${KK_E2E_NET:-172.29.241}.10
+networks:
+  default:
+    ipam:
+      config: !override
+        - subnet: ${KK_E2E_NET:-172.29.241}.0/24

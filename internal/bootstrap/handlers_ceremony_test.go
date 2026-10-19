@@ -6,6 +6,7 @@ package bootstrap
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"kryptkeeper/internal/ca"
 	"kryptkeeper/internal/keystore"
@@ -34,12 +36,19 @@ CREATE TABLE IF NOT EXISTS key_ceremonies (
     quorum        INTEGER NOT NULL CHECK (quorum >= 2),
     approvals     TEXT NOT NULL DEFAULT '[]',
     status        TEXT NOT NULL DEFAULT 'pending'
-                  CHECK (status IN ('pending', 'completed', 'aborted')),
+                  CHECK (status IN ('pending', 'completed', 'aborted', 'expired')),
     created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL
+    updated_at    TEXT NOT NULL,
+    reminder_sent_at TEXT
 );`
 
 func newCeremonyHandlerMux(t *testing.T) (*http.ServeMux, *ca.CeremonyManager) {
+	t.Helper()
+	mux, mgr, _ := newCeremonyHandlerMuxEngine(t)
+	return mux, mgr
+}
+
+func newCeremonyHandlerMuxEngine(t *testing.T) (*http.ServeMux, *ca.CeremonyManager, *ca.Engine) {
 	t.Helper()
 	t.Setenv("AUTH_MODE", "bootstrap")
 	t.Setenv("APP_BOOTSTRAP_TOKEN", "test-token")
@@ -67,7 +76,7 @@ func newCeremonyHandlerMux(t *testing.T) (*http.ServeMux, *ca.CeremonyManager) {
 	}
 	mux := http.NewServeMux()
 	RegisterCeremonyHandlers(mux, auth, mgr, stubAuditProvider{})
-	return mux, mgr
+	return mux, mgr, engine
 }
 
 func doCeremonyReq(t *testing.T, mux *http.ServeMux, method, path string, body any) *httptest.ResponseRecorder {
@@ -183,5 +192,115 @@ func TestCeremonyAbortEndpoint(t *testing.T) {
 	got, _, _ := mgr.Get(resp.Data.ID)
 	if got.Status != ca.CeremonyAborted {
 		t.Fatalf("expected aborted, got %q", got.Status)
+	}
+}
+
+func TestCeremonyStartRejectsQuorumBelowTwo(t *testing.T) {
+	mux, _, engine := newCeremonyHandlerMuxEngine(t)
+	for _, q := range []int{1, 0} {
+		rec := doCeremonyReq(t, mux, http.MethodPost, "/api/v1/ceremonies", map[string]any{
+			"name": "Q", "common_name": "Q CA", "algorithm": "ECDSA-P256",
+			"validity_days": 365,
+			"approvers":     []string{"bootstrap", "alice"}, "quorum": q,
+		})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("quorum %d: want 400, got %d: %s", q, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "at least 2") {
+			t.Fatalf("quorum %d: message must mention 'at least 2': %s", q, rec.Body.String())
+		}
+	}
+	cas, err := engine.ListCAs()
+	if err != nil || len(cas) != 0 {
+		t.Fatalf("no CA may be created for a rejected ceremony: %d %v", len(cas), err)
+	}
+}
+
+func TestCeremonyEndpointsShowExpiresAt(t *testing.T) {
+	mux, _ := newCeremonyHandlerMux(t)
+	rec := doCeremonyReq(t, mux, http.MethodPost, "/api/v1/ceremonies", map[string]any{
+		"name": "E", "common_name": "E CA", "algorithm": "ECDSA-P256",
+		"validity_days": 365,
+		"approvers":     []string{"bootstrap", "alice"}, "quorum": 2,
+	})
+	var created struct{ Data ca.Ceremony }
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	if want := created.Data.CreatedAt.Add(72 * time.Hour); !created.Data.ExpiresAt.Equal(want) {
+		t.Fatalf("start expires_at = %v, want created_at+72h = %v", created.Data.ExpiresAt, want)
+	}
+	rec = doCeremonyReq(t, mux, http.MethodGet, "/api/v1/ceremonies/"+created.Data.ID, nil)
+	var got struct{ Data ca.Ceremony }
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got.Data.ExpiresAt.IsZero() || !got.Data.ExpiresAt.Equal(created.Data.ExpiresAt) {
+		t.Fatalf("get expires_at = %v, want %v", got.Data.ExpiresAt, created.Data.ExpiresAt)
+	}
+	rec = doCeremonyReq(t, mux, http.MethodGet, "/api/v1/ceremonies", nil)
+	var list struct{ Data []ca.Ceremony }
+	_ = json.Unmarshal(rec.Body.Bytes(), &list)
+	if len(list.Data) != 1 || list.Data[0].ExpiresAt.IsZero() {
+		t.Fatalf("list must include expires_at: %s", rec.Body.String())
+	}
+}
+
+type captureAudit struct {
+	stubAuditProvider
+	entries []AuditEntry
+}
+
+func (c *captureAudit) AppendEntry(_ context.Context, e AuditEntry) error {
+	c.entries = append(c.entries, e)
+	return nil
+}
+
+func TestSweepCeremoniesAuditsExpiry(t *testing.T) {
+	_, mgr := newCeremonyHandlerMux(t)
+	start := func(name string) ca.Ceremony {
+		c, err := mgr.StartRootCACeremony(ca.RootCACeremonyParams{
+			Name: name, CommonName: name + " CA", Algorithm: keystore.ECDSAP256,
+			ValidityDays: 365, Initiator: "ops", Approvers: []string{"alice", "bob"}, Quorum: 2,
+		})
+		if err != nil {
+			t.Fatalf("start %s: %v", name, err)
+		}
+		return c
+	}
+	t0 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := t0
+	mgr.SetClock(func() time.Time { return now })
+	stale := start("stale")
+	done := start("done")
+	aborted := start("aborted")
+	if _, err := mgr.Approve(done.ID, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Approve(done.ID, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mgr.Abort(aborted.ID); err != nil {
+		t.Fatal(err)
+	}
+	now = t0.Add(73 * time.Hour)
+	fresh := start("fresh")
+
+	audit := &captureAudit{}
+	SweepCeremonies(context.Background(), mgr, audit)
+	if len(audit.entries) != 1 {
+		t.Fatalf("want exactly 1 ceremony.expire entry, got %+v", audit.entries)
+	}
+	e := audit.entries[0]
+	if e.Action != "ceremony.expire" || e.ResourceID != stale.ID || e.ActorType != "system" || e.Outcome != AuditOutcomeSuccess {
+		t.Fatalf("unexpected audit entry: %+v", e)
+	}
+	SweepCeremonies(context.Background(), mgr, audit)
+	if len(audit.entries) != 1 {
+		t.Fatalf("a second sweep must not re-audit, got %d entries", len(audit.entries))
+	}
+	for id, want := range map[string]string{
+		stale.ID: ca.CeremonyExpired, done.ID: ca.CeremonyCompleted,
+		aborted.ID: ca.CeremonyAborted, fresh.ID: ca.CeremonyPending,
+	} {
+		if c, _, _ := mgr.Get(id); c.Status != want {
+			t.Fatalf("ceremony %s status = %q, want %q", id, c.Status, want)
+		}
 	}
 }

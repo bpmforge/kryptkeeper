@@ -7,11 +7,13 @@ package main
 import (
 	"context"
 	"database/sql"
+	"math/big"
 	"net/http"
 	"os"
 	"strings"
 
 	"kryptkeeper/internal/bootstrap"
+	"kryptkeeper/internal/ca"
 	"kryptkeeper/internal/scep"
 )
 
@@ -33,6 +35,13 @@ func scepDisabledReason(legacyChallenge string, enabled bool, haveDB bool) strin
 	return ""
 }
 
+// scepNotRSAReason explains why SCEP stays off on a non-RSA CA: the PKIOperation
+// envelope key-wraps the CSR to the CA's public key and only RSA can unwrap it.
+func scepNotRSAReason(caID string) string {
+	return "CA " + caID + " does not have an RSA key, and SCEP's PKCS#7 envelope requires one (an ECDSA or Ed25519 CA cannot serve SCEP). " +
+		"Create an RSA CA and set KRYPTKEEPER_SCEP_CA_ID to its id, then restart the hub"
+}
+
 // scepSetup is SCEP's decision for this process: why it is off, or the
 // challenge store it shares with the API.
 func scepSetup(coreDB *sql.DB, isPostgres bool) (*scep.DBChallengeStore, string) {
@@ -46,6 +55,19 @@ func scepSetup(coreDB *sql.DB, isPostgres bool) (*scep.DBChallengeStore, string)
 func configureSCEPAudit(srv *scep.Server, audit bootstrap.AuditProvider) {
 	srv.WithAuditFunc(func(ctx context.Context, ev scep.AuditEvent) {
 		appendProtocolAudit(ctx, audit, ev.Action, ev.Actor, ev.Outcome, ev.SourceIP, ev.Detail)
+	})
+}
+
+// configureSCEPRenewal gives SCEP renewal (W26-30) the revocation lookup it
+// requires. With no store nothing is wired and the server refuses every
+// renewal (fail closed).
+func configureSCEPRenewal(srv *scep.Server, rev ca.RevocationChecker, caID string) {
+	if rev == nil {
+		return
+	}
+	srv.WithRevocationChecker(func(serial *big.Int) (bool, error) {
+		revoked, _, _, err := rev.IsRevoked(serial, caID)
+		return revoked, err
 	})
 }
 

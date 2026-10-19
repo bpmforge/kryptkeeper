@@ -1,0 +1,6 @@
+[
+  {"sslId": 1, "commonName": "s1.fixture.test", "status": "Issued"},
+  {"sslId": 2, "commonName": "s2.fixture.test", "status": "Revoked"},
+  {"sslId": 3, "commonName": "s3.fixture.test", "status": "Issued"},
+  {"sslId": 4, "commonName": "s4.fixture.test", "status": "Requested"}
+]

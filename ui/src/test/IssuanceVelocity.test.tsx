@@ -1,5 +1,6 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/api", () => ({
@@ -22,7 +23,9 @@ function renderPage() {
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <IssuanceVelocity />
+      <MemoryRouter>
+        <IssuanceVelocity />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -59,6 +62,12 @@ beforeEach(() => {
 });
 
 describe("IssuanceVelocity (S-46)", () => {
+  it("labels server-side day buckets as UTC", async () => {
+    renderPage();
+    expect(await screen.findByText(/Days are UTC calendar days/)).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Date (UTC)" })).toBeInTheDocument();
+  });
+
   it("resolves By CA and By Template raw ids to their display names", async () => {
     renderPage();
 
@@ -87,9 +96,9 @@ describe("IssuanceVelocity (S-46)", () => {
 
     // Sentinel fallbacks ("unknown"/"unassigned"/"none") are words, not
     // identifiers -- they must never get the identifier marking.
-    expect(screen.getByText("unknown")).not.toHaveAttribute("title");
+    expect(screen.getByText("Unknown CA")).not.toHaveAttribute("title");
     expect(screen.getByText("unassigned")).not.toHaveAttribute("title");
-    expect(screen.getByText("none")).not.toHaveAttribute("title");
+    expect(screen.getByText("No template")).not.toHaveAttribute("title");
   });
 
   it("does not mark an id as identifier-only while its name lookup is still in flight", async () => {

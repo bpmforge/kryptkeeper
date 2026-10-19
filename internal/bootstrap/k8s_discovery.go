@@ -9,7 +9,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
+	"strings"
 
 	"kryptkeeper/internal/certmanager"
 )
@@ -45,12 +46,38 @@ var newCertManagerConnectorForScan = func() (certManagerCertLister, error) {
 // job-row-carries-results home instead of forcing a fake address through
 // upsertScanResults.
 type k8sCertManagerScanSummary struct {
-	Certificates int                       `json:"certificates"`
-	Items        []certmanager.Certificate `json:"items"`
+	Certificates int                  `json:"certificates"`
+	Items        []k8sCertManagerItem `json:"items"`
+	// Clusters is the per-cluster outcome (W24-23); one failing cluster
+	// only fails its own row.
+	Clusters []k8sClusterResult `json:"clusters"`
+}
+
+type k8sCertManagerItem struct {
+	certmanager.Certificate
+	Cluster string `json:"cluster"`
+}
+
+type k8sClusterResult struct {
+	Name         string `json:"name"`
+	Certificates int    `json:"certificates"`
+	Error        string `json:"error,omitempty"`
 }
 
 // k8sCertManagerScanMaxItems bounds the JSON persisted per job.
 const k8sCertManagerScanMaxItems = 200
+
+const defaultKubeClusterName = "default"
+
+// newCertManagerConnectorForCluster builds the lister for one configured
+// cluster; a package var so tests inject fakes.
+var newCertManagerConnectorForCluster = func(c kubeClusterSource) (certManagerCertLister, error) {
+	conn, err := certmanager.New(certmanager.Config{APIServerURL: c.APIURL, Token: c.Token, CACert: c.CACert, Namespace: c.Namespace})
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
+}
 
 // runK8sCertManagerScanAndFinalize executes one k8s-certmanager scan job
 // and finalizes its scan_jobs row -- runCloudScanAndFinalize's shape,
@@ -67,22 +94,83 @@ func runK8sCertManagerScanAndFinalize(ctx context.Context, db *sql.DB, postgres 
 	}
 	finalize := func(status, summary, errMsg string) {
 		if _, err := db.ExecContext(ctx, update, status, summary, errMsg, jobID); err != nil {
-			log.Printf("k8s-certmanager scan %s: finalize failed: %v", jobID, err)
+			logging.Warnf("k8s-certmanager scan %s: finalize failed: %v", jobID, err)
 		}
 	}
 
-	conn, err := newCertManagerConnectorForScan()
+	clusters, err := kubeClusterSourcesLoader(ctx)
 	if err != nil {
-		finalize("failed", "", fmt.Sprintf("connector init: %v", err))
-		return
-	}
-	certs, err := conn.ListCertificates(ctx)
-	if err != nil {
-		finalize("failed", "", fmt.Sprintf("list certificates: %v", err))
+		finalize("failed", "", fmt.Sprintf("cluster config: %v", err))
 		return
 	}
 
-	summary := k8sCertManagerScanSummary{Certificates: len(certs), Items: certs}
+	var summary k8sCertManagerScanSummary
+	if len(clusters) == 0 {
+		// Legacy single-cluster env path, unchanged messages.
+		conn, err := newCertManagerConnectorForScan()
+		if err != nil {
+			finalize("failed", "", fmt.Sprintf("connector init: %v", err))
+			return
+		}
+		certs, err := conn.ListCertificates(ctx)
+		if err != nil {
+			finalize("failed", "", fmt.Sprintf("list certificates: %v", err))
+			return
+		}
+		summary.Items = tagClusterItems(defaultKubeClusterName, certs)
+		summary.Clusters = []k8sClusterResult{{Name: defaultKubeClusterName, Certificates: len(certs)}}
+	} else {
+		var failed []string
+		for _, c := range clusters {
+			res := k8sClusterResult{Name: c.Name}
+			certs, err := listClusterCertificates(ctx, c)
+			if err != nil {
+				res.Error = err.Error()
+				failed = append(failed, fmt.Sprintf("cluster %s: %s", c.Name, res.Error))
+			} else {
+				res.Certificates = len(certs)
+				summary.Items = append(summary.Items, tagClusterItems(c.Name, certs)...)
+			}
+			summary.Clusters = append(summary.Clusters, res)
+		}
+		if len(failed) == len(clusters) {
+			finalize("failed", "", strings.Join(failed, "; "))
+			return
+		}
+		if len(failed) > 0 {
+			errMsg := strings.Join(failed, "; ")
+			finishK8sCertManagerScan(finalize, jobID, summary, errMsg)
+			return
+		}
+	}
+	finishK8sCertManagerScan(finalize, jobID, summary, "")
+}
+
+func tagClusterItems(cluster string, certs []certmanager.Certificate) []k8sCertManagerItem {
+	items := make([]k8sCertManagerItem, 0, len(certs))
+	for _, c := range certs {
+		items = append(items, k8sCertManagerItem{Certificate: c, Cluster: cluster})
+	}
+	return items
+}
+
+func listClusterCertificates(ctx context.Context, c kubeClusterSource) ([]certmanager.Certificate, error) {
+	if c.credErr != "" {
+		return nil, fmt.Errorf("%s", c.credErr)
+	}
+	conn, err := newCertManagerConnectorForCluster(c)
+	if err != nil {
+		return nil, fmt.Errorf("connector init: %v", err)
+	}
+	certs, err := conn.ListCertificates(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list certificates: %v", err)
+	}
+	return certs, nil
+}
+
+func finishK8sCertManagerScan(finalize func(status, summary, errMsg string), jobID string, summary k8sCertManagerScanSummary, errMsg string) {
+	summary.Certificates = len(summary.Items)
 	if len(summary.Items) > k8sCertManagerScanMaxItems {
 		summary.Items = summary.Items[:k8sCertManagerScanMaxItems]
 	}
@@ -91,6 +179,6 @@ func runK8sCertManagerScanAndFinalize(ctx context.Context, db *sql.DB, postgres 
 		finalize("failed", "", fmt.Sprintf("summary marshal: %v", err))
 		return
 	}
-	finalize("completed", string(raw), "")
-	log.Printf("k8s-certmanager scan %s: %d certificates inventoried", jobID, len(certs))
+	finalize("completed", string(raw), errMsg)
+	logging.Infof("k8s-certmanager scan %s: %d certificates inventoried across %d cluster(s)", jobID, summary.Certificates, len(summary.Clusters))
 }

@@ -21,8 +21,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"kryptkeeper/internal/egress"
 )
 
 // dnsProvider publishes one TXT record and returns how to remove it.
@@ -30,6 +34,217 @@ type dnsProvider interface {
 	// Present creates the TXT record fqdn=value and returns the zone it went
 	// into (for the propagation check) and a cleanup that deletes it.
 	Present(ctx context.Context, fqdn, value string) (zone string, cleanup func(context.Context) error, err error)
+}
+
+// ---- provider registry (W27-21) -------------------------------------------
+
+// dnsProviderFactory builds a provider from the connector config and its
+// resolved credential payload.
+type dnsProviderFactory func(cfg acmeConnectorConfig, p acmeCredentialPayload) (dnsProvider, error)
+
+var dnsProviderRegistry = map[string]dnsProviderFactory{}
+
+// registerDNSProvider adds a provider; adapters call it from init(). A
+// duplicate name is a programming error.
+func registerDNSProvider(name string, f dnsProviderFactory) {
+	if _, dup := dnsProviderRegistry[name]; dup {
+		panic("dns provider registered twice: " + name)
+	}
+	dnsProviderRegistry[name] = f
+}
+
+// supportedDNSProviders lists registered names, sorted.
+func supportedDNSProviders() []string {
+	names := make([]string, 0, len(dnsProviderRegistry))
+	for n := range dnsProviderRegistry {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func unsupportedDNSProviderError(name string) error {
+	return fmt.Errorf("acme connector dns_provider %q is not supported (%s)", name, strings.Join(supportedDNSProviders(), ", "))
+}
+
+func newDNSProviderFromConfig(cfg acmeConnectorConfig, p acmeCredentialPayload) (dnsProvider, error) {
+	if cfg.DNSProvider == "" {
+		return nil, fmt.Errorf("acme connector challenge dns-01 needs config_json.dns_provider (%s)", strings.Join(supportedDNSProviders(), ", "))
+	}
+	f, ok := dnsProviderRegistry[cfg.DNSProvider]
+	if !ok {
+		return nil, unsupportedDNSProviderError(cfg.DNSProvider)
+	}
+	return f(cfg, p)
+}
+
+// secretConfigKeys may never appear at the top level of config_json: that
+// column is not encrypted and is echoed by the API.
+var secretConfigKeys = []string{"secret", "token", "password", "private_key", "client_secret", "secret_access_key", "access_token", "service_account_json"}
+
+// validateACMEConnectorConfig is the connector-create check for acme rows.
+// Unparseable JSON passes (existing rows must keep loading; the runtime
+// zeroes malformed config).
+func validateACMEConnectorConfig(configJSON string) error {
+	if strings.TrimSpace(configJSON) == "" {
+		return nil
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(configJSON), &top); err != nil {
+		return nil
+	}
+	for _, k := range secretConfigKeys {
+		if _, bad := top[k]; bad {
+			return errors.New("credentials belong in credential_ref, not config_json")
+		}
+	}
+	var cfg acmeConnectorConfig
+	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+		return nil
+	}
+	if cfg.DNSProvider != "" {
+		if _, ok := dnsProviderRegistry[cfg.DNSProvider]; !ok {
+			return fmt.Errorf("dns_provider %q is not supported (%s)", cfg.DNSProvider, strings.Join(supportedDNSProviders(), ", "))
+		}
+	}
+	return nil
+}
+
+func init() {
+	registerDNSProvider("cloudflare", func(_ acmeConnectorConfig, p acmeCredentialPayload) (dnsProvider, error) {
+		if p.CloudflareAPIToken == "" {
+			return nil, errors.New("acme connector dns-01 via cloudflare needs cloudflare_api_token in its credential")
+		}
+		return newCloudflareDNS(p.CloudflareAPIToken), nil
+	})
+}
+
+// ---- shared adapter helpers (W27-21) ---------------------------------------
+
+// dnsAPIClient is the egress-policy client every non-Cloudflare adapter
+// uses; provider hosts are fixed vendor hosts. Tests reach httptest servers
+// through egressAllowLoopback.
+func dnsAPIClient() *http.Client {
+	return egress.NewClient(egress.PolicyFromEnv(egress.Policy{
+		AllowLoopback:         egressAllowLoopback,
+		RequireHTTPS:          !egressAllowLoopback,
+		AllowPrivate:          true,
+		MaxRedirects:          3,
+		SameHostRedirectsOnly: true,
+		Timeout:               30 * time.Second,
+	}))
+}
+
+// redact replaces every non-empty secret in s with [redacted].
+func redact(s string, secrets ...string) string {
+	for _, sec := range secrets {
+		if sec != "" {
+			s = strings.ReplaceAll(s, sec, "[redacted]")
+		}
+	}
+	return s
+}
+
+// snippet cuts a provider message at 200 characters.
+func snippet(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) > 200 {
+		return s[:200] + "..."
+	}
+	return s
+}
+
+// dnsRoundTrip does one request and returns status and (capped) body.
+func dnsRoundTrip(c *http.Client, req *http.Request) (int, []byte, error) {
+	resp, err := c.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	return resp.StatusCode, body, err
+}
+
+// quoteTXT renders a value as one quoted TXT string.
+func quoteTXT(v string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(v) + `"`
+}
+
+// mergeTXT returns existing plus add (compared unquoted); foreign entries
+// keep their stored form.
+func mergeTXT(existing []string, add string) []string {
+	out := append([]string(nil), existing...)
+	for _, e := range existing {
+		if unquoteTXT(e) == unquoteTXT(add) {
+			return out
+		}
+	}
+	return append(out, add)
+}
+
+// withoutTXT returns existing minus remove (compared unquoted).
+func withoutTXT(existing []string, remove string) []string {
+	out := make([]string, 0, len(existing))
+	for _, e := range existing {
+		if unquoteTXT(e) != unquoteTXT(remove) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// rrsetBackend is what a read-modify-write TXT adapter implements. Values
+// are in the provider's stored form (see quote).
+type rrsetBackend interface {
+	// zoneFor resolves and remembers the zone for fqdn; returns its name.
+	zoneFor(ctx context.Context, fqdn string) (string, error)
+	read(ctx context.Context, fqdn string) ([]string, error)
+	// write replaces old with next; empty next removes the rrset.
+	write(ctx context.Context, fqdn string, old, next []string) error
+	quote(v string) string
+}
+
+// presentRRSet publishes value into the TXT rrset at fqdn without
+// disturbing other values, and returns a cleanup that removes only ours.
+func presentRRSet(ctx context.Context, mu *sync.Mutex, b rrsetBackend, fqdn, value string) (string, func(context.Context) error, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	zone, err := b.zoneFor(ctx, fqdn)
+	if err != nil {
+		return "", nil, err
+	}
+	old, err := b.read(ctx, fqdn)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := b.write(ctx, fqdn, old, mergeTXT(old, b.quote(value))); err != nil {
+		return "", nil, err
+	}
+	cleanup := func(ctx context.Context) error {
+		mu.Lock()
+		defer mu.Unlock()
+		cur, err := b.read(ctx, fqdn)
+		if err != nil {
+			return err
+		}
+		rest := withoutTXT(cur, b.quote(value))
+		if len(rest) == len(cur) {
+			return nil // already gone
+		}
+		return b.write(ctx, fqdn, cur, rest)
+	}
+	return zone, cleanup, nil
+}
+
+// parentCandidates lists fqdn's parent names longest first, stopping before
+// the bare TLD (as cloudflareDNS.zoneFor does).
+func parentCandidates(fqdn string) []string {
+	labels := strings.Split(strings.TrimSuffix(fqdn, "."), ".")
+	var out []string
+	for i := 1; i < len(labels)-1; i++ {
+		out = append(out, strings.Join(labels[i:], "."))
+	}
+	return out
 }
 
 const cloudflareAPIBase = "https://api.cloudflare.com/client/v4"
@@ -153,10 +368,4 @@ func lookupTXTAt(ctx context.Context, nameserver, name string) ([]string, error)
 		return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, addr)
 	}}
 	return r.LookupTXT(ctx, name)
-}
-
-// waitForTXT polls the zone's authoritative nameservers until each serves
-// value at fqdn.
-func waitForTXT(ctx context.Context, lookupNS func(context.Context, string) ([]*net.NS, error), lookup txtLookup, zone, fqdn, value string, interval time.Duration) error {
-	return authoritativeMethod(lookupNS, lookup, zone, fqdn, value).poll(ctx, interval, false)
 }

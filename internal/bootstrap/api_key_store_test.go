@@ -5,11 +5,15 @@
 package bootstrap
 
 import (
+	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -282,5 +286,114 @@ func TestDeleteAPIKeyHandlerReturns503WhenRevocationNotDurable(t *testing.T) {
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("DELETE = %d, want 503 (body %s)", rr.Code, rr.Body.String())
+	}
+}
+
+// countingKeyStore counts last_used_at writes reaching the store.
+type countingKeyStore struct {
+	apiKeyStore
+	n atomic.Int32
+}
+
+func (c *countingKeyStore) TouchLastUsed(ctx context.Context, kid string, at time.Time) error {
+	c.n.Add(1)
+	return c.apiKeyStore.TouchLastUsed(ctx, kid, at)
+}
+
+// W22-33 acceptance 1: real authentication stamps last_used_at, at most once
+// a minute, and the write reaches the DB.
+func TestAPIKeyAuthStampsLastUsedOncePerMinute(t *testing.T) {
+	db := openMigratedKeyDB(t, filepath.Join(t.TempDir(), "kk.db"))
+	a := newKeyAuth(t, nil, nil)
+	store := &countingKeyStore{apiKeyStore: NewAPIKeyStore(db, false)}
+	if err := a.SetAPIKeyStore(t.Context(), store); err != nil {
+		t.Fatal(err)
+	}
+	rec, token, err := a.CreateAPIKeyAs("alice@example.test", "ci", "svc", "service-account", nil, "", "", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := authStatus(a, token); err != nil {
+			t.Fatalf("auth %d: %v", i, err)
+		}
+	}
+	if n := store.n.Load(); n != 1 {
+		t.Fatalf("store writes = %d, want 1 (second auth is inside the interval)", n)
+	}
+	var got string
+	if err := db.QueryRow(`SELECT last_used_at FROM minted_api_keys WHERE kid = ?`, rec.Kid).Scan(&got); err != nil || got == "" {
+		t.Fatalf("db last_used_at = %q, err=%v", got, err)
+	}
+}
+
+// Config keys (APP_API_KEYS_JSON) never touch the store but still report use.
+func TestAPIKeyConfigKeyLastUsedInMemory(t *testing.T) {
+	configured := map[string]apiKeyRecord{"cfgkid": {
+		Kid: "cfgkid", SecretVerifier: apiKeyVerifier("config-secret", testKeyPepper),
+		PrincipalID: "svc-config", Role: "service-account", Active: true,
+	}}
+	a := newKeyAuth(t, nil, configured)
+	if _, err := authStatus(a, "kk_cfgkid_config-secret"); err != nil {
+		t.Fatal(err)
+	}
+	keys := a.ListAPIKeys()
+	if len(keys) != 1 || keys[0].LastUsedAt == "" {
+		t.Fatalf("config key must carry an in-memory last_used_at, got %+v", keys)
+	}
+	if _, err := time.Parse(time.RFC3339, keys[0].LastUsedAt); err != nil {
+		t.Fatalf("last_used_at not RFC3339: %v", err)
+	}
+}
+
+func TestAPIKeyListResponseIncludesLastUsedAt(t *testing.T) {
+	mux, auth := newAPIKeyTestMux(t)
+	used, usedToken, err := auth.CreateAPIKey("used", "svc-used", "service-account", nil, "", "", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	unused, _, err := auth.CreateAPIKey("unused", "svc-unused", "service-account", nil, "", "", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authStatus(auth, usedToken); err != nil {
+		t.Fatal(err)
+	}
+	rec := doLeakJSON(mux, http.MethodGet, "/api/v1/api-keys", "admin-token", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]any{}
+	for _, row := range out.Data {
+		seen[row["kid"].(string)] = row["last_used_at"]
+	}
+	ts, ok := seen[used.Kid].(string)
+	if !ok {
+		t.Fatalf("used key must report last_used_at, got %v", seen[used.Kid])
+	}
+	if _, err := time.Parse(time.RFC3339, ts); err != nil {
+		t.Fatalf("last_used_at %q: %v", ts, err)
+	}
+	if v, present := seen[unused.Kid]; present && v != nil {
+		t.Fatalf("never-used key must omit last_used_at, got %v", v)
+	}
+}
+
+// W22-33 acceptance 2: the column exists in both engines' migration.
+func TestAPIKeyLastUsedColumnBothEngines(t *testing.T) {
+	for _, engine := range []string{"postgres", "sqlite"} {
+		b, err := os.ReadFile("../db/migrations/" + engine + "/000074_minted_api_keys.up.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), "last_used_at") {
+			t.Errorf("%s migration 000074 lacks last_used_at", engine)
+		}
 	}
 }

@@ -1,0 +1,315 @@
+{
+  "task": "U-12",
+  "title": "Draft an issuance policy from plain English",
+  "sourceStory": "STORIES.md#u-12",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/templates"
+      },
+      "caption": "Open /templates",
+      "slug": "templates-list",
+      "expect": {
+        "role": "button",
+        "name": "Draft policy from text"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-12/01-templates-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Draft policy from text"
+      },
+      "caption": "Click **Draft policy from text**",
+      "slug": "draft-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "Draft policy from text"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-12/02-draft-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Policy name",
+        "within": "[role=dialog]"
+      },
+      "value": "no-rsa-2048",
+      "caption": "Fill **Policy name** with \"no-rsa-2048\"",
+      "slug": "Policy name",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-12/03-policy-name.png",
+        "annotated": "docs/guide/screenshots/U-12/03-policy-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 361,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Policy text",
+        "within": "[role=dialog]"
+      },
+      "value": "Require hardware tokens for all keys. Maximum validity 90 days.",
+      "caption": "Fill **Policy text** with \"Require hardware tokens for all keys. Maximum validity 90 days.\"",
+      "slug": "Policy text",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-12/04-policy-text.png",
+        "annotated": "docs/guide/screenshots/U-12/04-policy-text-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 435,
+          "w": 630,
+          "h": 118
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Parse"
+      },
+      "caption": "A phrase the parser does not understand is listed under **These phrases were not applied**",
+      "slug": "phrase-not-applied",
+      "allow": [
+        "not applied",
+        "hardware tokens"
+      ],
+      "expectError": true,
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-12/05-phrase-not-applied.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Back to text"
+      },
+      "caption": "Click **Back to text**",
+      "slug": "back-to-text",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-12/06-back-to-text.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Policy text",
+        "within": "[role=dialog]"
+      },
+      "value": "RSA keys must be at least 3072 bits. Maximum validity 90 days.",
+      "caption": "Fill **Policy text** with \"RSA keys must be at least 3072 bits. Maximum validity 90 days.\"",
+      "slug": "reworded",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-12/07-reworded.png",
+        "annotated": "docs/guide/screenshots/U-12/07-reworded-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 435,
+          "w": 630,
+          "h": 118
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Parse"
+      },
+      "caption": "Click **Parse**",
+      "slug": "parsed-preview",
+      "expect": {
+        "text": "Understood"
+      },
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-12/08-parsed-preview.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Submit draft"
+      },
+      "caption": "Click **Submit draft**",
+      "slug": "submitted-for-approval",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-12/09-submitted-for-approval.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:40:02.034Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-12",
+    "steps": 9,
+    "shots": 9,
+    "annotated": 3,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/templates"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-12/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-12/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

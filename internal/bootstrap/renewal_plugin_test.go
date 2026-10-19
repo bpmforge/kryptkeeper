@@ -46,6 +46,8 @@ func newPluginDevice(t *testing.T) *pluginDevice {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/certs":
 			d.certs[body["name"]], d.keys[body["name"]] = body["cert_pem"], body["key_pem"]
 			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodGet && r.URL.Path == "/api/certs":
+			_ = json.NewEncoder(w).Encode(map[string]string{"cert_pem": d.certs[r.URL.Query().Get("name")]})
 		case r.Method == http.MethodGet && r.URL.Path == "/api/binding":
 			_ = json.NewEncoder(w).Encode(map[string]string{"cert": d.binding})
 		case r.Method == http.MethodPut && r.URL.Path == "/api/binding":
@@ -153,7 +155,7 @@ func TestPluginTargetRenewalEndToEnd(t *testing.T) {
 			t.Fatalf("audit carries a secret: %+v", e)
 		}
 	}
-	if pushRow == nil || pushRow.Outcome != "success" || !strings.Contains(pushRow.ChangeSummary, "version=1.0.0") || !strings.Contains(pushRow.ChangeSummary, "verified=true") {
+	if pushRow == nil || pushRow.Outcome != "success" || !strings.Contains(pushRow.ChangeSummary, "verification=tls") || !strings.Contains(pushRow.ChangeSummary, "version=1.0.0") || !strings.Contains(pushRow.ChangeSummary, "verified=true") {
 		t.Fatalf("push audit row: %+v", pushRow)
 	}
 }
@@ -188,8 +190,8 @@ func TestPluginTargetPersists(t *testing.T) {
 }
 
 func TestPluginHTTPClientTrust(t *testing.T) {
-	if c, err := pluginHTTPClient(nil, ""); err != nil || c != nil {
-		t.Fatalf("no CA: %v %v", c, err)
+	if c, err := pluginHTTPClient(nil, ""); err != nil || c == nil {
+		t.Fatalf("no CA must yield the guarded default: %v %v", c, err)
 	}
 	if _, err := pluginHTTPClient(nil, "not a pem"); err == nil {
 		t.Fatal("a bad tls_ca_pem was accepted")
@@ -208,4 +210,77 @@ func TestPluginHTTPClientTrust(t *testing.T) {
 		t.Fatalf("the CA from tls_ca_pem was not trusted: %v", err)
 	}
 	_ = resp.Body.Close()
+}
+
+// W27-36: a plugin declaring verification "readback" is verified by the hub
+// fingerprinting the PEM the store returns (no TLS dial), unless the profile
+// sets verify_host_port, which forces the dial. The audit row says which.
+func TestPluginReadbackVerification(t *testing.T) {
+	db := setupIntegrationDB(t)
+	provider, engine := newIntegrationCAProvider(t, db)
+	ctx := context.Background()
+	mgr := NewDeliveryPluginManager(db, false, nil, nil)
+	wasm, _ := examplePlugin(t)
+	manifest := manifestVariant(t, "1.0.0", nil)
+	var m map[string]any
+	if err := json.Unmarshal(manifest, &m); err != nil {
+		t.Fatal(err)
+	}
+	m["verification"] = "readback"
+	manifest, _ = json.Marshal(m)
+	if _, err := mgr.Install(ctx, manifest, wasm, "", "admin"); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if err := mgr.enable(ctx, "kryptkeeper.example-device", "1.0.0", "approver"); err != nil {
+		t.Fatal(err)
+	}
+	dev := newPluginDevice(t)
+	target := ManagedTarget{ID: "tgt-rb", Name: "Edge VIP", Host: "vip.example.com", InstallMode: "plugin",
+		CredentialRef: "cred-plugin", PluginID: "kryptkeeper.example-device", PluginSettings: map[string]string{"listener": "vip-443"}}
+
+	run := func(profile RenewalInstallProfile, cn string) (RenewalExecuteResult, []AuditEntry, int) {
+		audit := &scepRecordingAudit{}
+		exec := NewRenewalExecutor(provider, &renewalFakeCredStore{
+			meta:    OutboundCredentialMeta{ID: "cred-plugin", CredentialType: CredentialTypeAPIToken},
+			payload: []byte(`{"base_url":"https://example.com","token":"dev-token-0123456789"}`),
+		}).WithPluginDeliverer(mgr, audit)
+		exec.pushClient = dev.client()
+		dials := 0
+		exec.verifier = func(context.Context, string) (string, error) { dials++; return dev.served(), nil }
+		issued, err := provider.IssueCertificate(ctx, CertificateIssueRequest{
+			CAID: getFirstCAID(t, engine), CSRPEM: generateTestCSRPEM(t, cn, cn), TemplateID: "file-backed-default", TeamID: "team-plugin",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := exec.ExecuteRenewal(ctx, issued.CertificateItem.FingerprintSHA256, target, profile)
+		if err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		return res, audit.entries, dials
+	}
+	pushDetail := func(entries []AuditEntry) string {
+		for _, e := range entries {
+			if e.Action == "delivery_plugin.push" {
+				return e.ChangeSummary
+			}
+		}
+		return ""
+	}
+
+	res, entries, dials := run(RenewalInstallProfile{}, "readback-a.example.com")
+	if !res.Verified || res.InstallOutcome != "installed_verified" || dials != 0 {
+		t.Fatalf("read-back renewal: %+v dials=%d", res, dials)
+	}
+	if d := pushDetail(entries); !strings.Contains(d, "verification=readback") || !strings.Contains(d, "verify_window=0s") || strings.Contains(d, "dev-token-0123456789") {
+		t.Fatalf("audit detail %q", d)
+	}
+
+	res, entries, dials = run(RenewalInstallProfile{VerifyHostPort: "vip.example.com:443"}, "readback-b.example.com")
+	if !res.Verified || dials != 1 {
+		t.Fatalf("explicit verify_host_port must force the TLS dial: %+v dials=%d", res, dials)
+	}
+	if d := pushDetail(entries); !strings.Contains(d, "verification=tls") {
+		t.Fatalf("audit detail %q", d)
+	}
 }

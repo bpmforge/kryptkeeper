@@ -4,8 +4,10 @@
 
 | Version | Supported |
 |---------|-----------|
-| 1.x     | ✅ Yes     |
-| < 1.0   | ❌ No      |
+| 0.21.x  | ✅ Yes (latest release) |
+| < 0.21  | ❌ No: upgrade to the latest 0.x release |
+
+Security fixes land in the latest minor release only. The supported row moves forward with each tagged release; the table is checked against the newest git tag by `scripts/check-security-txt.mjs`.
 
 ## Reporting a Vulnerability
 
@@ -33,7 +35,7 @@ Report security vulnerabilities via one of these channels:
 
 | Stage | Target |
 |-------|--------|
-| Acknowledgement | 48 hours |
+| Acknowledgement | 3 business days |
 | Initial assessment | 5 business days |
 | Fix + coordinated disclosure | 90 days (may be extended for complex issues) |
 | CVE assignment | Within 7 days of fix release |
@@ -67,14 +69,14 @@ a known bypass of authentication or separation of duties.
 - I-1 OCSP answers "good" with no store configured; I-2 OCSP cache race; M-3 nginx CSP is `frame-ancestors` only (no HSTS or script-src).
 - RC2-N-04 report endpoints materialise the whole inventory per request; RC2-N-05 arming a target checks `certificate.renew`, not certificate ownership (custom roles holding both `discovery.manage` and `certificate.renew` are admin-equivalent).
 - RC2-N-06 `token:` egress stamps (external jwt/oidc bearers) are never re-verified; RC2-N-08 file-mode audit store is O(file) per read and single-node.
-- Multi-tenancy is experimental: tenant isolation is not a security boundary in v0.9 and the hub refuses to start with `MULTI_TENANCY` on unless `KRYPTKEEPER_MULTI_TENANCY_EXPERIMENTAL=accept-risk`.
+- Multi-tenancy (v0.10): tenant isolation is enforced and covered by the tenant IDOR suite; the remaining limits (one hub-wide SSH CA key, SCIM users landing in the default tenant, instance-global settings being super-admin only) are listed in [docs/design/TENANCY_POSTURE.md](docs/design/TENANCY_POSTURE.md). The v0.9 experimental start-up gate is lifted; `KRYPTKEEPER_MULTI_TENANCY_GATE=enforce` restores it.
 
 Open findings from the RC5 delta review
 ([docs/reviews/rc5/RC5_DELTA_REVIEW.md](docs/reviews/rc5/RC5_DELTA_REVIEW.md)); the
 review's other items (S-L8 validity sum, the fail-open key-consistency check, the
 README provider docs, the rule burst cap) were fixed before rc.7.
 
-- RC5 S-M2 (MEDIUM, multi-tenant only): notification rules are hub-global. They carry no tenant, and the renewal scan walks every tenant's certificates. With multi-tenancy on, a principal holding `notification.manage` can create an `email` rule to an external address and receive the common name, fingerprint and days-to-expiry of other tenants' certificates (no key material). Do not grant `notification.manage` to tenant-scoped principals. Multi-tenancy is experimental (above), so this is not a boundary in v0.9; tenant-isolation fixes are scheduled for v0.10.
+- RC5 S-M2 (MEDIUM, multi-tenant only, FIXED in v0.10 by L-10: rules and silences carry a tenant): notification rules were hub-global. They carry no tenant, and the renewal scan walks every tenant's certificates. With multi-tenancy on, a principal holding `notification.manage` can create an `email` rule to an external address and receive the common name, fingerprint and days-to-expiry of other tenants' certificates (no key material). Do not grant `notification.manage` to tenant-scoped principals. Multi-tenancy is experimental (above), so this is not a boundary in v0.9; tenant-isolation fixes are scheduled for v0.10.
 - RC5 S-L2b: migration auto-tolerance accepts a column that already exists without comparing its type, default or CHECK, so a store that self-created a column with a different shape is not detected at runtime (covered by tests only). The self-heal exhaustiveness test checks file names, not that each store is constructed.
 - RC5 S-L7: a notification rule's email target is not syntax-checked; a malformed address is stored and fails at send time (logged only).
 - RC5 A-2: for the `delivery` provider "sent" means queued. A permanent failure (bad SMTP, webhook 500) is not audited as failed, and the cooldown suppresses a retry for its window.
@@ -99,11 +101,18 @@ you explicitly configure:
 - Integrations you turn on: notification channels (SMTP, Slack, PagerDuty, generic webhook),
   a SIEM webhook/syslog target (`SIEM_WEBHOOK_URL`/`SIEM_SYSLOG_ADDR`), an OIDC provider's
   JWKS endpoint, cloud inventory APIs, and hub↔agent/satellite communication.
+- Certificate Transparency monitoring, when `KRYPTKEEPER_CT_DOMAINS` is set: queries to
+  `crt.sh` (and `api.certspotter.com` unless `KRYPTKEEPER_CT_SECOND_SOURCE=off`) carrying the
+  monitored domain names.
+- ACME upstream connectors, when you configure one: requests to the ACME directory you choose
+  (for example Let's Encrypt) and, for DNS-01, to your DNS provider.
 - `govulncheck`/dependency tooling you run yourself (see below) — not run automatically
   by the product at runtime.
 
 All certificate data, audit logs, and configuration stay in your database and object
 storage; nothing is uploaded to Kryptkeeper or any third party as part of normal operation.
+
+The complete per-feature list, with defaults, is in `docs/ops/DATA_RESIDENCY.md`.
 
 ### Dependency security
 

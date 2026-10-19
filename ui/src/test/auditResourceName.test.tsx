@@ -5,7 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/api", () => ({
-  api: { authzCheck: vi.fn(), auditList: vi.fn() },
+  api: { authzCheck: vi.fn(), auditList: vi.fn(), auditExport: vi.fn() },
 }));
 
 import Audit from "../pages/Audit";
@@ -103,27 +103,15 @@ describe("Audit resource column", () => {
     );
   });
 
-  it("adds a resource_name column to the CSV export without disturbing existing columns", async () => {
-    let blob: Blob | undefined;
-    URL.createObjectURL = vi.fn((b: Blob) => {
-      blob = b;
-      return "blob:x";
-    });
-    URL.revokeObjectURL = vi.fn();
+  // W22-05: the CSV is built server-side now (no resource_name column: the
+  // server file carries the stored fields plus tenant), so the page only has
+  // to hand the applied filters to the streaming endpoint.
+  it("exports through the server endpoint instead of building a client CSV", async () => {
+    vi.mocked(api.auditExport).mockResolvedValue(undefined as unknown as never);
     renderAudit();
     await screen.findByRole("button", { name: "certificate.revoke" });
     await userEvent.click(screen.getByRole("button", { name: /export csv/i }));
-    await waitFor(() => expect(blob).toBeDefined());
-    const text = await new Promise<string>((resolve) => {
-      const fr = new FileReader();
-      fr.onload = () => resolve(String(fr.result));
-      fr.readAsText(blob!);
-    });
-    const [header, first] = text.split("\n");
-    expect(header).toBe(
-      "id,timestamp,action,actor_type,actor_id,resource_type,resource_id,trace_id,outcome,resource_name",
-    );
-    expect(first.endsWith(',"api.example.com"')).toBe(true);
-    expect(first).toContain(`"${FP}"`);
+    await waitFor(() => expect(api.auditExport).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(api.auditExport).mock.calls[0][0]).toMatchObject({ format: "csv" });
   });
 });

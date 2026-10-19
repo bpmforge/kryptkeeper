@@ -5,6 +5,7 @@
 package ca
 
 import (
+	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -33,6 +34,8 @@ type CrossSignResult struct {
 	OldCertPEM []byte
 	// OldKeyID is the retired key's on-disk reference.
 	OldKeyID string
+	// Rotation is the ledger entry RotateCA recorded for this re-key.
+	Rotation KeyRotation
 }
 
 // CrossSignRotate re-keys caID via RotateCA and issues the bridge. Both
@@ -50,24 +53,43 @@ func (e *Engine) CrossSignRotate(caID string, opts RotateCAOptions) (CrossSignRe
 	oldCert := oldCA.Certificate
 	oldCertPEM := append([]byte(nil), oldCA.CertPEM...)
 
+	// The bridge is built inside RotateCA's probe-verify step so a failure
+	// there rolls the whole rotation back instead of leaving a re-keyed CA
+	// without its bridge.
+	var crossPEM []byte
+	opts.afterProbe = func(newCA *CA, retiredKeyID string) error {
+		bridgePEM, err := e.buildAndVerifyBridge(newCA, oldCert, retiredKeyID)
+		crossPEM = bridgePEM
+		return err
+	}
 	rotated, err := e.RotateCA(caID, opts)
 	if err != nil {
 		return CrossSignResult{}, err
 	}
-	newCA := rotated.CA
-	newCert := newCA.Certificate
+	return CrossSignResult{
+		RolledCA:     rotated.CA,
+		CrossCertPEM: crossPEM,
+		OldCertPEM:   oldCertPEM,
+		OldKeyID:     rotated.OldKeyID,
+		Rotation:     rotated.Rotation,
+	}, nil
+}
 
-	// The retired key still exists on disk under OldKeyID — it signs the
+// buildAndVerifyBridge signs the bridge with the retired key and verifies both
+// chains. Must be called with e.mu held.
+func (e *Engine) buildAndVerifyBridge(newCA *CA, oldCert *x509.Certificate, retiredKeyID string) ([]byte, error) {
+	newCert := newCA.Certificate
+	// The retired key still exists on disk under retiredKeyID — it signs the
 	// bridge, with the old certificate as parent (AKI = old SKI).
-	oldSigner, err := e.keys.Signer(rotated.OldKeyID)
+	oldSigner, err := e.keys.Signer(retiredKeyID)
 	if err != nil {
-		return CrossSignResult{}, fmt.Errorf("cross-sign: retired key %s unavailable: %w", rotated.OldKeyID, err)
+		return nil, fmt.Errorf("cross-sign: retired key %s unavailable: %w", retiredKeyID, err)
 	}
-	oldAlgo := e.oldKeyAlgorithm(rotated.OldKeyID, oldCert)
+	oldAlgo := e.oldKeyAlgorithm(retiredKeyID, oldCert)
 
 	serial, err := generateSerialNumber()
 	if err != nil {
-		return CrossSignResult{}, fmt.Errorf("cross-sign: serial: %w", err)
+		return nil, fmt.Errorf("cross-sign: serial: %w", err)
 	}
 	now := time.Now().UTC()
 	// Cap the bridge at the OLD certificate's own lifetime: a cross-sign
@@ -88,30 +110,31 @@ func (e *Engine) CrossSignRotate(caID string, opts RotateCAOptions) (CrossSignRe
 		BasicConstraintsValid: true,
 		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		SubjectKeyId:          newCert.SubjectKeyId,
+		// Subject == issuer here, so x509.CreateCertificate omits the AKI it would
+		// otherwise copy from the parent. Without it OpenSSL classifies the bridge
+		// as self-signed (error 19) and refuses the old-anchor path (W23-19).
+		AuthorityKeyId: oldCert.SubjectKeyId,
 	}
 
 	crossDER, err := createCertDER(template, oldCert, oldAlgo, newCert.PublicKey, oldSigner)
 	if err != nil {
-		return CrossSignResult{}, fmt.Errorf("cross-sign: create bridge certificate: %w", err)
+		return nil, fmt.Errorf("cross-sign: create bridge certificate: %w", err)
 	}
 	crossCert, err := x509.ParseCertificate(crossDER)
 	if err != nil {
-		return CrossSignResult{}, fmt.Errorf("cross-sign: parse bridge certificate: %w", err)
+		return nil, fmt.Errorf("cross-sign: parse bridge certificate: %w", err)
 	}
-	crossPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: crossDER})
 
 	// Acceptance #2, enforced here rather than only in tests: both chains
 	// must validate for a probe leaf issued under the NEW key.
-	if err := e.verifyRolloverChains(caID, newCert, oldCert, crossCert); err != nil {
-		return CrossSignResult{}, fmt.Errorf("cross-sign: rollover chain verification failed: %w", err)
+	probe, err := e.issueProbeLeafLocked(newCA)
+	if err != nil {
+		return nil, fmt.Errorf("cross-sign: issue probe leaf: %w", err)
 	}
-
-	return CrossSignResult{
-		RolledCA:     newCA,
-		CrossCertPEM: crossPEM,
-		OldCertPEM:   oldCertPEM,
-		OldKeyID:     rotated.OldKeyID,
-	}, nil
+	if err := verifyRolloverChains(probe, newCert, oldCert, crossCert); err != nil {
+		return nil, fmt.Errorf("cross-sign: rollover chain verification failed: %w", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: crossDER}), nil
 }
 
 // oldKeyAlgorithm resolves the retired key's algorithm for signature
@@ -123,6 +146,14 @@ func (e *Engine) oldKeyAlgorithm(oldKeyID string, oldCert *x509.Certificate) key
 	}
 	switch oldCert.PublicKeyAlgorithm {
 	case x509.RSA:
+		if pub, ok := oldCert.PublicKey.(*rsa.PublicKey); ok {
+			switch bits := pub.N.BitLen(); {
+			case bits <= 2048:
+				return keystore.RSA2048
+			case bits <= 3072:
+				return keystore.RSA3072
+			}
+		}
 		return keystore.RSA4096
 	case x509.Ed25519:
 		return keystore.Ed25519
@@ -131,15 +162,10 @@ func (e *Engine) oldKeyAlgorithm(oldKeyID string, oldCert *x509.Certificate) key
 	}
 }
 
-// verifyRolloverChains issues a throwaway probe leaf under the new key and
-// builds both paths: directly to the new self-signed certificate, and via
-// the bridge to the old one.
-func (e *Engine) verifyRolloverChains(caID string, newCert, oldCert, crossCert *x509.Certificate) error {
-	probe, err := e.issueProbeLeaf(caID)
-	if err != nil {
-		return fmt.Errorf("issue probe leaf: %w", err)
-	}
-
+// verifyRolloverChains builds both paths for a probe leaf issued under the new
+// key: directly to the new self-signed certificate, and via the bridge to the
+// old one.
+func verifyRolloverChains(probe, newCert, oldCert, crossCert *x509.Certificate) error {
 	newRoots := x509.NewCertPool()
 	newRoots.AddCert(newCert)
 	if _, err := probe.Verify(x509.VerifyOptions{Roots: newRoots}); err != nil {
@@ -165,6 +191,11 @@ func (e *Engine) issueProbeLeaf(caID string) (*x509.Certificate, error) {
 	if !ok {
 		return nil, ErrCANotFound
 	}
+	return e.issueProbeLeafLocked(ca)
+}
+
+// issueProbeLeafLocked is issueProbeLeaf for a caller already holding e.mu.
+func (e *Engine) issueProbeLeafLocked(ca *CA) (*x509.Certificate, error) {
 	signer, err := e.keys.Signer(ca.KeyID)
 	if err != nil {
 		return nil, err

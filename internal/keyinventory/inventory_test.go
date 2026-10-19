@@ -12,6 +12,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"kryptkeeper/internal/sshkeys"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
@@ -210,5 +213,125 @@ func TestAzureKeyVaultPaginatesNextLink(t *testing.T) {
 	}
 	if len(keys) != 2 {
 		t.Fatalf("both pages must be inventoried, got %d", len(keys))
+	}
+}
+
+// W24-33: concurrent Collect with a per-provider timeout, and SSH sources.
+
+type slowSource struct {
+	name    string
+	delay   time.Duration
+	release chan struct{} // when set, blocks (ignoring ctx) until closed
+	keys    []Key
+}
+
+func (s slowSource) Provider() string { return s.name }
+func (s slowSource) ListKeys(context.Context) ([]Key, error) {
+	if s.release != nil {
+		<-s.release
+	} else {
+		time.Sleep(s.delay)
+	}
+	return s.keys, nil
+}
+
+func TestCollectWithTimeoutAbandonsHungProvider(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	start := time.Now()
+	inv := CollectWithTimeout(context.Background(), 100*time.Millisecond,
+		slowSource{name: "hung", release: release},
+		slowSource{name: "ok", keys: []Key{{Provider: "ok", KeyID: "k1"}}},
+	)
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("took %s", d)
+	}
+	if len(inv.Errors) != 1 || !strings.HasPrefix(inv.Errors[0], "hung: timed out") {
+		t.Fatalf("errors: %v", inv.Errors)
+	}
+	if len(inv.Keys) != 1 || inv.Keys[0].KeyID != "k1" {
+		t.Fatalf("keys: %+v", inv.Keys)
+	}
+}
+
+func TestCollectRunsProvidersConcurrently(t *testing.T) {
+	start := time.Now()
+	inv := CollectWithTimeout(context.Background(), 2*time.Second,
+		slowSource{name: "a", delay: 200 * time.Millisecond, keys: []Key{{KeyID: "a"}}},
+		slowSource{name: "b", delay: 200 * time.Millisecond, keys: []Key{{KeyID: "b"}}},
+	)
+	if d := time.Since(start); d > 350*time.Millisecond {
+		t.Fatalf("not concurrent: %s", d)
+	}
+	if len(inv.Keys) != 2 || inv.Keys[0].KeyID != "a" || inv.Keys[1].KeyID != "b" {
+		t.Fatalf("order not source order: %+v", inv.Keys)
+	}
+}
+
+type fakeHostLister struct{ recs []SSHHostKeyRecord }
+
+func (f fakeHostLister) ListSSHHostKeys(context.Context) ([]SSHHostKeyRecord, error) {
+	return f.recs, nil
+}
+
+func TestSSHHostKeySourceOneRowPerAlgorithm(t *testing.T) {
+	keys, err := NewSSHHostKeySource(fakeHostLister{[]SSHHostKeyRecord{
+		{Host: "h1", Port: 22, Algorithms: []string{"ssh-ed25519", "rsa-sha2-512"}, LastScanned: "2026-01-01T00:00:00Z"},
+	}}).ListKeys(context.Background())
+	if err != nil || len(keys) != 2 {
+		t.Fatalf("err=%v keys=%+v", err, keys)
+	}
+	if keys[0].KeyType != "host" || keys[0].Location != "h1:22" || keys[0].KeyID != "h1:22/ssh-ed25519" ||
+		keys[0].Algorithm != "Ed25519" || keys[0].PQCReadiness != "vulnerable" || keys[0].Provider != "ssh-host" {
+		t.Fatalf("bad row %+v", keys[0])
+	}
+}
+
+func TestSSHUserKeySourceStaleAndAuthorized(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	old := now.Add(-91 * 24 * time.Hour)
+	fresh := now.Add(-time.Hour)
+	inv := sshkeys.NewInventory()
+	inv.Add(sshkeys.SSHKey{Fingerprint: "SHA256:never", KeyType: sshkeys.RSA, BitSize: 4096, Host: "h", Path: "/home/u/.ssh/authorized_keys", IsAuthorized: true, CreatedAt: old})
+	inv.Add(sshkeys.SSHKey{Fingerprint: "SHA256:old", KeyType: sshkeys.Ed25519, Host: "h", LastRotated: &old})
+	inv.Add(sshkeys.SSHKey{Fingerprint: "SHA256:fresh", KeyType: sshkeys.ECDSA, Host: "h", LastRotated: &fresh, IsAuthorized: true})
+	keys, _ := NewSSHUserKeySource(inv, func() time.Time { return now }).ListKeys(context.Background())
+	by := map[string]Key{}
+	for _, k := range keys {
+		by[k.KeyID] = k
+	}
+	if len(by) != 3 || !by["SHA256:never"].Stale || !by["SHA256:old"].Stale || by["SHA256:fresh"].Stale {
+		t.Fatalf("stale flags wrong: %+v", by)
+	}
+	if by["SHA256:never"].State != "authorized" || by["SHA256:old"].State != "unauthorized" ||
+		by["SHA256:never"].Algorithm != "RSA_4096" || by["SHA256:never"].Location != "h:/home/u/.ssh/authorized_keys" ||
+		by["SHA256:fresh"].Algorithm != "ECDSA_P256" || by["SHA256:never"].KeyType != "user" {
+		t.Fatalf("rows wrong: %+v", by)
+	}
+}
+
+func TestSSHAlgorithmLabelAndPQC(t *testing.T) {
+	cases := []struct {
+		in   string
+		bits int
+		lbl  string
+		pqc  string
+	}{
+		{"ssh-ed25519", 0, "Ed25519", "vulnerable"},
+		{"rsa-sha2-512", 0, "RSA", "vulnerable"},
+		{"ssh-rsa", 2048, "RSA_2048", "vulnerable"},
+		{"ecdsa-sha2-nistp384", 0, "ECDSA_P384", "vulnerable"},
+		{"ecdsa-sha2-nistp521", 0, "ECDSA_P521", "vulnerable"},
+		{"ssh-dss", 0, "DSA", "vulnerable"},
+		{"ssh-mldsa-65", 0, "ssh-mldsa-65", "quantum_safe"},
+		{"mystery", 0, "mystery", "unknown"},
+	}
+	for _, c := range cases {
+		if got := sshAlgorithmLabel(c.in, c.bits); got != c.lbl {
+			t.Errorf("label(%q,%d)=%q want %q", c.in, c.bits, got, c.lbl)
+		}
+		if got := sshKeyPQC(c.in); got != c.pqc {
+			t.Errorf("pqc(%q)=%q want %q", c.in, got, c.pqc)
+		}
 	}
 }

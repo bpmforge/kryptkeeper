@@ -1,0 +1,206 @@
+{
+  "task": "U-37",
+  "title": "Connect Jira or ServiceNow (ITSM) for ticket-based alerts",
+  "sourceStory": "STORIES.md#u-37",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/integrations"
+      },
+      "caption": "Open /integrations",
+      "slug": "integrations",
+      "expect": {
+        "role": "heading",
+        "name": "Integrations"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-37/01-integrations.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "label": "ITSM kind"
+      },
+      "caption": "Locate **ITSM kind**",
+      "slug": "itsm-connections-panel",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-37/02-itsm-connections-panel.png",
+        "annotated": "docs/guide/screenshots/U-37/02-itsm-connections-panel-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 431,
+          "w": 559,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "ITSM kind"
+      },
+      "value": "Jira",
+      "caption": "Select \"Jira\" in **ITSM kind**",
+      "slug": "ITSM kind",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-37/03-itsm-kind.png",
+        "annotated": "docs/guide/screenshots/U-37/03-itsm-kind-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 431,
+          "w": 559,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "ITSM name"
+      },
+      "value": "jira-prod",
+      "caption": "Fill **ITSM name** with \"jira-prod\"",
+      "slug": "ITSM name",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-37/04-itsm-name.png",
+        "annotated": "docs/guide/screenshots/U-37/04-itsm-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 836,
+          "y": 431,
+          "w": 559,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "ITSM URL"
+      },
+      "value": "https://acme.atlassian.net",
+      "caption": "Fill **ITSM URL** with \"https://acme.atlassian.net\"",
+      "slug": "ITSM URL",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-37/05-itsm-url.png",
+        "annotated": "docs/guide/screenshots/U-37/05-itsm-url-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 501,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    }
+  ],
+  "flags": "EXTERNAL SERVICE (panel and add form only; testing a connection needs a live Jira/ServiceNow)",
+  "lastRun": {
+    "at": "2026-10-18T12:44:43.252Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-37",
+    "steps": 5,
+    "shots": 5,
+    "annotated": 4,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/integrations"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-37/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-37/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

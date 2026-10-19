@@ -7,10 +7,11 @@ package bootstrap
 import (
 	"context"
 	"errors"
-	"log"
 	"os"
 	"strconv"
 	"strings"
+
+	"kryptkeeper/internal/logging"
 )
 
 const caProviderEnv = "APP_CA_PROVIDER"
@@ -19,24 +20,29 @@ const (
 	caProviderFile = "file"
 )
 
-var caProviderWarnf = log.Printf
+var caProviderWarnf = logging.Warnf
 
 type CAListItem struct {
-	ID                           string  `json:"id"`
-	Name                         string  `json:"name"`
-	DisplayName                  string  `json:"display_name"`
-	Type                         string  `json:"type"`
-	ParentCAID                   *string `json:"parent_ca_id"`
-	Status                       string  `json:"status"`
-	KeyStorageType               string  `json:"key_storage_type"`
-	CertificateFingerprintSHA256 string  `json:"certificate_fingerprint_sha256"`
+	ID             string  `json:"id"`
+	Name           string  `json:"name"`
+	DisplayName    string  `json:"display_name"`
+	Type           string  `json:"type"`
+	ParentCAID     *string `json:"parent_ca_id"`
+	Status         string  `json:"status"`
+	KeyStorageType string  `json:"key_storage_type"`
+	// RevocationSigning is how CRLs/OCSP for this CA are signed: ml-dsa for an
+	// ML-DSA CA key, else classical (W31-05).
+	RevocationSigning            string `json:"revocation_signing"`
+	CertificateFingerprintSHA256 string `json:"certificate_fingerprint_sha256"`
 	// CertificatePEM is the actual PEM-armored certificate bytes (W19-01: the
 	// chain?format=pem export previously had no real certificate data to
 	// serve and fabricated a "PEM" block by wrapping the SHA-256 fingerprint
 	// hex string in BEGIN/END CERTIFICATE markers -- a string that looks like
 	// a certificate but is not one, undetected because no real ACME/EST/SCEP
 	// client had ever fetched a CA chain from a live hub to feed to openssl).
-	CertificatePEM        string   `json:"certificate_pem,omitempty"`
+	CertificatePEM string `json:"certificate_pem,omitempty"`
+	// Warnings are advisory notes about the CA (e.g. Ed25519 client compatibility).
+	Warnings              []string `json:"warnings,omitempty"`
 	CRLDistributionPoints []string `json:"crl_distribution_points"`
 	OCSPServiceURL        *string  `json:"ocsp_service_url"`
 	Certificate           *struct {
@@ -47,6 +53,9 @@ type CAListItem struct {
 		PublicKeyAlg      string `json:"public_key_algorithm"`
 		KeySizeBits       int    `json:"key_size_bits"`
 	} `json:"certificate,omitempty"`
+	// CSRPEM is the PKCS#10 request of an issuing CA awaiting its offline-signed
+	// certificate (status pending_certificate). Public data; never key material.
+	CSRPEM                   string `json:"csr_pem,omitempty"`
 	ActiveIssuedCertificates int    `json:"active_issued_certificates,omitempty"`
 	CreatedAt                string `json:"created_at"`
 	UpdatedAt                string `json:"updated_at"`
@@ -85,6 +94,8 @@ var (
 	errCAUnprocessable       = errors.New("ca unprocessable")
 	errCACreateUnsupported   = errors.New("ca create not supported by this provider")
 	errCARotateUnsupported   = errors.New("ca key rotation not supported by this provider")
+	// errCARotationRolledBack marks a rotation that failed and was undone (W23-16).
+	errCARotationRolledBack = errors.New("ca key rotation failed and was rolled back")
 )
 
 // CAKeyRotationResult is the API-layer view of a completed CA re-key
@@ -111,16 +122,56 @@ type CARotator interface {
 	RotateCAKey(ctx context.Context, id string, algorithm string) (CAKeyRotationResult, error)
 }
 
+// CARevoker is an optional CAProvider capability (W23-34): irreversible CA
+// revocation. Callers must reach it only through a dual-control approval.
+type CARevoker interface {
+	RevokeCA(ctx context.Context, id string) (CARevokeResult, error)
+	// CARevokeBlastRadius counts active certificates under the CA and its
+	// descendants, plus the descendant CAs.
+	CARevokeBlastRadius(ctx context.Context, id string) (certs, descendants int, err error)
+}
+
+// CARevokeResult is the outcome of an executed CA revocation.
+type CARevokeResult struct {
+	ID            string `json:"id"`
+	Status        string `json:"status"`
+	Reason        string `json:"reason"`
+	StatusOnly    bool   `json:"status_only"`
+	AffectedCerts int    `json:"affected_certs"`
+	DescendantCAs int    `json:"descendant_cas"`
+	RevokedAt     string `json:"revoked_at"`
+}
+
+// CAImporter is an optional CAProvider capability (W23-03): import an
+// external self-signed root as a keyless trust anchor and remove it again.
+// Only the engine-backed provider implements it.
+type CAImporter interface {
+	ImportRootCA(ctx context.Context, name string, certPEM []byte) (CAListItem, error)
+	CheckTrustAnchorRemovable(ctx context.Context, id string) error
+	RemoveTrustAnchor(ctx context.Context, id string) error
+}
+
+// CACSRProvider is an optional CAProvider capability (W23-04): the offline-root
+// flow where an issuing CA's key lives in the hub, its CSR is signed elsewhere
+// and the signed certificate is uploaded back.
+type CACSRProvider interface {
+	GetCSR(ctx context.Context, id string) (string, error)
+	CompleteCA(ctx context.Context, id string, certPEM []byte) (CAListItem, error)
+}
+
 // CACreateRequest is the payload for creating a new CA.
 type CACreateRequest struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name,omitempty"`
 	Type        string `json:"type"`      // "root" or "intermediate"
-	Algorithm   string `json:"algorithm"` // "ecdsaP256", "ecdsaP384", "rsa3072"
+	Algorithm   string `json:"algorithm"` // one of caSupportedAlgorithms
 	ValidityStr string `json:"validity"`  // e.g. "10y", "3650d", or RFC3339 duration
 	ParentCAID  string `json:"parent_ca_id,omitempty"`
 	SubjectCN   string `json:"subject_cn"`
 	SubjectOrg  string `json:"subject_org,omitempty"`
+	// KeyStorageType picks the key backend for this CA (canonical vocabulary,
+	// W23-11); empty means the hub default.
+	KeyStorageType string `json:"key_storage_type,omitempty"`
 }
 
 type CAProvider interface {

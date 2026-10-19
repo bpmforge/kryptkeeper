@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { scrollableProps } from "../lib/scrollable";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, Copy, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
@@ -185,6 +186,11 @@ export default function CloudKeys() {
         }
       />
 
+      <p className="text-xs text-muted-foreground">
+        PQC keys are not held in cloud KMS: custody is software-only
+        (docs/ADR_PQC_KEYS_SOFTWARE_ONLY.md).
+      </p>
+
       {isLoading ? (
         <StateMessage title="Loading" message="Querying cloud key sources…" />
       ) : status === 403 ? (
@@ -308,7 +314,7 @@ export default function CloudKeys() {
                       : "No keys match the current filters."}
                   </p>
                 ) : (
-                  <div className="overflow-x-auto">
+                  <div className="overflow-x-auto" {...scrollableProps}>
                     <table className="w-full text-sm">
                       <caption className="sr-only">Cloud KMS keys</caption>
                       <thead>

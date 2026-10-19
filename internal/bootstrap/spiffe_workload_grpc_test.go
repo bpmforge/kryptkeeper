@@ -137,3 +137,43 @@ func TestWorkloadAPIRequiresSecurityHeader(t *testing.T) {
 		t.Fatalf("a call missing the security header must be refused InvalidArgument, got %v", err)
 	}
 }
+
+// W29-01: the stream must push a fresh SVID at half the configured TTL
+// without the client reconnecting.
+func TestWorkloadAPIRotatesAtHalfLife(t *testing.T) {
+	reg := NewSelectorRegistry()
+	reg.RegisterUID(uint32(os.Getuid()), "spiffe://example.org/ns/prod/sa/checkout")
+	sock := startTestWorkloadAPI(t, reg)
+	t.Setenv("SPIFFE_SVID_TTL", "4s") // after spiffeTestSetup; rotation fires at 2s
+	client := dialWorkloadAPI(t, sock)
+
+	ctx, cancel := workloadCtx(t)
+	defer cancel()
+	stream, err := client.FetchX509SVID(ctx, &workload.X509SVIDRequest{})
+	if err != nil {
+		t.Fatalf("FetchX509SVID: %v", err)
+	}
+	first, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("first recv: %v", err)
+	}
+	start := time.Now()
+	second, err := stream.Recv() // same stream: no reconnect
+	if err != nil {
+		t.Fatalf("second recv: %v", err)
+	}
+	if waited := time.Since(start); waited < time.Second || waited > 3500*time.Millisecond {
+		t.Fatalf("rotation after %s, want about TTL/2 (2s)", waited)
+	}
+	c1, err1 := x509.ParseCertificate(first.Svids[0].X509Svid)
+	c2, err2 := x509.ParseCertificate(second.Svids[0].X509Svid)
+	if err1 != nil || err2 != nil {
+		t.Fatalf("parse: %v %v", err1, err2)
+	}
+	if c1.SerialNumber.Cmp(c2.SerialNumber) == 0 {
+		t.Fatal("rotated SVID reuses the first certificate")
+	}
+	if c2.URIs[0].String() != first.Svids[0].SpiffeId {
+		t.Fatalf("rotation changed identity: %v", c2.URIs)
+	}
+}

@@ -18,7 +18,7 @@ import (
 func TestInstallUnsupported(t *testing.T) {
 	withHints := agentclient.RenewalTask{CertPath: "/etc/nginx/ssl/a.pem", ServerType: "nginx"}
 	err := installUnsupported("windows", withHints)
-	if err == nil || !strings.Contains(err.Error(), "not supported on Windows agent in v0.9") || !strings.Contains(err.Error(), "WinRM/IIS") {
+	if err == nil || !strings.Contains(err.Error(), "not supported on the Windows agent") || !strings.Contains(err.Error(), "WinRM/IIS") {
 		t.Fatalf("windows with install hints: got %v", err)
 	}
 	if err := installUnsupported("windows", agentclient.RenewalTask{}); err != nil {
@@ -44,7 +44,7 @@ func TestReportFailure_PostsFailedResult(t *testing.T) {
 	defer hub.Close()
 
 	c := agentclient.New(hub.URL, "agent-1", "tok", nil)
-	cause := errors.New("install targets not supported on Windows agent in v0.9; use agentless WinRM/IIS")
+	cause := errors.New("install targets are not supported on the Windows agent; use agentless WinRM/IIS")
 	task := agentclient.RenewalTask{TaskID: "t1", Fingerprint: "ab12"}
 	if err := reportFailure(c, task, cause); !errors.Is(err, cause) {
 		t.Fatalf("reportFailure must return the cause, got %v", err)

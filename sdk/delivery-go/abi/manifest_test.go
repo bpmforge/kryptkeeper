@@ -54,6 +54,22 @@ func TestParseManifest(t *testing.T) {
 	}
 }
 
+func TestManifestVerification(t *testing.T) {
+	for _, v := range []string{"", "tls", "readback"} {
+		raw := strings.Replace(goodManifest, `"api_version"`, `"verification": "`+v+`", "api_version"`, 1)
+		m, err := ParseManifest([]byte(raw))
+		if err != nil || m.Verification != v {
+			t.Errorf("verification %q: %+v %v", v, m.Verification, err)
+		}
+	}
+	for _, v := range []string{"bogus", "plugin", "READBACK"} {
+		raw := strings.Replace(goodManifest, `"api_version"`, `"verification": "`+v+`", "api_version"`, 1)
+		if _, err := ParseManifest([]byte(raw)); err == nil || !strings.Contains(err.Error(), "verification") {
+			t.Errorf("verification %q accepted: %v", v, err)
+		}
+	}
+}
+
 func TestCapabilitiesWithin(t *testing.T) {
 	declared := Capabilities{ReceivePrivateKey: true, Network: &Network{HostsFromCredential: "base_url", Ports: []int{443}}, FileWrite: []string{"/etc/ssl"}}
 	if !declared.Within(declared) {
@@ -87,5 +103,17 @@ func TestCapabilitiesTier(t *testing.T) {
 	}
 	if (Capabilities{RemoteExec: true}).Tier() != TierHigh || (Capabilities{TrustStore: true, RemoteExec: true}).Tier() != TierCritical {
 		t.Error("exec / trust store tiers wrong")
+	}
+}
+
+func TestVerifyPropagationSecondsBounds(t *testing.T) {
+	for _, c := range []struct {
+		v  string
+		ok bool
+	}{{"0", true}, {"1200", true}, {"1800", true}, {"-1", false}, {"1801", false}} {
+		raw := strings.Replace(goodManifest, `"api_version"`, `"verify_propagation_seconds": `+c.v+`, "api_version"`, 1)
+		if _, err := ParseManifest([]byte(raw)); (err == nil) != c.ok {
+			t.Errorf("verify_propagation_seconds=%s: err=%v want ok=%t", c.v, err, c.ok)
+		}
 	}
 }

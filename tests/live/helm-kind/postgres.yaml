@@ -1,0 +1,51 @@
+# BYO Postgres for the chart harness (tests/live/helm-kind/run.sh). Throwaway,
+# single pod, emptyDir storage; the password comes from the kk-pg Secret that
+# run.sh creates at run time (never committed).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kk-pg
+  namespace: kk
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: kk-pg}
+  template:
+    metadata:
+      labels: {app: kk-pg}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          # Default max_connections=100 is exhausted when a second replica (or a
+          # rolling-update surge pod) starts: each hub opens ~20 pooled
+          # connections and a burst at boot. 300 gives headroom (measured, see
+          # README).
+          args: ["-c", "max_connections=300"]
+          env:
+            - {name: POSTGRES_USER, value: kryptkeeper}
+            - {name: POSTGRES_DB, value: kryptkeeper}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: kk-pg, key: password}
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "kryptkeeper", "-d", "kryptkeeper"]
+            periodSeconds: 3
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql/data}
+      volumes:
+        - {name: data, emptyDir: {}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kk-pg
+  namespace: kk
+spec:
+  selector: {app: kk-pg}
+  ports:
+    - port: 5432
+      targetPort: 5432

@@ -35,6 +35,8 @@ func frameworkDisplayName(framework string) string {
 		return "EU DORA"
 	case "nis2":
 		return "EU NIS2"
+	case "fedramp":
+		return "FedRAMP Moderate (mapping)"
 	case "", "all":
 		return "All Frameworks"
 	default:
@@ -49,12 +51,17 @@ var statusRGB = map[string][3]int{
 	"fail": {239, 68, 68},
 }
 
+// pdfCompression is false only in tests that read text back out of the PDF
+// bytes (fpdf compresses page streams by default).
+var pdfCompression = true
+
 // newBrandedPDF returns an A4 PDF with a consistent header/footer. createdAt is
 // passed in (never time.Now inside) and pins both PDF timestamps so the only
 // source of byte variation is fpdf's internal random font tag — the rendered
 // content is otherwise a pure function of the input.
 func newBrandedPDF(title string, createdAt time.Time) (*fpdf.Fpdf, func(string) string) {
 	pdf := fpdf.New("P", "mm", "A4", "")
+	pdf.SetCompression(pdfCompression)
 	// Pin both dates so rendered bytes are deterministic for a fixed createdAt
 	// (ModDate otherwise defaults to time.Now()).
 	pdf.SetCreationDate(createdAt.UTC())
@@ -112,6 +119,12 @@ func renderComplianceEvidencePDF(report ComplianceEvidenceReport, certCount int,
 	pdf.SetTextColor(15, 23, 42)
 	pdf.CellFormat(0, 8, tr(fmt.Sprintf("Control summary: %d pass · %d warn · %d fail  (%d%% passing)", s.Pass, s.Warn, s.Fail, pct)), "", 1, "L", false, 0, "")
 	pdf.Ln(2)
+	if frameworkIncludesFedramp(report.Framework) {
+		pdf.SetFont("Helvetica", "I", 8)
+		pdf.SetTextColor(100, 116, 139)
+		pdf.MultiCell(0, 4, tr(fedrampMappingNotice), "", "L", false)
+		pdf.Ln(2)
+	}
 
 	// One block per control.
 	for _, c := range report.Controls {
@@ -144,8 +157,23 @@ func renderComplianceEvidencePDF(report ComplianceEvidenceReport, certCount int,
 			pdf.SetTextColor(180, 83, 9)
 			pdf.MultiCell(0, 5, tr("Remediation: "+c.Remediation), "", "L", false)
 		}
+		pdf.SetFont("Helvetica", "", 8)
+		pdf.SetTextColor(100, 116, 139)
+		if c.Rule != "" {
+			pdf.MultiCell(0, 4, tr("Rule: "+c.Rule), "", "L", false)
+		}
+		if len(c.Artifacts) > 0 {
+			parts := make([]string, 0, len(c.Artifacts))
+			for _, a := range c.Artifacts {
+				parts = append(parts, fmt.Sprintf("%s (%s)", a.Kind, a.URL))
+			}
+			pdf.MultiCell(0, 4, tr("Artifacts: "+strings.Join(parts, "; ")), "", "L", false)
+		}
 		pdf.Ln(2)
 	}
+
+	renderAcceptedRisksSection(pdf, tr, report.AcceptedRisks)
+	renderKeyCustodySection(pdf, tr, report.KeyCustody, report.KeyCustodyNote)
 
 	var buf bytes.Buffer
 	if err := pdf.Output(&buf); err != nil {
@@ -155,6 +183,83 @@ func renderComplianceEvidencePDF(report ComplianceEvidenceReport, certCount int,
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// renderAcceptedRisksSection is always present so an auditor can see "none"
+// as well as what was excused.
+func renderAcceptedRisksSection(pdf *fpdf.Fpdf, tr func(string) string, risks []AcceptedRisk) {
+	pdf.Ln(4)
+	pdf.SetTextColor(15, 23, 42)
+	pdf.SetFont("Helvetica", "B", 13)
+	pdf.CellFormat(0, 9, tr(fmt.Sprintf("Accepted risks (%d)", len(risks))), "", 1, "L", false, 0, "")
+	if len(risks) == 0 {
+		pdf.SetFont("Helvetica", "", 9)
+		pdf.SetTextColor(51, 65, 85)
+		pdf.MultiCell(0, 5, tr("No accepted risks are active."), "", "L", false)
+		return
+	}
+	for _, r := range risks {
+		pdf.SetFont("Helvetica", "B", 10)
+		pdf.SetTextColor(15, 23, 42)
+		pdf.MultiCell(0, 6, tr(fmt.Sprintf("%s — %s %s", r.FindingCode, r.TargetType, r.TargetID)), "", "L", false)
+		owner := r.OwnerTeam
+		if owner == "" {
+			owner = "unowned"
+		}
+		if r.OwnerEmail != "" {
+			owner += " " + r.OwnerEmail
+		}
+		pdf.SetFont("Helvetica", "", 9)
+		pdf.SetTextColor(51, 65, 85)
+		pdf.MultiCell(0, 5, tr(fmt.Sprintf("Owner: %s · Justification: %s · Expires: %s · Approved/created by: %s",
+			owner, r.JustificationCode, r.ExpiresAt, r.CreatedBy)), "", "L", false)
+		if r.JustificationNote != "" {
+			pdf.MultiCell(0, 5, tr("Note: "+r.JustificationNote), "", "L", false)
+		}
+		pdf.Ln(2)
+	}
+}
+
+// maxCustodyPDFRows caps the key table so a very large keystore cannot blow
+// up the pack; the full list is in the custody_report artifact.
+const maxCustodyPDFRows = 100
+
+// renderKeyCustodySection is always present: a nil report prints why.
+func renderKeyCustodySection(pdf *fpdf.Fpdf, tr func(string) string, kc *KeyCustodyReport, note string) {
+	pdf.Ln(4)
+	pdf.SetTextColor(15, 23, 42)
+	pdf.SetFont("Helvetica", "B", 13)
+	pdf.CellFormat(0, 9, tr("Key custody"), "", 1, "L", false, 0, "")
+	pdf.SetFont("Helvetica", "", 9)
+	pdf.SetTextColor(51, 65, 85)
+	if kc == nil {
+		if note == "" {
+			note = "key custody evidence is unavailable"
+		}
+		pdf.MultiCell(0, 5, tr("Key custody evidence not included: "+note), "", "L", false)
+		return
+	}
+	escrow := "no"
+	if kc.DualControlEscrow {
+		escrow = "yes"
+	}
+	pdf.MultiCell(0, 5, tr(fmt.Sprintf("Backend: %s | Dual-control escrow: %s | Keys: %d", kc.Backend, escrow, len(kc.Keys))), "", "L", false)
+	pdf.SetFont("Helvetica", "", 8)
+	shown := kc.Keys
+	if len(shown) > maxCustodyPDFRows {
+		shown = shown[:maxCustodyPDFRows]
+	}
+	for _, k := range shown {
+		last := k.LastRotatedAt
+		if last == "" {
+			last = "never"
+		}
+		pdf.MultiCell(0, 4, tr(fmt.Sprintf("%s | %s | %s | %d | %s | %d",
+			k.KeyID, k.Algorithm, k.CreatedAt, k.RotationCount, last, k.AccessCount)), "", "L", false)
+	}
+	if more := len(kc.Keys) - len(shown); more > 0 {
+		pdf.MultiCell(0, 4, tr(fmt.Sprintf("... and %d more", more)), "", "L", false)
+	}
 }
 
 // metricTone returns an RGB color for a 0-100 metric (green/amber/red).
@@ -223,6 +328,9 @@ func renderExecutiveSummaryPDF(s ExecutiveSummary, createdAt time.Time) ([]byte,
 	pdf.SetFont("Helvetica", "", 10)
 	pdf.SetTextColor(71, 85, 105)
 	pdf.CellFormat(0, 6, tr(fmt.Sprintf("Risk: %d critical · %d high", s.RiskCritical, s.RiskHigh)), "", 1, "L", false, 0, "")
+	if pc := s.PrivilegedCredentials; pc != nil {
+		pdf.CellFormat(0, 6, tr(fmt.Sprintf("Privileged credentials: %d in use on %d hosts", pc.Count, pc.HostCount)), "", 1, "L", false, 0, "")
+	}
 	pdf.Ln(3)
 
 	// Top risks.
@@ -234,6 +342,7 @@ func renderExecutiveSummaryPDF(s ExecutiveSummary, createdAt time.Time) ([]byte,
 	for _, risk := range s.TopRisks {
 		pdf.MultiCell(0, 6, tr("-  "+risk), "", "L", false)
 	}
+	renderExecutiveTrendSection(pdf, tr, s.Trend)
 
 	var buf bytes.Buffer
 	if err := pdf.Output(&buf); err != nil {
@@ -243,6 +352,56 @@ func renderExecutiveSummaryPDF(s ExecutiveSummary, createdAt time.Time) ([]byte,
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// renderExecutiveTrendSection appends the "Posture trend" section: an
+// explicit message for a nil (tenant-scoped) or empty trend, else a table of
+// the most recent 12 snapshots, newest last.
+func renderExecutiveTrendSection(pdf *fpdf.Fpdf, tr func(string) string, t *ExecutiveTrend) {
+	pdf.Ln(3)
+	pdf.SetFont("Helvetica", "B", 12)
+	pdf.SetTextColor(15, 23, 42)
+	pdf.CellFormat(0, 8, tr("Posture trend (last 90 days)"), "", 1, "L", false, 0, "")
+	pdf.SetFont("Helvetica", "", 10)
+	pdf.SetTextColor(51, 65, 85)
+	switch {
+	case t == nil:
+		pdf.MultiCell(0, 6, tr("Posture trend is available to fleet administrators only."), "", "L", false)
+		return
+	case len(t.Points) == 0:
+		pdf.MultiCell(0, 6, tr("No posture snapshots in the last 90 days."), "", "L", false)
+		return
+	}
+	const maxRows = 12
+	pts := t.Points
+	if len(pts) > maxRows {
+		pts = pts[len(pts)-maxRows:]
+	}
+	cols := []string{"A", "B", "C", "D", "F"}
+	pdf.SetFont("Helvetica", "B", 9)
+	pdf.CellFormat(34, 6, "Date", "B", 0, "L", false, 0, "")
+	pdf.CellFormat(24, 6, "Certs", "B", 0, "R", false, 0, "")
+	for _, g := range cols {
+		pdf.CellFormat(18, 6, g, "B", 0, "R", false, 0, "")
+	}
+	pdf.Ln(-1)
+	pdf.SetFont("Helvetica", "", 9)
+	for _, p := range pts {
+		d := p.CapturedAt
+		if len(d) > 10 {
+			d = d[:10]
+		}
+		pdf.CellFormat(34, 5, tr(d), "", 0, "L", false, 0, "")
+		pdf.CellFormat(24, 5, fmt.Sprintf("%d", p.TotalCerts), "", 0, "R", false, 0, "")
+		for _, g := range cols {
+			pdf.CellFormat(18, 5, fmt.Sprintf("%d", p.Grades[g]), "", 0, "R", false, 0, "")
+		}
+		pdf.Ln(-1)
+	}
+	if len(t.Points) > maxRows {
+		pdf.SetFont("Helvetica", "", 8)
+		pdf.CellFormat(0, 5, tr(fmt.Sprintf("Showing %d of %d snapshots.", maxRows, len(t.Points))), "", 1, "L", false, 0, "")
+	}
 }
 
 // expiryTone colors the expiry-risk tile: 0 is good, any expiring is bad.

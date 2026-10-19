@@ -14,6 +14,7 @@ type Algorithm string
 
 const (
 	RSA2048   Algorithm = "RSA-2048"
+	RSA3072   Algorithm = "RSA-3072"
 	RSA4096   Algorithm = "RSA-4096"
 	ECDSAP256 Algorithm = "ECDSA-P256"
 	ECDSAP384 Algorithm = "ECDSA-P384"
@@ -43,6 +44,12 @@ type KeyMetadata struct {
 	ID        string    `json:"id"`
 	Algorithm Algorithm `json:"algorithm"`
 	CreatedAt string    `json:"created_at"`
+	// State is empty for a live key and "pending_deletion" for a cloud-KMS key
+	// inside its provider recovery window (W23-23). DeletionScheduledAt is
+	// when the provider purges it for good (RFC3339); both are omitted for
+	// live keys.
+	State               string `json:"state,omitempty"`
+	DeletionScheduledAt string `json:"deletion_scheduled_at,omitempty"`
 }
 
 // HybridKeyLoader is an optional extension to Store for backends that support
@@ -50,6 +57,11 @@ type KeyMetadata struct {
 type HybridKeyLoader interface {
 	LoadHybridKeyPair(id string) (HybridKeyPair, error)
 }
+
+// BackendLabeler is implemented by stores that front several backends and so
+// know which one a create in flight targets (env vocabulary: software, pkcs11,
+// vault, cloudkms).
+type BackendLabeler interface{ CurrentBackendLabel() string }
 
 // KeyRotateResult is returned by RotateKey.
 type KeyRotateResult struct {
@@ -99,3 +111,16 @@ type Store interface {
 var (
 	ErrKeyBackupFailed = errors.New("key backup/export failed")
 )
+
+// rsaAlgorithmForBits buckets an RSA modulus size into the closest Algorithm
+// constant: <=2048 RSA-2048, <=3072 RSA-3072, otherwise RSA-4096.
+func rsaAlgorithmForBits(bits int) Algorithm {
+	switch {
+	case bits <= 2048:
+		return RSA2048
+	case bits <= 3072:
+		return RSA3072
+	default:
+		return RSA4096
+	}
+}

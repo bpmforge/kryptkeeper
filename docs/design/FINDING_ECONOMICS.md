@@ -144,3 +144,41 @@ of the funnel) does not exist yet — this ticket's exception rows reference a `
 that isn't backed by any persisted "finding" row, because no such row exists yet. Building that
 tracking is a separate, larger piece of work than this ticket's 8 points cover (its own notes flag
 it as a "split candidate" for exactly this reason).
+
+## Stage 2 (dedup) — built in W22-29
+
+Stage 2 of the funnel is now real: findings have a persisted, stable identity and every funnel
+surface reports the stages as `raw`, `deduped`, `in_scope`, `effective`, `suppressed` (a
+`FindingFunnelSummary`; the earlier "persisted dedup identity does not exist yet" notes above are
+superseded).
+
+**Identity.** `FindingIdentityID(tenant, target_type, target_id, finding_code)` =
+`"fnd-" + hex(sha256(tenant NUL target_type NUL target_id NUL finding_code))[:32]`. It is persisted
+in `finding_identities` (migration `000093`, self-healed by `FindingIdentityStore.EnsureSchema`):
+`first_seen` never moves, `last_seen` is bumped at most once an hour (`Observe` is throttled so a
+polled dashboard does not turn reads into writes). `FindingException.IdentityID(tenant)` yields the
+identity an exception covers, so one exception stays attached to the finding across repeated scans.
+Tenant is part of the identity because discovery endpoints are per-tenant rows: two tenants that
+each serve the same flawed certificate hold two findings, and one tenant's row is never shared with
+or refreshed by another's. A certificate target (posture) is identified by its fingerprint alone
+(one CA, hence one tenant), so posture findings use tenant `""`. Exceptions themselves are not
+tenant-stamped (see HANDOFF in the W22-29 report).
+
+**Dedup rule.** Posture: identity = (certificate, fingerprint, flag). Discovery: an endpoint issue
+is attributed to the lexicographically smallest fingerprint in `CertFingerprints`, so the same flaw
+on the same certificate is one finding however many endpoints serve it; an endpoint presenting no
+certificate has nothing stable to attribute to, so each of its issues is its own unmerged finding
+(counted, never persisted). Suppression is unchanged: an issue is suppressed when any certificate
+its endpoint presents carries an active exception for it.
+
+**In-scope rule.** `in_scope == deduped` today. Every funnel surface is either a super-admin-only
+aggregate (`denyAggregateReportForTenantScoped`) or already scoped at the source (the discovery
+summary filters on the caller's tenant), so the scope stage removes nothing yet; it exists so the
+response shape does not change when it does.
+
+**Counts.** `suppressed` = in-scope identities with an active exception; `effective = in_scope -
+suppressed`. Invariants: `raw >= deduped >= in_scope >= effective` and `effective + suppressed ==
+in_scope`. Posture snapshots persisted before W22-29 lack `deduped`/`in_scope` (they decode as 0):
+a reader must treat 0 alongside a non-zero `raw` as unknown.
+
+**Still future:** stage 4 (applicability re-checks) and a read API over `finding_identities`.

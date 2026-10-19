@@ -12,13 +12,16 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/base64"
+	"errors"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -26,6 +29,7 @@ import (
 
 	"go.mozilla.org/pkcs7"
 	"golang.org/x/crypto/bcrypt"
+	_ "modernc.org/sqlite"
 
 	"kryptkeeper/internal/ca"
 	"kryptkeeper/internal/keystore"
@@ -361,8 +365,11 @@ func TestReenrollment(t *testing.T) {
 
 	// A certificate from another issuer, or none, may not re-enroll.
 	_, foreign := selfCA(t, "sensor-1.devices.example.com")
-	for name, c := range map[string]call{"foreign": {cert: &foreign}, "none": {}} {
-		if resp := post(t, ts, "/.well-known/est/simplereenroll", hostile(t), c); resp.StatusCode != http.StatusForbidden {
+	for name, c := range map[string]struct {
+		c    call
+		code int
+	}{"foreign": {call{cert: &foreign}, http.StatusForbidden}, "none": {call{}, http.StatusUnauthorized}} {
+		if resp := post(t, ts, "/.well-known/est/simplereenroll", hostile(t), c.c); resp.StatusCode != c.code {
 			t.Fatalf("%s: got %d", name, resp.StatusCode)
 		}
 	}
@@ -377,4 +384,261 @@ func TestReenrollment(t *testing.T) {
 	if last := f.audit[len(f.audit)-1]; last.Action != "est.reenroll" || last.Outcome != "denied" || last.Detail != "certificate is revoked" {
 		t.Fatalf("audit %+v", last)
 	}
+}
+
+// W26-07: API-managed users, the users-file precedence, and the failure alert.
+
+type fakeSource struct {
+	users map[string]User
+	err   error
+}
+
+func (f fakeSource) LookupUser(_ context.Context, name string) (User, bool, error) {
+	if f.err != nil {
+		return User{}, false, f.err
+	}
+	u, ok := f.users[name]
+	return u, ok && !u.Disabled, nil
+}
+
+func minCostHash(t *testing.T, pw string) string {
+	t.Helper()
+	h, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(h)
+}
+
+func goodCSR(t *testing.T) string {
+	return csrB64(t, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "a.devices.example.com"}})
+}
+
+func TestDBUserAuthenticatesWithAllowedSuffix(t *testing.T) {
+	f := newFixture(t)
+	store := newTestUserStore(t)
+	if _, err := store.Create(context.Background(), StoredUser{Username: "api-user", BcryptHash: minCostHash(t, "s3cret"), AllowedDNSSuffixes: []string{".devices.example.com"}, CreatedBy: "admin"}); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.WithUserSource(store)
+	ts := f.tlsServer(t)
+
+	cert := issuedCert(t, post(t, ts, "/.well-known/est/simpleenroll", goodCSR(t), call{user: "api-user", pass: "s3cret"}))
+	if cert.Subject.CommonName != "a.devices.example.com" {
+		t.Fatalf("subject %q", cert.Subject)
+	}
+	if resp := post(t, ts, "/.well-known/est/simpleenroll", csrB64(t, &x509.CertificateRequest{Subject: pkix.Name{CommonName: "x.other.example.com"}}), call{user: "api-user", pass: "s3cret"}); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("name outside the suffix: %d", resp.StatusCode)
+	}
+}
+
+func TestWrongPasswordIs401AndAuditedAsEnrollFailure(t *testing.T) {
+	f := newFixture(t)
+	f.srv.WithUserSource(fakeSource{users: map[string]User{"u": {Username: "u", BcryptHash: minCostHash(t, "right"), AllowedDNSSuffixes: []string{".devices.example.com"}}}})
+	ts := f.tlsServer(t)
+	resp := post(t, ts, "/.well-known/est/simpleenroll", goodCSR(t), call{user: "u", pass: "wrong"})
+	if resp.StatusCode != http.StatusUnauthorized || !strings.HasPrefix(resp.Header.Get("WWW-Authenticate"), "Basic") {
+		t.Fatalf("got %d %q", resp.StatusCode, resp.Header.Get("WWW-Authenticate"))
+	}
+	if len(f.audit) != 1 || f.audit[0].Action != "est.enroll.failure" || f.audit[0].Outcome != "denied" || f.audit[0].Actor != "u" {
+		t.Fatalf("audit %+v", f.audit)
+	}
+}
+
+func TestNameBindingRefusalIsAuditedAsEnrollFailure(t *testing.T) {
+	f := newFixture(t).withBasic(t, ".devices.example.com")
+	ts := f.tlsServer(t)
+	post(t, ts, "/.well-known/est/simpleenroll", hostile(t), call{user: "enroller", pass: "pw"})
+	if len(f.audit) != 1 || f.audit[0].Action != "est.enroll.failure" || f.audit[0].Outcome != "denied" {
+		t.Fatalf("audit %+v", f.audit)
+	}
+}
+
+func TestFileUserWinsOnNameClash(t *testing.T) {
+	f := newFixture(t).withBasic(t, ".devices.example.com") // "enroller" / "pw"
+	f.srv.WithUserSource(fakeSource{users: map[string]User{"enroller": {Username: "enroller", BcryptHash: minCostHash(t, "db-pw"), AllowedDNSSuffixes: []string{".devices.example.com"}}}})
+	ts := f.tlsServer(t)
+	if !f.srv.HasFileUser("enroller") || f.srv.HasFileUser("db-only") {
+		t.Fatal("HasFileUser")
+	}
+	if resp := post(t, ts, "/.well-known/est/simpleenroll", goodCSR(t), call{user: "enroller", pass: "db-pw"}); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the source's password must not work for a file user: %d", resp.StatusCode)
+	}
+	issuedCert(t, post(t, ts, "/.well-known/est/simpleenroll", goodCSR(t), call{user: "enroller", pass: "pw"}))
+}
+
+func TestDisabledUserIndistinguishableFrom401Unknown(t *testing.T) {
+	f := newFixture(t)
+	f.srv.WithUserSource(fakeSource{users: map[string]User{"off": {Username: "off", BcryptHash: minCostHash(t, "pw"), AllowedDNSSuffixes: []string{".devices.example.com"}, Disabled: true}}})
+	ts := f.tlsServer(t)
+	snap := func(c call) (int, string, string) {
+		resp := post(t, ts, "/.well-known/est/simpleenroll", goodCSR(t), c)
+		body, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, resp.Header.Get("WWW-Authenticate"), string(body)
+	}
+	c1, h1, b1 := snap(call{user: "off", pass: "pw"}) // the correct password
+	c2, h2, b2 := snap(call{user: "ghost", pass: "pw"})
+	if c1 != c2 || h1 != h2 || b1 != b2 || c1 != http.StatusUnauthorized {
+		t.Fatalf("disabled %d %q %q vs unknown %d %q %q", c1, h1, b1, c2, h2, b2)
+	}
+	if len(f.audit) != 2 || f.audit[0].Detail != "user disabled" || f.audit[1].Detail != "invalid credentials" {
+		t.Fatalf("audit %+v", f.audit)
+	}
+}
+
+func TestUserSourceErrorFailsClosed503(t *testing.T) {
+	f := newFixture(t).withBasic(t, ".devices.example.com")
+	f.srv.WithUserSource(fakeSource{err: errors.New("db down")})
+	ts := f.tlsServer(t)
+	resp := post(t, ts, "/.well-known/est/simpleenroll", goodCSR(t), call{user: "someone", pass: "pw"})
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("got %d", resp.StatusCode)
+	}
+	// A file user does not need the source and still works.
+	issuedCert(t, post(t, ts, "/.well-known/est/simpleenroll", goodCSR(t), call{user: "enroller", pass: "pw"}))
+}
+
+func TestUserSourceCountsAsConfigured(t *testing.T) {
+	s := NewServer(nil, "ca")
+	if s.EnrollmentConfigured() {
+		t.Fatal("configured with nothing")
+	}
+	s.WithUserSource(fakeSource{})
+	if !s.EnrollmentConfigured() {
+		t.Fatal("a user source is a credential type")
+	}
+}
+
+func TestAlertAfterTenFailuresPerMinute(t *testing.T) {
+	var w failureWindow
+	t0 := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	for i := 1; i <= 10; i++ {
+		if _, fire := w.record("a", t0.Add(time.Duration(i)*time.Second)); fire {
+			t.Fatalf("attempt %d alerted", i)
+		}
+	}
+	if n, fire := w.record("a", t0.Add(11*time.Second)); !fire || n != 11 {
+		t.Fatalf("11th: n=%d fire=%v", n, fire)
+	}
+	if _, fire := w.record("a", t0.Add(12*time.Second)); fire {
+		t.Fatal("alerted twice in one window")
+	}
+	if _, fire := w.record("b", t0.Add(12*time.Second)); fire {
+		t.Fatal("users are counted independently")
+	}
+	// Next minute re-arms.
+	later := t0.Add(2 * time.Minute)
+	for i := 0; i < 10; i++ {
+		if _, fire := w.record("a", later); fire {
+			t.Fatal("new window alerted early")
+		}
+	}
+	if _, fire := w.record("a", later); !fire {
+		t.Fatal("new window did not re-arm")
+	}
+	// The key table is bounded; the oldest key is the one evicted.
+	small := failureWindow{max: 3}
+	for _, k := range []string{"k1", "k2", "k3", "k4", "k5"} {
+		small.record(k, t0)
+	}
+	if small.order.Len() != 3 || len(small.byKey) != 3 || small.byKey["k1"] != nil || small.byKey["k5"] == nil {
+		t.Fatalf("cap not enforced: %d keys", len(small.byKey))
+	}
+	long := strings.Repeat("x", 500)
+	w.record(long, t0)
+	if w.byKey[long] != nil || w.byKey[long[:failureKeyMax]] == nil {
+		t.Fatal("key not truncated")
+	}
+}
+
+func TestAlertFiresThroughServerOnEleventhBadPassword(t *testing.T) {
+	f := newFixture(t).withBasic(t, ".devices.example.com")
+	var alerts []map[string]string
+	f.srv.WithAlertFunc(func(_ context.Context, kind string, d map[string]string) {
+		if kind != "est.basic.failures" {
+			t.Errorf("kind %q", kind)
+		}
+		alerts = append(alerts, d)
+	})
+	ts := f.tlsServer(t)
+	for i := 0; i < 12; i++ {
+		post(t, ts, "/.well-known/est/simpleenroll", goodCSR(t), call{user: "enroller", pass: "bad"})
+	}
+	if len(alerts) != 1 || alerts[0]["user"] != "enroller" || alerts[0]["count"] != "11" || alerts[0]["source_ip"] == "" {
+		t.Fatalf("alerts %v", alerts)
+	}
+}
+
+func TestValidateSuffixes(t *testing.T) {
+	got, err := ValidateSuffixes([]string{" .Devices.Example.com "})
+	if err != nil || !slices.Equal(got, []string{".devices.example.com"}) {
+		t.Fatalf("%v %v", got, err)
+	}
+	for _, bad := range [][]string{nil, {}, {"devices.example.com"}, {"."}, {"*.example.com"}, {".ok.example.com", "bad"}} {
+		if _, err := ValidateSuffixes(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+func TestNewUserPasswordIs24CharactersAndHashes(t *testing.T) {
+	pw, hash, err := NewUserPassword()
+	if err != nil || len(pw) != 24 || strings.ContainsAny(pw, "+/=") {
+		t.Fatalf("%q %v", pw, err)
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(pw)) != nil {
+		t.Fatal("hash does not match")
+	}
+}
+
+func TestDBUserStoreLifecycle(t *testing.T) {
+	ctx := context.Background()
+	st := newTestUserStore(t)
+	u := StoredUser{Username: "u1", BcryptHash: minCostHash(t, "a"), AllowedDNSSuffixes: []string{".a.example.com"}, CreatedBy: "admin"}
+	if _, err := st.Create(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Create(ctx, u); !errors.Is(err, ErrUserExists) {
+		t.Fatalf("duplicate: %v", err)
+	}
+	off := true
+	if _, err := st.Update(ctx, "u1", &off, []string{".b.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := st.LookupUser(ctx, "u1"); ok {
+		t.Fatal("disabled user looked up as ok")
+	}
+	if err := st.SetPassword(ctx, "u1", minCostHash(t, "b")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.Get(ctx, "u1")
+	if err != nil || !got.Disabled || got.PasswordRotatedAt == nil || !slices.Equal(got.AllowedDNSSuffixes, []string{".b.example.com"}) {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if list, _ := st.List(ctx); len(list) != 1 {
+		t.Fatalf("list %v", list)
+	}
+	if err := st.Delete(ctx, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Delete(ctx, "u1"); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("delete missing: %v", err)
+	}
+	if _, err := st.Update(ctx, "u1", &off, nil); !errors.Is(err, ErrUserNotFound) {
+		t.Fatalf("update missing: %v", err)
+	}
+}
+
+func newTestUserStore(t *testing.T) *DBUserStore {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "est.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	st := NewDBUserStore(db, false)
+	if err := st.EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return st
 }

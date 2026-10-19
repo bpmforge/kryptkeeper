@@ -2,8 +2,8 @@ apiVersion: v2
 name: kryptkeeper
 description: Enterprise PKI & Crypto Trust Platform — CA engine, PQC issuance, cert lifecycle automation
 type: application
-version: 0.9.4
-appVersion: "0.9.4"
+version: 1.0.0
+appVersion: "1.0.0"
 keywords:
   - pki
   - certificates
@@ -30,3 +30,5 @@ annotations:
   artifacthub.io/changes: |
     - kind: added
       description: Initial release — CA engine, PQC/ML-DSA issuance, hybrid certs, Intune BYOCA, cert-manager issuer, Terraform provider, satellite agent
+    - kind: added
+      description: Optional dashboard Deployment/Service/ConfigMap with TLS-verifying nginx proxy and per-path Ingress backend selection

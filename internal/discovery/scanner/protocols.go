@@ -10,10 +10,13 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 	"strings"
 	"time"
+
+	ldap "github.com/go-ldap/ldap/v3"
 )
 
 // W14-03: protocol-aware scanning. The plain scanner only captures
@@ -23,21 +26,23 @@ import (
 // layer. Every captured cert is the SAME DiscoveredCert (certToDiscovered)
 // into the one inventory.
 //
-// LDAP StartTLS is deliberately absent: its extended-operation request
-// is BER-encoded, the same binary-LDAP protocol the W13-04 go-ldap
-// decision gates — it lands with that dependency, not hand-rolled.
+// LDAP StartTLS (W24-02) goes through go-ldap rather than hand-rolled
+// BER: the RFC 4511 extended request is binary and not worth re-implementing.
 
 // ProtocolScanner captures certs/metadata over non-plain-TLS protocols.
 type ProtocolScanner struct {
 	dialer  *net.Dialer
 	timeout time.Duration
+	// active enables the probes that go beyond the connection a scan already
+	// makes (the LDAP rootDSE read): full and deep scans only (D-206).
+	active bool
 }
 
 func NewProtocolScanner(timeout time.Duration) *ProtocolScanner {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	return &ProtocolScanner{dialer: &net.Dialer{Timeout: timeout}, timeout: timeout}
+	return &ProtocolScanner{dialer: guardedDialer(timeout), timeout: timeout}
 }
 
 func (p *ProtocolScanner) dial(ctx context.Context, host string, port int) (net.Conn, error) {
@@ -62,44 +67,48 @@ func (p *ProtocolScanner) tlsCapture(conn net.Conn, host, protocol string, port 
 		dc.Served = true
 		ep.Certs = append(ep.Certs, dc)
 	}
+	ep.signals = append(ep.signals, certEvidence(tconn.ConnectionState().PeerCertificates)...)
 	return ep
 }
 
 // starttlsLineVerb is the plaintext preamble for line-based protocols.
 type starttlsLineVerb struct {
-	greet    func(r *bufio.Reader) error // consume the banner
-	send     string                      // the STARTTLS verb line
-	expectOK func(line string) bool      // predicate on the reply
+	greet    func(r *bufio.Reader) (string, error) // consume the banner and return it
+	send     string                                // the STARTTLS verb line
+	expectOK func(line string) bool                // predicate on the reply
 	tag      string
 }
 
 var lineProtocols = map[string]starttlsLineVerb{
 	"smtp": {
-		greet: func(r *bufio.Reader) error { return expectPrefix(r, "220") },
+		greet: func(r *bufio.Reader) (string, error) { return expectPrefix(r, "220") },
 		send:  "STARTTLS\r\n", expectOK: func(l string) bool { return strings.HasPrefix(l, "220") },
 		tag: "starttls-smtp",
 	},
 	"imap": {
-		greet: func(r *bufio.Reader) error { return expectPrefix(r, "* OK") },
+		greet: func(r *bufio.Reader) (string, error) { return expectPrefix(r, "* OK") },
 		send:  "a1 STARTTLS\r\n", expectOK: func(l string) bool { return strings.Contains(l, "OK") },
 		tag: "starttls-imap",
 	},
 	"pop3": {
-		greet: func(r *bufio.Reader) error { return expectPrefix(r, "+OK") },
+		greet: func(r *bufio.Reader) (string, error) { return expectPrefix(r, "+OK") },
 		send:  "STLS\r\n", expectOK: func(l string) bool { return strings.HasPrefix(l, "+OK") },
 		tag: "starttls-pop3",
 	},
 }
 
-func expectPrefix(r *bufio.Reader, prefix string) error {
+// expectPrefix reads the greeting line and returns it trimmed, so the banner
+// that used to be discarded can identify the mail server.
+func expectPrefix(r *bufio.Reader, prefix string) (string, error) {
 	line, err := r.ReadString('\n')
 	if err != nil {
-		return err
+		return "", err
 	}
-	if !strings.HasPrefix(strings.TrimSpace(line), prefix) {
-		return fmt.Errorf("unexpected banner %q", strings.TrimSpace(line))
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, prefix) {
+		return "", fmt.Errorf("unexpected banner %q", line)
 	}
-	return nil
+	return line, nil
 }
 
 // ScanSTARTTLS negotiates STARTTLS for a line-based protocol (smtp,
@@ -107,6 +116,12 @@ func expectPrefix(r *bufio.Reader, prefix string) error {
 func (p *ProtocolScanner) ScanSTARTTLS(ctx context.Context, host string, port int, protocol string) DiscoveredEndpoint {
 	if protocol == "postgres" {
 		return p.scanPostgres(ctx, host, port)
+	}
+	if protocol == "ldap" {
+		return p.ScanLDAPStartTLS(ctx, host, port)
+	}
+	if protocol == "mysql" {
+		return p.scanMySQL(ctx, host, port)
 	}
 	verb, ok := lineProtocols[protocol]
 	if !ok {
@@ -117,9 +132,17 @@ func (p *ProtocolScanner) ScanSTARTTLS(ctx context.Context, host string, port in
 		return DiscoveredEndpoint{Host: host, Port: port, Protocol: verb.tag, Error: err.Error()}
 	}
 	r := bufio.NewReader(conn)
-	if err := verb.greet(r); err != nil {
+	banner, err := verb.greet(r)
+	if err != nil {
 		conn.Close()
 		return DiscoveredEndpoint{Host: host, Port: port, Protocol: verb.tag, Reachable: true, Error: "greet: " + err.Error()}
+	}
+	// The greeting names the mail server; keep it on every outcome below, since
+	// a server that refuses STARTTLS is still identified by what it said first.
+	greeting := bannerEvidence(banner)
+	withGreeting := func(ep DiscoveredEndpoint) DiscoveredEndpoint {
+		ep.signals = append(ep.signals, greeting...)
+		return ep
 	}
 	// SMTP wants an EHLO before STARTTLS; harmless for others that
 	// ignore an unknown verb, but only SMTP requires it.
@@ -129,14 +152,47 @@ func (p *ProtocolScanner) ScanSTARTTLS(ctx context.Context, host string, port in
 	}
 	if _, err := conn.Write([]byte(verb.send)); err != nil {
 		conn.Close()
-		return DiscoveredEndpoint{Host: host, Port: port, Protocol: verb.tag, Reachable: true, Error: "send: " + err.Error()}
+		return withGreeting(DiscoveredEndpoint{Host: host, Port: port, Protocol: verb.tag, Reachable: true, Error: "send: " + err.Error()})
 	}
 	line, err := r.ReadString('\n')
 	if err != nil || !verb.expectOK(strings.TrimSpace(line)) {
 		conn.Close()
-		return DiscoveredEndpoint{Host: host, Port: port, Protocol: verb.tag, Reachable: true, Error: "starttls refused: " + strings.TrimSpace(line)}
+		return withGreeting(DiscoveredEndpoint{Host: host, Port: port, Protocol: verb.tag, Reachable: true, Error: "starttls refused: " + strings.TrimSpace(line)})
 	}
-	return p.tlsCapture(conn, host, verb.tag, port)
+	return withGreeting(p.tlsCapture(conn, host, verb.tag, port))
+}
+
+// ScanLDAPStartTLS sends the RFC 4511 StartTLS extended request, then captures the cert.
+// go-ldap takes no context, so the scan is bounded by the dialer timeout plus SetTimeout.
+func (p *ProtocolScanner) ScanLDAPStartTLS(ctx context.Context, host string, port int) DiscoveredEndpoint {
+	tag := "starttls-ldap"
+	if err := ctx.Err(); err != nil {
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Error: err.Error()}
+	}
+	conn, err := ldap.DialURL("ldap://"+net.JoinHostPort(host, strconv.Itoa(port)), ldap.DialWithDialer(guardedDialer(p.timeout)))
+	if err != nil {
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Error: err.Error()}
+	}
+	defer conn.Close()
+	conn.SetTimeout(p.timeout)
+	if err := conn.StartTLS(&tls.Config{ServerName: host, InsecureSkipVerify: true}); err != nil {
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Reachable: true, Error: "starttls refused: " + err.Error()}
+	}
+	state, ok := conn.TLSConnectionState()
+	if !ok {
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Reachable: true, Error: "tls state unavailable"}
+	}
+	ep := DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Reachable: true, ScannedAt: time.Now().UTC(), TLSVersion: tlsVersionString(state.Version)}
+	for i, cert := range state.PeerCertificates {
+		dc := certToDiscovered(cert, host, i == 0)
+		dc.Served = true
+		ep.Certs = append(ep.Certs, dc)
+	}
+	ep.signals = append(ep.signals, certEvidence(state.PeerCertificates)...)
+	if p.active {
+		ep.signals = append(ep.signals, rootDSEEvidence(conn, p.timeout)...)
+	}
+	return ep
 }
 
 // drainMultiline consumes an SMTP-style multiline reply (250-… lines
@@ -205,6 +261,7 @@ func (p *ProtocolScanner) ScanSSH(ctx context.Context, host string, port int) Di
 		return ep
 	}
 	ep.Banner = strings.TrimSpace(banner)
+	ep.signals = append(ep.signals, sshBannerEvidence(ep.Banner)...)
 	_, _ = conn.Write([]byte("SSH-2.0-Kryptkeeper-Scan\r\n"))
 
 	// Read the KEXINIT binary packet: uint32 pkt_len, byte pad_len,
@@ -321,4 +378,82 @@ func readFull(r interface{ Read([]byte) (int, error) }, buf []byte) (int, error)
 		}
 	}
 	return total, nil
+}
+
+// mailTech classifies an SMTP, IMAP or POP3 greeting. Order matters only where
+// one product's greeting mentions another; none of these do today, but
+// Exchange is first because its greeting is the least specific string.
+func mailTech(banner string) string {
+	b := strings.ToLower(banner)
+	switch {
+	case strings.Contains(b, "microsoft esmtp mail service"), strings.Contains(b, "microsoft exchange"):
+		return "exchange"
+	case strings.Contains(b, "postfix"):
+		return "postfix"
+	case strings.Contains(b, "exim"):
+		return "exim"
+	case strings.Contains(b, "sendmail"):
+		return "sendmail"
+	case strings.Contains(b, "dovecot"):
+		return "dovecot"
+	case strings.Contains(b, "cyrus"):
+		return "cyrus"
+	}
+	return ""
+}
+
+// bannerEvidence is the evidence for a mail greeting, or nil when the greeting
+// names no server we know. Unknown greetings are not stored: unlike a Server
+// header there is no product token to keep.
+func bannerEvidence(line string) []Evidence {
+	tech := mailTech(line)
+	if tech == "" {
+		return nil
+	}
+	return []Evidence{NewEvidence(SignalBanner, line, tech)}
+}
+
+// sshBannerTech classifies an SSH identification string.
+func sshBannerTech(banner string) string {
+	b := strings.ToLower(banner)
+	switch {
+	case strings.Contains(b, "openssh"):
+		return "openssh"
+	case strings.Contains(b, "cisco"):
+		return "other:cisco" // IOS, NX-OS and ASA all say Cisco; the vocabulary only names ASA
+	case strings.Contains(b, "mod_sftp"):
+		return "other:mod_sftp"
+	}
+	return ""
+}
+
+func sshBannerEvidence(banner string) []Evidence {
+	tech := sshBannerTech(banner)
+	if tech == "" {
+		return nil
+	}
+	return []Evidence{NewEvidence(SignalBanner, banner, tech)}
+}
+
+// isMailImplicitTLS reports the catalogue tags whose service speaks first once
+// the TLS handshake is done.
+func isMailImplicitTLS(protocol string) bool {
+	switch protocol {
+	case "imaps", "pop3s", "smtps":
+		return true
+	}
+	return false
+}
+
+// greetingEvidence reads the server's greeting off an established implicit-TLS
+// mail connection. The read is length- and deadline-bounded: a silent or
+// hostile peer costs at most the scan timeout and 512 bytes.
+func greetingEvidence(conn net.Conn, _ string, timeout time.Duration) []Evidence {
+	_ = conn.SetDeadline(time.Now().Add(timeout))        // best-effort read deadline; a missing greeting is non-fatal
+	defer func() { _ = conn.SetDeadline(time.Time{}) }() // clear deadline; error irrelevant on a closing conn
+	line, err := bufio.NewReader(io.LimitReader(conn, 512)).ReadString('\n')
+	if err != nil && line == "" {
+		return nil
+	}
+	return bannerEvidence(strings.TrimSpace(line))
 }

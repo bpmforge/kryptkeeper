@@ -1,0 +1,248 @@
+{
+  "task": "U-28b",
+  "title": "Enroll devices with SCEP: SCEP enabled (KRYPTKEEPER_SCEP_ENABLED=true)",
+  "sourceStory": "STORIES.md#u-28b",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/enrollment"
+      },
+      "caption": "Open /enrollment",
+      "slug": "scep-enabled",
+      "expect": {
+        "role": "button",
+        "name": "New challenge"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28b/01-scep-enabled.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New challenge"
+      },
+      "caption": "Click **New challenge**",
+      "slug": "new-challenge-dialog",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28b/02-new-challenge-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Common name",
+        "within": "[role=dialog]"
+      },
+      "value": "lab-switch.acme.test",
+      "caption": "Fill **Common name** with \"lab-switch.acme.test\"",
+      "slug": "Common name",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28b/03-common-name.png",
+        "annotated": "docs/guide/screenshots/U-28b/03-common-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 356,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "DNS names",
+        "within": "[role=dialog]"
+      },
+      "value": "lab-switch.acme.test",
+      "caption": "Fill **DNS names** with \"lab-switch.acme.test\"",
+      "slug": "DNS names",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28b/04-dns-names.png",
+        "annotated": "docs/guide/screenshots/U-28b/04-dns-names-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 426,
+          "w": 630,
+          "h": 78
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Valid for",
+        "within": "[role=dialog]"
+      },
+      "value": "1h",
+      "caption": "Select \"1h\" in **Valid for**",
+      "slug": "Valid for",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28b/05-valid-for.png",
+        "annotated": "docs/guide/screenshots/U-28b/05-valid-for-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 541,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Create challenge"
+      },
+      "caption": "Click **Create challenge**",
+      "slug": "challenge-shown-once",
+      "redact": [
+        "code",
+        "pre",
+        "input[readonly]"
+      ],
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28b/06-challenge-shown-once.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Done",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Done**",
+      "slug": "Done",
+      "capture": false,
+      "n": 7
+    }
+  ],
+  "flags": "CONFIG + LAB DEVICE (device-side enrolment not captured)",
+  "principal": "cfgada",
+  "lastRun": {
+    "at": "2026-10-18T12:53:08.665Z",
+    "base": "http://127.0.0.1:14182",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-28b",
+    "steps": 7,
+    "shots": 6,
+    "annotated": 3,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/enrollment"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-28b/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-28b/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

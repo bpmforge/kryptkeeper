@@ -77,7 +77,9 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-          cache: true
+          # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
+          # setup-go's cache re-downloaded ~2.7 GB over them on every job.
+          cache: false
 
       - name: Build agent (${{ matrix.suffix }})
         env:
@@ -105,7 +107,9 @@ jobs:
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-          cache: true
+          # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
+          # setup-go's cache re-downloaded ~2.7 GB over them on every job.
+          cache: false
       - name: Run tests
         # Agent packages only: ci-pr/ci-main already run the whole module, and
         # internal/bootstrap alone exceeds go test's 10m default on a busy runner.

@@ -131,3 +131,153 @@ func TestK8sCertManagerScanRejectedWithoutRunner(t *testing.T) {
 		t.Fatalf("bogus scan type must be refused up front: %v", err)
 	}
 }
+
+// W24-23: multi-cluster cert-manager scans.
+
+type multiClusterHarness struct {
+	done <-chan struct{}
+}
+
+// overrideClusters injects the cluster list and per-cluster fakes (keyed by
+// cluster name); a missing key means a connector-init error.
+func overrideClusters(t *testing.T, clusters []kubeClusterSource, fakes map[string]*fakeCertManagerConnector) multiClusterHarness {
+	t.Helper()
+	done := make(chan struct{})
+	origLoader, origNew, origAfter := kubeClusterSourcesLoader, newCertManagerConnectorForCluster, afterDiscoveryScanPersist
+	kubeClusterSourcesLoader = func(context.Context) ([]kubeClusterSource, error) { return clusters, nil }
+	newCertManagerConnectorForCluster = func(c kubeClusterSource) (certManagerCertLister, error) {
+		f, ok := fakes[c.Name]
+		if !ok {
+			return nil, errors.New("rbac denied (403)")
+		}
+		return f, nil
+	}
+	afterDiscoveryScanPersist = func(string) { close(done) }
+	t.Cleanup(func() {
+		kubeClusterSourcesLoader, newCertManagerConnectorForCluster, afterDiscoveryScanPersist = origLoader, origNew, origAfter
+	})
+	return multiClusterHarness{done: done}
+}
+
+func runClusterScan(t *testing.T, h multiClusterHarness) (status string, errMsg string, sum k8sCertManagerScanSummary) {
+	t.Helper()
+	db := setupDiscoveryTestDB(t)
+	store := &sqliteDiscoveryStore{db: db}
+	result, err := store.CreateScan(context.Background(), scanTypeK8sCertManager, "", nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	waitForScan(t, h.done)
+	var summary, em *string
+	if err := db.QueryRow("SELECT status, results_summary, error_message FROM scan_jobs WHERE id = ?", result.ID).Scan(&status, &summary, &em); err != nil {
+		t.Fatal(err)
+	}
+	if em != nil {
+		errMsg = *em
+	}
+	if summary != nil && *summary != "" {
+		if err := json.Unmarshal([]byte(*summary), &sum); err != nil {
+			t.Fatalf("summary: %v", err)
+		}
+	}
+	return status, errMsg, sum
+}
+
+func TestCertManagerScanTwoClustersRecordsCluster(t *testing.T) {
+	h := overrideClusters(t, []kubeClusterSource{{Name: "east"}, {Name: "west"}}, map[string]*fakeCertManagerConnector{
+		"east": {certs: []certmanager.Certificate{{Namespace: "a", Name: "e1"}}},
+		"west": {certs: []certmanager.Certificate{{Namespace: "b", Name: "w1"}, {Namespace: "b", Name: "w2"}}},
+	})
+	status, _, sum := runClusterScan(t, h)
+	if status != "completed" || sum.Certificates != 3 || len(sum.Clusters) != 2 {
+		t.Fatalf("status %s summary %+v", status, sum)
+	}
+	for _, it := range sum.Items {
+		want := map[string]string{"e1": "east", "w1": "west", "w2": "west"}[it.Name]
+		if it.Cluster != want {
+			t.Fatalf("item %s cluster %q want %q", it.Name, it.Cluster, want)
+		}
+	}
+	for _, c := range sum.Clusters {
+		if c.Error != "" {
+			t.Fatalf("unexpected cluster error: %+v", c)
+		}
+	}
+}
+
+func TestCertManagerScanOneClusterFailsOthersSucceed(t *testing.T) {
+	h := overrideClusters(t, []kubeClusterSource{{Name: "east"}, {Name: "west"}}, map[string]*fakeCertManagerConnector{
+		"east": {certs: []certmanager.Certificate{{Namespace: "a", Name: "e1"}}},
+		"west": {err: errors.New("unreachable")},
+	})
+	status, errMsg, sum := runClusterScan(t, h)
+	if status != "completed" || len(sum.Items) != 1 || sum.Items[0].Cluster != "east" {
+		t.Fatalf("status %s summary %+v", status, sum)
+	}
+	if !strings.Contains(errMsg, "cluster west") || strings.Contains(errMsg, "cluster east") {
+		t.Fatalf("error_message must name only the failed cluster: %q", errMsg)
+	}
+	if sum.Clusters[1].Name != "west" || sum.Clusters[1].Error == "" || sum.Clusters[0].Error != "" {
+		t.Fatalf("per-cluster results: %+v", sum.Clusters)
+	}
+}
+
+func TestCertManagerScanAllClustersFailFinalizesFailed(t *testing.T) {
+	h := overrideClusters(t, []kubeClusterSource{{Name: "east"}, {Name: "bad", credErr: kubeClusterCredentialBad}}, map[string]*fakeCertManagerConnector{
+		"east": {err: errors.New("boom")},
+	})
+	status, errMsg, _ := runClusterScan(t, h)
+	if status != "failed" || !strings.Contains(errMsg, "cluster east") || !strings.Contains(errMsg, "cluster bad: credential invalid") {
+		t.Fatalf("status %s err %q", status, errMsg)
+	}
+}
+
+type fakeCredResolver map[string]string
+
+func (f fakeCredResolver) Resolve(_ context.Context, id string) ([]byte, error) {
+	v, ok := f[id]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return []byte(v), nil
+}
+
+func TestKubeClusterSourcesLoadFromConfig(t *testing.T) {
+	raw := `[{"name":"prod-east","credential_ref":"c1","namespace":"apps"},{"name":"bad","credential_ref":"c2"},{"name":"gone","credential_ref":"c3"}]`
+	srcs, err := parseKubeClusterSources(raw)
+	if err != nil || len(srcs) != 3 {
+		t.Fatalf("parse: %v %+v", err, srcs)
+	}
+	if strings.Contains(raw, "bearer") || strings.Contains(raw, "base_url") {
+		t.Fatal("config value must not carry secrets")
+	}
+	srcs = resolveKubeClusterCredentials(context.Background(), srcs, fakeCredResolver{
+		"c1": `{"base_url":"https://k.example:6443","bearer_token":"tok","ca_cert":"PEM","namespace":"ignored"}`,
+		"c2": `{"bearer_token":"tok"}`,
+	})
+	if srcs[0].APIURL != "https://k.example:6443" || srcs[0].Token != "tok" || string(srcs[0].CACert) != "PEM" || srcs[0].Namespace != "apps" || srcs[0].credErr != "" {
+		t.Fatalf("resolved: %+v", srcs[0])
+	}
+	if srcs[1].credErr != kubeClusterCredentialBad || srcs[2].credErr != kubeClusterCredentialBad {
+		t.Fatalf("bad credentials must be flagged: %+v %+v", srcs[1], srcs[2])
+	}
+	for _, bad := range []string{`not json`, `[{"name":""}]`, `[{"name":"a/b"}]`, `[{"name":"x"},{"name":"x"}]`} {
+		if _, err := parseKubeClusterSources(bad); err == nil {
+			t.Fatalf("expected error for %s", bad)
+		}
+	}
+}
+
+func TestKubeClusterSourcesEnvFallbackWhenUnset(t *testing.T) {
+	t.Setenv("KRYPTKEEPER_K8S_CLUSTERS", "")
+	if v := discoveryConfigValueFrom(context.Background(), nil, configKeyKubeClusters); v != "" {
+		t.Fatalf("unset must be empty (legacy single-cluster path), got %q", v)
+	}
+	if srcs, err := parseKubeClusterSources(""); err != nil || srcs != nil {
+		t.Fatalf("empty value must yield nil: %v %v", srcs, err)
+	}
+	t.Setenv("KRYPTKEEPER_K8S_CLUSTERS", `[{"name":"e","credential_ref":"c"}]`)
+	if v := discoveryConfigValueFrom(context.Background(), nil, configKeyKubeClusters); !strings.Contains(v, `"e"`) {
+		t.Fatalf("env value not read: %q", v)
+	}
+}

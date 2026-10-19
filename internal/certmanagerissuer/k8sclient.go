@@ -5,6 +5,7 @@
 package certmanagerissuer
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -98,6 +99,108 @@ func (c *K8sClient) ListCertificateRequests(ctx context.Context, namespace strin
 		return nil, fmt.Errorf("decode CertificateRequestList: %w", err)
 	}
 	return &list, nil
+}
+
+// GetCertificateRequest returns one CertificateRequest.
+func (c *K8sClient) GetCertificateRequest(ctx context.Context, namespace, name string) (*CertificateRequest, error) {
+	body, err := c.get(ctx, c.crURL(namespace, name))
+	if err != nil {
+		return nil, err
+	}
+	var cr CertificateRequest
+	if err := json.Unmarshal(body, &cr); err != nil {
+		return nil, fmt.Errorf("decode CertificateRequest: %w", err)
+	}
+	return &cr, nil
+}
+
+// WatchCertificateRequests streams watch events for CertificateRequests from
+// resourceVersion, calling onEvent for each. It returns nil on a clean EOF,
+// ErrWatchExpired when the version is too old, and the callback's error if it
+// fails. The stream is not subject to the client's request timeout.
+func (c *K8sClient) WatchCertificateRequests(ctx context.Context, namespace, resourceVersion string, onEvent func(WatchEvent) error) error {
+	url := c.crURL(namespace, "") + "?watch=true&allowWatchBookmarks=true&timeoutSeconds=300"
+	if resourceVersion != "" {
+		url += "&resourceVersion=" + resourceVersion
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	c.setHeaders(req)
+
+	hc := *c.HTTPClient
+	hc.Timeout = 0 // a client-wide timeout would kill the long-lived stream
+	resp, err := hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("WATCH %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusGone {
+		return ErrWatchExpired
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("WATCH %s: status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+
+	r := bufio.NewReader(resp.Body)
+	for {
+		line, err := r.ReadBytes('\n')
+		if len(bytes.TrimSpace(line)) > 0 {
+			var ev WatchEvent
+			if jerr := json.Unmarshal(line, &ev); jerr != nil {
+				return fmt.Errorf("decode watch event: %w", jerr)
+			}
+			if ev.Type == "ERROR" {
+				var st struct {
+					Code    int    `json:"code"`
+					Message string `json:"message"`
+				}
+				if jerr := json.Unmarshal(ev.Object, &st); jerr != nil {
+					return fmt.Errorf("decode watch error event: %w", jerr)
+				}
+				if st.Code == http.StatusGone {
+					return ErrWatchExpired
+				}
+				return fmt.Errorf("watch error event: code %d: %s", st.Code, st.Message)
+			}
+			if cerr := onEvent(ev); cerr != nil {
+				return cerr
+			}
+		}
+		if err != nil {
+			if err == io.EOF || ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("read watch stream: %w", err)
+		}
+	}
+}
+
+// PatchCRConditions upserts conditions (by Type) on a CertificateRequest
+// status, preserving the existing ones.
+func (c *K8sClient) PatchCRConditions(ctx context.Context, cr *CertificateRequest, conds ...Condition) error {
+	merged := append([]Condition(nil), cr.Status.Conditions...)
+	for _, cond := range conds {
+		replaced := false
+		for i := range merged {
+			if merged[i].Type == cond.Type {
+				merged[i] = cond
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			merged = append(merged, cond)
+		}
+	}
+	body, err := json.Marshal(StatusPatch{Status: CRStatus{Conditions: merged}})
+	if err != nil {
+		return fmt.Errorf("marshal status patch: %w", err)
+	}
+	return c.patch(ctx, c.crURL(cr.Metadata.Namespace, cr.Metadata.Name)+"/status", body)
 }
 
 // PatchCRStatus updates a CertificateRequest's status with the issued certificate

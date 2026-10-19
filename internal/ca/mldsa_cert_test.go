@@ -203,3 +203,30 @@ func TestCreateCertificateMLDSADirectly(t *testing.T) {
 
 	t.Logf("ML-DSA-65 self-signed cert: %d bytes DER", len(certDER))
 }
+
+func TestMLDSAKeyUsageBitStringIsRFC5280(t *testing.T) {
+	cases := []struct {
+		ku   x509.KeyUsage
+		want []int
+	}{
+		{x509.KeyUsageCertSign | x509.KeyUsageCRLSign, []int{5, 6}},
+		{x509.KeyUsageDigitalSignature, []int{0}},
+		{x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment, []int{0, 2}},
+		{x509.KeyUsageDecipherOnly, []int{8}},
+	}
+	for _, c := range cases {
+		bs := keyUsageBitString(c.ku)
+		if bs.BitLength != c.want[len(c.want)-1]+1 {
+			t.Errorf("ku %v: BitLength %d, want trailing zeros dropped (%d)", c.ku, bs.BitLength, c.want[len(c.want)-1]+1)
+		}
+		set := map[int]bool{}
+		for _, i := range c.want {
+			set[i] = true
+		}
+		for i := 0; i < 9; i++ {
+			if (bs.At(i) == 1) != set[i] {
+				t.Errorf("ku %v: bit %d = %d, want set=%v", c.ku, i, bs.At(i), set[i])
+			}
+		}
+	}
+}

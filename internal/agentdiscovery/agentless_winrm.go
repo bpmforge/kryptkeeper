@@ -15,12 +15,16 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf16"
+
+	"kryptkeeper/internal/egress"
 )
 
 // W14-02: agentless Windows discovery over WinRM. WinRM is WS-Management
@@ -110,6 +114,11 @@ func NewWSManShell(cfg WinRMConfig, client *http.Client) *WSManShell {
 			// One connection: NTLM authenticates the TCP connection, so the
 			// sealed http path must keep talking over the one it authenticated.
 			MaxConnsPerHost: 1, MaxIdleConnsPerHost: 1,
+			// The endpoint comes from a credential or a discovery result;
+			// refuse metadata and link-local at connect time, keep the
+			// private and loopback hosts WinRM is actually used against.
+			DialContext: (&net.Dialer{Timeout: 30 * time.Second, Control: hostDialPolicy.DialControl()}).DialContext,
+			Proxy:       nil,
 		}}
 	}
 	return &WSManShell{cfg: cfg, client: client}
@@ -273,6 +282,14 @@ func xmlEscape(s string) string {
 	return b.String()
 }
 
+// argTextEscape escapes an Arguments element body with named entities only.
+// xml.EscapeText writes '"' as "&#34;", which Windows WinRM passes to cmd.exe
+// undecoded, so cmd runs "#34" and every quoted argument (a space, an icacls
+// "(OI)(CI)" grant) fails; a '"' needs no escaping in element text.
+var argTextEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+
+func argTextEscape(s string) string { return argTextEscaper.Replace(s) }
+
 // powerShellEncode returns the -EncodedCommand argument: UTF-16LE
 // base64, PowerShell's documented contract.
 func powerShellEncode(script string) string {
@@ -319,6 +336,11 @@ func (s *WSManShell) Run(ctx context.Context, command string, args ...string) (s
 // the PFX build). Here nothing is wrapped: a native command runs as-is
 // and a PowerShell script is encoded exactly once.
 func (s *WSManShell) RunExit(ctx context.Context, command string, args ...string) (stdout, stderr string, exitCode int, err error) {
+	// Rendered first so a refused argument never creates a shell on the host.
+	argXML, err := winrmArgumentsXML(args)
+	if err != nil {
+		return "", "", 0, err
+	}
 	// 1. Create shell.
 	raw, err := s.soap(ctx, "http://schemas.xmlsoap.org/ws/2004/09/transfer/Create", "",
 		`<rsp:Shell><rsp:InputStreams>stdin</rsp:InputStreams><rsp:OutputStreams>stdout stderr</rsp:OutputStreams></rsp:Shell>`)
@@ -344,12 +366,8 @@ func (s *WSManShell) RunExit(ctx context.Context, command string, args ...string
 
 	// 2. Command. WinRM joins Arguments with spaces and does not quote,
 	// so an argument with whitespace is quoted here (cmd.exe rules).
-	var argXML strings.Builder
-	for _, a := range args {
-		fmt.Fprintf(&argXML, "<rsp:Arguments>%s</rsp:Arguments>", xmlEscape(cmdQuote(a)))
-	}
 	raw, err = s.soap(ctx, "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Command", shellID,
-		fmt.Sprintf(`<rsp:CommandLine><rsp:Command>%s</rsp:Command>%s</rsp:CommandLine>`, xmlEscape(command), argXML.String()))
+		fmt.Sprintf(`<rsp:CommandLine><rsp:Command>%s</rsp:Command>%s</rsp:CommandLine>`, xmlEscape(command), argXML))
 	if err != nil {
 		return "", "", 0, err
 	}
@@ -393,10 +411,36 @@ func (s *WSManShell) RunExit(ctx context.Context, command string, args ...string
 	return out.String(), errOut.String(), exitCode, nil
 }
 
-// cmdQuote wraps an argument containing whitespace or a quote in double
-// quotes, escaping embedded quotes, which is what cmd.exe's parser expects.
+// winrmArgumentsXML renders args as rsp:Arguments elements. An argument with
+// a double quote, CR, LF or NUL is refused: cmd.exe has no escape for '"'
+// inside a quoted string (cmdQuote's \" ends the quote for cmd, so the rest
+// of the value would be parsed bare and an "&" in it would start a second
+// command), and a line break ends the command line. No caller needs them:
+// scripts travel as -EncodedCommand base64.
+func winrmArgumentsXML(args []string) (string, error) {
+	var b strings.Builder
+	for i, a := range args {
+		if strings.ContainsAny(a, "\"\r\n\x00") {
+			return "", fmt.Errorf("winrm: argument %d contains a quote or line break, which cmd.exe cannot carry safely", i+1)
+		}
+		fmt.Fprintf(&b, "<rsp:Arguments>%s</rsp:Arguments>", argTextEscape(cmdQuote(a)))
+	}
+	return b.String(), nil
+}
+
+// cmdQuote wraps an argument containing whitespace, a quote, or a cmd.exe
+// metacharacter in double quotes. Inside quotes & | < > ^ are literal; left
+// bare, a value such as "x&calc" would start a second command. The \" it
+// writes for an embedded quote is for the launched program's argv parser, not
+// cmd.exe (for cmd it ends the quote), so RunExit refuses such arguments
+// before they get here (winrmArgumentsXML).
 func cmdQuote(a string) string {
-	if a != "" && !strings.ContainsAny(a, " \t\"") {
+	// "=", "," and ";" are deliberately not triggers: they only separate
+	// arguments for cmd.exe builtins, not for the program being launched,
+	// and quoting a padded -EncodedCommand value ("...==") made every WinRM
+	// discovery and IIS install fail on the host ("A command must follow
+	// -Command"), found in the v1 lab on Server 2022.
+	if a != "" && !strings.ContainsAny(a, " \t\"&|<>^()%!") {
 		return a
 	}
 	return `"` + strings.ReplaceAll(a, `"`, `\"`) + `"`
@@ -474,5 +518,34 @@ func (s *AgentlessWinRMScanner) Scan(ctx context.Context) AgentlessScanResult {
 		res.Certs = append(res.Certs, c)
 		res.Parsed = append(res.Parsed, cert)
 	}
+	s.scanPosture(ctx, &res)
 	return res
 }
+
+// scanPosture runs the W34-12 posture script. It is a second PowerShell
+// session on purpose: the certificate enumeration above must keep working on
+// hosts where the posture pass cannot (no certutil rights, no IIS module), and
+// a failure here is recorded as PostureErr, never as a scan error.
+func (s *AgentlessWinRMScanner) scanPosture(ctx context.Context, res *AgentlessScanResult) {
+	out, err := s.shell.Run(ctx, "powershell", "-NonInteractive", "-EncodedCommand", powerShellEncode(winPostureScript))
+	if err != nil {
+		res.PostureErr = err.Error()
+		return
+	}
+	thumbs := map[string]string{}
+	for i, c := range res.Parsed {
+		if i < len(res.Certs) && res.Certs[i].Source == "agentless-winrm:My" {
+			thumbs[winThumbprint(c)] = res.Certs[i].Fingerprint
+		}
+	}
+	p := ParseWinPosture(out)
+	if !p.Complete {
+		res.PostureErr = "posture script did not finish"
+		return
+	}
+	res.Files = WindowsFileFacts(p, thumbs)
+	res.WinBindings = p.Bindings
+	res.FilesScanned = true
+}
+
+var hostDialPolicy = egress.Policy{AllowPrivate: true, AllowLoopback: true}

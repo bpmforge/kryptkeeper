@@ -258,6 +258,20 @@ Migration for an existing deployment whose clients issue certificates with a bea
 
 `KRYPTKEEPER_DISABLE_BOOTSTRAP_TOKEN=true` makes the raw `APP_BOOTSTRAP_TOKEN` never authenticate; login sessions, API keys and bearer tokens still work. Enable login (or SSO) and confirm an admin session works before turning this on. The hub logs a notice at startup when it is set. The bootstrap token is compared in constant time.
 
+## Break-glass recovery after a bad SSO override
+
+**Symptoms:** OIDC bearer logins return `401` after an `sso.oidc_*` runtime override was saved (wrong issuer, audience, discovery URL or JWKS).
+
+Prerequisites (checked before any `sso.oidc_*` save is accepted): `APP_AUTH_LOGIN_*` configures an enabled local admin (`pki-admin`) with a password hash, and `APP_AUTH_BREAKGLASS_EMAIL` equals that local login email.
+
+1. Log in as the local admin at `POST /api/v1/auth/breakglass/login` (`{"email": ..., "password": ...}`). This never contacts the IdP and raises a break-glass alert.
+2. Remove the overrides with the returned token: `DELETE /api/v1/config/sso.oidc_issuer`, then `sso.oidc_audience`, `sso.oidc_discovery_url`, `sso.oidc_jwks_json`. Reset is never guarded.
+3. Verify with `GET /api/v1/config`: each key shows `effective_source: env`.
+
+`PUT /api/v1/config/sso.oidc_*` answers `409 Conflict` (nothing saved, audited as a `config.set` failure) with one of:
+- `an enabled local admin is required before changing SSO settings (set APP_AUTH_LOGIN_* and APP_AUTH_BREAKGLASS_EMAIL)`
+- `OIDC discovery test failed; override not saved` (the issuer or discovery URL must serve an https discovery document with a matching `issuer` and a `jwks_uri`; 3 s timeout, no redirects, loopback and link-local addresses refused). Clearing the issuer or discovery URL (empty value) skips the probe.
+
 ## Post-Incident Requirements
 
 - Produce post-mortem within 48 hours (timeline, root cause, prevention actions).

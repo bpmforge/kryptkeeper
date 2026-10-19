@@ -74,3 +74,38 @@ func TestTemplateIssuedCountReflectsIssuedCertificates(t *testing.T) {
 		t.Fatalf("template_id filter for unknown id: total=%d err=%v, want 0", none.Total, err)
 	}
 }
+
+type noCountCerts struct{ CertificateProvider }
+
+func (noCountCerts) CertCountsByTemplate(context.Context) (map[string]int, error) {
+	return map[string]int{}, nil
+}
+
+// Regression: the decorator must not hide the revision-history capability
+// (the handler answered 503 for every template whenever it was on).
+func TestIssuedCountDecoratorKeepsRevisionLister(t *testing.T) {
+	ctx := context.Background()
+	raw := &fileTemplateProvider{filePath: filepath.Join(t.TempDir(), "templates.json")}
+	item, err := raw.CreateTemplate(ctx, TemplateUpsertRequest{
+		Name: "t", DisplayName: "t", KeyUsage: []string{"digitalSignature"},
+		ExtendedKeyUsage: []string{"serverAuth"}, AllowedAlgorithms: []string{"ECDSA"},
+		ValidityPeriod: "P90D", Active: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tp := WithIssuedCounts(raw, noCountCerts{})
+	lister, ok := tp.(TemplateRevisionLister)
+	if !ok {
+		t.Fatal("decorated provider lost TemplateRevisionLister")
+	}
+	revs, found, err := lister.ListTemplateRevisions(ctx, item.ID)
+	if err != nil || !found || len(revs) == 0 {
+		t.Fatalf("revisions = %d found=%v err=%v", len(revs), found, err)
+	}
+	// Inner provider without history: sentinel, not a silent empty list.
+	bare := &issuedCountTemplateProvider{TemplateProvider: stubTemplateProvider{}, counts: noCountCerts{}}
+	if _, _, err := bare.ListTemplateRevisions(ctx, "x"); !errors.Is(err, errTemplateRevisionsUnsupported) {
+		t.Fatalf("err = %v", err)
+	}
+}

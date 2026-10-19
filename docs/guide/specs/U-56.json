@@ -1,0 +1,328 @@
+{
+  "task": "U-56",
+  "title": "Produce compliance evidence (packs, CBOM, scheduled delivery)",
+  "sourceStory": "STORIES.md#u-56",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/compliance-evidence"
+      },
+      "caption": "Open /reports/compliance-evidence",
+      "slug": "compliance-all-frameworks",
+      "expect": {
+        "role": "button",
+        "name": "Evidence pack (PDF)"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-56/01-compliance-all-frameworks.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Compliance framework"
+      },
+      "value": "SOC 2",
+      "caption": "Select \"SOC 2\" in **Compliance framework**",
+      "slug": "soc2",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-56/02-soc2.png",
+        "annotated": "docs/guide/screenshots/U-56/02-soc2-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 766,
+          "y": 27,
+          "w": 192,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Compliance framework"
+      },
+      "value": "PCI DSS 4.0.1",
+      "caption": "Select \"PCI DSS 4.0.1\" in **Compliance framework**",
+      "slug": "pci-dss",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-56/03-pci-dss.png",
+        "annotated": "docs/guide/screenshots/U-56/03-pci-dss-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 766,
+          "y": 27,
+          "w": 192,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "role": "button",
+        "name": "Download CBOM"
+      },
+      "caption": "Locate **Download CBOM**",
+      "slug": "download-cbom",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-56/04-download-cbom.png",
+        "annotated": "docs/guide/screenshots/U-56/04-download-cbom-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1158,
+          "y": 24,
+          "w": 160,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/settings"
+      },
+      "caption": "Open /settings",
+      "slug": "settings-evidence-delivery",
+      "expect": {
+        "role": "button",
+        "name": "Add schedule"
+      },
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-56/05-settings-evidence-delivery.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Framework"
+      },
+      "value": "SOC 2",
+      "caption": "Select \"SOC 2\" in **Framework**",
+      "slug": "Framework",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-56/06-framework.png",
+        "annotated": "docs/guide/screenshots/U-56/06-framework-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 664,
+          "w": 212,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Cadence"
+      },
+      "value": "Weekly",
+      "caption": "Select \"Weekly\" in **Cadence**",
+      "slug": "Cadence",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-56/07-cadence.png",
+        "annotated": "docs/guide/screenshots/U-56/07-cadence-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 485,
+          "y": 664,
+          "w": 147,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Recipients"
+      },
+      "value": "auditor@acme.test",
+      "caption": "Fill **Recipients** with \"auditor@acme.test\"",
+      "slug": "recipients",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-56/08-recipients.png",
+        "annotated": "docs/guide/screenshots/U-56/08-recipients-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 639,
+          "y": 664,
+          "w": 488,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Add schedule"
+      },
+      "caption": "Click **Add schedule**",
+      "slug": "schedule-added",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-56/09-schedule-added.png",
+        "annotated": "docs/guide/screenshots/U-56/09-schedule-added-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1135,
+          "y": 658,
+          "w": 138,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "flags": "LOCAL SINK (scheduled email goes to the Mailpit SMTP sink)",
+  "lastRun": {
+    "at": "2026-10-18T12:47:36.211Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-56",
+    "steps": 9,
+    "shots": 9,
+    "annotated": 7,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/settings"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-56/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-56/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

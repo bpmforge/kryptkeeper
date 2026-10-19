@@ -7,6 +7,9 @@ package bootstrap
 import (
 	"regexp"
 	"strings"
+
+	"kryptkeeper/internal/keystore"
+	"kryptkeeper/internal/pqc"
 )
 
 // derivedWave is an auto-generated migration wave with its assigned members.
@@ -66,12 +69,19 @@ func isPublicFacing(c CertificateItem) bool {
 // and are skipped. Each wave's owner is the most common owner team among its
 // members. Order reflects a safe rollout sequence.
 func derivePQCWaves(certs []CertificateItem) []derivedWave {
+	return deriveWavesFor(certs, func(c CertificateItem) bool { return c.PQCReadiness == "vulnerable" })
+}
+
+// deriveWavesFor groups the active certs passing keep into ordered
+// Test/Internal/Customer-Facing waves; the tiering is shared by every
+// transition, only the selection differs.
+func deriveWavesFor(certs []CertificateItem, keep func(CertificateItem) bool) []derivedWave {
 	order := []string{"Test", "Internal", "Customer-Facing"}
 	byWave := map[string][]MigrationWaveMember{}
 	teamVotes := map[string]map[string]int{}
 
 	for _, c := range activeCertificates(certs) {
-		if c.PQCReadiness != "vulnerable" {
+		if !keep(c) {
 			continue
 		}
 		w := classifyWave(c)
@@ -111,4 +121,21 @@ func topTeam(votes map[string]int) string {
 		}
 	}
 	return best
+}
+
+// resolveWaveTargetAlgorithm picks the re-issue algorithm for a wave from the
+// template. An empty request keeps the PQC-only behaviour (first ML-DSA/hybrid
+// in AllowedAlgorithms); a named one must be both allowed by the template
+// (exact string match) and a supported transition target.
+func resolveWaveTargetAlgorithm(tpl TemplateItem, requested string) (keystore.Algorithm, bool) {
+	if requested == "" {
+		return templateHasPQCAlgorithm(tpl)
+	}
+	algo := keystore.Algorithm(requested)
+	for _, a := range tpl.AllowedAlgorithms {
+		if a == requested {
+			return algo, pqc.IsTransitionTarget(algo)
+		}
+	}
+	return "", false
 }

@@ -353,7 +353,7 @@ func newGCPCASSource(ctx context.Context, configJSON, credentialRef string, cred
 	return &gcpCASSource{
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"), project: cfg.Project,
 		location: cfg.Location, pool: cfg.CAPool,
-		token:  strings.TrimSpace(string(raw)),
+		token:  credentialSecretString(raw, "token"),
 		client: inventoryHTTPClient(commercialHTTPTimeout),
 	}, nil
 }

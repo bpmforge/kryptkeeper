@@ -70,6 +70,20 @@ func PinManifest(t testing.TB, dir string, wasm []byte) []byte {
 	return out
 }
 
+func withoutVerifyWindow(t testing.TB, manifest []byte) []byte {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(manifest, &m); err != nil {
+		t.Fatal(err)
+	}
+	delete(m, "verify_propagation_seconds")
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
 // Load builds, pins and loads the plugin in dir with exactly the
 // capabilities its manifest declares (what an approval grants).
 func Load(t testing.TB, rt *delivery.Runtime, dir string) *delivery.Plugin {
@@ -79,6 +93,13 @@ func Load(t testing.TB, rt *delivery.Runtime, dir string) *delivery.Plugin {
 	m, err := abi.ParseManifest(manifest)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if m.VerifyPropagationSeconds > 0 {
+		// The shipped window (validated above) is for real CDN rollouts; the
+		// Suite's devices switch instantly, and its mismatch cases would
+		// otherwise wait the whole window. The window itself is covered by
+		// internal/plugins/delivery's fake-clock tests (W27-37).
+		manifest = withoutVerifyWindow(t, manifest)
 	}
 	p, err := rt.Load(context.Background(), manifest, wasm, m.Capabilities)
 	if err != nil {
@@ -94,7 +115,11 @@ type Device interface {
 	Env() delivery.Env
 	// Served is the SHA-256 fingerprint of the certificate in service.
 	Served() string
-	// FailNext makes the next "upload", "bind" or "rollback" fail.
+	// FailNext makes the next "upload", "bind" or "rollback" fail. For a
+	// plugin declaring verification "readback" it also accepts "verify":
+	// from then until Reset, every read-back of the newly written object
+	// answers with a different certificate, except the plugin's own first
+	// read-back inside Push (so the failure is the hub's, not Push's).
 	FailNext(step string)
 	// Reset restores the starting state: an initial certificate in service
 	// and no failures pending.
@@ -146,22 +171,38 @@ func Fingerprint(certPEM string) string {
 // Suite grades a plugin against its device. It asserts what the hub relies
 // on: outcomes from the fixed vocabulary, verification and rollback decided
 // by the hub, an honest RolledBack, and no secret in anything the plugin
-// says.
+// says. A plugin whose manifest declares verification "readback" is verified
+// through its verify op (the hub fingerprints the stored PEM) instead of a
+// TLS dial; the Device then models a secret store.
 func Suite(t *testing.T, p *delivery.Plugin, dev Device) {
 	ctx := context.Background()
+	readback := p.Manifest().Verification == abi.VerificationReadback
 	servedVerifier := func(context.Context, string) (string, error) { return dev.Served(), nil }
 	staleVerifier := func(context.Context, string) (string, error) {
 		return strings.Repeat("0", 64), nil
+	}
+	// stale arms the failure the hub must catch: a TLS verifier that sees a
+	// different certificate, or a store whose read-back returns one.
+	stale := func() agentinstall.Verifier {
+		if readback {
+			dev.FailNext("verify")
+			return nil
+		}
+		return staleVerifier
 	}
 	deliver := func(t *testing.T, cert Cert, verify agentinstall.Verifier) (agentinstall.InstallResult, []delivery.Event) {
 		var events []delivery.Event
 		env := dev.Env()
 		env.Events = func(e delivery.Event) { events = append(events, e) }
 		env.Timeout = time.Minute
-		res := p.Deliver(ctx, env, delivery.DeliverRequest{
+		req := delivery.DeliverRequest{
 			Name: "kk-conformance", CertPEM: cert.CertPEM, KeyPEM: cert.KeyPEM,
 			VerifyHostPort: "device.invalid:443", ExpectedFingerprint: cert.Fingerprint,
-		}, verify)
+		}
+		if readback {
+			req.VerifyHostPort, req.ReadbackVerify = "", true
+		}
+		res := p.Deliver(ctx, env, req, verify)
 		for _, e := range events {
 			if strings.Contains(e.Detail, "-----BEGIN") || strings.Contains(e.Detail, strings.TrimSpace(string(cert.KeyPEM))) {
 				t.Errorf("event carries key material: %+v", e)
@@ -200,7 +241,7 @@ func Suite(t *testing.T, p *delivery.Plugin, dev Device) {
 	t.Run("verify mismatch rolls back", func(t *testing.T) {
 		dev.Reset()
 		before := dev.Served()
-		res, _ := deliver(t, NewCert(t, "unverified"), staleVerifier)
+		res, _ := deliver(t, NewCert(t, "unverified"), stale())
 		if res.Outcome != agentinstall.OutcomeVerifyFailed || res.Verified || !res.RolledBack {
 			t.Fatalf("result %+v", res)
 		}
@@ -212,7 +253,7 @@ func Suite(t *testing.T, p *delivery.Plugin, dev Device) {
 	t.Run("failed rollback is reported as failed", func(t *testing.T) {
 		dev.Reset()
 		dev.FailNext("rollback")
-		res, _ := deliver(t, NewCert(t, "stuck"), staleVerifier)
+		res, _ := deliver(t, NewCert(t, "stuck"), stale())
 		if res.RolledBack || res.Outcome != agentinstall.OutcomeVerifyFailed || !strings.Contains(res.Detail, "ROLLBACK FAILED") {
 			t.Fatalf("a failed rollback must never read as rolled back: %+v", res)
 		}

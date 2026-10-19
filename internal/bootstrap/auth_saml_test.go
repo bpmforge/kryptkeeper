@@ -86,6 +86,7 @@ type samlAssertionParams struct {
 	NotOnOrAfter       time.Time // Conditions -- the warning-only expiry (acceptance #3)
 	ConfirmationExpiry time.Time // SubjectConfirmationData.NotOnOrAfter -- Validate()'s own hard-error expiry
 	InResponseTo       string    // SubjectConfirmationData.InResponseTo; empty renders an unsolicited (IdP-initiated) assertion
+	Groups             []string  // values of a "groups" attribute (W22-19); empty renders none
 }
 
 var samlAssertionTemplate = template.Must(template.New("assertion").Parse(`<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="{{.ID}}" Version="2.0" IssueInstant="{{.NotBefore}}">
@@ -109,7 +110,10 @@ var samlAssertionTemplate = template.Must(template.New("assertion").Parse(`<saml
   <saml:AttributeStatement>
     <saml:Attribute Name="Email">
       <saml:AttributeValue>{{.Email}}</saml:AttributeValue>
-    </saml:Attribute>
+    </saml:Attribute>{{if .Groups}}
+    <saml:Attribute Name="groups">{{range .Groups}}
+      <saml:AttributeValue>{{.}}</saml:AttributeValue>{{end}}
+    </saml:Attribute>{{end}}
   </saml:AttributeStatement>
 </saml:Assertion>`))
 
@@ -130,6 +134,7 @@ func buildSAMLAssertionXML(t *testing.T, p samlAssertionParams) string {
 		NotOnOrAfter       string
 		ConfirmationExpiry string
 		InResponseTo       string
+		Groups             []string
 	}{
 		ID:                 p.ID,
 		NameID:             p.NameID,
@@ -141,6 +146,7 @@ func buildSAMLAssertionXML(t *testing.T, p samlAssertionParams) string {
 		NotOnOrAfter:       p.NotOnOrAfter.UTC().Format(time.RFC3339),
 		ConfirmationExpiry: p.ConfirmationExpiry.UTC().Format(time.RFC3339),
 		InResponseTo:       p.InResponseTo,
+		Groups:             p.Groups,
 	}
 	var buf bytes.Buffer
 	if err := samlAssertionTemplate.Execute(&buf, data); err != nil {

@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -25,9 +26,10 @@ import (
 // W11-07: the SSH CA API. The CA key lives in the platform keystore under a
 // well-known id — generated on first use, reused forever after; signing
 // happens through the keystore's crypto.Signer, so key material never
-// leaves its boundary. Issuance is direct + audited; approval gating joins
-// when the issuance policy engine (W5-05) defines when it is required
-// (spec decision 3).
+// leaves its boundary. Issuance is audited. A template with require_approval
+// (FR-P70, W26-31) parks the request in the shared approval store as a
+// kind="ssh" row; the approve handler signs it through sshApprovalIssuer, so
+// the approver-role, proposer != approver and tenant rules are the X.509 ones.
 
 const sshCAKeyID = "ssh-ca"
 
@@ -97,13 +99,28 @@ func (s *sshCertStore) insert(ctx context.Context, rec SSHCertRecord) error {
 }
 
 func (s *sshCertStore) list(ctx context.Context, subjectFingerprint string) ([]SSHCertRecord, error) {
+	return s.listForTenant(ctx, subjectFingerprint, "")
+}
+
+// listForTenant returns issued certificates, newest first. A non-empty tenant
+// restricts rows in SQL (before the LIMIT) so a busy neighbour cannot crowd a
+// tenant's own certificates out of the page.
+func (s *sshCertStore) listForTenant(ctx context.Context, subjectFingerprint, tenant string) ([]SSHCertRecord, error) {
 	query := `SELECT serial, cert_type, key_id, principals, valid_after, valid_before,
 		subject_fingerprint, authority_fingerprint, certificate_line, tenant, created_at, template_id
 		FROM ssh_certificates`
 	args := []any{}
+	conds := []string{}
 	if subjectFingerprint != "" {
-		query += fmt.Sprintf(" WHERE subject_fingerprint = %s", s.ph(1))
 		args = append(args, subjectFingerprint)
+		conds = append(conds, fmt.Sprintf("subject_fingerprint = %s", s.ph(len(args))))
+	}
+	if tenant != "" {
+		args = append(args, tenant)
+		conds = append(conds, fmt.Sprintf("COALESCE(NULLIF(tenant, ''), 'default') = %s", s.ph(len(args))))
+	}
+	if len(conds) > 0 {
+		query += " WHERE " + strings.Join(conds, " AND ")
 	}
 	query += " ORDER BY created_at DESC LIMIT 200"
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -194,6 +211,11 @@ func newSSHCertStoreFromEnv() *sshCertStore {
 func RegisterSSHCertHandlers(mux *http.ServeMux, auth *Authenticator, keys keystore.Store, templates TemplateProvider, auditProvider AuditProvider) {
 	authority := &sshCAAuthority{keys: keys}
 	store := newSSHCertStoreFromEnv()
+	approvals, _ := newApprovalStoreFromEnv() // nil = approval-required templates answer 503; open errors are logged by the provider
+	var issuer sshApprovalIssuerFunc = func(ctx context.Context, apr ApprovalRequest) (SSHCertRecord, error) {
+		return issueApprovedSSHCertificate(ctx, authority, store, templates, apr)
+	}
+	sshApprovalIssuer.Store(&issuer)
 
 	mux.HandleFunc("/api/v1/ssh/ca", func(w http.ResponseWriter, r *http.Request) {
 		if _, err := auth.AuthenticatePrincipalDetails(r, time.Now()); err != nil {
@@ -228,7 +250,11 @@ func RegisterSSHCertHandlers(mux *http.ServeMux, auth *Authenticator, keys keyst
 				writeServiceUnavailable(w, "ssh certificate store not configured")
 				return
 			}
-			recs, err := store.list(r.Context(), strings.TrimSpace(r.URL.Query().Get("subject_fingerprint")))
+			scope := ""
+			if !tenantBypass(pd) {
+				scope = pd.Tenant
+			}
+			recs, err := store.listForTenant(r.Context(), strings.TrimSpace(r.URL.Query().Get("subject_fingerprint")), scope)
 			if err != nil {
 				writeServiceUnavailable(w, "list failed")
 				return
@@ -271,65 +297,69 @@ func RegisterSSHCertHandlers(mux *http.ServeMux, auth *Authenticator, keys keyst
 				writeBadRequestJSON(w, "unknown template_id")
 				return
 			}
-			if !tpl.Active || tpl.SSHPolicy == nil {
+			ttl, refusal := sshTemplateTTL(tpl, req)
+			if refusal != "" {
+				// Inactive, policy-less, invalid-policy and over-policy requests all
+				// end here, before any approval row or signature exists.
 				emitAuditEvent(r, auditProvider, pd.ID, "ssh_certificate.issue", "ssh_certificate", req.TemplateID+":"+req.KeyID, AuditOutcomeDenied)
-				writeBadRequestJSON(w, "template is inactive or has no ssh_policy; SSH certificates can only be issued from a template that configures one")
+				writeBadRequestJSON(w, refusal)
 				return
 			}
-			if err := tpl.SSHPolicy.Validate(); err != nil {
-				// A hand-edited template file can carry a policy the API would have refused.
-				emitAuditEvent(r, auditProvider, pd.ID, "ssh_certificate.issue", "ssh_certificate", req.TemplateID+":"+req.KeyID, AuditOutcomeDenied)
-				writeBadRequestJSON(w, "template ssh_policy is invalid")
-				return
-			}
-			ttl, err := tpl.SSHPolicy.Check(req.CertType, req.Principals, time.Duration(req.TTLHours*float64(time.Hour)))
-			if err != nil {
-				emitAuditEvent(r, auditProvider, pd.ID, "ssh_certificate.issue", "ssh_certificate", req.TemplateID+":"+req.KeyID, AuditOutcomeDenied)
-				writeBadRequestJSON(w, err.Error())
-				return
-			}
-			signer, err := authority.signer()
-			if err != nil {
+			// Parsed up front so a bad key is a 400 now, not when an approver acts.
+			if _, _, _, _, perr := ssh.ParseAuthorizedKey([]byte(req.PublicKey)); perr != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "ssh_certificate.issue", "ssh_certificate", req.KeyID, AuditOutcomeFailure)
-				writeServiceUnavailable(w, err.Error())
+				writeBadRequestJSON(w, "public_key must be authorized_keys format")
 				return
 			}
-			issued, err := sshkeys.IssueCert(signer, sshkeys.CertRequest{
-				PublicKey:  req.PublicKey,
-				CertType:   req.CertType,
-				KeyID:      req.KeyID,
-				Principals: req.Principals,
-				TTL:        ttl,
-			})
-			if err != nil {
-				emitAuditEvent(r, auditProvider, pd.ID, "ssh_certificate.issue", "ssh_certificate", req.KeyID, AuditOutcomeFailure)
-				writeBadRequestJSON(w, err.Error())
-				return
-			}
-
-			rec := SSHCertRecord{
-				Serial:               fmt.Sprintf("%d", issued.Serial),
-				CertType:             issued.CertType,
-				KeyID:                issued.KeyID,
-				Principals:           issued.Principals,
-				ValidAfter:           issued.ValidAfter.Format(time.RFC3339),
-				ValidBefore:          issued.ValidBefore.Format(time.RFC3339),
-				SubjectFingerprint:   issued.SubjectFingerprint,
-				AuthorityFingerprint: issued.AuthorityFingerprint,
-				CertificateLine:      issued.CertificateLine,
-				Tenant:               DefaultTenant,
-				CreatedAt:            time.Now().UTC().Format(time.RFC3339),
-				TemplateID:           req.TemplateID,
-			}
+			tenant := DefaultTenant
 			if !tenantBypass(pd) {
-				rec.Tenant = pd.Tenant
+				tenant = pd.Tenant
 			}
-			if store != nil {
-				if err := store.insert(r.Context(), rec); err != nil {
-					emitAuditEvent(r, auditProvider, pd.ID, "ssh_certificate.issue", "ssh_certificate", req.KeyID, AuditOutcomeFailure)
-					writeServiceUnavailable(w, "issued but persisting the record failed: "+err.Error())
+			if tpl.RequireApproval {
+				if strings.TrimSpace(req.KeyID) == "" {
+					emitAuditEvent(r, auditProvider, pd.ID, "ssh_certificate.issue", "ssh_certificate", req.TemplateID+":"+req.KeyID, AuditOutcomeFailure)
+					writeBadRequestJSON(w, "key_id is required (it is what sshd logs)")
 					return
 				}
+				if approvals == nil {
+					emitAuditEvent(r, auditProvider, pd.ID, "ssh_certificate.issue", "ssh_certificate", req.TemplateID+":"+req.KeyID, AuditOutcomeFailure)
+					writeServiceUnavailable(w, "approval store not configured")
+					return
+				}
+				approvalID, aerr := newApprovalID()
+				if aerr != nil {
+					emitAuditEvent(r, auditProvider, pd.ID, "ssh_certificate.issue", "ssh_certificate", req.TemplateID+":"+req.KeyID, AuditOutcomeFailure)
+					writeServiceUnavailable(w, "approval request failed")
+					return
+				}
+				apr := ApprovalRequest{
+					ID:          approvalID,
+					Kind:        approvalKindSSH,
+					TemplateID:  req.TemplateID,
+					Requester:   pd.ID,
+					SSHRequest:  &req,
+					Tenant:      tenant,
+					RequestedAt: time.Now().UTC().Format(time.RFC3339),
+				}
+				if aerr := approvals.Create(r.Context(), apr); aerr != nil {
+					emitAuditEvent(r, auditProvider, pd.ID, "ssh_certificate.issue", "ssh_certificate", req.TemplateID+":"+req.KeyID, AuditOutcomeFailure)
+					writeServiceUnavailable(w, "approval request failed")
+					return
+				}
+				emitAuditEventDetail(r, auditProvider, pd.ID, "ssh_certificate.issue", "ssh_certificate",
+					req.TemplateID+":"+approvalID+":"+req.KeyID, AuditOutcomePendingApproval,
+					fmt.Sprintf(`{"approval_id":%q,"template_id":%q}`, approvalID, req.TemplateID))
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Location", "/api/v1/approvals/"+approvalID)
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = fmt.Fprintf(w, `{"status":"pending_approval","approval_id":%q,"message":"issuance requires approval — check /api/v1/approvals/%s"}`, approvalID, approvalID)
+				return
+			}
+			rec, ierr := issueSSHCertificate(r.Context(), authority, store, req, ttl, tenant)
+			if ierr != nil {
+				emitAuditEvent(r, auditProvider, pd.ID, "ssh_certificate.issue", "ssh_certificate", req.KeyID, AuditOutcomeFailure)
+				writeSSHIssueError(w, ierr)
+				return
 			}
 			// The audit resource id carries template+serial+key_id — the record
 			// is reconstructable from the audit log plus this table.
@@ -342,4 +372,114 @@ func RegisterSSHCertHandlers(mux *http.ServeMux, auth *Authenticator, keys keyst
 			writeMethodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 		}
 	})
+}
+
+// sshApprovalIssuerFunc signs the SSH request held by an approved kind="ssh"
+// row. RegisterSSHCertHandlers owns the CA signer and cert store, so it
+// publishes the hook the approval handler calls; nil (no SSH CA mounted)
+// makes an SSH approval answer 503.
+type sshApprovalIssuerFunc func(ctx context.Context, apr ApprovalRequest) (SSHCertRecord, error)
+
+var sshApprovalIssuer atomic.Pointer[sshApprovalIssuerFunc]
+
+// sshTemplateTTL runs every template-level check for an SSH issue request and
+// returns the effective TTL, or a non-empty refusal message. It is shared by
+// request time and approval time: the template may have changed or been
+// disabled in between.
+func sshTemplateTTL(tpl TemplateItem, req sshCertIssueRequest) (time.Duration, string) {
+	if !tpl.Active || tpl.SSHPolicy == nil {
+		return 0, "template is inactive or has no ssh_policy; SSH certificates can only be issued from a template that configures one"
+	}
+	if err := tpl.SSHPolicy.Validate(); err != nil {
+		// A hand-edited template file can carry a policy the API would have refused.
+		return 0, "template ssh_policy is invalid"
+	}
+	ttl, err := tpl.SSHPolicy.Check(req.CertType, req.Principals, time.Duration(req.TTLHours*float64(time.Hour)))
+	if err != nil {
+		return 0, err.Error()
+	}
+	return ttl, ""
+}
+
+// sshIssueError carries the HTTP status a failed sign-and-store maps to.
+type sshIssueError struct {
+	status int
+	msg    string
+}
+
+func (e *sshIssueError) Error() string { return e.msg }
+
+func writeSSHIssueError(w http.ResponseWriter, err error) {
+	var ie *sshIssueError
+	if errors.As(err, &ie) && ie.status == http.StatusBadRequest {
+		writeBadRequestJSON(w, ie.msg)
+		return
+	}
+	writeServiceUnavailable(w, err.Error())
+}
+
+// issueSSHCertificate signs req with the CA and persists the record. It is
+// the one signing path for both the direct 201 and the approved-request
+// issuance; callers audit their own outcome.
+func issueSSHCertificate(ctx context.Context, authority *sshCAAuthority, store *sshCertStore, req sshCertIssueRequest, ttl time.Duration, tenant string) (SSHCertRecord, error) {
+	signer, err := authority.signer()
+	if err != nil {
+		return SSHCertRecord{}, &sshIssueError{status: http.StatusServiceUnavailable, msg: err.Error()}
+	}
+	issued, err := sshkeys.IssueCert(signer, sshkeys.CertRequest{
+		PublicKey:  req.PublicKey,
+		CertType:   req.CertType,
+		KeyID:      req.KeyID,
+		Principals: req.Principals,
+		TTL:        ttl,
+	})
+	if err != nil {
+		return SSHCertRecord{}, &sshIssueError{status: http.StatusBadRequest, msg: err.Error()}
+	}
+	rec := SSHCertRecord{
+		Serial:               fmt.Sprintf("%d", issued.Serial),
+		CertType:             issued.CertType,
+		KeyID:                issued.KeyID,
+		Principals:           issued.Principals,
+		ValidAfter:           issued.ValidAfter.Format(time.RFC3339),
+		ValidBefore:          issued.ValidBefore.Format(time.RFC3339),
+		SubjectFingerprint:   issued.SubjectFingerprint,
+		AuthorityFingerprint: issued.AuthorityFingerprint,
+		CertificateLine:      issued.CertificateLine,
+		Tenant:               tenant,
+		CreatedAt:            time.Now().UTC().Format(time.RFC3339),
+		TemplateID:           req.TemplateID,
+	}
+	if store != nil {
+		if err := store.insert(ctx, rec); err != nil {
+			return SSHCertRecord{}, &sshIssueError{status: http.StatusServiceUnavailable, msg: "issued but persisting the record failed: " + err.Error()}
+		}
+	}
+	return rec, nil
+}
+
+// issueApprovedSSHCertificate completes an approved kind="ssh" request. The
+// template is re-read and every policy check re-run, so a template disabled or
+// tightened since the request refuses here instead of signing.
+func issueApprovedSSHCertificate(ctx context.Context, authority *sshCAAuthority, store *sshCertStore, templates TemplateProvider, apr ApprovalRequest) (SSHCertRecord, error) {
+	if apr.SSHRequest == nil {
+		return SSHCertRecord{}, errors.New("approval has no ssh request")
+	}
+	if templates == nil {
+		return SSHCertRecord{}, errors.New("template provider not configured")
+	}
+	req := *apr.SSHRequest
+	tpl, found, err := templates.GetTemplate(ctx, apr.TemplateID)
+	if err != nil || !found {
+		return SSHCertRecord{}, errors.New("template lookup failed")
+	}
+	ttl, refusal := sshTemplateTTL(tpl, req)
+	if refusal != "" {
+		return SSHCertRecord{}, errors.New(refusal)
+	}
+	tenant := apr.Tenant
+	if tenant == "" {
+		tenant = DefaultTenant
+	}
+	return issueSSHCertificate(ctx, authority, store, req, ttl, tenant)
 }

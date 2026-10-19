@@ -58,6 +58,25 @@ type MigrationRoadmap struct {
 	PQCScorePercent     int             `json:"pqc_score_percent"`    // see ReadinessTally
 	QuantumSafePercent  int             `json:"quantum_safe_percent"` // see ReadinessTally
 	Items               []MigrationItem `json:"items"`
+	Timeline            Timeline        `json:"timeline"`
+}
+
+// QuarterBucket is one calendar quarter of the migration timeline.
+type QuarterBucket struct {
+	Quarter  string `json:"quarter"`  // "2027-Q3"
+	Due      int    `json:"due"`      // certs still to migrate whose validity ends in the quarter
+	Migrated int    `json:"migrated"` // quantum-safe (full chain) certs whose validity ends in the quarter
+}
+
+// Timeline buckets the inventory by the quarter each certificate's validity
+// ends, from the current quarter through the quarter containing the PQC
+// deadline. A cert's expiry is its natural rotation point, so "due" is the
+// work that must land in that quarter. Leaf-only and not-applicable certs are
+// neither due nor migrated (a leaf-only chain is not migrated; N/A is out of scope).
+type Timeline struct {
+	Quarters         []QuarterBucket `json:"quarters"`
+	ExpireBefore2030 int             `json:"expire_before_2030"` // pending certs expiring before the deadline
+	ExpireAfter2030  int             `json:"expire_after_2030"`  // pending certs expiring at/after the deadline
 }
 
 // Planner generates PQC migration roadmaps from certificate inventory.
@@ -78,6 +97,9 @@ func (p *Planner) GenerateRoadmap(certs []CertRecord) MigrationRoadmap {
 	roadmap := MigrationRoadmap{
 		GeneratedAt: time.Now().UTC(),
 		TotalCerts:  len(certs),
+		// Non-nil so an empty estate encodes "items": [] — the UI reads
+		// items.length and a JSON null crashed the PQC Migration page.
+		Items: []MigrationItem{},
 	}
 
 	var tally ReadinessTally
@@ -106,11 +128,65 @@ func (p *Planner) GenerateRoadmap(certs []CertRecord) MigrationRoadmap {
 	roadmap.PQCScorePercent = tally.PQCScorePercent
 	roadmap.QuantumSafePercent = tally.QuantumSafePercent
 
+	roadmap.Timeline = p.buildTimeline(certs, roadmap.GeneratedAt)
+
 	sort.Slice(roadmap.Items, func(i, j int) bool {
 		return priorityOrder(roadmap.Items[i].Priority) < priorityOrder(roadmap.Items[j].Priority)
 	})
 
 	return roadmap
+}
+
+func quarterStart(t time.Time) time.Time {
+	t = t.UTC()
+	return time.Date(t.Year(), time.Month((int(t.Month())-1)/3*3+1), 1, 0, 0, 0, 0, time.UTC)
+}
+
+func quarterLabel(t time.Time) string {
+	return strconv.Itoa(t.Year()) + "-Q" + strconv.Itoa((int(t.Month())-1)/3+1)
+}
+
+// buildTimeline is separate from GenerateRoadmap so tests can pin "now".
+// Certs with no parseable expiry are skipped; already-expired pending certs
+// still count toward ExpireBefore2030 but fall in no quarter.
+func (p *Planner) buildTimeline(certs []CertRecord, now time.Time) Timeline {
+	tl := Timeline{Quarters: []QuarterBucket{}}
+	first, last := quarterStart(now), quarterStart(p.pqcDeadline)
+	index := map[string]int{}
+	for q := first; !q.After(last); q = q.AddDate(0, 3, 0) {
+		index[quarterLabel(q)] = len(tl.Quarters)
+		tl.Quarters = append(tl.Quarters, QuarterBucket{Quarter: quarterLabel(q)})
+	}
+	for _, c := range certs {
+		if c.ValidUntil.IsZero() {
+			continue
+		}
+		pending := c.PQCReadiness == ReadinessMigrReady || c.PQCReadiness == ReadinessHybrid || c.PQCReadiness == ReadinessVulnerable
+		migrated := c.PQCReadiness == ReadinessQuantumSafe
+		if !pending && !migrated {
+			continue
+		}
+		if pending {
+			if c.ValidUntil.Before(p.pqcDeadline) {
+				tl.ExpireBefore2030++
+			} else {
+				tl.ExpireAfter2030++
+			}
+		}
+		if c.ValidUntil.Before(first) {
+			continue
+		}
+		i, ok := index[quarterLabel(c.ValidUntil)]
+		if !ok {
+			continue
+		}
+		if pending {
+			tl.Quarters[i].Due++
+		} else {
+			tl.Quarters[i].Migrated++
+		}
+	}
+	return tl
 }
 
 func (p *Planner) classifyCert(cert CertRecord) MigrationItem {

@@ -241,3 +241,62 @@ func TestSQLiteDiscoveryStorePersistsWinRMFailureReason(t *testing.T) {
 		t.Fatalf("status=%q error_message=%q", status, msg)
 	}
 }
+
+// W34-12: the posture pass rides the scan's endpoint as host observations and
+// lands in discovered_files with kind cng_key.
+func TestWinRMTargetScannerCarriesPostureAndPersistsIt(t *testing.T) {
+	targets, creds := winrmTestStores(t)
+	_, _ = creds.Create(context.Background(), "cred-w3", "iis", CredentialTypeWindowsPassword, "",
+		[]byte(`{"base_url":"https://192.0.2.31:5986/wsman","username":"kktest","password":"pw-secret"}`))
+	tgt, err := targets.Create(context.Background(), ManagedTarget{ID: "t-w3", Name: "w3", Host: "192.0.2.31", DiscoveryMode: "winrm", InstallMode: "iis", RenewalMethod: "manual", CredentialRef: "cred-w3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf := testX509(t, "web-leaf")
+	enumerate := func(_ context.Context, _ agentdiscovery.WinRMConfig, host string) agentdiscovery.AgentlessScanResult {
+		return agentdiscovery.AgentlessScanResult{Host: host,
+			Certs:        []agentclient.DiscoveredCert{{Source: "agentless-winrm:My", Fingerprint: "AA:BB"}},
+			Parsed:       []*x509.Certificate{leaf},
+			IISService:   "Running",
+			FilesScanned: true,
+			Files: []agentdiscovery.FileFact{{
+				Path: `C:\ProgramData\Microsoft\Crypto\Keys\k1`, Kind: agentdiscovery.FileKindCNGKey,
+				UID: agentdiscovery.UnknownID, GID: agentdiscovery.UnknownID, ServiceUID: agentdiscovery.UnknownID, Statted: true,
+				Posture: agentdiscovery.PostureStandard, ServiceTech: "iis", ServiceName: "DefaultAppPool",
+				Findings: []string{"KEY_WORLD_READABLE: BUILTIN\\Users can read the key file"}, CertFingerprints: []string{"AA:BB"},
+			}},
+			WinBindings: []agentdiscovery.WinBinding{
+				{IPPort: "0.0.0.0:443", Port: 443, Thumbprint: "T1", AppID: "{4dc3e181-e14b-4a21-b022-59fc669b0914}"},
+				{IPPort: "0.0.0.0:7000", Port: 7000, Thumbprint: "T2"}, // unknown app: no evidence
+			},
+		}
+	}
+	res := newWinRMTargetScanner(targets, creds, enumerate)(context.Background(), tgt.ID)
+	obs := res.Endpoints[0].HostObs
+	if obs == nil || !obs.FilesScanned || obs.ListenersScanned || len(obs.Files) != 1 || obs.TargetID != "t-w3" {
+		t.Fatalf("host observations: %+v", obs)
+	}
+	if len(obs.Listeners) != 1 || obs.Listeners[0].Port != 443 || obs.Listeners[0].Evidence.Tech != "iis" || obs.Listeners[0].Evidence.Weight != 100 {
+		t.Fatalf("listener evidence: %+v", obs.Listeners)
+	}
+
+	db := setupDiscoveryTestDB(t)
+	if err := ensureDiscoveredFilesSchema(context.Background(), db, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := persistHostFiles(context.Background(), db, false, "t", "192.0.2.31", obs); err != nil {
+		t.Fatal(err)
+	}
+	var kind, posture, findings string
+	if err := db.QueryRow(`SELECT kind, posture, findings FROM discovered_files WHERE host = '192.0.2.31'`).Scan(&kind, &posture, &findings); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "cng_key" || posture != "standard" || !strings.Contains(findings, "KEY_WORLD_READABLE") {
+		t.Fatalf("row: %s %s %s", kind, posture, findings)
+	}
+	var links int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM certificate_files`).Scan(&links)
+	if links != 1 {
+		t.Fatalf("certificate link: %d", links)
+	}
+}

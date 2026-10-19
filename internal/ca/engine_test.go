@@ -13,6 +13,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"math/big"
 	"net"
 	"net/url"
 	"testing"
@@ -281,13 +282,28 @@ func TestGetCAChain(t *testing.T) {
 	}
 }
 
+func selfSignedRootPEM(t *testing.T, cn string) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: cn},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+}
+
 func TestImportCA(t *testing.T) {
 	engine := newTestEngine(t)
 
-	// Create a self-signed CA cert to import.
-	root, _ := engine.CreateRootCA("Source Root", pkix.Name{CommonName: "Source Root"}, keystore.ECDSAP256, 10*365*24*time.Hour)
-
-	imported, err := engine.ImportCA("Imported Root", root.CertPEM)
+	imported, err := engine.ImportCA("Imported Root", selfSignedRootPEM(t, "Source Root"))
 	if err != nil {
 		t.Fatalf("import CA: %v", err)
 	}
@@ -297,8 +313,44 @@ func TestImportCA(t *testing.T) {
 	if imported.KeyID != "" {
 		t.Error("imported CA should have no KeyID")
 	}
+	if imported.KeyStorageType != "external" {
+		t.Errorf("imported CA key storage = %q, want external", imported.KeyStorageType)
+	}
 	if imported.Certificate.Subject.CommonName != "Source Root" {
 		t.Errorf("expected CN=Source Root, got %s", imported.Certificate.Subject.CommonName)
+	}
+}
+
+func TestImportCADuplicateAndTrustAnchorRemoval(t *testing.T) {
+	engine := newTestEngine(t)
+	rootPEM := selfSignedRootPEM(t, "Ext Root")
+	imported, err := engine.ImportCA("Ext", rootPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.ImportCA("Ext again", rootPEM); !errors.Is(err, ErrCAAlreadyImported) {
+		t.Fatalf("duplicate import: err = %v, want ErrCAAlreadyImported", err)
+	}
+	// A root the hub generated itself (it holds the key) is not a trust anchor.
+	own, err := engine.CreateRootCA("Own", pkix.Name{CommonName: "Own"}, keystore.ECDSAP256, 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.RemoveTrustAnchor(own.ID); !errors.Is(err, ErrNotTrustAnchor) {
+		t.Fatalf("remove keyed root: err = %v, want ErrNotTrustAnchor", err)
+	}
+	if err := engine.RemoveTrustAnchor("missing"); !errors.Is(err, ErrCANotFound) {
+		t.Fatalf("remove unknown: err = %v, want ErrCANotFound", err)
+	}
+	if err := engine.RemoveTrustAnchor(imported.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := engine.GetCA(imported.ID); got.Status != "revoked" {
+		t.Fatalf("status = %s, want revoked", got.Status)
+	}
+	again, err := engine.ImportCA("Ext", rootPEM)
+	if err != nil || again.ID != imported.ID || again.Status != "active" {
+		t.Fatalf("re-import: %+v %v, want reactivation of %s", again, err, imported.ID)
 	}
 }
 

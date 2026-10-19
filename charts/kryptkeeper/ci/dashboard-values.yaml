@@ -1,0 +1,18 @@
+# Render-test fixture only. No real credentials: the Secret names are placeholders.
+secrets:
+  existingSecret: kk-creds
+dashboard:
+  enabled: true
+  hubCA:
+    existingSecret: kryptkeeper-ca
+ingress:
+  enabled: true
+  hosts:
+    - host: kryptkeeper.example.test
+      paths:
+        - path: /
+          pathType: Prefix
+          backend: dashboard
+        - path: /acme
+          pathType: Prefix
+          backend: api

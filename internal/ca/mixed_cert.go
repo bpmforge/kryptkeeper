@@ -41,7 +41,7 @@ func classicalSignatureAlgOID(algo keystore.Algorithm) (asn1.ObjectIdentifier, c
 		return asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 2}, crypto.SHA256, true // ecdsa-with-SHA256
 	case keystore.ECDSAP384:
 		return asn1.ObjectIdentifier{1, 2, 840, 10045, 4, 3, 3}, crypto.SHA384, true // ecdsa-with-SHA384
-	case keystore.RSA2048, keystore.RSA4096:
+	case keystore.RSA2048, keystore.RSA3072, keystore.RSA4096:
 		return asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 11}, crypto.SHA256, true // sha256WithRSAEncryption
 	case keystore.Ed25519:
 		return asn1.ObjectIdentifier{1, 3, 101, 112}, crypto.Hash(0), true // id-Ed25519, full-message
@@ -145,7 +145,7 @@ func verifyClassicalCSRSignature(algo keystore.Algorithm, hash crypto.Hash, pub 
 		h := hash.New()
 		h.Write(msg)
 		return ecdsa.VerifyASN1(ecdsaPub, h.Sum(nil), sig)
-	case keystore.RSA2048, keystore.RSA4096:
+	case keystore.RSA2048, keystore.RSA3072, keystore.RSA4096:
 		rsaPub, ok := pub.(*rsa.PublicKey)
 		if !ok {
 			return false

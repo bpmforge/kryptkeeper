@@ -7,12 +7,19 @@ package bootstrap
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -63,14 +70,20 @@ func TestValidateNHIRequestPolicy(t *testing.T) {
 // approve (RC1-B-01).
 func nhiTestSetup(t *testing.T) (*http.ServeMux, NHIStore, *Authenticator) {
 	t.Helper()
+	return nhiTestSetupAudit(t, stubAuditProvider{})
+}
+
+// nhiTestSetupAudit is nhiTestSetup with a caller-supplied audit provider.
+func nhiTestSetupAudit(t *testing.T, audit AuditProvider) (*http.ServeMux, NHIStore, *Authenticator) {
+	t.Helper()
 	mux := spiffeTestSetup(t)
 	t.Setenv("APP_API_KEY_PEPPER", "test-pepper-32chars-minimum!!!!!")
 	t.Setenv("APP_API_KEY_AUTH_ENABLED", "true")
 	auth := newReportsTestAuth(t)
 	reg := NewWorkloadRegistry()
-	registerSPIFFEWorkloadHandlers(mux, auth, reg, stubAuditProvider{})
+	registerSPIFFEWorkloadHandlers(mux, auth, reg, audit)
 	store := newTestNHIStore(t)
-	registerNHIHandlers(mux, auth, store, reg, stubAuditProvider{})
+	registerNHIHandlers(mux, auth, store, reg, audit)
 	return mux, store, auth
 }
 
@@ -242,4 +255,208 @@ func seedNHICreator(store NHIStore, id, creator string) error {
 	}
 	_, err := s.db.Exec("UPDATE nhi_identities SET created_by = ? WHERE id = ?", creator, id)
 	return err
+}
+
+// nhiLeaf builds a self-signed stand-in for an SVID carrying spiffeID.
+func nhiLeaf(t *testing.T, spiffeID string, notBefore, notAfter time.Time) *x509.Certificate {
+	t.Helper()
+	u, err := url.Parse(spiffeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "svid"},
+		NotBefore: notBefore, NotAfter: notAfter, URIs: []*url.URL{u},
+	}, &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "svid"}}, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// seedApprovedNHI creates an identity and decides it approved.
+func seedApprovedNHI(t *testing.T, store NHIStore, name string, scopes []string) NHIIdentity {
+	t.Helper()
+	n, err := store.Create(context.Background(), NHIIdentity{
+		Name: name, Kind: "ai_agent", SPIFFEID: "spiffe://example.org/nhi/ai_agent/" + name,
+		Scopes: scopes, CreatedBy: "proposer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Decide(context.Background(), n.ID, "approved", "approver"); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func TestRevokedNHISVIDRejectedWithin60s(t *testing.T) {
+	ctx := context.Background()
+	store := newTestNHIStore(t)
+	t0 := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	now := t0
+	authz := NewNHIAuthorizer(store, func() time.Time { return now })
+	n := seedApprovedNHI(t, store, "pay-agent", []string{"certificate.read"})
+	leaf := nhiLeaf(t, n.SPIFFEID, t0.Add(-time.Minute), t0.Add(24*time.Hour))
+
+	if err := authz.Authorize(ctx, leaf, "certificate.read"); err != nil {
+		t.Fatalf("approved NHI refused: %v", err)
+	}
+	if err := store.Decide(ctx, n.ID, "revoked", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []time.Duration{0, 30 * time.Second, 59 * time.Second} {
+		now = t0.Add(d)
+		if err := authz.Authorize(ctx, leaf, "certificate.read"); !errors.Is(err, ErrNHIRevoked) {
+			t.Fatalf("at +%s: want ErrNHIRevoked, got %v", d, err)
+		}
+	}
+}
+
+func TestNHIAuthorizerRejectsExpiredAndUnknown(t *testing.T) {
+	ctx := context.Background()
+	store := newTestNHIStore(t)
+	t0 := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	now := t0
+	authz := NewNHIAuthorizer(store, func() time.Time { return now })
+	n := seedApprovedNHI(t, store, "exp-agent", []string{"certificate.read"})
+	leaf := nhiLeaf(t, n.SPIFFEID, t0.Add(-time.Minute), t0.Add(time.Hour))
+
+	now = t0.Add(2 * time.Hour)
+	if err := authz.Authorize(ctx, leaf, "certificate.read"); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expired SVID: got %v", err)
+	}
+	now = t0
+	ghost := nhiLeaf(t, "spiffe://example.org/nhi/ai_agent/ghost", t0.Add(-time.Minute), t0.Add(time.Hour))
+	if err := authz.Authorize(ctx, ghost, "certificate.read"); !errors.Is(err, ErrNHIUnknown) {
+		t.Fatalf("unknown NHI: got %v", err)
+	}
+	pending, _ := store.Create(ctx, NHIIdentity{Name: "pend", Kind: "ai_agent",
+		SPIFFEID: "spiffe://example.org/nhi/ai_agent/pend", Scopes: []string{"certificate.read"}, CreatedBy: "p"})
+	pl := nhiLeaf(t, pending.SPIFFEID, t0.Add(-time.Minute), t0.Add(time.Hour))
+	if err := authz.Authorize(ctx, pl, "certificate.read"); !errors.Is(err, ErrNHINotActive) {
+		t.Fatalf("pending NHI: got %v", err)
+	}
+	if err := authz.Authorize(ctx, nil, "certificate.read"); err == nil {
+		t.Fatal("nil leaf accepted")
+	}
+}
+
+func TestNHIScopeChangeTakesEffectWithoutReissue(t *testing.T) {
+	ctx := context.Background()
+	store := newTestNHIStore(t)
+	t0 := time.Date(2026, 10, 16, 9, 0, 0, 0, time.UTC)
+	authz := NewNHIAuthorizer(store, func() time.Time { return t0 })
+	n := seedApprovedNHI(t, store, "scope-agent", []string{"certificate.read"})
+	leaf := nhiLeaf(t, n.SPIFFEID, t0.Add(-time.Minute), t0.Add(time.Hour))
+
+	if err := authz.Authorize(ctx, leaf, "certificate.read"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateScopes(ctx, n.ID, []string{"report.read"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := authz.Authorize(ctx, leaf, "certificate.read"); !errors.Is(err, ErrNHIScope) {
+		t.Fatalf("dropped scope still honoured: %v", err)
+	}
+	if err := authz.Authorize(ctx, leaf, "report.read"); err != nil {
+		t.Fatalf("new scope refused: %v", err)
+	}
+	if err := authz.Authorize(ctx, leaf, "*"); !errors.Is(err, ErrNHIScope) {
+		t.Fatalf("wildcard honoured: %v", err)
+	}
+	if err := store.UpdateScopes(ctx, n.ID, []string{"certificate.readd"}); err == nil {
+		t.Fatal("out-of-vocabulary scope accepted")
+	}
+	if err := store.UpdateScopes(ctx, n.ID, nil); err == nil {
+		t.Fatal("empty scopes accepted")
+	}
+	if err := store.Decide(ctx, n.ID, "revoked", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateScopes(ctx, n.ID, []string{"report.read"}); !errors.Is(err, ErrNHIRevoked) {
+		t.Fatalf("scope edit on revoked NHI: %v", err)
+	}
+}
+
+func TestRevokedPendingNHICannotBeUnrevoked(t *testing.T) {
+	audit := &memAuditProvider{}
+	mux, store, auth := nhiTestSetupAudit(t, audit)
+	approver := mintAdminToken(t, auth, "nhi-approver", "")
+	created := proposeNHI(t, mux, "pending-then-revoked")
+
+	revoke := func() int {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, authedReq(http.MethodPost, "/api/v1/nhi/identities/"+created.ID+"/revoke", nil))
+		return rec.Code
+	}
+	if code := revoke(); code != http.StatusNoContent {
+		t.Fatalf("revoke: %d", code)
+	}
+	_ = seedNHICreator(store, created.ID, "someone-else")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, bearerReq(approver, http.MethodPost, "/api/v1/nhi/identities/"+created.ID+"/approve", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("approve after revoke: %d", rec.Code)
+	}
+	if err := store.Decide(context.Background(), created.ID, "approved", "x"); !errors.Is(err, ErrNHIRevoked) {
+		t.Fatalf("direct Decide on revoked: %v", err)
+	}
+	if got, _, _ := store.Get(context.Background(), created.ID); got.Status != "revoked" {
+		t.Fatalf("status %q, want revoked", got.Status)
+	}
+	if code := revoke(); code != http.StatusNoContent {
+		t.Fatalf("second revoke: %d", code)
+	}
+	revokes := 0
+	for _, e := range audit.entries {
+		if e.Action == "nhi.revoke" {
+			revokes++
+		}
+	}
+	if revokes != 1 {
+		t.Fatalf("nhi.revoke audit rows = %d, want 1", revokes)
+	}
+	if err := store.Decide(context.Background(), "nhi-missing", "approved", "x"); err == nil || errors.Is(err, ErrNHIRevoked) {
+		t.Fatalf("missing id must be a not-found error, got %v", err)
+	}
+}
+
+func TestRevokedNHIJoinTokenCannotMint(t *testing.T) {
+	mux, store, auth := nhiTestSetup(t)
+	approver := mintAdminToken(t, auth, "nhi-approver", "")
+	created := proposeNHI(t, mux, "token-agent")
+	_ = seedNHICreator(store, created.ID, "someone-else")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, bearerReq(approver, http.MethodPost, "/api/v1/nhi/identities/"+created.ID+"/approve", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			JoinToken string `json:"join_token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	rec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rec2, authedReq(http.MethodPost, "/api/v1/nhi/identities/"+created.ID+"/revoke", nil))
+	if rec2.Code != http.StatusNoContent {
+		t.Fatalf("revoke: %d", rec2.Code)
+	}
+	body, _ := json.Marshal(map[string]string{"join_token": resp.Data.JoinToken})
+	rec3 := httptest.NewRecorder()
+	mux.ServeHTTP(rec3, httptest.NewRequest(http.MethodPost, "/api/v1/spiffe/workload-svid", bytes.NewReader(body)))
+	if rec3.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked NHI token minted: %d %s", rec3.Code, rec3.Body.String())
+	}
 }

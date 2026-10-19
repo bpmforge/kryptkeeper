@@ -8,11 +8,12 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"log"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 const (
@@ -111,7 +112,7 @@ func (a *Authenticator) verifyLoginPasswordLimited(ctx context.Context, password
 func (a *Authenticator) upgradeLegacyLoginHash(password, pepper string) {
 	hash, err := HashLoginPassword(password, pepper)
 	if err != nil {
-		log.Printf("warning: could not upgrade legacy login password hash: %v", err)
+		logging.Warnf("could not upgrade legacy login password hash: %v", err)
 		return
 	}
 	s := &a.hardening.login
@@ -120,7 +121,7 @@ func (a *Authenticator) upgradeLegacyLoginHash(password, pepper string) {
 	s.upgradedHash = hash
 	s.hashMu.Unlock()
 	if first {
-		log.Print("warning: APP_AUTH_LOGIN_PASSWORD_HASH is a legacy HMAC-SHA256 verifier; " +
+		logging.Warn("APP_AUTH_LOGIN_PASSWORD_HASH is a legacy HMAC-SHA256 verifier; " +
 			"upgraded to Argon2id in memory for this process only. Generate a persistent one with " +
 			"`kryptkeeper --hash-password` and set APP_AUTH_LOGIN_PASSWORD_HASH to it")
 	}

@@ -13,7 +13,11 @@ key, tamper check, and Delete. Free, no AWS account.
 - moto ignores `MessageType=DIGEST` and hashes the digest again, so the test
   verifies over h(digest) when `KK_KMS_EMULATOR_MOTO=1`. Wiring and wire formats
   are covered; DIGEST semantics need real AWS.
-- moto returns 500 for `ScheduleKeyDeletion` given an ARN; the test then only
-  asserts the W9-07 contract (refused destroy keeps the reference).
+- moto returns 500 for `ScheduleKeyDeletion` given an ARN; the store test then
+  only asserts the W9-07 contract (refused destroy keeps the reference).
+  `TestAWSKMSDeletionPendingAndCancel` (W23-24) sidesteps this with a bare key
+  id: it schedules with the SDK and asserts PendingDeletion with the 7-day
+  window, then calls the product cancel (`keystore.CancelCloudKeyDeletion`) and
+  asserts Enabled; a second cancel must error.
 - IAM, key policies, quotas and real HSM behaviour are untested.
 - GCP and Azure legs are not covered here.

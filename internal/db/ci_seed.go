@@ -7,7 +7,8 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"log"
+
+	"kryptkeeper/internal/logging"
 )
 
 // RemoveCISeedData deletes the rows migration 000007 inserts (S-42).
@@ -82,6 +83,6 @@ func RemoveCISeedData(db *sql.DB, engine string) (int64, error) {
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("commit: %w", err)
 	}
-	log.Printf("removed CI seed data: %d row(s) across %d tables", total, len(stmts))
+	logging.Infof("removed CI seed data: %d row(s) across %d tables", total, len(stmts))
 	return total, nil
 }

@@ -10,7 +10,8 @@ happened because this rule was ignored for two months.
 
 2. `docs/DECISIONS.md` — the decision ledger (D-001..D-106+, vocabulary canon); new decisions land here only. Last confirmed current: 2026-07-15 (D-106 added 2026-08-18, still current)
 3. `docs/sdlc/phase-0-ideation/VISION_V5.md` — the estate-management pivot (D-106): CA-agnostic inventory + takeover, source of the FR-P64..70 requirements. Last confirmed current: 2026-08-18
-4. `docs/ROADMAP.md` — the hardening-track wave plan (W0–W18), exit criteria per wave. Last confirmed current: 2026-07-15 (waves through W18 landed since; see STATUS.md)
+4. `docs/ROADMAP.md` — the public roadmap: everything deferred from 1.0.0, by theme, with a target (1.1, later, needs partner hardware); `docs/ROADMAP_PROCESS.md` is the rule that keeps it current. Last confirmed current: 2026-10-18
+   - `docs/HARDENING_ROADMAP.md` — the hardening-track wave plan (W0–W18), exit criteria per wave (was `docs/ROADMAP.md` until 2026-10-18). Last confirmed current: 2026-07-15 (waves through W18 landed since; see STATUS.md)
 5. `docs/NEXT_HORIZON.md` — V6 seed: what comes after the current wave plan, researched against the 2026-08 competitive landscape. Last confirmed current: 2026-08-19
 6. `docs/UAT_PLAN.md` — the real-external-system UAT bar (fakes are not evidence); status matrix (4 passed / 8 todo / 3 blocked) and W19-01..12. Last confirmed current: 2026-09-10
 8. `docs/PRODUCT_SRS.md` — FR-P/NFR-P requirements, now carrying a Status column traced to the board + STATUS.md. Last confirmed current: 2026-09-10
@@ -30,7 +31,8 @@ happened because this rule was ignored for two months.
 - `docs/ops/OIDC_JWKS_RUNBOOK.md` — OIDC discovery + JWKS rotation, fail-closed behavior
 - `docs/deployment.md` — the three deployment targets: Compose, Kubernetes/Helm, bare metal/air-gapped
 - `docs/ops/grafana-dashboard.json`, `docs/ops/pki-slo-dashboard.json` — operational dashboards
-- `docs/guides/*` — end-user how-tos: `getting-started.md`, `day-one-estate.md`, `replace-adcs.md`, `intune-byoca.md`, `pqc-certificate.md`, `spiffe.md`, `mcp-server.md`
+- `docs/release/ACR_VPAT_v0.21.md` — Accessibility Conformance Report (VPAT 2.5, WCAG 2.2 A/AA) for the v0.21 UI; self-assessment, manual screen-reader fields `PENDING-RUN`. Last confirmed current: 2026-10-17
+- `docs/guides/*` — end-user how-tos: `getting-started.md`, `day-one-estate.md`, `replace-adcs.md`, `migrate-from-venafi.md`, `migrate-from-certcentral.md`, `migrate-from-keyfactor.md`, `migrate-from-vault-pki.md`, `intune-byoca.md`, `pqc-certificate.md`, `spiffe.md`, `mcp-server.md`
 - Security posture audits: `docs/ops/ws-01-ws-02-security-audit-latest.md`, `docs/ops/ws-05-08-db-adapter-security-audit.md`, `docs/ops/ws-05-08-provider-security-audit.md`, `docs/ops/ws-10-ci-workflow-reaudit-fail-closed.md`, `docs/ops/ws-10-ci-workflow-reaudit-latest.md` (superseded: `docs/ops/ws-10-ci-workflow-baseline-review.md`, `docs/ops/workflow-hardening-report-2026-04-06.md`)
 
 ## Build

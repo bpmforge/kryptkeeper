@@ -48,6 +48,9 @@ func registerBackupHandlers(mux *http.ServeMux, auth *Authenticator, store keyst
 			writeForbidden(w, "admin role required for key backup")
 			return
 		}
+		if denyTenantPrincipalKeyOp(w, r, auditProvider, principalDetails, "backup.create", "backup", "all-keys") {
+			return
+		}
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w, http.MethodPost)
 			return
@@ -108,6 +111,9 @@ func registerBackupHandlers(mux *http.ServeMux, auth *Authenticator, store keyst
 		if !isAdminRole(principalDetails.Role) {
 			emitAuditEvent(r, auditProvider, principal, "backup.restore", "backup", "all-keys", AuditOutcomeDenied)
 			writeForbidden(w, "admin role required for key restore")
+			return
+		}
+		if denyTenantPrincipalKeyOp(w, r, auditProvider, principalDetails, "backup.restore", "backup", "all-keys") {
 			return
 		}
 		if r.Method != http.MethodPost {

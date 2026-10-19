@@ -1,65 +1,134 @@
 #!/usr/bin/env bash
-# W12-07: the day-one estate exercise as a script — fresh hub to a
-# risk-scored estate report. Companion to docs/guides/day-one-estate.md.
+# W12-07 / W24-37: the day-one estate exercise as a script — fresh hub to a
+# risk-scored estate report, then a count check. Companion to
+# docs/guides/day-one-estate.md.
 #
 # Usage:
 #   BASE_URL=http://localhost:8080 TOKEN=<api-token> \
 #   [PEM_BUNDLE=./certs.pem] [SCAN_TARGET=10.0.0.0/24] \
 #   [ADCS_EXPORT_PATH=/exports/adcs] \
+#   [EXPECT_TOTAL=n EXPECT_MANAGED=n EXPECT_EXTERNAL=n EXPECT_UNMANAGED=n] \
 #   bash scripts/day-one-estate.sh
+#
+# Stages and exit codes: hub=10 import=20 scan=30 sync=40 report=50 verify=60.
+# Any other failure exits 1 and names CURRENT_STAGE. Set
+# KK_DAYONE_INJECT_FAIL=<stage> to force that stage to fail (tests the
+# failure path; fires before any network call).
 #
 # Safe to re-run: imports dedupe by fingerprint, scans are additive,
 # sources upsert. No secrets are echoed.
-set -euo pipefail
+set -Eeuo pipefail
 
 BASE_URL="${BASE_URL:-http://localhost:8080}"
 API="$BASE_URL/api/v1"
 : "${TOKEN:?set TOKEN to an API token with admin rights}"
 
 auth=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
-say() { printf '\n== Stage %s — %s\n' "$1" "$2"; }
+CURRENT_STAGE=init
 
-say 1 "hub reachable"
-curl -fsS "${auth[@]}" "$API/certificates?limit=1" >/dev/null
+say() { CURRENT_STAGE="$2"; printf '\n== Stage %s — %s: %s\n' "$1" "$2" "$3"; }
+fail() { echo "FAILED stage=$1 exit=$2" >&2; exit "$2"; }
+# shellcheck disable=SC2154
+trap 'rc=$?; echo "FAILED stage=$CURRENT_STAGE exit=$rc" >&2; exit "$rc"' ERR
+maybe_inject() {
+  if [ "${KK_DAYONE_INJECT_FAIL:-}" = "$1" ]; then
+    echo "INJECTED FAILURE at stage=$1" >&2
+    fail "$1" "$2"
+  fi
+}
+
+# Injection preflight: so the failure path is testable with no hub running,
+# the named stage fails before any network call is made.
+case "${KK_DAYONE_INJECT_FAIL:-}" in
+  hub) CURRENT_STAGE=hub; maybe_inject hub 10 ;;
+  import) CURRENT_STAGE=import; maybe_inject import 20 ;;
+  scan) CURRENT_STAGE=scan; maybe_inject scan 30 ;;
+  sync) CURRENT_STAGE=sync; maybe_inject sync 40 ;;
+  report) CURRENT_STAGE=report; maybe_inject report 50 ;;
+  verify) CURRENT_STAGE=verify; maybe_inject verify 60 ;;
+  "") ;;
+  *) echo "unknown KK_DAYONE_INJECT_FAIL stage: ${KK_DAYONE_INJECT_FAIL}" >&2; exit 2 ;;
+esac
+
+today="$(date -u +%F)"
+
+say 1 hub "hub reachable"
+maybe_inject hub 10
+curl -fsS "${auth[@]}" "$API/certificates?limit=1" >/dev/null || fail hub 10
 echo "   ok: authenticated against $BASE_URL"
 
+say 2 import "bulk import (${PEM_BUNDLE:-skipped})"
+maybe_inject import 20
 if [ -n "${PEM_BUNDLE:-}" ]; then
-  say 2 "bulk import ($PEM_BUNDLE)"
-  bundle=$(python3 -c 'import json,sys;print(json.dumps(open(sys.argv[1]).read()))' "$PEM_BUNDLE")
+  bundle=$(python3 -c 'import json,sys;print(json.dumps(open(sys.argv[1]).read()))' "$PEM_BUNDLE") || fail import 20
   curl -fsS "${auth[@]}" -X POST "$API/certificates/bulk-import" \
-    -d "{\"format\":\"pem\",\"bundle\":$bundle}"
+    -d "{\"format\":\"pem\",\"bundle\":$bundle}" || fail import 20
   echo
 else
-  say 2 "bulk import — skipped (set PEM_BUNDLE to a PEM file)"
+  echo "   skipped (set PEM_BUNDLE to a PEM file)"
 fi
 
+say 3 scan "network scan (${SCAN_TARGET:-skipped})"
+maybe_inject scan 30
 if [ -n "${SCAN_TARGET:-}" ]; then
-  say 3 "network scan ($SCAN_TARGET)"
   curl -fsS "${auth[@]}" -X POST "$API/discovery/scans" \
-    -d "{\"scan_type\":\"network\",\"target\":\"$SCAN_TARGET\"}"
+    -d "{\"scan_type\":\"network\",\"target\":\"$SCAN_TARGET\"}" || fail scan 30
   echo
   echo "   watch progress on the Discovery page"
 else
-  say 3 "network scan — skipped (set SCAN_TARGET to a CIDR or host:port)"
+  echo "   skipped (set SCAN_TARGET to a CIDR or host:port)"
 fi
 
+say 4 sync "ADCS export sync (${ADCS_EXPORT_PATH:-skipped})"
+maybe_inject sync 40
 if [ -n "${ADCS_EXPORT_PATH:-}" ]; then
-  say 4 "ADCS export sync ($ADCS_EXPORT_PATH)"
   src=$(curl -fsS "${auth[@]}" -X POST "$API/inventory-sources" \
-    -d "{\"name\":\"day-one-adcs\",\"type\":\"adcs_export\",\"config_json\":\"{\\\"export_path\\\":\\\"$ADCS_EXPORT_PATH\\\"}\"}")
-  id=$(printf '%s' "$src" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["id"])')
-  curl -fsS "${auth[@]}" -X POST "$API/inventory-sources/$id/sync"
+    -d "{\"name\":\"day-one-adcs\",\"type\":\"adcs_export\",\"config_json\":\"{\\\"export_path\\\":\\\"$ADCS_EXPORT_PATH\\\"}\"}") || fail sync 40
+  id=$(printf '%s' "$src" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["id"])') || fail sync 40
+  curl -fsS "${auth[@]}" -X POST "$API/inventory-sources/$id/sync" || fail sync 40
   echo
 else
-  say 4 "ADCS sync — skipped (set ADCS_EXPORT_PATH to an export directory on the hub)"
+  echo "   skipped (set ADCS_EXPORT_PATH to an export directory on the hub)"
 fi
 
-say 6 "the payoff"
-curl -fsS "${auth[@]}" "$API/reports/pqc-migration" | head -c 400
+say 6 report "the payoff"
+maybe_inject report 50
+curl -fsS "${auth[@]}" "$API/reports/pqc-migration" | head -c 400 || fail report 50
 echo
-out="kryptkeeper-estate-$(date -u +%F).csv"
-curl -fsS "${auth[@]}" "$API/reports/export/inventory?format=csv" -o "$out"
-echo "   estate export written to $out"
+csv="kryptkeeper-estate-$today.csv"
+pdf="kryptkeeper-estate-$today.pdf"
+estate_json="kryptkeeper-estate-$today.json"
+curl -fsS "${auth[@]}" "$API/reports/export/inventory?format=csv" -o "$csv" || fail report 50
+curl -fsS "${auth[@]}" "$API/reports/estate?format=pdf" -o "$pdf" || fail report 50
+curl -fsS "${auth[@]}" "$API/reports/estate" -o "$estate_json" || fail report 50
+echo "   written: $csv $pdf $estate_json"
+
+say 7 verify "estate report equals dashboard (and seeded counts, if EXPECT_* set)"
+maybe_inject verify 60
+dash=$(curl -fsS "${auth[@]}" "$API/dashboard/summary") || fail verify 60
+DASH="$dash" python3 - "$estate_json" <<'PY' || fail verify 60
+import json, os, sys
+estate = json.load(open(sys.argv[1]))
+estate = estate.get("data", estate)
+by_state = estate.get("by_state", {})
+certs = json.loads(os.environ["DASH"])["data"]["certificates"]
+bad = []
+for k in ("managed", "external", "unmanaged"):
+    if int(by_state.get(k, 0)) != int(certs.get(k, 0)):
+        bad.append(f"{k}: estate={by_state.get(k, 0)} dashboard={certs.get(k, 0)}")
+actual = {"total": estate.get("total"), "managed": by_state.get("managed", 0),
+          "external": by_state.get("external", 0), "unmanaged": by_state.get("unmanaged", 0)}
+for k in ("total", "managed", "external", "unmanaged"):
+    want = os.environ.get("EXPECT_" + k.upper())
+    if want not in (None, "") and int(actual[k] or 0) != int(want):
+        bad.append(f"{k}: expected={want} estate={actual[k]}")
+print("   estate:", actual)
+if bad:
+    print("   MISMATCH: " + "; ".join(bad), file=sys.stderr)
+    sys.exit(1)
+print("   counts verified")
+PY
+CURRENT_STAGE=complete
 echo
 echo "Done. Dashboard shows the managed/external/unmanaged split;"
 echo "day two: POST $API/estate/takeover to start managing what you found."

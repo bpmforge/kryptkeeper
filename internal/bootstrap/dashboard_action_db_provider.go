@@ -38,18 +38,6 @@ func newDBDashboardActionProviderFromEnv() DashboardActionProvider {
 	return &dbDashboardActionProvider{store: state.store, openErr: state.openErr}
 }
 
-func newDBDashboardActionStoreFromEnv() (dbDashboardActionStore, error) {
-	state := newDBProviderState[dbDashboardActionStore](
-		"dashboard action",
-		dashboardActionDBSQLiteDSNFromEnv,
-		dashboardActionDBPostgresDSNFromEnv,
-		fmt.Errorf("postgres mode requires APP_DASHBOARD_DB_DSN, KRYPTKEEPER_DB_DSN, or DATABASE_URL"),
-		func(db *sql.DB) dbDashboardActionStore { return &sqliteDashboardActionStore{db: db} },
-		func(db *sql.DB) dbDashboardActionStore { return &postgresDashboardActionStore{db: db} },
-	)
-	return state.store, state.openErr
-}
-
 func dashboardActionDBSQLiteDSNFromEnv() (string, error) {
 	return resolveSQLiteDSNFromEnv("APP_DASHBOARD_DB_DSN", "KRYPTKEEPER_DATA_DIR", "kryptkeeper.db")
 }

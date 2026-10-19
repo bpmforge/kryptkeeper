@@ -715,9 +715,9 @@ Requirements are organized by feature area. Each requirement table uses the foll
 |-------|-------|
 | **ID** | FR-063 |
 | **Title** | Agent — Auto-Update |
-| **Description** | The agent shall support signed auto-update. The platform serves a signed manifest (JSON) containing the latest agent version, binary URL, and SHA-256 hash. The manifest is signed by an Ed25519 key whose public key is embedded in the agent binary at build time. On update: the agent downloads the new binary, verifies the SHA-256 hash, verifies the Ed25519 manifest signature, replaces the current binary, and restarts. If verification fails at any step, the current binary is kept and an error is reported. |
-| **Priority** | Could-have |
-| **Version** | V1 |
+| **Description** | DESCOPED from v1.0 by D-128: agent upgrades use the package manager, MSI or image replacement (packaging/README.md, "Upgrading the agent"). The text below is retained as the v1.x candidate. The agent shall support signed auto-update. The platform serves a signed manifest (JSON) containing the latest agent version, binary URL, and SHA-256 hash. The manifest is signed by an Ed25519 key whose public key is embedded in the agent binary at build time. On update: the agent downloads the new binary, verifies the SHA-256 hash, verifies the Ed25519 manifest signature, replaces the current binary, and restarts. If verification fails at any step, the current binary is kept and an error is reported. |
+| **Priority** | Descoped (D-128) |
+| **Version** | Descoped from v1.0; v1.x candidate |
 | **Personas** | Alex (PKI Admin) |
 | **Acceptance Criteria** | Given a new agent version published with a valid signed manifest, when the agent checks for updates and a new version is available, then the agent downloads the binary, verifies hash and signature, replaces itself, and restarts within 5 minutes. Given a manifest with an invalid signature, when the agent processes it, then no update is applied and the current binary continues running. |
 | **Dependencies** | FR-060 |
@@ -1203,7 +1203,7 @@ Same schema as PostgreSQL via the repository pattern interface (C-Tech04). SQLit
 | FR-060 | Agent | `pki-agent` | `tests/agent/binary_size_test.go` |
 | FR-061 | Agent | `pki-agent` | `tests/agent/polling_test.go` |
 | FR-062 | Agent | `pki-agent` | `tests/agent/inotify_test.go` |
-| FR-063 | Agent | `pki-agent` | `tests/agent/autoupdate_test.go` |
+| FR-063 | Agent | `pki-agent` | `tests/agent/autoupdate_test.go` (descoped, D-128) |
 | FR-070 | Inventory | `pki-core` | `tests/inventory/dedup_test.go` |
 | FR-071 | Inventory | `pki-api` | `tests/inventory/filter_test.go` |
 | FR-072 | Inventory | `pki-core` | `tests/inventory/chain_validation_test.go` |

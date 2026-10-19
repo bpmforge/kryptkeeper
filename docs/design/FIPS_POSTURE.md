@@ -2,8 +2,12 @@
 
 Kryptkeeper's FIPS posture uses **Go's native FIPS 140-3 Cryptographic
 Module** — no BoringCrypto fork, no cgo, no third-party crypto vendor.
-The module is part of the Go toolchain (Go ≥ 1.24) and is what NIST's
-CMVP validates; stdlib `crypto/fips140` reports its state at run time.
+The module is part of the Go toolchain (Go ≥ 1.24); stdlib
+`crypto/fips140` reports its state at run time. Kryptkeeper is not itself a
+validated product, and the module's CMVP status is recorded per release in
+[`docs/release/CMVP_STATUS.md`](../release/CMVP_STATUS.md). Claim text:
+"Kryptkeeper uses the Go FIPS 140-3 module (CMVP status: X)."
+
 
 ## How to build and run each posture level
 
@@ -14,7 +18,7 @@ CMVP validates; stdlib `crypto/fips140` reports its state at run time.
 | FIPS enforced | as above | `GODEBUG=fips140=only` | Non-approved algorithm use fails at runtime rather than silently falling outside the boundary. |
 | + Root custody | any of the above | `KRYPTKEEPER_KEY_BACKEND=pkcs11` (or `cloudkms`) | NFR-011: root keys live in an HSM. **Enforced**: with FIPS mode on (or `KRYPTKEEPER_FIPS_ROOT_HSM=true`), the CA role refuses to boot on a software or Vault keystore. |
 
-## The validated boundary
+## The cryptographic boundary
 
 **Inside the boundary** (when FIPS mode is on):
 
@@ -22,7 +26,10 @@ CMVP validates; stdlib `crypto/fips140` reports its state at run time.
   signing/verification, RSA/ECDSA/Ed25519 operations, SHA-2, AES-GCM,
   Argon2's underlying primitives as exposed via the module — executes in
   the validated module.
-- ML-DSA (FIPS 204) signatures are FIPS-approved as an algorithm family.
+- ML-DSA (FIPS 204) is an approved algorithm standard but is implemented
+  by a third-party library (`github.com/cloudflare/circl`) **outside** the
+  pinned module (v1.0.0 has no `mldsa`). `GODEBUG=fips140=only` refuses it
+  (W23-31); `fips140=on` allows it, outside the boundary.
 - Key custody for CA/root keys: a PKCS#11 HSM (`pkcs11` backend) or a
   cloud KMS whose HSMs carry their own FIPS 140 validations
   (`cloudkms`: AWS KMS, GCP Cloud KMS, Azure Key Vault).
@@ -42,6 +49,24 @@ CMVP validates; stdlib `crypto/fips140` reports its state at run time.
 - The Argon2id passphrase KDF for software-keystore files is outside
   the module's approved-KDF list; in a FIPS-custody deployment root
   keys are not in that store at all.
+
+## Algorithm matrix
+
+Module = the pinned Go module `v1.0.0` (`GOFIPS140=v1.0.0`).
+
+| Algorithm | Inside Go module v1.0.0 | Behaviour under `fips140=on` | Under `fips140=only` |
+|---|---|---|---|
+| ECDSA P-256 / P-384 | inside | allowed | allowed |
+| RSA-2048 / RSA-4096 (PKCS#1 v1.5, PSS) | inside | allowed | allowed |
+| Ed25519 | inside (module has `ed25519`) | allowed | allowed |
+| ML-DSA-44 / 65 / 87 | outside (circl) | allowed | **refused**, error names this doc |
+| Hybrid ECDSA+ML-DSA | outside | refused (`CheckFIPSAlgorithm`) | refused |
+| Argon2id keystore KDF | outside | n.a. | n.a. |
+| Software-keystore AES-GCM | inside, but arbitrary-IV GCM is refused | allowed | **not usable** (measured in W23-31) |
+| Vault transit | not validated | not custody | not custody |
+
+Root keys must be HSM/KMS custody regardless (NFR-011), so the software
+keystore's incompatibility with `only` does not widen the claim.
 
 ## Enforcement points (not just claims)
 
@@ -64,5 +89,8 @@ CMVP validates; stdlib `crypto/fips140` reports its state at run time.
   requirements are covered by the same mechanisms (the module's lineage
   is documented in Go's security docs).
 - The module version pinned by `GOFIPS140` at build time is the version
-  whose CMVP certificate applies; record it in release notes for each
-  FIPS build (`keystore.FIPSPosture().ModuleVersion` prints it).
+  whose CMVP certificate applies. The certificate number and status are
+  recorded per release in
+  [`docs/release/CMVP_STATUS.md`](../release/CMVP_STATUS.md), together with
+  the claim text. `keystore.FIPSPosture().ModuleVersion` and
+  `GET /api/v1/meta` (`.fips`) print the version a running process uses.

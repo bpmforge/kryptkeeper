@@ -6,9 +6,8 @@ package main
 
 import (
 	"database/sql"
-	"log"
-
 	"kryptkeeper/internal/bootstrap"
+	"kryptkeeper/internal/logging"
 )
 
 // newDeliveryPluginManager builds the process's one delivery plugin manager
@@ -25,18 +24,18 @@ func newDeliveryPluginManager(coreDB *sql.DB, isPostgres bool) *bootstrap.Delive
 	if bootstrap.DeliveryPluginsEnabledFromEnv() {
 		var err error
 		if trust, err = bootstrap.PluginTrustFromEnv(); err != nil {
-			log.Fatalf("delivery plugins: %v", err)
+			logging.Fatalf("delivery plugins: %v", err)
 		}
 	}
 	mgr := bootstrap.NewDeliveryPluginManager(coreDB, isPostgres, bootstrap.NewPendingActionStoreFromEnv(), trust)
 	switch {
 	case mgr != nil:
 		fp, verified := trust.Counts()
-		log.Printf("delivery plugins: on (/api/v1/delivery-plugins; High/Critical capabilities need a second approver; signing keys: %d first-party, %d trusted)", fp, verified)
+		logging.Infof("delivery plugins: on (/api/v1/delivery-plugins; High/Critical capabilities need a second approver; signing keys: %d first-party, %d trusted)", fp, verified)
 	case !bootstrap.DeliveryPluginsEnabledFromEnv():
-		log.Print("delivery plugins: off (KRYPTKEEPER_DELIVERY_PLUGINS=off)")
+		logging.Info("delivery plugins: off (KRYPTKEEPER_DELIVERY_PLUGINS=off)")
 	default:
-		log.Print("delivery plugins: off (no hub database)")
+		logging.Info("delivery plugins: off (no hub database)")
 	}
 	return mgr
 }

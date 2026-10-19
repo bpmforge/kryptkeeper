@@ -1,0 +1,342 @@
+{
+  "env": {
+    "a_ready_at_end": "true",
+    "b_ready_at_end": "true",
+    "commit": "53fc414e",
+    "cores": "16",
+    "cpu": "Apple M4 Max",
+    "go": "go1.27.1",
+    "hub_version": "kryptkeeper",
+    "image_id": "213f95a04cfaf31ae85d34ba7aad05ed148eb12d86889a5883278decfb755e16",
+    "os": "27.0.1",
+    "podman": "podman version 6.1.3",
+    "podman_machine": "podman-machine-default* cpus=12 mem=32GiB disk=100GiB",
+    "poll_minutes": "1",
+    "postgres": "PostgreSQL 16.15 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+    "ram_gb": "64",
+    "revocation_sync_interval": "2s",
+    "running_containers_on_host": "16",
+    "uname": "Darwin Christine-M4MAX.local 27.0.0 Darwin Kernel Version 27.0.0: Tue Aug 11 21:05:48 PDT 2026; root:xnu-13432.1.9~1/RELEASE_ARM64_T6041 arm64",
+    "utc_end": "2026-10-16T02:37:08Z",
+    "utc_start": "2026-10-16T02:06:08Z"
+  },
+  "plan": {
+    "mode": "full",
+    "issuance_target": 10000
+  },
+  "events": [
+    {
+      "elapsed_s": 1.1,
+      "utc": "2026-10-16T02:06:09Z",
+      "name": "soak_start",
+      "detail": "mode=full target=10000 tick=180ms"
+    },
+    {
+      "elapsed_s": 302,
+      "utc": "2026-10-16T02:11:10Z",
+      "name": "revocation_visible_on_B",
+      "detail": "probe 1 latency 2.01s attempts 1"
+    },
+    {
+      "elapsed_s": 480,
+      "utc": "2026-10-16T02:14:08Z",
+      "name": "kill_replica_A",
+      "detail": "podman kill -s KILL kkha_kk-a_1 (took 115ms)"
+    },
+    {
+      "elapsed_s": 540,
+      "utc": "2026-10-16T02:15:08Z",
+      "name": "restart_replica_A",
+      "detail": "podman start kkha_kk-a_1 (took 183ms)"
+    },
+    {
+      "elapsed_s": 602,
+      "utc": "2026-10-16T02:16:10Z",
+      "name": "revocation_visible_on_B",
+      "detail": "probe 2 latency 2.01s attempts 1"
+    },
+    {
+      "elapsed_s": 900,
+      "utc": "2026-10-16T02:21:08Z",
+      "name": "postgres_restart_abrupt",
+      "detail": "podman restart -t 0 kkha_postgres_1 (took 1.269s)"
+    },
+    {
+      "elapsed_s": 902.2,
+      "utc": "2026-10-16T02:21:10Z",
+      "name": "revocation_visible_on_B",
+      "detail": "probe 3 latency 2.11s attempts 1"
+    },
+    {
+      "elapsed_s": 1202,
+      "utc": "2026-10-16T02:26:10Z",
+      "name": "revocation_visible_on_B",
+      "detail": "probe 4 latency 2.01s attempts 1"
+    },
+    {
+      "elapsed_s": 1320,
+      "utc": "2026-10-16T02:28:08Z",
+      "name": "partition_begin_B",
+      "detail": "podman network disconnect kkha_db kkha_kk-b_1 (took 40.642s)"
+    },
+    {
+      "elapsed_s": 1410,
+      "utc": "2026-10-16T02:29:38Z",
+      "name": "partition_end_B",
+      "detail": "podman network connect kkha_db kkha_kk-b_1 (took 12.636s)"
+    },
+    {
+      "elapsed_s": 1502,
+      "utc": "2026-10-16T02:31:10Z",
+      "name": "revocation_visible_on_B",
+      "detail": "probe 5 latency 2.01s attempts 1"
+    },
+    {
+      "elapsed_s": 1802,
+      "utc": "2026-10-16T02:36:10Z",
+      "name": "revocation_visible_on_B",
+      "detail": "probe 6 latency 2.01s attempts 1"
+    },
+    {
+      "elapsed_s": 1859.5,
+      "utc": "2026-10-16T02:37:08Z",
+      "name": "issuance_target_reached",
+      "detail": "successes=10000"
+    },
+    {
+      "elapsed_s": 1859.5,
+      "utc": "2026-10-16T02:37:08Z",
+      "name": "soak_end_of_schedule",
+      "detail": "successes=10001"
+    }
+  ],
+  "duration_s": 1859.5,
+  "issuance": {
+    "target": 10000,
+    "successes": 10001,
+    "failures_by_class": {
+      "5xx": 6,
+      "connection": 2,
+      "timeout": 1
+    },
+    "ticks_skipped_no_ready_replica": 5,
+    "ticks_dropped_workers_busy": 308,
+    "certificates_rows_for_ca": 10057,
+    "rows_beyond_successes_and_primed": 6,
+    "partial_rows_raw_cert_b64_null": 0,
+    "duplicate_serial_groups": 0,
+    "success_latency_ms": {
+      "max": 8633.2,
+      "p50": 5,
+      "p95": 151.8,
+      "p99": 2425.3
+    },
+    "failures_per_minute": {
+      "m08": 2,
+      "m15": 2,
+      "m22": 4,
+      "m23": 1
+    },
+    "error_kinds": {
+      "A HTTP 0 dial tcp N.N.N.N:N: connect: connection refused": 2,
+      "A HTTP 503 ": 1,
+      "B HTTP 0 context deadline exceeded (Client.Timeout exceeded while awaiting headers)": 1,
+      "B HTTP 503 ": 5
+    }
+  },
+  "availability_balancer_primed_combined": {
+    "ok": 7426,
+    "total": 7432,
+    "percent": 99.919,
+    "failure_windows": [
+      "t+480s..t+481s (2)",
+      "t+901s..t+902s (2)",
+      "t+901s..t+902s (2)"
+    ]
+  },
+  "availability_balancer_crl": {
+    "ok": 3712,
+    "total": 3716,
+    "percent": 99.892,
+    "failure_windows": [
+      "t+480s..t+481s (2)",
+      "t+901s..t+902s (2)"
+    ]
+  },
+  "availability_balancer_ocsp_primed": {
+    "ok": 3714,
+    "total": 3716,
+    "percent": 99.946,
+    "failure_windows": [
+      "t+901s..t+902s (2)"
+    ]
+  },
+  "availability_direct_primed_combined": {
+    "ok": 7432,
+    "total": 7432,
+    "percent": 100
+  },
+  "availability_balancer_ocsp_unprimed": {
+    "ok": 1852,
+    "total": 1856,
+    "percent": 99.784,
+    "failure_windows": [
+      "t+79s..t+79s (1)",
+      "t+480s..t+480s (1)",
+      "t+901s..t+901s (1)",
+      "t+1364s..t+1364s (1)"
+    ]
+  },
+  "revocation_visibility": {
+    "probes": [
+      {
+        "planned_at_s": 300,
+        "revoke_attempts": 1,
+        "latency_s": 2.01,
+        "visible_on_b": true
+      },
+      {
+        "planned_at_s": 600,
+        "revoke_attempts": 1,
+        "latency_s": 2.01,
+        "visible_on_b": true
+      },
+      {
+        "planned_at_s": 900,
+        "revoke_attempts": 1,
+        "latency_s": 2.11,
+        "visible_on_b": true
+      },
+      {
+        "planned_at_s": 1200,
+        "revoke_attempts": 1,
+        "latency_s": 2.01,
+        "visible_on_b": true
+      },
+      {
+        "planned_at_s": 1500,
+        "revoke_attempts": 1,
+        "latency_s": 2.01,
+        "visible_on_b": true
+      },
+      {
+        "planned_at_s": 1800,
+        "revoke_attempts": 1,
+        "latency_s": 2.01,
+        "visible_on_b": true
+      }
+    ],
+    "max_s": 2.11,
+    "p50_s": 2.01
+  },
+  "renewal_rows_examined": 0,
+  "alert_rows_examined": 0,
+  "readyz_changes": [
+    {
+      "elapsed_s": 1.6,
+      "replica": "A",
+      "code": 200
+    },
+    {
+      "elapsed_s": 1.6,
+      "replica": "B",
+      "code": 200
+    },
+    {
+      "elapsed_s": 480.1,
+      "replica": "A",
+      "code": 0
+    },
+    {
+      "elapsed_s": 540.7,
+      "replica": "A",
+      "code": 200
+    },
+    {
+      "elapsed_s": 900.7,
+      "replica": "B",
+      "code": 503
+    },
+    {
+      "elapsed_s": 901.2,
+      "replica": "A",
+      "code": 503
+    },
+    {
+      "elapsed_s": 902,
+      "replica": "B",
+      "code": 200
+    },
+    {
+      "elapsed_s": 902.2,
+      "replica": "A",
+      "code": 200
+    },
+    {
+      "elapsed_s": 1362.2,
+      "replica": "B",
+      "code": 503
+    },
+    {
+      "elapsed_s": 1364.2,
+      "replica": "B",
+      "code": 0
+    },
+    {
+      "elapsed_s": 1364.2,
+      "replica": "B",
+      "code": 503
+    },
+    {
+      "elapsed_s": 1422.7,
+      "replica": "B",
+      "code": 200
+    }
+  ],
+  "loadavg": {
+    "start": "{ 29.48 40.34 52.23 }",
+    "end": "{ 21.42 31.85 36.69 }",
+    "peak_1min": 70.4,
+    "samples_every_60s": [
+      "22.65 36.34 49.92",
+      "27.62 35.35 48.63",
+      "28.31 33.92 47.17",
+      "21.60 30.73 45.06",
+      "28.00 31.09 44.23",
+      "31.24 31.60 43.53",
+      "32.27 31.68 42.74",
+      "33.12 32.24 42.21",
+      "25.87 30.63 40.94",
+      "22.31 28.76 39.54",
+      "28.39 29.25 38.98",
+      "32.44 30.70 38.89",
+      "25.04 29.22 37.79",
+      "34.12 31.16 37.94",
+      "63.52 39.88 40.72",
+      "70.40 46.30 43.07",
+      "55.04 45.94 43.13",
+      "39.54 43.22 42.30",
+      "26.99 38.90 40.75",
+      "30.02 37.53 40.10",
+      "28.14 35.53 39.17",
+      "35.91 36.22 39.17",
+      "37.74 36.91 39.23",
+      "51.00 40.13 40.23",
+      "46.48 41.37 40.72",
+      "40.50 39.94 40.19",
+      "36.15 38.92 39.80",
+      "42.16 39.67 39.99",
+      "26.67 35.84 38.54",
+      "29.08 35.37 38.21"
+    ]
+  },
+  "pass": {
+    "availability_primed_ge_99_9": true,
+    "both_ready_at_end": true,
+    "issuance_target_reached": true,
+    "partition_b_readyz_503": true,
+    "revocation_visible_lt_60s": true,
+    "zero_duplicate_serials": true,
+    "zero_partial_rows": true
+  }
+}

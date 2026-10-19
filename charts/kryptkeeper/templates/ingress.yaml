@@ -1,16 +1,18 @@
 {{- if .Values.ingress.enabled -}}
 {{- $fullName := include "kryptkeeper.fullname" . -}}
 {{- $svcPort := .Values.service.port -}}
+{{- $dashName := include "kryptkeeper.dashboardFullname" . -}}
+{{- $dash := .Values.dashboard -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ $fullName }}
   labels:
     {{- include "kryptkeeper.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
+  {{- /* W30-19: SSE-safe defaults (GET /api/v1/events); user annotations win. */}}
+  {{- $ann := merge (dict) (.Values.ingress.annotations | default dict) (dict "nginx.ingress.kubernetes.io/proxy-buffering" "off" "nginx.ingress.kubernetes.io/proxy-read-timeout" "3600" "nginx.ingress.kubernetes.io/proxy-send-timeout" "3600") }}
   annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- toYaml $ann | nindent 4 }}
 spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
@@ -25,13 +27,26 @@ spec:
       http:
         paths:
           {{- range .paths }}
+          {{- $backend := default "api" .backend }}
+          {{- if not (has $backend (list "api" "dashboard")) }}
+          {{- fail (printf "ingress path %s: backend must be api or dashboard, got %s" .path $backend) }}
+          {{- end }}
+          {{- if and (eq $backend "dashboard") (not $dash.enabled) }}
+          {{- fail (printf "ingress path %s routes to the dashboard but dashboard.enabled=false" .path) }}
+          {{- end }}
           - path: {{ .path }}
             pathType: {{ .pathType }}
             backend:
               service:
+                {{- if eq $backend "dashboard" }}
+                name: {{ $dashName }}
+                port:
+                  number: {{ $dash.service.port }}
+                {{- else }}
                 name: {{ $fullName }}
                 port:
                   number: {{ $svcPort }}
+                {{- end }}
           {{- end }}
     {{- end }}
 {{- end }}

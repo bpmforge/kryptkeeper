@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -100,6 +101,8 @@ type managedOIDCJWKSCache struct {
 }
 
 type Authenticator struct {
+	// required: stores /readyz must see up (D-290-A); see required_store.go.
+	required         requiredStores
 	config           authValidatorConfig
 	oidcJWKSCache    *managedOIDCJWKSCache
 	discoveryEnabled bool
@@ -157,6 +160,8 @@ type Authenticator struct {
 	// ssoConfigNow is time.Now by default; tests override it to advance the
 	// TTL window without a real sleep.
 	ssoConfigNow func() time.Time
+	// liveCfg is the TTL-cached SAML/SCIM overlay (W33-04); see auth_config.go.
+	liveCfg liveAuthConfig
 }
 
 // ssoBearerConfig is the TTL-cached, store-resolved snapshot of the three
@@ -275,7 +280,8 @@ func (a *Authenticator) AuthenticatePrincipalDetails(r *http.Request, now time.T
 	// run them without a user DB keep working. A *confirmed* deprovisioned
 	// match still denies every class that is looked up.
 	if a.userProvider != nil && !principalSkipsUserStore(pd) {
-		deprovisioned, derr := principalIsDeprovisioned(r.Context(), a.userProvider, pd.ID)
+		rec, found, derr := lookupPrincipalUser(r.Context(), a.userProvider, pd.ID)
+		deprovisioned := found && isDeprovisionedStatus(rec.Status)
 		if derr != nil {
 			if a.principalUsesUserStore(pd) {
 				a.reportUserStoreError(r, pd.ID, derr)
@@ -283,9 +289,17 @@ func (a *Authenticator) AuthenticatePrincipalDetails(r *http.Request, now time.T
 			}
 		} else if deprovisioned {
 			return AuthPrincipal{}, fmt.Errorf("unauthorized")
+		} else if found && rec.Tenant != "" && a.principalUsesUserStore(pd) {
+			// L-18: a login session takes its tenant from the account, not
+			// from anything the client presents.
+			pd.Tenant = rec.Tenant
 		}
 	}
-	return resolvePrincipalTenancy(pd, r)
+	resolved, rerr := resolvePrincipalTenancy(pd, r)
+	if rerr == nil {
+		recordAuditTenant(r, resolved.Tenant)
+	}
+	return resolved, rerr
 }
 
 // errTenantMismatch is returned when a tenant-scoped principal's X-Tenant
@@ -349,11 +363,67 @@ func (a *Authenticator) DiscoveryEnabled() bool {
 	return a.discoveryEnabled
 }
 
+// errCrossSiteCookie is returned when the session cookie arrives on a
+// state-changing request that a browser marked (or whose Origin shows) as not
+// same-origin. Callers see it as an authentication failure.
+var errCrossSiteCookie = fmt.Errorf("cross-site cookie request refused")
+
+// crossSiteCookieRequest is the F9 defence in depth behind the cookie's
+// SameSite=Strict: a request that authenticates with the kk_token cookie (no
+// Authorization header) and uses an unsafe method must be same-origin.
+// SameSite alone does not cover a same-site foreign origin (a sibling
+// subdomain with XSS or a takeover), which still sends the cookie.
+//
+// Sec-Fetch-Site, set by the browser and not forgeable from page script, is
+// authoritative when present: same-origin and none (user-initiated) pass,
+// same-site and cross-site fail. Without it (older browsers) the Origin header
+// must match the request host, or the X-Forwarded-Host of a fronting proxy.
+// A request with neither header is not a browser fetch (curl, a script, a
+// server-to-server client), and CSRF needs a browser to attach the cookie, so
+// it is allowed rather than breaking cookie-bearing CLI use.
+func crossSiteCookieRequest(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return false
+	}
+	if _, err := parseBearerToken(r.Header.Get("Authorization")); err == nil {
+		return false // header auth is not ambient; the browser never adds it
+	}
+	if c, err := r.Cookie("kk_token"); err != nil || c.Value == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))) {
+	case "same-origin", "none":
+		return false
+	case "":
+	default:
+		return true
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return true // "null" and malformed origins are never ours
+	}
+	if strings.EqualFold(u.Host, r.Host) {
+		return false
+	}
+	if fwd := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); fwd != "" && strings.EqualFold(u.Host, fwd) {
+		return false
+	}
+	return true
+}
+
 func authenticatePrincipal(r *http.Request, cfg authValidatorConfig, oidcJWKSCache *managedOIDCJWKSCache, now time.Time) (AuthPrincipal, error) {
 	token, err := parseBearerToken(r.Header.Get("Authorization"))
 	if err != nil {
 		// Fall back to httpOnly session cookie set by the login endpoint.
 		if cookie, cookieErr := r.Cookie("kk_token"); cookieErr == nil && cookie.Value != "" {
+			if crossSiteCookieRequest(r) {
+				return AuthPrincipal{}, errCrossSiteCookie
+			}
 			token = cookie.Value
 		} else {
 			return AuthPrincipal{}, fmt.Errorf("unauthorized")
@@ -380,8 +450,15 @@ func authenticatePrincipal(r *http.Request, cfg authValidatorConfig, oidcJWKSCac
 		if err != nil {
 			return AuthPrincipal{}, err
 		}
-		return cfg.bearerPrincipal(token, sub, tenant, AuthTypeJWT), nil
+		return cfg.bearerPrincipal(token, sub, tenant, AuthTypeJWT)
 	case "oidc":
+		// W33-06: with the local password login enabled, a local login-session
+		// JWT (break-glass) must still authenticate when the IdP side is
+		// broken, or a bad SSO override could never be reset. Only a token
+		// signed with the login secret passes; nothing else is relaxed.
+		if p, ok := localSessionPrincipal(token, cfg); ok {
+			return p, nil
+		}
 		// Fail closed at request time too: the DB overrides for issuer and
 		// audience can be cleared after startup validation passed, and an
 		// unset audience would accept any token the IdP ever signed (A02-4).
@@ -393,14 +470,14 @@ func authenticatePrincipal(r *http.Request, cfg authValidatorConfig, oidcJWKSCac
 			if err != nil {
 				return AuthPrincipal{}, err
 			}
-			return cfg.bearerPrincipal(token, sub, tenant, AuthTypeOIDC), nil
+			return cfg.bearerPrincipal(token, sub, tenant, AuthTypeOIDC)
 		}
 		if oidcJWKSCache != nil {
 			sub, tenant, err := validateOIDCRS256JWTManaged(r.Context(), token, oidcJWKSCache, cfg.oidcIssuer, cfg.oidcAudience, cfg.tenantClaim, now)
 			if err != nil {
 				return AuthPrincipal{}, err
 			}
-			return cfg.bearerPrincipal(token, sub, tenant, AuthTypeOIDC), nil
+			return cfg.bearerPrincipal(token, sub, tenant, AuthTypeOIDC)
 		}
 		return AuthPrincipal{}, fmt.Errorf("unauthorized")
 	case "bootstrap":
@@ -451,4 +528,24 @@ func (a *Authenticator) apiKeysSnapshot() map[string]apiKeyRecord {
 		copied[kid] = recordCopy
 	}
 	return copied
+}
+
+// localSessionPrincipal validates a local-login session JWT in oidc mode.
+func localSessionPrincipal(token string, cfg authValidatorConfig) (AuthPrincipal, bool) {
+	if !cfg.loginEnabled || strings.TrimSpace(cfg.loginSigning) == "" {
+		return AuthPrincipal{}, false
+	}
+	sub, _, err := validateHS256JWT(token, cfg.loginSigning, cfg.jwtIssuer, cfg.jwtAudience, "", time.Now())
+	if err != nil {
+		return AuthPrincipal{}, false
+	}
+	role := strings.TrimSpace(jwtRoleClaim(token))
+	if role == "" {
+		return AuthPrincipal{}, false
+	}
+	scopes := []string{}
+	if isAdminRole(role) {
+		scopes = []string{"*"}
+	}
+	return AuthPrincipal{ID: sub, Role: role, Scopes: scopes, AuthType: AuthTypeLocal}, true
 }

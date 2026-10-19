@@ -67,6 +67,21 @@ func normalizeDNSIdentifier(v string) (value, base string, wildcard bool, err er
 	return value, base, wildcard, nil
 }
 
+// validateAllowEntry checks one provisioner allow-list entry: lowercase, with
+// an optional "*." prefix, the remainder a certifiable DNS name.
+func validateAllowEntry(e string) (string, error) {
+	if e != strings.ToLower(strings.TrimSpace(e)) {
+		return "", errors.New("must be lowercase with no surrounding space")
+	}
+	rest := strings.TrimPrefix(e, "*.")
+	if _, _, wild, err := normalizeDNSIdentifier(rest); err != nil {
+		return "", err
+	} else if wild {
+		return "", errors.New("only one leading *. is allowed")
+	}
+	return e, nil
+}
+
 // errBadCSR is the finalize-time CSR rejection; its text is returned to the
 // client as the badCSR problem detail.
 type errBadCSR string

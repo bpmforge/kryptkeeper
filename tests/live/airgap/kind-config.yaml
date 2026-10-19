@@ -1,0 +1,10 @@
+# One node; containerd reads per-registry mirrors from /etc/containerd/certs.d
+# (run.sh writes the localhost:5001 hosts.toml after the cluster is up).
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"
+nodes:
+  - role: control-plane

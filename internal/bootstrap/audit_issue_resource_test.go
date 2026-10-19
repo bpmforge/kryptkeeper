@@ -31,6 +31,10 @@ func (s *createApprovalStore) Create(_ context.Context, a ApprovalRequest) error
 	return nil
 }
 
+func (s *createApprovalStore) List(context.Context, string, int, int) ([]ApprovalRequest, int, error) {
+	return nil, 0, nil
+}
+
 func issueAndCollect(t *testing.T, p issueStubProvider, store ApprovalStore) (int, []AuditEntry) {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -44,7 +48,7 @@ func issueAndCollect(t *testing.T, p issueStubProvider, store ApprovalStore) (in
 // A successful issue names the issued certificate by fingerprint, never the
 // collection.
 func TestIssueAuditReferencesIssuedFingerprint(t *testing.T) {
-	code, rows := issueAndCollect(t, issueStubProvider{result: CertificateIssueResult{CertificateItem{FingerprintSHA256: "fp-new", CommonName: "n.example.com"}}}, nil)
+	code, rows := issueAndCollect(t, issueStubProvider{result: CertificateIssueResult{CertificateItem: CertificateItem{FingerprintSHA256: "fp-new", CommonName: "n.example.com"}}}, nil)
 	if code != http.StatusCreated {
 		t.Fatalf("status %d", code)
 	}

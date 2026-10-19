@@ -100,7 +100,7 @@ func TestNonDeliveringProvidersAreNotMarkedSent(t *testing.T) {
 				!strings.Contains(skipped[0].ChangeSummary, "notification provider "+name+" does not deliver") {
 				t.Fatalf("want one skipped audit naming rule and provider, got %+v", skipped)
 			}
-			if _, ok, _ := cooldown.LastAlertedAt(ctx, "fp-a#rule:"+rule.ID); ok {
+			if _, ok, _ := cooldown.LastAlertedAt(ctx, crossingKey("fp-a", rule.ID)); ok {
 				t.Fatal("cooldown written for an alert that was never sent")
 			}
 			if s.status.LastNotifications != 0 {
@@ -167,7 +167,7 @@ func TestTestDeliveryEndpointReportsNotDispatched(t *testing.T) {
 	t.Setenv("AUTH_MODE", "bootstrap")
 	t.Setenv("APP_BOOTSTRAP_TOKEN", "test-token")
 	mux := http.NewServeMux()
-	registerNotificationHandlers(mux, NewAuthenticatorFromEnv(), newFileNotificationProvider(), stubAuditProvider{})
+	registerNotificationHandlers(mux, NewAuthenticatorFromEnv(), newFileNotificationProvider(), stubAuditProvider{}, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/test-delivery",
 		strings.NewReader(`{"channel":"email","target":"a@example.com","message":"hi"}`))
 	req.Header.Set("Authorization", "Bearer test-token")
@@ -209,8 +209,8 @@ func TestWarnIfRulesCannotDeliver(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.warnIfRulesCannotDeliver(ctx)
-	if out := buf.String(); !strings.Contains(out, "WARNING") || !strings.Contains(out, `"file"`) {
-		t.Fatalf("want WARNING naming provider, got %q", out)
+	if out := buf.String(); !strings.Contains(out, "WARN") || !strings.Contains(out, `"file"`) {
+		t.Fatalf("want WARN-level line naming provider, got %q", out)
 	}
 
 	buf.Reset()

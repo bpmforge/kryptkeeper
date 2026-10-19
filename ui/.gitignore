@@ -23,3 +23,7 @@ dist-ssr
 *.sln
 *.sw?
 .playwright-cli/
+
+# Playwright (W33-01)
+test-results/
+playwright-report/

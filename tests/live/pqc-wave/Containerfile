@@ -1,0 +1,17 @@
+# W31-11: TLS endpoint for the live PQC wave harness: sshd (install transport) + nginx,
+# both on the base image's OpenSSL (>= 3.5, so s_client/x509 here understand ML-DSA).
+# Base is alpine:3.22; the fallback if it ever stops shipping OpenSSL >= 3.5 is ubuntu:25.10.
+FROM docker.io/library/alpine:3.22
+RUN apk add --no-cache nginx openssh openssl \
+    && mkdir -p /etc/ssl/kk /run/nginx /root/.ssh \
+    && chmod 700 /root/.ssh \
+    && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 \
+         -keyout /etc/ssl/kk/server.key -out /etc/ssl/kk/server.crt -subj "/CN=placeholder.kk-uat.local" \
+    && chmod 644 /etc/ssl/kk/server.crt && chmod 600 /etc/ssl/kk/server.key \
+    && sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' \
+              -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+COPY nginx-kk.conf /etc/nginx/http.d/default.conf
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+EXPOSE 22 443
+ENTRYPOINT ["/entrypoint.sh"]

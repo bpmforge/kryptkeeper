@@ -20,10 +20,7 @@ import (
 // response protection by default.
 
 // pkiStatusInfo per RFC 4210 §5.1.1. failInfo is a PKIFailureInfo BIT
-// STRING; badMessageCheck is bit 0, so its DER encoding as a single-byte
-// bitstring is 0x80 with 7 unused trailing bits — encoded directly rather
-// than via a named-bits helper since this server only ever emits that one
-// failure reason.
+// STRING; see failInfoBits for the encoding.
 type pkiStatusInfo struct {
 	Status       int
 	StatusString []asn1.RawValue `asn1:"optional"` // PKIFreeText ::= SEQUENCE OF UTF8String
@@ -42,55 +39,91 @@ func utf8FreeText(s string) []asn1.RawValue {
 	}}
 }
 
-var failInfoBadMessageCheck = asn1.BitString{Bytes: []byte{0x80}, BitLength: 1}
+// PKIFailureInfo bit positions, RFC 4210 §5.2.3.
+const (
+	failBadAlg          = 0
+	failBadMessageCheck = 1
+	failBadRequest      = 2
+	failBadCertID       = 4
+	failBadPOP          = 9
+	failCertRevoked     = 10
+	failNotAuthorized   = 23
+	failSystemFailure   = 25
+)
 
-// certOrEncCert wraps the issued certificate as a [0] CONTEXT tag.
-type certOrEncCert struct {
-	Bytes []byte
+// failInfoBits encodes the single named bit failBit as a PKIFailureInfo BIT
+// STRING: length failBit+1, the bit at position failBit%8 of byte failBit/8
+// (bit 0 is the most significant bit of the first byte).
+func failInfoBits(failBit int) asn1.BitString {
+	b := make([]byte, failBit/8+1)
+	b[failBit/8] = 0x80 >> (failBit % 8)
+	return asn1.BitString{Bytes: b, BitLength: failBit + 1}
 }
 
 // buildCertResponse constructs a DER-encoded CMP PKIMessage containing the
 // issued certificate, protected with the shared secret. bodyTag must be
 // PKIBodyIP, PKIBodyCP or PKIBodyKUP.
-func buildCertResponse(cert *x509.Certificate, bodyTag int, reqHdr parsedHeader, secret, reference []byte) ([]byte, error) {
-	body, err := marshalCertRepBody(cert, bodyTag)
+func buildCertResponse(cert *x509.Certificate, certReqID, bodyTag int, reqHdr parsedHeader, secret, reference []byte) ([]byte, error) {
+	body, err := marshalCertRepBody(cert, certReqID, bodyTag)
 	if err != nil {
 		return nil, err
 	}
 	return buildProtectedMessage(body, reqHdr, secret, reference)
 }
 
-func marshalCertRepBody(cert *x509.Certificate, bodyTag int) ([]byte, error) {
+// pkiStatusWaiting is PKIStatus "waiting" (RFC 4210 §5.2.3): the request was
+// accepted but the certificate is not ready; the client polls with pollReq.
+const pkiStatusWaiting = 3
+
+// buildWaitingResponse answers an ir/cr/kur whose issuance is deferred: a
+// CertResponse with status waiting and no certifiedKeyPair.
+func buildWaitingResponse(certReqID, bodyTag int, reqHdr parsedHeader, secret, reference []byte) ([]byte, error) {
+	body, err := marshalCertRepBody(nil, certReqID, bodyTag)
+	if err != nil {
+		return nil, err
+	}
+	return buildProtectedMessage(body, reqHdr, secret, reference)
+}
+
+// marshalCertRepBody encodes a CertRepMessage body. A nil cert yields status
+// waiting with no certifiedKeyPair.
+func marshalCertRepBody(cert *x509.Certificate, certReqID, bodyTag int) ([]byte, error) {
 	// CMPCertificate = [0] EXPLICIT Certificate (the raw DER)
-	certTagged, err := asn1.Marshal(asn1.RawValue{
-		Class:      asn1.ClassContextSpecific,
-		Tag:        0,
-		IsCompound: true,
-		Bytes:      cert.Raw,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("cmp: marshal CMPCertificate: %w", err)
+	var ckp []byte
+	status := pkiStatusInfo{Status: 0} // accepted
+	if cert != nil {
+		certTagged, err := asn1.Marshal(asn1.RawValue{
+			Class:      asn1.ClassContextSpecific,
+			Tag:        0,
+			IsCompound: true,
+			Bytes:      cert.Raw,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("cmp: marshal CMPCertificate: %w", err)
+		}
+
+		// CertifiedKeyPair ::= SEQUENCE { certOrEncCert CertOrEncCert, ... }
+		ckp, err = asn1.Marshal(asn1.RawValue{
+			Class:      asn1.ClassUniversal,
+			Tag:        asn1.TagSequence,
+			IsCompound: true,
+			Bytes:      certTagged,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("cmp: marshal CertifiedKeyPair: %w", err)
+		}
+	} else {
+		status = pkiStatusInfo{Status: pkiStatusWaiting}
 	}
 
-	// CertifiedKeyPair ::= SEQUENCE { certOrEncCert CertOrEncCert, ... }
-	ckp, err := asn1.Marshal(asn1.RawValue{
-		Class:      asn1.ClassUniversal,
-		Tag:        asn1.TagSequence,
-		IsCompound: true,
-		Bytes:      certTagged,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("cmp: marshal CertifiedKeyPair: %w", err)
-	}
-
-	// PKIStatusInfo ::= SEQUENCE { status INTEGER(0) }  — accepted
-	statusBytes, err := asn1.Marshal(pkiStatusInfo{Status: 0})
+	// PKIStatusInfo ::= SEQUENCE { status INTEGER }
+	statusBytes, err := asn1.Marshal(status)
 	if err != nil {
 		return nil, fmt.Errorf("cmp: marshal PKIStatusInfo: %w", err)
 	}
 
-	// certReqId INTEGER — always 0 for single-cert response
-	reqIDBytes, err := asn1.Marshal(big.NewInt(0))
+	// certReqId INTEGER echoes the request's.
+	reqIDBytes, err := asn1.Marshal(big.NewInt(int64(certReqID)))
 	if err != nil {
 		return nil, fmt.Errorf("cmp: marshal certReqId: %w", err)
 	}
@@ -160,16 +193,13 @@ func buildPKIConf(reqHdr parsedHeader, secret, reference []byte) ([]byte, error)
 	return buildProtectedMessage(body, reqHdr, secret, reference)
 }
 
-// buildErrorResponse constructs a rejection (body type 23, ErrorMsgContent)
-// with PKIStatusInfo{status: rejection, failInfo: badMessageCheck},
-// protected with the shared secret — RFC 4210 §5.1.3's requirement that
-// protection failures are reported, not silently dropped, and that the
-// rejection is itself authenticated so a MITM cannot forge it either.
-func buildErrorResponse(reqHdr parsedHeader, statusText string, secret, reference []byte) ([]byte, error) {
+// buildErrorResponseFail constructs a rejection (body type 23, ErrorMsgContent)
+// carrying an explicit PKIFailureInfo bit (the fail* constants above).
+func buildErrorResponseFail(reqHdr parsedHeader, statusText string, failBit int, secret, reference []byte) ([]byte, error) {
 	status := pkiStatusInfo{
 		Status:       2, // rejection
 		StatusString: utf8FreeText(statusText),
-		FailInfo:     failInfoBadMessageCheck,
+		FailInfo:     failInfoBits(failBit),
 	}
 	statusBytes, err := asn1.Marshal(status)
 	if err != nil {
@@ -338,4 +368,58 @@ func generalNameEmptyDirectoryName() ([]byte, error) {
 		IsCompound: true,
 		Bytes:      emptySeq,
 	})
+}
+
+// wrapBody wraps an already-encoded content TLV as the PKIBody alternative
+// [tag] (EXPLICIT, like every PKIBody choice in RFC 4210's module).
+func wrapBody(tag int, content []byte) ([]byte, error) {
+	return asn1.Marshal(asn1.RawValue{
+		Class:      asn1.ClassContextSpecific,
+		Tag:        tag,
+		IsCompound: true,
+		Bytes:      content,
+	})
+}
+
+// buildRevResponse constructs an rp (body type 12): RevRepContent ::=
+// SEQUENCE { status SEQUENCE OF PKIStatusInfo } with one granted (0) status.
+func buildRevResponse(reqHdr parsedHeader, secret, reference []byte) ([]byte, error) {
+	statusBytes, err := asn1.Marshal(pkiStatusInfo{Status: 0})
+	if err != nil {
+		return nil, fmt.Errorf("cmp: marshal PKIStatusInfo: %w", err)
+	}
+	statuses, err := asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: statusBytes})
+	if err != nil {
+		return nil, fmt.Errorf("cmp: marshal status list: %w", err)
+	}
+	content, err := asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: statuses})
+	if err != nil {
+		return nil, fmt.Errorf("cmp: marshal RevRepContent: %w", err)
+	}
+	body, err := wrapBody(PKIBodyRP, content)
+	if err != nil {
+		return nil, fmt.Errorf("cmp: marshal PKIBody(rp): %w", err)
+	}
+	return buildProtectedMessage(body, reqHdr, secret, reference)
+}
+
+// buildPollRep constructs a pollRep (body type 26): PollRepContent ::=
+// SEQUENCE OF SEQUENCE { certReqId INTEGER, checkAfter INTEGER, ... }.
+func buildPollRep(certReqID, checkAfter int, reqHdr parsedHeader, secret, reference []byte) ([]byte, error) {
+	entry, err := asn1.Marshal(struct {
+		CertReqID  int
+		CheckAfter int
+	}{certReqID, checkAfter})
+	if err != nil {
+		return nil, fmt.Errorf("cmp: marshal PollRep entry: %w", err)
+	}
+	content, err := asn1.Marshal(asn1.RawValue{Class: asn1.ClassUniversal, Tag: asn1.TagSequence, IsCompound: true, Bytes: entry})
+	if err != nil {
+		return nil, fmt.Errorf("cmp: marshal PollRepContent: %w", err)
+	}
+	body, err := wrapBody(PKIBodyPollRep, content)
+	if err != nil {
+		return nil, fmt.Errorf("cmp: marshal PKIBody(pollRep): %w", err)
+	}
+	return buildProtectedMessage(body, reqHdr, secret, reference)
 }

@@ -5,11 +5,16 @@
 package cmp
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/x509"
+	"encoding/asn1"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
-	"log"
+	"kryptkeeper/internal/logging"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -28,9 +33,29 @@ const (
 	PKIBodyRR       = 11 // Revocation Request
 	PKIBodyRP       = 12 // Revocation Response
 	PKIBodyPKIConf  = 19 // Confirmation
+	PKIBodyGenM     = 21 // General message (unsupported)
 	PKIBodyError    = 23 // Error
 	PKIBodyCertConf = 24 // Certificate confirm
+	PKIBodyPollReq  = 25 // Polling request
+	PKIBodyPollRep  = 26 // Polling response
 )
+
+// AuditEvent is one CMP outcome. Action is cmp.ir|cr|kur|rr|poll|reject;
+// Actor is the request's senderKID; Outcome is success, denied, failure or
+// pending_approval.
+type AuditEvent struct {
+	Action   string
+	Actor    string
+	Outcome  string
+	SourceIP string
+	Detail   string
+}
+
+// AuditFunc records an AuditEvent; main adapts it to the hub's audit log.
+type AuditFunc func(ctx context.Context, ev AuditEvent)
+
+// AlertFunc raises a security alert (kind "cmp.replay"); main adapts it.
+type AlertFunc func(ctx context.Context, kind string, detail map[string]string)
 
 // Server implements the Certificate Management Protocol per RFC 4210.
 type Server struct {
@@ -52,6 +77,18 @@ type Server struct {
 	// zones: names the certTemplate asks for are issued only if they match
 	// (CallerNamesOnly semantics). Empty keeps the old "any name" behaviour.
 	allowedDNSSuffixes []string
+
+	// credentials, when set, supplies per-client PBM secrets and trust
+	// anchors (W26-09). The env secret above stays valid beside it.
+	credentials CredentialStore
+
+	audit    AuditFunc
+	alert    AlertFunc
+	revoker  Revoker
+	approver Approver
+	pending  *pendingStore
+	pollTTL  time.Duration
+	now      func() time.Time
 }
 
 // NewServer creates a CMP server. secret is the RFC 4210 §5.1.3.1
@@ -66,7 +103,57 @@ func NewServer(caEngine ca.Service, caID, secret, reference string) *Server {
 		secret:    []byte(secret),
 		reference: []byte(reference),
 		replay:    newReplayCache(replayMaxEntries, replayWindow),
+		pending:   newPendingStore(),
+		pollTTL:   defaultPollTTL,
+		now:       time.Now,
 	}
+}
+
+// WithAuditFunc wires the audit sink. Nil (the default) records nothing.
+func (s *Server) WithAuditFunc(f AuditFunc) *Server {
+	s.audit = f
+	return s
+}
+
+// WithAlertFunc wires the alert sink for replayed transactions.
+func (s *Server) WithAlertFunc(f AlertFunc) *Server {
+	s.alert = f
+	return s
+}
+
+// WithRevoker enables rr. Without it rr answers badRequest.
+func (s *Server) WithRevoker(r Revoker) *Server {
+	s.revoker = r
+	return s
+}
+
+// WithApprover enables deferred issuance: when the approver says approval is
+// needed, ir/cr/kur answer status waiting and the client polls.
+func (s *Server) WithApprover(a Approver) *Server {
+	s.approver = a
+	return s
+}
+
+// WithPollTTL sets how long a waiting transaction stays pollable.
+func (s *Server) WithPollTTL(d time.Duration) *Server {
+	if d > 0 {
+		s.pollTTL = d
+	}
+	return s
+}
+
+func (s *Server) emit(ctx context.Context, r *http.Request, msg *parsedMessage, action, outcome, detail string) {
+	if s.audit == nil {
+		return
+	}
+	s.audit(ctx, AuditEvent{Action: action, Actor: string(msg.Header.SenderKID), Outcome: outcome, SourceIP: sourceIP(r), Detail: detail})
+}
+
+func sourceIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }
 
 // WithAllowedDNSSuffixes limits the names an authenticated client may obtain
@@ -107,7 +194,7 @@ func (s *Server) Handler() http.Handler {
 
 		msg, err := parsePKIMessage(body)
 		if err != nil {
-			log.Printf("cmp: parse error: %v", err)
+			logging.Infof("cmp: parse error: %v", err)
 			http.Error(w, "invalid CMP message", http.StatusBadRequest)
 			return
 		}
@@ -117,25 +204,42 @@ func (s *Server) Handler() http.Handler {
 		// W19-16 added — previously nothing here checked protection at all,
 		// so any anonymous POST that satisfied CSR extraction was issued a
 		// certificate with zero authentication.
-		if protErr := verifyPBMProtection(&msg.Header, msg.Protection, msg.BodyRaw.FullBytes, s.secret); protErr != nil {
-			log.Printf("cmp: rejecting unprotected/invalid request: %v", protErr)
-			s.writeError(w, msg.Header, protErr.Error())
+		cred := s.credFor(r.Context(), msg.Header)
+		msg.cred = cred
+		if len(cred.secret) == 0 && s.credentials != nil {
+			// Credentials-only mode and an unknown or revoked reference: there
+			// is no secret to verify against, and an empty one must never
+			// authenticate. Same answer as any MAC failure.
+			logging.Infof("cmp: rejecting request: no active credential for the senderKID")
+			s.writeError(w, cred, msg.Header, "badMessageCheck: MAC mismatch")
+			return
+		}
+		if protErr := verifyPBMProtection(&msg.Header, msg.Protection, msg.BodyRaw.FullBytes, cred.secret); protErr != nil {
+			logging.Infof("cmp: rejecting unprotected/invalid request: %v", protErr)
+			s.writeError(w, cred, msg.Header, protErr.Error())
 			return
 		}
 
 		// The MAC proves knowledge of the secret; the senderKID must also name
 		// the configured reference, so a key identifier is not decorative.
 		// Same answer as a MAC failure so the two are not distinguishable.
-		if len(s.reference) > 0 && !hmac.Equal(msg.Header.SenderKID, s.reference) {
-			log.Printf("cmp: rejecting request: senderKID does not match the configured reference")
-			s.writeError(w, msg.Header, "badMessageCheck: MAC mismatch")
+		if len(cred.reference) > 0 && !hmac.Equal(msg.Header.SenderKID, cred.reference) {
+			logging.Infof("cmp: rejecting request: senderKID does not match the configured reference")
+			s.writeError(w, cred, msg.Header, "badMessageCheck: MAC mismatch")
 			return
 		}
 		// Only authenticated messages are recorded, so unauthenticated junk
 		// cannot fill the cache.
 		if !s.replay.firstUse(msg.Header.TransactionID, msg.Header.SenderNonce) {
-			log.Printf("cmp: rejecting request: transactionID/senderNonce missing or already used")
-			s.writeError(w, msg.Header, "badRequest: transactionID and senderNonce must be present and not reused")
+			logging.Infof("cmp: rejecting request: transactionID/senderNonce missing or already used")
+			s.emit(r.Context(), r, msg, "cmp.reject", "denied", "replayed transaction")
+			if s.alert != nil {
+				s.alert(r.Context(), "cmp.replay", map[string]string{
+					"transaction_id": hex.EncodeToString(msg.Header.TransactionID),
+					"source_ip":      sourceIP(r),
+				})
+			}
+			s.writeErrorFail(w, msg.cred, msg.Header, "badRequest: transactionID and senderNonce must be present and not reused", failBadRequest)
 			return
 		}
 
@@ -145,31 +249,75 @@ func (s *Server) Handler() http.Handler {
 		case PKIBodyKUR:
 			s.handleCertRequest(w, r, msg, PKIBodyKUR)
 		case PKIBodyCertConf:
-			s.handleCertConf(w, msg)
+			s.handleCertConf(w, r, msg)
+		case PKIBodyRR:
+			s.handleRevoke(w, r, msg)
+		case PKIBodyPollReq:
+			s.handlePollReq(w, r, msg)
 		default:
-			s.writeError(w, msg.Header, fmt.Sprintf("unsupported CMP body type: %d", msg.BodyType))
+			// genm (21) and anything else.
+			text := fmt.Sprintf("unsupported CMP body type: %d", msg.BodyType)
+			s.emit(r.Context(), r, msg, "cmp.reject", "denied", text)
+			s.writeErrorFail(w, msg.cred, msg.Header, text, failBadRequest)
 		}
 	})
 }
 
 func (s *Server) handleCertRequest(w http.ResponseWriter, r *http.Request, msg *parsedMessage, reqBodyType int) {
-	respBodyType := responseBodyType(reqBodyType)
+	action := certAction(reqBodyType)
 
 	reqs, err := parseCertReqMessages(msg.BodyBytes)
 	if err != nil {
-		log.Printf("cmp: CertReqMessages rejected: %v", err)
-		s.writeError(w, msg.Header, err.Error())
+		logging.Infof("cmp: CertReqMessages rejected: %v", err)
+		s.emit(r.Context(), r, msg, action, "denied", "malformed request")
+		s.writeError(w, msg.cred, msg.Header, err.Error())
 		return
 	}
 	// A real CMP client sends one CertReqMsg per ir/cr/kur; issuing exactly
 	// that one keeps the response shape (single CertResponse) simple and
 	// matches what openssl cmp expects back.
-	csr := reqs[0].CSR
+	req := reqs[0]
 
-	if err := ca.CheckPublicKeyStrength(csr.PublicKey); err != nil {
-		log.Printf("cmp: weak key rejected: %v", err)
-		s.writeError(w, msg.Header, "key too weak: "+err.Error())
+	issuanceReq, refusal := s.buildIssuanceRequest(req.CSR, msg.cred.suffixes)
+	if refusal != "" {
+		s.emit(r.Context(), r, msg, action, "denied", refusal)
+		s.writeError(w, msg.cred, msg.Header, refusal)
 		return
+	}
+
+	if s.approver != nil {
+		needs, err := s.approver.Needs(r.Context())
+		if err != nil {
+			logging.Warnf("cmp: approval check failed: %v", err)
+			s.emit(r.Context(), r, msg, action, "failure", "approval check failed")
+			s.writeErrorFail(w, msg.cred, msg.Header, "approval check failed", failSystemFailure)
+			return
+		}
+		if needs {
+			s.deferIssuance(w, r, msg, reqBodyType, req)
+			return
+		}
+	}
+	s.issue(w, r, msg.cred, msg.Header, string(msg.Header.SenderKID), reqBodyType, req, issuanceReq)
+}
+
+func certAction(reqBodyType int) string {
+	switch reqBodyType {
+	case PKIBodyIR:
+		return "cmp.ir"
+	case PKIBodyKUR:
+		return "cmp.kur"
+	default:
+		return "cmp.cr"
+	}
+}
+
+// buildIssuanceRequest applies the key-strength and DNS-suffix checks and
+// returns the CA request, or a client-safe refusal text.
+func (s *Server) buildIssuanceRequest(csr *x509.CertificateRequest, suffixes []string) (ca.IssuanceRequest, string) {
+	if err := ca.CheckPublicKeyStrength(csr.PublicKey); err != nil {
+		logging.Infof("cmp: weak key rejected: %v", err)
+		return ca.IssuanceRequest{}, "key too weak: " + err.Error()
 	}
 
 	issuanceReq := ca.IssuanceRequest{
@@ -178,20 +326,50 @@ func (s *Server) handleCertRequest(w http.ResponseWriter, r *http.Request, msg *
 		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	}
-	if len(s.allowedDNSSuffixes) > 0 {
-		if reason := s.nameBindingViolation(csr); reason != "" {
-			log.Printf("cmp: names refused by the DNS suffix binding: %s", reason)
-			s.writeError(w, msg.Header, "requested name is not permitted for this client")
-			return
+	if len(suffixes) > 0 {
+		if reason := nameBindingViolation(csr, suffixes); reason != "" {
+			logging.Warnf("cmp: names refused by the DNS suffix binding: %s", reason)
+			return ca.IssuanceRequest{}, "requested name is not permitted for this client"
 		}
 		// Only the names just checked are signed.
 		issuanceReq.DNSNames = csr.DNSNames
 		issuanceReq.CallerNamesOnly = true
 	}
-	issued, err := s.caEngine.IssueCertificate(s.caID, issuanceReq)
+	return issuanceReq, ""
+}
+
+// issue signs the certificate and answers with the protected ip/cp/kup. It is
+// the single issuance path: immediate ir/cr/kur and an approved pollReq both
+// end here, so recording and auditing cover both.
+func (s *Server) issue(w http.ResponseWriter, r *http.Request, cred credCtx, hdr parsedHeader, actor string, reqBodyType int, req crmfRequest, issuanceReq ca.IssuanceRequest) {
+	action := certAction(reqBodyType)
+	audit := func(outcome, detail string) {
+		if s.audit != nil {
+			s.audit(r.Context(), AuditEvent{Action: action, Actor: actor, Outcome: outcome, SourceIP: sourceIP(r), Detail: detail})
+		}
+	}
+
+	issuerID, rerr := ca.ResolveCAID(s.caEngine, s.caID)
+	if rerr != nil {
+		logging.Warnf("cmp: %v", rerr)
+		audit("failure", rerr.Error())
+		msg := "certificate issuance failed"
+		if errors.Is(rerr, ca.ErrNoCAConfigured) {
+			msg = rerr.Error()
+		}
+		s.writeError(w, cred, hdr, msg)
+		return
+	}
+	issued, err := s.caEngine.IssueCertificate(issuerID, issuanceReq)
 	if err != nil {
-		log.Printf("cmp: issuance failed: %v", err)
-		s.writeError(w, msg.Header, "certificate issuance failed")
+		logging.Warnf("cmp: issuance failed: %v", err)
+		if errors.Is(err, ca.ErrCARevoked) {
+			audit("denied", "issuing CA revoked")
+			s.writeError(w, cred, hdr, "issuing CA revoked")
+			return
+		}
+		audit("failure", "certificate issuance failed")
+		s.writeError(w, cred, hdr, "certificate issuance failed")
 		return
 	}
 
@@ -200,37 +378,39 @@ func (s *Server) handleCertRequest(w http.ResponseWriter, r *http.Request, msg *
 	// PKIMessage response; it would hand the client a credential this system
 	// then can't undo. Best-effort, logged only (W18-18: previously nothing
 	// recorded CMP issuance at all, matching the gap W18-16 closed for ACME).
-	// This path is shared by IR, CR and KUR (handleKeyUpdate delegates here),
-	// so all three record here.
+	// This path is shared by IR, CR and KUR (and an approved pollReq), so all
+	// record here.
 	if s.issuedRecorder != nil {
-		if err := s.issuedRecorder.RecordIssuedCertificate(r.Context(), s.caID, issued.Certificate, issued.CertPEM, "cmp"); err != nil {
-			log.Printf("cmp: issued certificate %s not recorded: %v", issued.Fingerprint, err)
+		if err := s.issuedRecorder.RecordIssuedCertificate(r.Context(), s.activeCAID(), issued.Certificate, issued.CertPEM, "cmp"); err != nil {
+			logging.Infof("cmp: issued certificate %s not recorded: %v", issued.Fingerprint, err)
 		}
 	}
 
-	pkiMsg, err := buildCertResponse(issued.Certificate, respBodyType, msg.Header, s.secret, s.reference)
+	pkiMsg, err := buildCertResponse(issued.Certificate, req.CertReqID, responseBodyType(reqBodyType), hdr, cred.secret, cred.reference)
 	if err != nil {
-		log.Printf("cmp: build PKIMessage failed: %v", err)
-		s.writeError(w, msg.Header, "certificate response encoding failed")
+		logging.Warnf("cmp: build PKIMessage failed: %v", err)
+		audit("failure", "certificate response encoding failed")
+		s.writeError(w, cred, hdr, "certificate response encoding failed")
 		return
 	}
 
+	audit("success", "serial="+issued.Certificate.SerialNumber.Text(16))
 	s.write(w, pkiMsg)
 }
 
 // nameBindingViolation returns why csr's names fall outside the configured
 // DNS suffixes, or "". The CN is checked too: it is not a SAN but relying
 // parties still read it.
-func (s *Server) nameBindingViolation(csr *x509.CertificateRequest) string {
+func nameBindingViolation(csr *x509.CertificateRequest, suffixes []string) string {
 	for _, d := range csr.DNSNames {
-		if !ca.DNSNameMatchesSuffixes(d, s.allowedDNSSuffixes) {
+		if !ca.DNSNameMatchesSuffixes(d, suffixes) {
 			return fmt.Sprintf("DNS name %q", d)
 		}
 	}
 	if len(csr.IPAddresses) > 0 || len(csr.URIs) > 0 {
 		return "IP or URI SAN (only DNS names can match a DNS suffix)"
 	}
-	if cn := strings.TrimSpace(csr.Subject.CommonName); cn != "" && !ca.DNSNameMatchesSuffixes(cn, s.allowedDNSSuffixes) {
+	if cn := strings.TrimSpace(csr.Subject.CommonName); cn != "" && !ca.DNSNameMatchesSuffixes(cn, suffixes) {
 		return fmt.Sprintf("subject CN %q", cn)
 	}
 	return ""
@@ -239,21 +419,44 @@ func (s *Server) nameBindingViolation(csr *x509.CertificateRequest) string {
 // handleCertConf answers a client's certConf (body type 24, sent after ir/cr
 // unless -disable_confirm) with a protected pkiconf (body type 19) per
 // RFC 4210 §5.3.20 -- openssl cmp waits for this before considering the
-// enrollment transaction complete.
-func (s *Server) handleCertConf(w http.ResponseWriter, msg *parsedMessage) {
-	pkiMsg, err := buildPKIConf(msg.Header, s.secret, s.reference)
+// enrollment transaction complete. A CertStatus whose statusInfo is neither
+// accepted (0) nor grantedWithMods (1) means the client refused the
+// certificate: that is audited (cmp.reject) but not acted on (no auto-revoke),
+// and pkiconf is still returned.
+func (s *Server) handleCertConf(w http.ResponseWriter, r *http.Request, msg *parsedMessage) {
+	var statuses []struct {
+		CertHash   []byte
+		CertReqID  int
+		StatusInfo pkiStatusInfo `asn1:"optional"`
+	}
+	if _, err := asn1.Unmarshal(msg.BodyBytes, &statuses); err != nil {
+		logging.Infof("cmp: certConf not parsed (still confirming): %v", err)
+	}
+	for _, st := range statuses {
+		if st.StatusInfo.Status != 0 && st.StatusInfo.Status != 1 {
+			s.emit(r.Context(), r, msg, "cmp.reject", "denied", fmt.Sprintf("client rejected certificate certReqId=%d", st.CertReqID))
+		}
+	}
+
+	pkiMsg, err := buildPKIConf(msg.Header, msg.cred.secret, msg.cred.reference)
 	if err != nil {
-		log.Printf("cmp: build pkiconf failed: %v", err)
-		s.writeError(w, msg.Header, "pkiconf encoding failed")
+		logging.Warnf("cmp: build pkiconf failed: %v", err)
+		s.writeError(w, msg.cred, msg.Header, "pkiconf encoding failed")
 		return
 	}
 	s.write(w, pkiMsg)
 }
 
-func (s *Server) writeError(w http.ResponseWriter, hdr parsedHeader, statusText string) {
-	pkiMsg, err := buildErrorResponse(hdr, statusText, s.secret, s.reference)
+func (s *Server) writeError(w http.ResponseWriter, cred credCtx, hdr parsedHeader, statusText string) {
+	s.writeErrorFail(w, cred, hdr, statusText, failBadMessageCheck)
+}
+
+// writeErrorFail answers with a protected error carrying PKIFailureInfo bit
+// failBit.
+func (s *Server) writeErrorFail(w http.ResponseWriter, cred credCtx, hdr parsedHeader, statusText string, failBit int) {
+	pkiMsg, err := buildErrorResponseFail(hdr, statusText, failBit, cred.secret, cred.reference)
 	if err != nil {
-		log.Printf("cmp: build error response failed: %v", err)
+		logging.Warnf("cmp: build error response failed: %v", err)
 		http.Error(w, "invalid CMP message", http.StatusBadRequest)
 		return
 	}
@@ -280,4 +483,14 @@ func responseBodyType(reqBodyType int) int {
 	default:
 		return PKIBodyCP
 	}
+}
+
+// activeCAID returns the CA this server issues from: the configured id, else
+// the first stored CA resolved at request time so a root created after
+// startup (first-run onboarding) becomes the default without a restart. It
+// returns "" while no CA exists or the CA list cannot be read; callers that
+// issue check ca.ResolveCAID for the specific error.
+func (s *Server) activeCAID() string {
+	id, _ := ca.ResolveCAID(s.caEngine, s.caID)
+	return id
 }

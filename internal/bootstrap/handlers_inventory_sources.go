@@ -33,10 +33,16 @@ func RegisterInventorySourceHandlers(mux *http.ServeMux, auth *Authenticator, st
 				writeServiceUnavailable(w, "list failed")
 				return
 			}
+			visible := make([]InventorySourceRecord, 0, len(recs))
+			for _, rec := range recs {
+				if stampedTenantVisible(pd, rec.Tenant) {
+					visible = append(visible, rec)
+				}
+			}
 			emitAuditEvent(r, auditProvider, pd.ID, "inventory_source.list", "inventory_source", "inventory-sources", AuditOutcomeSuccess)
 			writeJSONStatus(w, http.StatusOK, struct {
 				Data []InventorySourceRecord `json:"data"`
-			}{Data: recs})
+			}{Data: visible})
 		case http.MethodPost:
 			body := http.MaxBytesReader(w, r.Body, 64*1024)
 			defer body.Close()
@@ -101,6 +107,11 @@ func RegisterInventorySourceHandlers(mux *http.ServeMux, auth *Authenticator, st
 				writeNotFound(w, "inventory source not found")
 				return
 			}
+			if !stampedTenantVisible(pd, rec.Tenant) {
+				emitAuditEvent(r, auditProvider, pd.ID, "inventory_source.sync", "inventory_source", id, AuditOutcomeDenied)
+				writeNotFound(w, "inventory source not found")
+				return
+			}
 			source, err := buildInventorySource(r.Context(), rec, creds)
 			if err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "inventory_source.sync", "inventory_source", id, AuditOutcomeFailure)
@@ -134,6 +145,18 @@ func RegisterInventorySourceHandlers(mux *http.ServeMux, auth *Authenticator, st
 		}
 		if r.Method != http.MethodDelete {
 			writeMethodNotAllowed(w, http.MethodDelete)
+			return
+		}
+		existing, gerr := store.Get(r.Context(), id)
+		if gerr != nil || !stampedTenantVisible(pd, existing.Tenant) {
+			// A lookup failure and a foreign tenant's row both answer 404 (no
+			// existence oracle) but must still leave a row (W22-06).
+			outcome := AuditOutcomeDenied
+			if gerr != nil {
+				outcome = AuditOutcomeFailure
+			}
+			emitAuditEvent(r, auditProvider, pd.ID, "inventory_source.delete", "inventory_source", id, outcome)
+			writeNotFound(w, "inventory source not found")
 			return
 		}
 		if err := store.Delete(r.Context(), id); err != nil {

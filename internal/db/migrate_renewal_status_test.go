@@ -15,11 +15,12 @@ func TestMigration000073_RenewalStatusReissueRequired(t *testing.T) {
 	if err := RunMigrations(db, "sqlite"); err != nil {
 		t.Fatalf("RunMigrations: %v", err)
 	}
-	// Rolling back to 72 also reverts 000077, which drops its own columns
-	// before 000073's rebuild runs; they are not 000073's to preserve.
+	// Rolling back to 72 also reverts 000077, 000092 and 000126, which drop
+	// their own columns before 000073's rebuild runs; they are not 000073's to
+	// preserve.
 	var colsAfterUp []string
 	for _, c := range tableColumnNames(t, db, "certificates") {
-		if c != "trust_class" && c != "is_ca" {
+		if c != "trust_class" && c != "is_ca" && c != "ownership_source" && c != "template_revision" && c != "issuer_class" {
 			colsAfterUp = append(colsAfterUp, c)
 		}
 	}

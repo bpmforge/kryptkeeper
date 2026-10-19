@@ -219,8 +219,19 @@ func (e *WinRMExecutor) powershell(ctx context.Context, script string) (string, 
 // quotes by doubling them. Single quotes mean PowerShell performs no
 // expansion, so a path containing $ or ` cannot become an injection.
 func psQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	// PowerShell treats the typographic single quotes U+2018..U+201B as
+	// quote characters too, so each is doubled like ASCII ' or a value
+	// containing one would end the literal early.
+	return "'" + psSingleQuoteEscaper.Replace(s) + "'"
 }
+
+var psSingleQuoteEscaper = strings.NewReplacer(
+	"'", "''",
+	"\u2018", "\u2018\u2018",
+	"\u2019", "\u2019\u2019",
+	"\u201a", "\u201a\u201a",
+	"\u201b", "\u201b\u201b",
+)
 
 func stripWhitespace(s string) string {
 	return strings.Map(func(r rune) rune {

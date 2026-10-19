@@ -43,7 +43,7 @@ type CitrixPusher struct {
 
 func NewCitrixPusher(cfg CitrixConfig, client *http.Client) *CitrixPusher {
 	if client == nil {
-		client = http.DefaultClient
+		client = guardedPushClient(nil)
 	}
 	return &CitrixPusher{cfg: cfg, client: client, verify: defaultVerifier}
 }

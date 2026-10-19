@@ -1,49 +1,73 @@
 # CSRF Posture
 
-## Enforced posture: Bearer token + same-origin
+## Enforced posture: Bearer-or-cookie auth, SameSite=Strict, same-origin check on cookie writes
 
-Kryptkeeper does **not** use traditional synchroniser-token or double-submit cookie CSRF mitigations.
-Instead it relies on two controls that together eliminate CSRF for browser clients:
+Kryptkeeper does **not** use synchroniser-token or double-submit CSRF tokens. The API accepts
+two credential transports, and they are defended differently:
 
-### 1. Bearer token authentication (not cookies)
+### 1. `Authorization: Bearer` (API keys, JWTs, bootstrap token)
 
-All authenticated API requests must include an `Authorization: Bearer <jwt>` header.
-Tokens are stored in `sessionStorage` (see `ui/src/pages/Login.tsx`), which is:
+CLI, MCP, agents and integrations authenticate with an explicit header. A browser never adds an
+`Authorization` header on its own, so a cross-site page cannot ride it. No CSRF exposure.
 
-- **not** accessible to cross-origin JavaScript
-- **not** automatically attached to cross-origin requests by the browser (unlike cookies)
+### 2. The `kk_token` session cookie (browser UI)
 
-A cross-origin attacker page cannot read `sessionStorage` or inject the token into a forged
-request, so the server never receives a valid `Authorization` header for a CSRF attempt.
+`POST /api/v1/auth/login` (and the OIDC/SAML callbacks) set `kk_token` as an `HttpOnly`,
+`SameSite=Strict` cookie, `Secure` whenever the request arrived over TLS. The UI sends it with
+`credentials: "include"` to its own origin (`ui/src/lib/api.ts`), and **every** route accepts it
+in place of a bearer header (`authenticatePrincipal`, `auth.go`). Cookies are therefore real
+ambient authority, and earlier revisions of this document that said auth was Bearer-only were
+wrong.
 
-### 2. Same-origin enforcement
+Controls, in order:
 
-The API does not set `Access-Control-Allow-Origin: *`.
-Requests from foreign origins are rejected at the CORS layer before reaching any handler.
+1. **`SameSite=Strict`** keeps browsers from attaching the cookie to cross-site requests. It does
+   not stop a *same-site* foreign origin (a sibling subdomain with XSS or a takeover, or an
+   http downgrade of the same registrable domain).
+2. **Origin / Fetch-Metadata check on unsafe methods (F9).** A POST, PUT, PATCH or DELETE that
+   authenticates by cookie alone (no `Authorization` header) must be same-origin
+   (`crossSiteCookieRequest`, `auth.go`):
+   - `Sec-Fetch-Site` is authoritative when present: `same-origin` and `none` pass; `same-site`
+     and `cross-site` fail. It is browser-set and cannot be forged by page script.
+   - Without it, an `Origin` header must match the request `Host` (or the `X-Forwarded-Host`
+     of a fronting proxy); `null` and malformed origins fail.
+   - A request carrying neither header is not a browser fetch (curl, scripts, server-to-server)
+     and is allowed: CSRF needs a browser to attach the cookie, and rejecting it would break
+     cookie-bearing CLI use without protecting anyone.
+   - Safe methods (GET, HEAD, OPTIONS, TRACE) are not checked; no handler mutates on them.
+
+   `authenticatePrincipal` enforces this for every handler, so a refused request is an
+   authentication failure (401) and the handler records it as a denied audit event, the same
+   as any other failed authentication.
+3. **No permissive CORS.** The API sends no `Access-Control-Allow-Origin`, so browsers do not
+   expose cross-origin responses to foreign pages. This limits reads; the checks above are what
+   stop writes.
 
 ### Protocol endpoints (ACME, SCEP, EST, OCSP, CRL, CMP, XCEP)
 
-These endpoints use client-certificate or challenge-based authentication, not browser sessions.
-They are not exposed to browser CSRF vectors.
+Client-certificate or challenge-based authentication, not browser sessions. Not exposed to
+browser CSRF.
 
 ### Residual risk
 
 | Scenario | Risk | Mitigation |
 |---|---|---|
-| Token leak via XSS | High if it occurs | CSP headers on the UI (planned); token is JWT with short TTL |
-| Subdomain takeover + sessionStorage scope | Low | Subdomain isolation; `sessionStorage` is per-origin |
-| HTTP (non-TLS) deployment | High | Deployment guide requires TLS; see `cmd/kryptkeeper/main.go` TLS flag |
+| Token leak via XSS | High if it occurs | CSP headers on the UI; short-lived access JWT; cookie is `HttpOnly` |
+| Same-site XSS or subdomain takeover | Low | Fetch-Metadata / Origin check above; host the UI on its own origin |
+| Browser too old to send `Sec-Fetch-Site` and `Origin` on a write | Low | Falls back to allow; all current browsers send at least `Origin` on cross-origin writes |
+| HTTP (non-TLS) deployment | High | Deployment guide requires TLS; the `Secure` attribute follows the request scheme |
 
 ### Testing
 
-The absence of CSRF tokens is verified in `internal/bootstrap/auth_handlers_test.go` which
-checks that unauthenticated requests without an `Authorization` header return 401 across all
-state-mutating endpoints.
+`internal/bootstrap/auth_cookie_csrf_test.go` covers the matrix: same-origin, none, cross-site,
+same-site, origin mismatch, `null`, forwarded host, bearer auth, no-header non-browser writes,
+and the end-to-end refusal of a valid session cookie on a cross-site write.
 
 ## Decision record
 
-- **Date:** 2026-04-17
-- **Decision:** Bearer + same-origin is the enforced CSRF posture; no CSRF token needed.
-- **Rationale:** Matches industry practice for SPA + REST APIs (OWASP recommends this as an
-  acceptable alternative to CSRF tokens when cookies are not used for auth transport).
+- **2026-04-17:** Bearer + same-origin recorded as the CSRF posture, on the assumption that the
+  cookie was not an auth transport.
+- **2026-10-17 (security review F9), supersedes the above:** the cookie *is* an auth transport on
+  all routes. Posture is `SameSite=Strict` plus a mandatory same-origin check on cookie-authenticated
+  unsafe methods. No CSRF token is introduced.
 - **Owner:** Security team

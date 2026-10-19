@@ -1,0 +1,226 @@
+{
+  "task": "U-19",
+  "title": "Approve a proposed policy or exception (pending action)",
+  "sourceStory": "STORIES.md#u-19",
+  "persona": "marcus.webb (pki-admin, second person)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/inbox"
+      },
+      "caption": "Open /inbox",
+      "slug": "inbox",
+      "expect": {
+        "role": "heading",
+        "name": "Approvals inbox"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-19/01-inbox.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Type"
+      },
+      "value": "Pending actions",
+      "caption": "Select \"Pending actions\" in **Type**",
+      "slug": "pending-actions-filter",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-19/02-pending-actions-filter.png",
+        "annotated": "docs/guide/screenshots/U-19/02-pending-actions-filter-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 244,
+          "y": 153,
+          "w": 205,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Approve",
+        "within": "div.space-y-3 > div",
+        "withinText": "Exception create"
+      },
+      "caption": "Click **Approve**",
+      "slug": "approve-exception",
+      "optional": true,
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-19/03-approve-exception.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Approve",
+        "within": "div.space-y-3 > div",
+        "withinText": "Codesign OIDC"
+      },
+      "caption": "Click **Approve**",
+      "slug": "approve-trust-rule",
+      "optional": true,
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-19/04-approve-trust-rule.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Approve",
+        "within": "div.space-y-3 > div",
+        "withinText": "Migration apply"
+      },
+      "caption": "Click **Approve**",
+      "slug": "approve-migration",
+      "optional": true,
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-19/05-approve-migration.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Approve",
+        "within": "div.space-y-3 > div",
+        "withinText": "NL policy draft"
+      },
+      "caption": "Click **Approve**",
+      "slug": "approve-policy-draft",
+      "optional": true,
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-19/06-approve-policy-draft.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "principal": "marcus",
+  "lastRun": {
+    "at": "2026-10-18T12:48:29.654Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-19",
+    "steps": 6,
+    "shots": 6,
+    "annotated": 1,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/inbox"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-19/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-19/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

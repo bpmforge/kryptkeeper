@@ -1,0 +1,72 @@
+{
+  "env": {
+    "commit": "de1adcf6",
+    "cores": "16",
+    "cpu": "Apple M4 Max",
+    "db_engine": "",
+    "go": "go1.27.1",
+    "loadavg_at_end": "50.34 51.03 46.45",
+    "note": "in-process legs only; no hub or database running during this run, but the machine is shared with other work (see loadavg); OCSP over loopback to an httptest server, status lookup in memory",
+    "os": "27.0.1",
+    "ram_gb": "64",
+    "uname": "Darwin arm64",
+    "utc": "2026-10-16T00:31:01Z"
+  },
+  "crl": [
+    {
+      "revocations": 10000,
+      "der_bytes": 495259,
+      "gen_ms_median": 18.25,
+      "heap_delta_mb": 1.48,
+      "alloc_mb": 14.05
+    },
+    {
+      "revocations": 100000,
+      "der_bytes": 4949905,
+      "gen_ms_median": 222.83,
+      "heap_delta_mb": 12.77,
+      "alloc_mb": 136.13
+    },
+    {
+      "revocations": 1000000,
+      "der_bytes": 49498743,
+      "gen_ms_median": 1307.5,
+      "heap_delta_mb": 111.22,
+      "alloc_mb": 1329.03
+    }
+  ],
+  "ocsp": {
+    "cold": {
+      "rps": 500,
+      "seconds": 30,
+      "n": 15000,
+      "errors": 0,
+      "p50_ms": 0.57,
+      "p95_ms": 5.38,
+      "p99_ms": 14.21,
+      "max_ms": 94.93
+    },
+    "warm": {
+      "rps": 500,
+      "seconds": 30,
+      "n": 15000,
+      "errors": 0,
+      "p50_ms": 0.48,
+      "p95_ms": 3.34,
+      "p99_ms": 6.56,
+      "max_ms": 14.44
+    }
+  },
+  "ocsp_attached": null,
+  "replica": null,
+  "targets": {
+    "crl_100k_s": 2,
+    "ocsp_p99_ms": 50,
+    "replica_visible_s": 60
+  },
+  "pass": {
+    "crl_100k": true,
+    "ocsp_p99": true,
+    "replica": null
+  }
+}

@@ -16,9 +16,10 @@ import (
 	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/asn1"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"math/big"
 	"net"
 	"net/http"
@@ -59,7 +60,13 @@ var (
 	date    = "unknown"
 )
 
+// startedAt anchors the 24h window of an env-only WEBHOOK_SECRET_PREVIOUS,
+// which has no stored timestamp.
+var startedAt = time.Now()
+
 func main() {
+	logging.Setup(logging.ConfigFromEnv(os.Getenv))
+
 	// W20-02: seed APP_VERSION/APP_COMMIT from the linker-injected build
 	// stamp so GET /api/v1/meta (handlers_meta.go) reports the real release
 	// version -- but never override an operator who already set these
@@ -82,9 +89,21 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--hash-password" {
 		hashPasswordAndExit()
 	}
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		migrateAndExit(os.Args[2:])
+	}
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Printf("kryptkeeper %s (commit %s, built %s)\n", version, commit, date)
 		os.Exit(0)
+	}
+
+	// H-F2: registered first so LIFO runs it last, after the server and the
+	// schedulers deferred below have stopped using their pools.
+	defer bootstrap.CloseSharedPostgresPools()
+
+	// S-02: a malformed quorum policy must not silently degrade dual control.
+	if err := bootstrap.ValidateApprovalQuorumPolicyFromEnv(); err != nil {
+		logging.Fatalf("%v", err)
 	}
 
 	certMode := strings.ToLower(strings.TrimSpace(os.Getenv("APP_CERTIFICATE_PROVIDER")))
@@ -96,8 +115,9 @@ func main() {
 	if needsCrypto {
 		var err error
 		coreDB, isPostgres, err = bootstrap.OpenCoreDB()
+		reportCoreDBOpenFailure(err)
 		if fatal := bootstrap.CoreDBStartupDecision(certMode, err); fatal != nil {
-			log.Fatal(fatal)
+			logging.Fatal(fatal)
 		}
 	}
 
@@ -106,65 +126,105 @@ func main() {
 	var keys keystore.Store
 	var defaultCAID string
 	var revStore ca.RevocationStore
+	var lifecycleCAStore ca.Store
 	// W19-19: declared at function scope (not `:=` inside the block below)
 	// so it survives to the RunWithProtocols/Run call below, which injects
 	// it into the raw keys handler instead of the handler reading
 	// package-level state.
 	var keyBackend string
+	var keyRouter *keystore.Router
 
 	if needsCrypto {
 		keystoreDir, keystoreWarn := bootstrap.ResolveKeystoreDir(os.Getenv)
 		if keystoreWarn != "" {
-			log.Print(keystoreWarn)
+			logging.Info(keystoreWarn)
 		}
 		if err := bootstrap.EnsureWritableKeystoreDir(keystoreDir); err != nil {
-			log.Fatalf("keystore directory %q unusable: %v (set KRYPTKEEPER_KEYSTORE_DIR to a writable path on a persistent volume, or put KRYPTKEEPER_DATA_DIR on one)", keystoreDir, err)
+			logging.Fatalf("keystore directory %q unusable: %v (set KRYPTKEEPER_KEYSTORE_DIR to a writable path on a persistent volume, or put KRYPTKEEPER_DATA_DIR on one)", keystoreDir, err)
 		}
-		log.Printf("keystore directory: %s", keystoreDir)
+		logging.Infof("keystore directory: %s", keystoreDir)
 
 		keyBackend = strings.ToLower(strings.TrimSpace(os.Getenv("KRYPTKEEPER_KEY_BACKEND")))
 
 		// W9-11/NFR-011: under FIPS posture the CA role must not come up
 		// on a non-HSM keystore at all — fatal, not a warning.
 		if err := keystore.CheckRootKeyCustody(keyBackend); err != nil {
-			log.Fatalf("FIPS posture: %v", err)
+			logging.Fatalf("FIPS posture: %v", err)
 		}
 
+		keystorePass := os.Getenv("KRYPTKEEPER_KEYSTORE_PASSPHRASE")
+		buildKeyBackend := func(name string) (keystore.Store, error) {
+			switch name {
+			case "pkcs11":
+				st, err := keystore.NewPKCS11StoreFromEnv()
+				if err != nil {
+					return nil, fmt.Errorf("pkcs11 keystore init: %w", err)
+				}
+				logging.Info("key backend: PKCS#11 (HSM)")
+				return st, nil
+			case "vault":
+				st, err := keystore.NewVaultStoreFromEnv()
+				if err != nil {
+					return nil, fmt.Errorf("vault keystore init: %w", err)
+				}
+				logging.Info("key backend: HashiCorp Vault transit")
+				return st, nil
+			case "cloudkms":
+				// W9-02: previously dead code — no path ever constructed the
+				// cloud KMS store, and its key references were memory-only.
+				st, err := buildCloudKMSStore(os.Getenv("KRYPTKEEPER_KMS_PROVIDER"), coreDB, isPostgres)
+				if err != nil {
+					return nil, fmt.Errorf("cloud kms keystore init: %w", err)
+				}
+				logging.Infof("key backend: cloud KMS (%s)", os.Getenv("KRYPTKEEPER_KMS_PROVIDER"))
+				return st, nil
+			default:
+				if keystorePass == "" {
+					return nil, errors.New("KRYPTKEEPER_KEYSTORE_PASSPHRASE is required when APP_CERTIFICATE_PROVIDER=ca")
+				}
+				if err := bootstrap.RejectPlaceholderSecret("KRYPTKEEPER_KEYSTORE_PASSPHRASE", keystorePass); err != nil {
+					return nil, err
+				}
+				st, err := keystore.NewSoftwareStore(keystoreDir, []byte(keystorePass))
+				if err != nil {
+					return nil, fmt.Errorf("keystore init: %w", err)
+				}
+				logging.Info("key backend: software (AES-GCM + Argon2id)")
+				return st, nil
+			}
+		}
 		var err error
-		switch keyBackend {
-		case "pkcs11":
-			keys, err = keystore.NewPKCS11StoreFromEnv()
-			if err != nil {
-				log.Fatalf("pkcs11 keystore init: %v", err)
+		defaultBackendName := keyBackend
+		if defaultBackendName == "" {
+			defaultBackendName = "software"
+		}
+		keys, err = buildKeyBackend(keyBackend)
+		if err != nil {
+			logging.Fatal(err)
+		}
+		// W23-11: optional extra backends let one hub mix custody models. Unset
+		// keeps exactly the single-backend behaviour (no Router).
+		if extra := parseExtraKeyBackends(os.Getenv("KRYPTKEEPER_KEY_BACKENDS"), defaultBackendName); len(extra) > 0 {
+			m := map[string]keystore.Store{defaultBackendName: keys}
+			for _, name := range extra {
+				switch name {
+				case "software", "pkcs11", "vault", "cloudkms":
+				default:
+					logging.Fatalf("KRYPTKEEPER_KEY_BACKENDS: unknown backend %q (software, pkcs11, vault, cloudkms)", name)
+				}
+				st, berr := buildKeyBackend(name)
+				if berr != nil {
+					logging.Fatal(berr)
+				}
+				m[name] = st
 			}
-			log.Print("key backend: PKCS#11 (HSM)")
-		case "vault":
-			keys, err = keystore.NewVaultStoreFromEnv()
-			if err != nil {
-				log.Fatalf("vault keystore init: %v", err)
+			r, rerr := keystore.NewRouter(defaultBackendName, m)
+			if rerr != nil {
+				logging.Fatalf("key backend router: %v", rerr)
 			}
-			log.Print("key backend: HashiCorp Vault transit")
-		case "cloudkms":
-			// W9-02: previously dead code — no path ever constructed the
-			// cloud KMS store, and its key references were memory-only.
-			keys, err = buildCloudKMSStore(os.Getenv("KRYPTKEEPER_KMS_PROVIDER"), coreDB, isPostgres)
-			if err != nil {
-				log.Fatalf("cloud kms keystore init: %v", err)
-			}
-			log.Printf("key backend: cloud KMS (%s)", os.Getenv("KRYPTKEEPER_KMS_PROVIDER"))
-		default:
-			keystorePass := os.Getenv("KRYPTKEEPER_KEYSTORE_PASSPHRASE")
-			if keystorePass == "" {
-				log.Fatal("KRYPTKEEPER_KEYSTORE_PASSPHRASE is required when APP_CERTIFICATE_PROVIDER=ca")
-			}
-			if err := bootstrap.RejectPlaceholderSecret("KRYPTKEEPER_KEYSTORE_PASSPHRASE", keystorePass); err != nil {
-				log.Fatal(err)
-			}
-			keys, err = keystore.NewSoftwareStore(keystoreDir, []byte(keystorePass))
-			if err != nil {
-				log.Fatalf("keystore init: %v", err)
-			}
-			log.Print("key backend: software (AES-GCM + Argon2id)")
+			keyRouter = r
+			keys = r
+			logging.Infof("key backends enabled: %s (default %s)", strings.Join(r.Backends(), ","), defaultBackendName)
 		}
 
 		// Choose CA store: DB-backed when available, in-memory otherwise.
@@ -172,13 +232,18 @@ func main() {
 		if coreDB != nil {
 			caStore = ca.NewDBStore(coreDB, isPostgres)
 			revStore = ca.NewDBRevocationStore(coreDB, isPostgres)
-			log.Print("CA store: database")
+			logging.Info("CA store: database")
 		} else {
 			caStore = ca.NewMemStore()
 			revStore = ca.NewMemRevocationStore()
-			log.Print("CA store: in-memory (no DB)")
+			logging.Info("CA store: in-memory (no DB)")
 		}
 
+		if keyRouter != nil {
+			// Must precede CheckKeyConsistency or every non-default CA key
+			// reports as missing.
+			keyRouter.SetResolver(caKeyBackendResolver(caStore))
+		}
 		engine := ca.NewEngine(keys, caStore)
 		// W19-08: tell the engine which keystore.Store backend `keys` is so
 		// CA.KeyStorageType is truthful and PQC keygen is refused on
@@ -190,7 +255,7 @@ func main() {
 		// core DB (and so the issuance_policies table) exists.
 		if coreDB != nil {
 			if err := attachPolicyEngine(engine, coreDB, isPostgres, os.Getenv); err != nil {
-				log.Fatalf("startup: %v", err)
+				logging.Fatalf("startup: %v", err)
 			}
 		}
 		caEngine = engine
@@ -198,6 +263,7 @@ func main() {
 		// into which keys back a CA, so it can refuse rotating one directly
 		// instead of silently breaking the CA.
 		bootstrap.SetActiveCAStore(caStore)
+		lifecycleCAStore = caStore
 		// v2.1: wire the CA engine for SPIFFE SVID issuance + trust bundle.
 		bootstrap.SetSPIFFEEngine(caEngine)
 
@@ -211,21 +277,21 @@ func main() {
 		}
 		allowMissing := strings.EqualFold(strings.TrimSpace(os.Getenv(ca.AllowMissingCAKeysEnv)), "true")
 		if err := ca.StartupKeyCheckDecision(findings, checkErr, allowMissing); err != nil {
-			log.Fatalf("startup: %v", err)
+			logging.Fatalf("startup: %v", err)
 		}
 
 		if defaultCAID, err = resolveDefaultCA(caEngine, os.Getenv); err != nil {
-			log.Fatalf("startup: %v", err)
+			logging.Fatalf("startup: %v", err)
 		}
 	}
 
 	// Multi-tenancy is experimental (audit A01-001/002/004/005/006, A01S-3):
 	// refuse to start unless the operator acknowledged it.
 	if err := bootstrap.MultiTenancyExperimentalCheck(os.Getenv); err != nil {
-		log.Fatal(err)
+		logging.Fatal(err)
 	}
 	if bootstrap.MultiTenancyEnabled() {
-		log.Print(bootstrap.MultiTenancyExperimentalWarning)
+		logging.Info(bootstrap.MultiTenancyExperimentalWarning)
 	}
 
 	// --- Providers ---
@@ -233,10 +299,10 @@ func main() {
 	switch {
 	case coreDB != nil:
 		if err := auth.SetAPIKeyStore(context.Background(), bootstrap.NewAPIKeyStore(coreDB, isPostgres)); err != nil {
-			log.Fatalf("api key store: %v", err)
+			logging.Fatalf("api key store: %v", err)
 		}
 	case auth.APIKeyMintingAvailable():
-		log.Print("WARNING: no core database (APP_CERTIFICATE_PROVIDER is not ca): API keys minted via POST /api/v1/api-keys are held in memory and do NOT survive a restart; keys in APP_API_KEYS_JSON do")
+		logging.Warn("no core database (APP_CERTIFICATE_PROVIDER is not ca): API keys minted via POST /api/v1/api-keys are held in memory and do NOT survive a restart; keys in APP_API_KEYS_JSON do")
 	}
 	// Opened lazily: the custom-role store is only touched when
 	// APP_AUTH_ROLE_MAP_JSON names a role that is not a compiled one.
@@ -250,12 +316,12 @@ func main() {
 	})
 	report := auth.ValidationReport()
 	for _, warn := range report.Warnings {
-		log.Printf("startup warning: %s", warn)
+		logging.Warnf("startup warning: %s", warn)
 	}
 	// An auth misconfiguration that leaves tokens forgeable or unscoped must
 	// stop the hub, not scroll past in the log (A07-6 / A2A7-009).
 	if err := report.FatalError(); err != nil {
-		log.Fatalf("refusing to start: %v", err)
+		logging.Fatalf("refusing to start: %v", err)
 	}
 	certSummaryProvider := bootstrap.NewCertSummaryProviderFromEnv()
 	// One router + one wrap at the construction point so every audit writer
@@ -264,11 +330,23 @@ func main() {
 	// Fail closed: a hub without a working audit trail does not start.
 	rawAudit, auditDesc, auditErr := bootstrap.ResolveAuditProvider(coreDB != nil)
 	if auditErr != nil {
-		log.Fatalf("refusing to start: audit store unavailable: %v", auditErr)
+		logging.Fatalf("refusing to start: audit store unavailable: %v", auditErr)
 	}
-	log.Printf("audit provider: %s", auditDesc)
+	logging.Infof("audit provider: %s", auditDesc)
 	auditProvider := bootstrap.WithSIEMForwarding(rawAudit, siemRouter)
+	auditAppliedMigrations(auditProvider)
+	// W30-27: install the HA takeover observer before ANY HA-gated scheduler
+	// starts so a takeover on its first tick is reported (the setter is atomic).
+	{
+		var haChannel delivery.Channel
+		haTarget := strings.TrimSpace(os.Getenv("KRYPTKEEPER_HA_NOTIFY_TARGET"))
+		if haTarget != "" {
+			haChannel = bootstrap.NewFanOutChannel(deliveryChannelsFromEnv(bootstrap.NewConfigStoreFromEnv()))
+		}
+		bootstrap.SetHAFailoverObserver(bootstrap.NewHAFailoverNotifier(auditProvider, haChannel, haTarget).Observe)
+	}
 	templateProvider := bootstrap.NewTemplateProviderFromEnv()
+	bootstrap.UpgradeWindowsEnrollLists(templateProvider) // D-291, once
 
 	var certificateProvider bootstrap.CertificateProvider
 	if needsCrypto {
@@ -276,7 +354,7 @@ func main() {
 			bootstrap.NewCACertificateProvider(caEngine, revStore, coreDB, isPostgres),
 			templateProvider,
 		)
-		log.Print("certificate provider: ca engine")
+		logging.Info("certificate provider: ca engine")
 	} else {
 		certificateProvider = bootstrap.NewCertificateProviderFromEnv()
 	}
@@ -292,6 +370,11 @@ func main() {
 		// that does not.
 		caProvider = bootstrap.NewEngineCAProviderWithCounts(
 			caEngine, bootstrap.ActiveCertCountByCAFromProvider(certificateProvider, bootstrap.NewDBActiveCertCountByCA(coreDB)))
+		if sel, ok := caProvider.(interface {
+			SetKeyBackends(bootstrap.KeyBackendSelector)
+		}); ok && keyRouter != nil {
+			sel.SetKeyBackends(keyRouter)
+		}
 	} else {
 		caProvider = bootstrap.NewCAProviderFromEnv()
 	}
@@ -301,20 +384,25 @@ func main() {
 	var discoveryProvider bootstrap.DiscoveryProvider
 	if strings.ToLower(strings.TrimSpace(os.Getenv("APP_DISCOVERY_PROVIDER"))) == "scanner" {
 		discoveryProvider = bootstrap.NewScannerDiscoveryProvider(nil, 50)
-		log.Print("discovery provider: scanner (minimal in-memory mode: 443 only, nothing persisted; use db for full discovery)")
+		logging.Info("discovery provider: scanner (minimal in-memory mode: 443 only, nothing persisted; use db for full discovery)")
 	} else {
 		discoveryProvider = bootstrap.NewDiscoveryProviderFromEnv()
 	}
 	// W5-12: recurring agentless discovery — opt-in via
 	// KRYPTKEEPER_DISCOVERY_SCAN_INTERVAL; works with any provider.
 	if sched := bootstrap.NewDiscoverySchedulerWithTargetsFromEnv(discoveryProvider, bootstrap.NewManagedTargetStoreFromEnv()); sched != nil {
+		sched.WithScheduleStore(bootstrap.NewDiscoveryScheduleStoreFromEnv())
 		sched.Start(context.Background())
 	}
 
+	// W32-10: ITSM ticket queue; also a delivery channel named "itsm".
+	itsmSvc := newITSMService(coreDB, isPostgres, auditProvider)
+
 	var notificationProvider bootstrap.NotificationProvider
 	if strings.ToLower(strings.TrimSpace(os.Getenv("APP_NOTIFICATION_PROVIDER"))) == "delivery" {
-		notificationProvider = bootstrap.NewDeliveryNotificationProvider(deliveryChannelsFromEnv(bootstrap.NewConfigStoreFromEnv()), 3)
-		log.Print("notification provider: delivery engine")
+		cfgStore := bootstrap.NewConfigStoreFromEnv()
+		notificationProvider = bootstrap.NewDeliveryNotificationProviderWithEscalation(append(deliveryChannelsFromEnv(cfgStore), itsmChannels(itsmSvc)...), 3, escalationResolver(cfgStore))
+		logging.Info("notification provider: delivery engine")
 	} else {
 		notificationProvider = bootstrap.NewNotificationProviderFromEnv()
 	}
@@ -327,39 +415,51 @@ func main() {
 	// --- Background schedulers ---
 	// Renewal scheduler: scans daily for certs approaching expiry and triggers
 	// auto-renewal or owner notifications.
+	renewalExecutor := bootstrap.NewRenewalExecutorFromEnv(certificateProvider).WithPluginDeliverer(pluginManager, auditProvider)
 	renewalScheduler := bootstrap.NewRenewalSchedulerFromEnv(certificateProvider, notificationProvider, auditProvider).
 		// S-17: arm the sweep's execute path — targets that opted in
 		// (auto_renew + ssh install profile + credential) renew for real via
 		// the W5-13 engine; everything else stays notify-only.
-		WithRenewalExecutor(bootstrap.NewRenewalExecutorFromEnv(certificateProvider).WithPluginDeliverer(pluginManager, auditProvider)).
+		WithRenewalExecutor(renewalExecutor).
+		// W26-27: ARI-driven timing for acme-upstream certs.
+		WithARIDue(bootstrap.NewARIDueFunc(renewalExecutor.ConnectorRegistryFunc(), certificateProvider)).
 		// RC1-A-01: a push also needs the principal that armed the target to
 		// still exist and still hold certificate.renew.
 		WithStampVerifier(auth.StampVerifier())
 	renewalScheduler.Start()
+	// W26-29: react to CA-initiated mass revocation of acme-upstream certs.
+	stopMassRevoke := bootstrap.StartACMEMassRevokeMonitor(context.Background(), renewalExecutor.ConnectorRegistryFunc(), certificateProvider, auditProvider, renewalScheduler)
+	defer stopMassRevoke()
+	bootstrap.StartApprovalExpiry(context.Background(), auditProvider)                         // W22-09: auto-reject stale approvals; lives for the process
+	bootstrap.StartCMDBSync(context.Background(), itsmSvc, certificateProvider, auditProvider) // W32-13: daily CMDB ownership sync
 	// W11-05: scheduled direct-CA inventory syncs.
 	inventorySync := bootstrap.NewInventorySyncSchedulerFromEnv(certificateProvider)
 	inventorySync.Start()
 	defer inventorySync.Stop()
 	defer renewalScheduler.Stop()
-	log.Print("renewal scheduler: started")
+	logging.Info("renewal scheduler: started")
 
 	// Posture scheduler: captures a daily crypto-posture snapshot for trend charts.
 	if snapshotStore, err := bootstrap.NewPostureSnapshotStoreFromEnv(); err != nil {
-		log.Printf("posture scheduler: disabled (snapshot store unavailable: %v)", err)
+		logging.Warnf("posture scheduler: disabled (snapshot store unavailable: %v)", err)
 	} else {
-		postureScheduler := bootstrap.NewPostureSchedulerFromEnv(certificateProvider, snapshotStore)
+		if err := bootstrap.ValidatePostureRetentionFromEnv(); err != nil {
+			logging.Fatalf("posture retention: %v", err)
+		}
+		postureScheduler := bootstrap.NewPostureSchedulerFromEnv(certificateProvider, snapshotStore).WithAudit(auditProvider)
 		postureScheduler.Start()
 		defer postureScheduler.Stop()
-		log.Print("posture scheduler: started")
+		logging.Info("posture scheduler: started")
 	}
 
-	// W12-01: CT-log rogue-cert monitor (opt-in via KRYPTKEEPER_CT_DOMAINS).
+	// W12-01: CT-log rogue-cert monitor (idle until domains are set via the
+	// ct.domains config key or KRYPTKEEPER_CT_DOMAINS).
 	// Detection needs the core DB for finding persistence; notification is
 	// best-effort over the first configured delivery channel and detection
 	// never depends on it.
 	if coreDB != nil {
 		if ctStore, err := ctmonitor.NewStore(coreDB, isPostgres); err != nil {
-			log.Printf("ct monitor: disabled (store: %v)", err)
+			logging.Infof("ct monitor: disabled (store: %v)", err)
 		} else {
 			ctInventory := ctmonitor.NewProviderInventory(func(ctx context.Context) (map[string]struct{}, error) {
 				serials := map[string]struct{}{}
@@ -374,11 +474,24 @@ func main() {
 			})
 			var ctNotifier ctmonitor.Notifier
 			if target := strings.TrimSpace(os.Getenv("KRYPTKEEPER_CT_NOTIFY_TARGET")); target != "" {
-				if chans := deliveryChannelsFromEnv(bootstrap.NewConfigStoreFromEnv()); len(chans) > 0 {
-					ctNotifier = &ctmonitor.ChannelNotifier{Channel: chans[0], Target: target}
-				}
+				fan := bootstrap.NewFanOutChannel(deliveryChannelsFromEnv(bootstrap.NewConfigStoreFromEnv()))
+				ctNotifier = &ctmonitor.ChannelNotifier{Channel: fan, Target: target}
 			}
 			if ctMonitor := ctmonitor.NewMonitorFromEnv(ctInventory, ctStore, ctNotifier); ctMonitor != nil {
+				// W24-20: domains re-read each scan (config store first, env
+				// fallback); only the HA lease holder polls.
+				ctCfg := bootstrap.NewConfigStoreFromEnv()
+				ctMonitor.SetDomainProvider(func(ctx context.Context) []string {
+					if ctCfg != nil {
+						if e, ok, err := ctCfg.Get(ctx, "ct.domains"); err == nil && ok && strings.TrimSpace(e.Value) != "" {
+							return ctmonitor.ParseDomainList(e.Value)
+						}
+					}
+					return ctmonitor.ParseDomainList(os.Getenv("KRYPTKEEPER_CT_DOMAINS"))
+				})
+				if hc := bootstrap.NewHACoordinatorFromEnvLogged(); hc != nil {
+					ctMonitor.SetLeaderLock(hc) // explicit nil check: a nil *HACoordinator in the interface is non-nil
+				}
 				hours := 12
 				if raw := strings.TrimSpace(os.Getenv("KRYPTKEEPER_CT_SCAN_HOURS")); raw != "" {
 					if n, err := strconv.Atoi(raw); err == nil && n > 0 {
@@ -388,26 +501,40 @@ func main() {
 				ctCtx, ctCancel := context.WithCancel(context.Background())
 				go ctMonitor.Start(ctCtx, time.Duration(hours)*time.Hour)
 				defer ctCancel()
-				log.Printf("ct monitor: started (every %dh)", hours)
+				logging.Infof("ct monitor: started (every %dh)", hours)
 			}
 		}
 	}
 
-	// W12-02: SLO evaluator — sweeps the expiry histogram and pages the
-	// first delivery channel on ok->breach transitions. Always on; the
+	// W12-02: SLO evaluator — sweeps the expiry histogram and pages every
+	// configured delivery channel on ok->breach transitions. Always on; the
 	// no-data guards keep an idle estate silent.
 	{
 		var sloChannel delivery.Channel
 		sloTarget := strings.TrimSpace(os.Getenv("KRYPTKEEPER_SLO_NOTIFY_TARGET"))
 		if sloTarget != "" {
-			if chans := deliveryChannelsFromEnv(bootstrap.NewConfigStoreFromEnv()); len(chans) > 0 {
-				sloChannel = chans[0]
-			}
+			sloChannel = bootstrap.NewFanOutChannel(deliveryChannelsFromEnv(bootstrap.NewConfigStoreFromEnv()))
 		}
 		sloScheduler := bootstrap.NewSLOSchedulerFromEnv(certificateProvider, sloChannel, sloTarget)
 		sloScheduler.Start()
 		defer sloScheduler.Stop()
-		log.Print("slo scheduler: started")
+		logging.Info("slo scheduler: started")
+	}
+
+	// W30-27: HA takeover signals (audit ha.failover + alert scheduler.failover)
+	// and the backup-age sweep (alert backup.stale), both via the notification
+	// fan-out. Alerts need a target; the audit leg does not.
+	{
+		var backupChannel delivery.Channel
+		backupTarget := strings.TrimSpace(os.Getenv("KRYPTKEEPER_BACKUP_NOTIFY_TARGET"))
+		if backupTarget != "" {
+			backupChannel = bootstrap.NewFanOutChannel(deliveryChannelsFromEnv(bootstrap.NewConfigStoreFromEnv()))
+		}
+		if sweeper := bootstrap.NewBackupStaleSweeperFromEnv(auditProvider, backupChannel, backupTarget); sweeper != nil {
+			sweeper.Start()
+			defer sweeper.Stop()
+			logging.Info("backup stale sweeper: started")
+		}
 	}
 
 	// W12-03: issuance-anomaly detection — scheduled scan with latched
@@ -417,32 +544,69 @@ func main() {
 		var anomalyChannel delivery.Channel
 		anomalyTarget := strings.TrimSpace(os.Getenv("KRYPTKEEPER_ANOMALY_NOTIFY_TARGET"))
 		if anomalyTarget != "" {
-			if chans := deliveryChannelsFromEnv(bootstrap.NewConfigStoreFromEnv()); len(chans) > 0 {
-				anomalyChannel = chans[0]
-			}
+			anomalyChannel = bootstrap.NewFanOutChannel(deliveryChannelsFromEnv(bootstrap.NewConfigStoreFromEnv()))
 		}
-		anomalyScheduler = bootstrap.NewAnomalySchedulerFromEnv(certificateProvider, anomalyChannel, anomalyTarget)
+		anomalyScheduler = bootstrap.NewAnomalySchedulerFromEnv(certificateProvider, anomalyChannel, anomalyTarget).WithAuditProvider(auditProvider)
 		anomalyScheduler.Start()
 		defer anomalyScheduler.Stop()
-		log.Print("anomaly scheduler: started")
+		logging.Info("anomaly scheduler: started")
+	}
+
+	// W22-31: accepted-risk exception expiry warning (14 days ahead) and
+	// lapse audit; warnings go to the cert owner, else this fallback target.
+	if excStore := bootstrap.NewFindingExceptionStoreFromEnv(); excStore != nil {
+		var excChannel delivery.Channel
+		excTarget := strings.TrimSpace(os.Getenv("KRYPTKEEPER_EXCEPTION_NOTIFY_TARGET"))
+		if chans := deliveryChannelsFromEnv(bootstrap.NewConfigStoreFromEnv()); len(chans) > 0 {
+			excChannel = chans[0]
+		}
+		excExpiry := bootstrap.NewExceptionExpiryScannerFromEnv(excStore, certificateProvider, auditProvider, excChannel, excTarget)
+		excExpiry.Start()
+		defer excExpiry.Stop()
+	}
+
+	// W22-26: orphan owner detection — alerts once when a deactivated user
+	// still owns certificates.
+	{
+		var orphanChannel delivery.Channel
+		orphanTarget := strings.TrimSpace(os.Getenv("KRYPTKEEPER_OWNERSHIP_ORPHAN_NOTIFY_TARGET"))
+		if orphanTarget != "" {
+			if chans := deliveryChannelsFromEnv(bootstrap.NewConfigStoreFromEnv()); len(chans) > 0 {
+				orphanChannel = chans[0]
+			}
+		}
+		orphanScanner := bootstrap.NewOrphanScannerFromEnv(certificateProvider, bootstrap.NewUserProviderFromEnv(), auditProvider, orphanChannel, orphanTarget)
+		orphanScanner.Start()
+		defer orphanScanner.Stop()
+		logging.Info("ownership orphan scanner: started")
 	}
 
 	// W12-04: mesh/SaaS discovery sweep (dormant when unconfigured).
 	if meshScheduler := bootstrap.NewMeshDiscoverySchedulerFromEnv(); meshScheduler != nil {
 		meshScheduler.Start()
 		defer meshScheduler.Stop()
-		log.Print("mesh discovery scheduler: started")
+		logging.Info("mesh discovery scheduler: started")
 	}
 
 	// Evidence scheduler: emails recurring compliance evidence packs (v1.4).
 	evidenceMailer := bootstrap.NewEvidenceMailerFromEnv()
 	if evidenceStore := bootstrap.NewEvidenceScheduleStoreFromEnv(); evidenceStore != nil && evidenceMailer.Enabled() {
-		evidenceScheduler := bootstrap.NewEvidenceSchedulerFromEnv(certificateProvider, caProvider, evidenceStore, evidenceMailer)
+		evidenceScheduler := bootstrap.NewEvidenceSchedulerFromEnv(certificateProvider, caProvider, evidenceStore, evidenceMailer).WithAudit(auditProvider)
 		evidenceScheduler.Start()
 		defer evidenceScheduler.Stop()
-		log.Print("evidence scheduler: started")
+		logging.Info("evidence scheduler: started")
 	} else {
-		log.Print("evidence scheduler: disabled (configure SMTP_HOST/SMTP_FROM to enable)")
+		logging.Info("evidence scheduler: disabled (configure SMTP_HOST/SMTP_FROM to enable)")
+	}
+
+	// Report scheduler: generic CSV/XLSX/PDF report delivery (W28-06).
+	if reportStore := bootstrap.NewReportScheduleStoreFromEnv(); reportStore != nil && evidenceMailer.Enabled() {
+		reportScheduler := bootstrap.NewReportSchedulerFromEnv(certificateProvider, caProvider, reportStore, evidenceMailer, auditProvider)
+		reportScheduler.Start()
+		defer reportScheduler.Stop()
+		logging.Info("report scheduler: started")
+	} else {
+		logging.Info("report scheduler: disabled (configure SMTP_HOST/SMTP_FROM to enable)")
 	}
 
 	// Agent renewal driver: re-evaluates each registered agent's last-known
@@ -466,7 +630,7 @@ func main() {
 		port = "8080"
 	}
 	if _, err := strconv.Atoi(port); err != nil {
-		log.Fatalf("invalid PORT %q: %v", port, err)
+		logging.Fatalf("invalid PORT %q: %v", port, err)
 	}
 	bindAddr := os.Getenv("APP_BIND_ADDR")
 	if bindAddr == "" {
@@ -489,10 +653,10 @@ func main() {
 	tlsRecorder, _ := certificateProvider.(ca.IssuedCertificateRecorder)
 	tlsConfig, tlsWarning, err := resolveTLSMode(needsCrypto, caEngine, tlsRecorder, defaultCAID, dataDir, bindAddr)
 	if err != nil {
-		log.Fatalf("TLS configuration: %v", err)
+		logging.Fatalf("TLS configuration: %v", err)
 	}
 	if tlsWarning != "" {
-		log.Print("warning: " + tlsWarning)
+		logging.Warn("" + tlsWarning)
 	}
 
 	// W19-13: the hub's public URL must never be its bind address -- a wildcard
@@ -501,13 +665,35 @@ func main() {
 	// with "dial tcp 0.0.0.0:PORT: connection refused" (UAT W19-04, 2026-09-10).
 	publicBaseURL, baseURLWarning, err := resolvePublicBaseURL(bindAddr, port, tlsConfig != nil)
 	if err != nil {
-		log.Fatalf("invalid KRYPTKEEPER_BASE_URL: %v", err)
+		logging.Fatalf("invalid KRYPTKEEPER_BASE_URL: %v", err)
 	}
 	if baseURLWarning != "" {
-		log.Print("warning: " + baseURLWarning)
+		logging.Warn("" + baseURLWarning)
 	}
 
 	pluginOpts := deliveryPluginOption(pluginManager)
+	lifecycleOpt, stopLifecycle := keyLifecycleOption(keys, coreDB, isPostgres, lifecycleCAStore, caProvider, certificateProvider, auditProvider, pluginManager)
+	defer stopLifecycle()
+	caRevokeOpt := bootstrap.WithActionExecutor(bootstrap.ActionCARevoke, bootstrap.NewCARevokeExecutor(caProvider, auditProvider))
+	codesignRec, _ := certificateProvider.(ca.IssuedCertificateRecorder)
+	codesignOpt := bootstrap.WithCodesignOIDC(caEngine, codesignRec, bootstrap.NewCodesignTrustStoreFromEnv(), bootstrap.NewPendingActionStoreFromEnv(), auth, auditProvider)
+	tsaOpt := bootstrap.TSAOptionFromEnv(auth, auditProvider)
+	cmpEnrollOpt := bootstrap.WithActionExecutor(cmpEnrollActionType, cmpEnrollExecutor)
+	// W23-27: on Postgres, /readyz also fails while the shared HA DB is lost.
+	var readyOpt bootstrap.ServerOption
+	if isPostgres {
+		if haCoord := bootstrap.NewHACoordinatorFromEnvLogged(); haCoord != nil {
+			readyOpt = bootstrap.WithReadinessProbe(haCoord.ReadinessProbe(auditProvider))
+		}
+	}
+	// A draining replica must stop leading: release HA leases now rather than in
+	// the defers (which logging.Fatal on a failed Shutdown would skip). Both
+	// stops are idempotent, so the later defers are harmless repeats.
+	drainOpt := bootstrap.WithDrainStartHook(func() {
+		stopLifecycle()
+		renewalScheduler.Stop()
+	})
+	archiveOpt := auditArchiveOption(auth, auditProvider, coreDB, isPostgres, auditDesc, os.Getenv)
 
 	// --- Protocol handlers (only when crypto engine is active) ---
 	if needsCrypto {
@@ -519,7 +705,7 @@ func main() {
 		// when set, otherwise this hub's own endpoints, preferably on the
 		// plain-HTTP revocation listener (see revocation_http.go).
 		if engine, ok := caEngine.(*ca.Engine); ok {
-			engine.SetRevocationPointers(func(caID string) (crlURLs, ocspURLs []string) {
+			pointers := func(caID string) (crlURLs, ocspURLs []string) {
 				if item, ok, err := caProvider.GetCA(context.Background(), caID); err == nil && ok {
 					crlURLs = item.CRLDistributionPoints
 					if item.OCSPServiceURL != nil && strings.TrimSpace(*item.OCSPServiceURL) != "" {
@@ -535,17 +721,20 @@ func main() {
 					}
 				}
 				return crlURLs, ocspURLs
-			})
+			}
+			engine.SetRevocationPointers(pointers)
+			// W23-50: with CRL shards on, new leaves point at their serial's shard.
+			if n := crl.ShardCountFromEnv(); n > 1 && revocationBaseURL(baseURL) != "" {
+				engine.SetRevocationPointersForSerial(shardPointers(pointers, revocationBaseURL(baseURL), n))
+			}
 			if revocationBaseURL(baseURL) == "" {
-				log.Print("warning: issued certificates carry no CRL/OCSP pointers unless their CA configures them: set KRYPTKEEPER_REVOCATION_BASE_URL or KRYPTKEEPER_BASE_URL")
+				logging.Warn("issued certificates carry no CRL/OCSP pointers unless their CA configures them: set KRYPTKEEPER_REVOCATION_BASE_URL or KRYPTKEEPER_BASE_URL")
 			}
 		}
 
 		// Per-endpoint rate limiters (per client IP, sliding window).
-		acmeRL := ratelimit.New(30, time.Minute)  // 30 req/min — covers order + authz + finalize
 		ocspRL := ratelimit.New(200, time.Minute) // 200 req/min — clients poll frequently
 		crlRL := ratelimit.New(30, time.Minute)
-		estRL := ratelimit.New(30, time.Minute)
 		scepRL := ratelimit.New(30, time.Minute)
 		cmpRL := ratelimit.New(30, time.Minute)
 		wstepRL := ratelimit.New(30, time.Minute)
@@ -555,15 +744,15 @@ func main() {
 		if coreDB != nil {
 			aStore := acme.NewSQLiteStore(coreDB, isPostgres)
 			if err := aStore.EnsureSchema(); err != nil {
-				log.Printf("warning: ACME schema migration failed (%v) — falling back to in-memory store", err)
+				logging.Warnf("ACME schema migration failed (%v) — falling back to in-memory store", err)
 				acmeStore = acme.NewMemStore()
 			} else {
 				acmeStore = aStore
-				log.Print("ACME store: database")
+				logging.Info("ACME store: database")
 			}
 		} else {
 			acmeStore = acme.NewMemStore()
-			log.Print("ACME store: in-memory (no DB)")
+			logging.Info("ACME store: in-memory (no DB)")
 		}
 		acmeServer := acme.NewServerWithStore(baseURL, caEngine, defaultCAID, acmeStore, revStore)
 		// W18-16/W18-18: issued certificates were never written to the
@@ -576,10 +765,13 @@ func main() {
 		// internal/bootstrap.
 		issuedRecorder, hasIssuedRecorder := certificateProvider.(ca.IssuedCertificateRecorder)
 		if !hasIssuedRecorder {
-			log.Print("certificate provider does not support issuance recording — ACME/EST/SCEP/CMP-issued certs will not appear in inventory until revoked")
+			logging.Warn("certificate provider does not support issuance recording — ACME/EST/SCEP/CMP-issued certs will not appear in inventory until revoked")
 		} else {
 			acmeServer.WithIssuedRecorder(issuedRecorder)
 		}
+		acmeServer.WithEnrollmentGate(protocolEnrollmentGate("KRYPTKEEPER_ACME_TEMPLATE", "acme", templateProvider, auditProvider))
+		acmeEABAPI := configureACMEAdmin(acmeServer, auth, coreDB, isPostgres, auditProvider, caEngine, templateProvider, baseURL)
+		acmeRL := newACMEProtocolLimiter(acmeStore, acmeServer.LookupEABKey, auditProvider) // W22-39: per-credential, 30/min/IP unauthenticated
 		protocolMux.Handle("/acme/", acmeRL.Middleware(acmeServer.Handler()))
 
 		ocspResponder := ocsp.NewResponder(
@@ -621,7 +813,11 @@ func main() {
 				return caObj.Certificate, signer, nil
 			},
 			24*time.Hour, 10000,
-		)
+		).WithMaxAge(ocsp.MaxAgeFromEnv()).
+			WithIssuerStatus(ocspIssuerStatus(caEngine, revStore)).
+			WithRetiredIssuers(func(keyHash []byte) (*x509.Certificate, crypto.Signer, error) {
+				return ocspResolveRetiredIssuer(caEngine, keys, keyHash)
+			})
 		// "/ocsp/" too: RFC 5019 GET puts the request in the path
 		// (/ocsp/<base64>), which is what Windows CryptoAPI sends. With only
 		// "/ocsp" registered those requests fell through to the UI.
@@ -661,6 +857,19 @@ func main() {
 			},
 			24*time.Hour,
 		)
+		configureCRL(crlGen, auditProvider, revocationBaseURL(baseURL))
+		// W23-16: a CA key rotation drops CRLs and OCSP responses signed by
+		// the other key so the next ones come from the active key.
+		if rot, ok := caEngine.(interface{ OnRotate(func(string)) }); ok {
+			rot.OnRotate(func(caID string) {
+				crlGen.InvalidateCA(caID)
+				ocspResponder.InvalidateAll()
+			})
+		}
+		if coreDB != nil {
+			// CRL numbers must stay monotonic across restarts and replicas.
+			crlGen.WithNumberAllocator(crl.NewDBNumberAllocator(coreDB, isPostgres))
+		}
 
 		// W19-01/W19-29: ocspResponder and crlGen each cache per their own
 		// keying (per-serial, per-CA respectively) and each had no
@@ -673,6 +882,10 @@ func main() {
 		// invalidator, wired into the SAME two revoke call sites that used
 		// to take only ocspResponder, makes one revoke invalidate both.
 		revocationInvalidator := multiRevocationCacheInvalidator{ocspResponder, crlGen}
+		startRevocationSync(context.Background(), coreDB, crlGen, ocspResponder)
+		// W23-34: revoking a CA records it with its parent and drops cached
+		// CRL/OCSP answers (both caches, including children's "good").
+		bootstrap.AttachRevocation(caProvider, revStore, ocspResponder, crlGen)
 		acmeServer.WithOCSPCacheInvalidator(revocationInvalidator)
 		if invalidatable, ok := certificateProvider.(interface {
 			SetOCSPCacheInvalidator(ca.RevocationCacheInvalidator)
@@ -691,8 +904,11 @@ func main() {
 		if hasIssuedRecorder {
 			estServer.WithIssuedRecorder(issuedRecorder)
 		}
+		estServer.WithEnrollmentGate(protocolEnrollmentGate("KRYPTKEEPER_EST_TEMPLATE", "est", templateProvider, auditProvider))
 		configureESTAuth(estServer, revStore, auditProvider)
-		protocolMux.Handle("/.well-known/est/", estRL.Middleware(estServer.Handler()))
+		estUserAPI := configureESTUserAdmin(estServer, coreDB, isPostgres, auth, auditProvider)
+		estLabelAPI := configureESTLabels(estServer, coreDB, isPostgres, auth, templateProvider, auditProvider)
+		protocolMux.Handle("/.well-known/est/", newESTProtocolLimiter(auditProvider).Middleware(estServer.Handler()))
 
 		// W19-15: SCEP's PKIOperation envelope (CMS EnvelopedData, RFC 8894
 		// §3.1) key-wraps the CSR to the issuing CA's RSA public key -- there
@@ -707,15 +923,36 @@ func main() {
 		}
 		scepStore, scepOff := scepSetup(coreDB, isPostgres)
 		var scepAPI bootstrap.ServerOption
+		// scepWhyOff is what the UI shows: set only when SCEP was requested
+		// (or is blocked by a leftover setting) yet is not serving.
+		scepWhyOff := ""
 		if scepOff != "" {
-			log.Print("SCEP disabled: " + scepOff)
+			logging.Info("SCEP disabled: " + scepOff)
+			if bootstrap.SCEPEnabledFromEnv() || strings.TrimSpace(os.Getenv(envSCEPLegacyChallenge)) != "" {
+				scepWhyOff = scepOff
+			}
+		} else if scepCAID == "" {
+			// First-run mode: SCEP is bound to one RSA CA at startup, so it
+			// cannot resolve lazily. Answer 503 with the reason (not 404)
+			// until a root exists and the hub is restarted.
+			protocolMux.HandleFunc("/scep", func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, ca.ErrNoCAConfigured.Error(), http.StatusServiceUnavailable)
+			})
+			scepWhyOff = "SCEP needs a CA: create a root CA with an RSA key, set KRYPTKEEPER_SCEP_CA_ID to it, and restart the hub"
+			logging.Info("SCEP disabled until a CA exists: create a root CA (set KRYPTKEEPER_SCEP_CA_ID to an RSA CA) and restart")
 		} else if scepCAObj, scepCAErr := caEngine.GetCA(scepCAID); scepCAErr != nil {
-			log.Printf("SCEP disabled — CA %s unavailable: %v", scepCAID, scepCAErr)
+			scepWhyOff = fmt.Sprintf("the SCEP CA %s could not be loaded; set KRYPTKEEPER_SCEP_CA_ID to an existing RSA CA and restart the hub", scepCAID)
+			logging.Warnf("SCEP disabled — CA %s unavailable: %v", scepCAID, scepCAErr)
 		} else if _, isRSA := scepCAObj.Certificate.PublicKey.(*rsa.PublicKey); !isRSA {
-			log.Printf("SCEP disabled — CA %s key is not RSA (SCEP's PKCS#7 envelope requires an RSA recipient key); set KRYPTKEEPER_SCEP_CA_ID to an RSA-issuing CA", scepCAID)
+			scepWhyOff = scepNotRSAReason(scepCAID)
+			logging.Warnf("SCEP disabled — %s", scepWhyOff)
 		} else {
 			scepServer := scep.NewServer(caEngine, scepCAID, scepStore)
 			configureSCEPAudit(scepServer, auditProvider)
+			if revStore != nil { // a nil store must stay a nil interface so renewal fails closed
+				configureSCEPRenewal(scepServer, revStore, scepCAID)
+			}
+			scepServer.WithEnrollmentGate(protocolEnrollmentGate("KRYPTKEEPER_SCEP_TEMPLATE", "scep", templateProvider, auditProvider))
 			// The decrypter is resolved fresh on every enrollment rather
 			// than cached: keys.Signer's SoftwareStore implementation hands
 			// back the concrete *rsa.PrivateKey, which implements
@@ -743,36 +980,53 @@ func main() {
 			}
 			protocolMux.Handle("/scep", scepRL.Middleware(scepServer.Handler()))
 			scepAPI = scepChallengeOption(auth, scepStore, scepCAID, auditProvider)
-			log.Printf("SCEP endpoint: /scep (CA %s); one-time challenges: POST /api/v1/scep/challenges", scepCAID)
+			logging.Infof("SCEP endpoint: /scep (CA %s); one-time challenges: POST /api/v1/scep/challenges", scepCAID)
 		}
 
 		// CMP over HTTP (RFC 6712). W19-16: requires a shared secret — RFC
 		// 4210 §5.1.3 message protection is now enforced, so an unconfigured
 		// secret means no client could ever authenticate, matching SCEP's
 		// disabled-until-configured pattern above.
+		// W26-09: API-managed credentials (POST /api/v1/cmp/credentials) can
+		// be the only authentication, so a configured database also enables CMP.
 		cmpSecret := os.Getenv("KRYPTKEEPER_CMP_SECRET")
-		if cmpSecret == "" {
-			log.Print("CMP disabled — set KRYPTKEEPER_CMP_SECRET to enable")
+		cmpCreds, cmpCredAPI := configureCMPCredentials(auth, coreDB, isPostgres, auditProvider)
+		if cmpSecret == "" && cmpCreds == nil {
+			logging.Info("CMP disabled — set KRYPTKEEPER_CMP_SECRET (or configure a database for API-managed credentials) to enable")
 		} else {
+			if cmpSecret == "" {
+				logging.Info("CMP: no KRYPTKEEPER_CMP_SECRET — only API-managed credentials authenticate")
+			} else if cmpCreds != nil {
+				logging.Info("CMP: KRYPTKEEPER_CMP_SECRET and API-managed credentials are both accepted")
+			}
 			cmpReference := os.Getenv("KRYPTKEEPER_CMP_REFERENCE")
 			cmpServer := cmp.NewServer(caEngine, defaultCAID, cmpSecret, cmpReference)
 			if cmpReference == "" {
-				log.Print("CMP: KRYPTKEEPER_CMP_REFERENCE is empty — the senderKID is not checked; set it so the key identifier is bound to the secret")
+				logging.Info("CMP: KRYPTKEEPER_CMP_REFERENCE is empty — the senderKID is not checked; set it so the key identifier is bound to the secret")
 			}
 			if sfx := strings.TrimSpace(os.Getenv("KRYPTKEEPER_CMP_ALLOWED_DNS_SUFFIXES")); sfx != "" {
 				parts := strings.Split(sfx, ",")
 				if err := (&ca.NamePolicy{AllowedDNSSuffixes: parts}).Validate(); err != nil {
-					log.Fatalf("KRYPTKEEPER_CMP_ALLOWED_DNS_SUFFIXES: %v", err)
+					logging.Fatalf("KRYPTKEEPER_CMP_ALLOWED_DNS_SUFFIXES: %v", err)
 				}
 				cmpServer.WithAllowedDNSSuffixes(parts)
 			} else {
-				log.Print("CMP: KRYPTKEEPER_CMP_ALLOWED_DNS_SUFFIXES is unset — a client holding the CMP secret can obtain a certificate for any name")
+				logging.Info("CMP: KRYPTKEEPER_CMP_ALLOWED_DNS_SUFFIXES is unset — a client holding the CMP secret can obtain a certificate for any name")
 			}
 			if hasIssuedRecorder {
 				cmpServer.WithIssuedRecorder(issuedRecorder)
 			}
+			if cmpCreds != nil {
+				cmpServer.WithCredentials(cmpCreds)
+			}
+			cmpServer.WithAuditFunc(cmpAuditFunc(auditProvider)).WithAlertFunc(cmpAlertFunc(auditProvider)).
+				WithRevoker(cmpRevoker{certs: certificateProvider})
+			if tplID := strings.TrimSpace(os.Getenv("KRYPTKEEPER_CMP_TEMPLATE")); tplID != "" {
+				cmpServer.WithApprover(cmpApprover{templateID: tplID, templates: templateProvider, actions: bootstrap.NewPendingActionStoreFromEnv()})
+				logging.Infof("CMP: enrollment waits for approval when template %s has require_approval (clients poll with pollReq)", tplID)
+			}
 			protocolMux.Handle("/cmp", cmpRL.Middleware(cmpServer.Handler()))
-			log.Print("CMP endpoint: /cmp")
+			logging.Info("CMP endpoint: /cmp")
 		}
 
 		// MS-WSTEP + MS-XCEP (Windows autoenrollment), authenticated per
@@ -780,9 +1034,13 @@ func main() {
 		// certificate for renewal. Without a keytab and SPN they are not
 		// served at all (W20-08).
 		if wstepAuth, err := wstep.KerberosFromEnv(); err != nil {
-			log.Printf("WSTEP/XCEP disabled: %v", err)
+			logging.Infof("WSTEP/XCEP disabled: %v", err)
 		} else {
 			wstepAudit := func(ctx context.Context, ev wstep.AuditEvent) {
+				if ev.Template != "" {
+					appendProtocolAuditFor(ctx, auditProvider, "template", ev.Template, ev.Action, ev.Actor, ev.Outcome, ev.SourceIP, ev.Detail)
+					return
+				}
 				appendProtocolAudit(ctx, auditProvider, ev.Action, ev.Actor, ev.Outcome, ev.SourceIP, ev.Detail)
 			}
 			// Templates offered for autoenrollment: active, with an OID. One
@@ -810,7 +1068,7 @@ func main() {
 				if d, err := time.ParseDuration(raw); err == nil && d > 0 {
 					xcepRenewal = uint64(d / time.Second)
 				} else {
-					log.Printf("warning: KRYPTKEEPER_XCEP_RENEWAL_PERIOD=%q ignored: want a Go duration such as 1008h", raw)
+					logging.Warnf("KRYPTKEEPER_XCEP_RENEWAL_PERIOD=%q ignored: want a Go duration such as 1008h", raw)
 				}
 			}
 			xcepTemplateFunc := func() ([]xcep.Template, error) {
@@ -821,15 +1079,17 @@ func main() {
 				out := make([]xcep.Template, 0, len(offered))
 				for _, t := range offered {
 					out = append(out, xcep.Template{
-						Name:            t.Name,
-						DisplayName:     t.DisplayName,
-						OID:             t.OID,
-						MinKeySize:      t.MinKeySize,
-						AutoEnroll:      t.AutoEnroll,
-						Revision:        t.Revision,
-						Enrollee:        t.Enrollee(),
-						RenewalSeconds:  xcepRenewal,
-						ValiditySeconds: uint64(bootstrap.TemplatePolicy(t).MaxValidity / time.Second),
+						Name:              t.Name,
+						DisplayName:       t.DisplayName,
+						OID:               t.OID,
+						MinKeySize:        bootstrap.TemplatePolicy(t).MinKeySize,
+						AllowedAlgorithms: bootstrap.TemplatePolicy(t).AllowedAlgorithms,
+						AutoEnroll:        t.AutoEnroll,
+						Revision:          t.Revision,
+						Enrollee:          t.Enrollee(),
+						EnrollRoles:       t.EnrollRoles(),
+						RenewalSeconds:    xcepRenewal,
+						ValiditySeconds:   uint64(bootstrap.TemplatePolicy(t).MaxValidity / time.Second),
 					})
 				}
 				return out, nil
@@ -837,7 +1097,7 @@ func main() {
 			findTemplate := func(match func(bootstrap.TemplateItem) bool) (bootstrap.TemplateItem, bool) {
 				offered, err := offeredTemplates()
 				if err != nil {
-					log.Printf("wstep: template list error: %v", err)
+					logging.Infof("wstep: template list error: %v", err)
 					return bootstrap.TemplateItem{}, false
 				}
 				for _, t := range offered {
@@ -853,7 +1113,7 @@ func main() {
 					return wstep.TemplateRef{}, false
 				}
 				policy := bootstrap.TemplatePolicy(t)
-				return wstep.TemplateRef{Name: t.Name, OID: t.OID, Enrollee: t.Enrollee(), MajorVersion: t.Revision, Policy: &policy}, true
+				return wstep.TemplateRef{Name: t.Name, OID: t.OID, Enrollee: t.Enrollee(), EnrollRoles: t.EnrollRoles(), MajorVersion: t.Revision, Policy: &policy}, true
 			}
 			// TokenType carries a template OID or name for non-Windows WSTEP
 			// clients (our own connector sends the name).
@@ -863,7 +1123,7 @@ func main() {
 					return wstep.TemplateRef{}, false
 				}
 				policy := bootstrap.TemplatePolicy(t)
-				return wstep.TemplateRef{Name: t.Name, OID: t.OID, Enrollee: t.Enrollee(), MajorVersion: t.Revision, Policy: &policy}, true
+				return wstep.TemplateRef{Name: t.Name, OID: t.OID, Enrollee: t.Enrollee(), EnrollRoles: t.EnrollRoles(), MajorVersion: t.Revision, Policy: &policy}, true
 			}
 			// MS-WSTEP (Windows WSTEP certificate enrollment).
 			wstepServer := wstep.NewServer(caEngine, defaultCAID).
@@ -880,7 +1140,7 @@ func main() {
 			if requestClientCertFromEnv() {
 				renewalNote = "renewal over Kerberos, or by hub-issued TLS client certificate"
 			}
-			log.Printf("WSTEP endpoint: /wstep (Kerberos SPN %s; %s)", os.Getenv(wstep.EnvSPN), renewalNote)
+			logging.Infof("WSTEP endpoint: /wstep (Kerberos SPN %s; %s)", os.Getenv(wstep.EnvSPN), renewalNote)
 
 			// MS-XCEP (Windows Certificate Enrollment Policy Protocol).
 			// Bridge the bootstrap TemplateProvider to the XCEP TemplateListFunc.
@@ -890,13 +1150,31 @@ func main() {
 			}
 			xcepServer := xcep.NewServer(xcepTemplateFunc, xcepPolicyID).
 				WithAuthenticator(wstepAuth).WithAuditFunc(wstepAudit)
-			if issuer, err := caEngine.GetCA(defaultCAID); err == nil && issuer.Certificate != nil {
+			// Advertise only key sizes the issuance policy will accept at
+			// WSTEP time; the same engine and CA resolution issuance uses.
+			if eng, ok := caEngine.(*ca.Engine); ok && eng != nil && eng.PolicyEngine() != nil {
+				pe := eng.PolicyEngine()
+				xcepServer.WithKeyPolicy(func() (xcep.KeyPolicyFunc, error) {
+					issuerID, err := ca.ResolveCAID(caEngine, defaultCAID)
+					if err != nil {
+						return nil, err
+					}
+					probe, err := pe.RSAProbe(issuerID)
+					if err != nil {
+						return nil, err
+					}
+					return probe.AcceptedRSABits, nil
+				})
+			}
+			if defaultCAID == "" {
+				logging.Info("XCEP: no CA exists yet (first-run mode); GetPolicies will fault until a root CA is created and the hub is restarted")
+			} else if issuer, err := caEngine.GetCA(defaultCAID); err == nil && issuer.Certificate != nil {
 				xcepServer.WithIssuer(issuer.Certificate.Raw, os.Getenv("KRYPTKEEPER_WSTEP_URL"))
 			} else {
-				log.Printf("warning: XCEP has no issuing CA (%v); GetPolicies will fault", err)
+				logging.Warnf("XCEP has no issuing CA (%v); GetPolicies will fault", err)
 			}
 			protocolMux.Handle("/xcep", xcepRL.Middleware(xcepServer.Handler()))
-			log.Printf("XCEP endpoint: /xcep (policy: %s)", xcepPolicyID)
+			logging.Infof("XCEP endpoint: /xcep (policy: %s)", xcepPolicyID)
 		}
 
 		protocolMux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
@@ -908,12 +1186,12 @@ func main() {
 			metrics.Default.WritePrometheus(w)
 		})
 
-		if err := bootstrap.RunWithProtocols(listenAddr, tlsConfig, auth, certSummaryProvider, auditProvider, caProvider, templateProvider, certificateProvider, protocolProvider, discoveryProvider, notificationProvider, dashboardActionProvider, protocolMux, keys, keyBackend, ceremonyOption(auth, auditProvider, coreDB, isPostgres, caEngine), anomalyOption(auth, anomalyScheduler), scepAPI, pluginOpts, bootstrap.WithSIEMRouter(siemRouter)); err != nil {
-			log.Fatal(err)
+		if err := bootstrap.RunWithProtocols(listenAddr, tlsConfig, auth, certSummaryProvider, auditProvider, caProvider, templateProvider, certificateProvider, protocolProvider, discoveryProvider, notificationProvider, dashboardActionProvider, protocolMux, keys, keyBackend, ceremonyOption(auth, auditProvider, coreDB, isPostgres, caEngine), policyAdminOption(auth, auditProvider, caEngine), teamPolicyOption(auth, auditProvider, coreDB, isPostgres), policyDraftOption(auth, auditProvider, caEngine, caProvider), anomalyOption(auth, anomalyScheduler), bootstrap.WithAnomalyRemediation(auth, anomalyScheduler, certificateProvider, caProvider, templateProvider, auditProvider), scepAPI, bootstrap.WithSCEPOffReason(scepWhyOff), estUserAPI, estLabelAPI, pluginOpts, caRevokeOpt, codesignOpt, tsaOpt, cmpEnrollOpt, lifecycleOpt, readyOpt, drainOpt, archiveOpt, acmeEABAPI, cmpCredAPI, bootstrap.WithSIEMRouter(siemRouter), bootstrap.WithITSM(itsmSvc)); err != nil {
+			logging.Fatal(err)
 		}
 	} else {
-		if err := bootstrap.Run(listenAddr, tlsConfig, auth, certSummaryProvider, auditProvider, caProvider, templateProvider, certificateProvider, protocolProvider, discoveryProvider, notificationProvider, dashboardActionProvider, keys, keyBackend, ceremonyOption(auth, auditProvider, coreDB, isPostgres, caEngine), anomalyOption(auth, anomalyScheduler), pluginOpts, bootstrap.WithSIEMRouter(siemRouter)); err != nil {
-			log.Fatal(err)
+		if err := bootstrap.Run(listenAddr, tlsConfig, auth, certSummaryProvider, auditProvider, caProvider, templateProvider, certificateProvider, protocolProvider, discoveryProvider, notificationProvider, dashboardActionProvider, keys, keyBackend, ceremonyOption(auth, auditProvider, coreDB, isPostgres, caEngine), policyAdminOption(auth, auditProvider, caEngine), teamPolicyOption(auth, auditProvider, coreDB, isPostgres), policyDraftOption(auth, auditProvider, caEngine, caProvider), anomalyOption(auth, anomalyScheduler), bootstrap.WithAnomalyRemediation(auth, anomalyScheduler, certificateProvider, caProvider, templateProvider, auditProvider), pluginOpts, caRevokeOpt, codesignOpt, tsaOpt, cmpEnrollOpt, lifecycleOpt, readyOpt, drainOpt, archiveOpt, bootstrap.WithSIEMRouter(siemRouter), bootstrap.WithITSM(itsmSvc)); err != nil {
+			logging.Fatal(err)
 		}
 	}
 }
@@ -927,8 +1205,15 @@ func main() {
 // unauthenticated request -- so one config read per send stays within
 // acceptance #3's bound; it is not a per-request hot path.
 type configuredChannel struct {
-	name  string
-	build func(ctx context.Context) delivery.Channel
+	name       string
+	build      func(ctx context.Context) delivery.Channel
+	configured func(ctx context.Context) bool
+}
+
+// Configured reports whether the channel's required settings are currently
+// present, re-resolving the config store on each call like Send does.
+func (c *configuredChannel) Configured(ctx context.Context) bool {
+	return c.configured != nil && c.configured(ctx)
 }
 
 func (c *configuredChannel) Name() string { return c.name }
@@ -951,7 +1236,7 @@ func (c *configuredChannel) Send(ctx context.Context, event delivery.Event) erro
 func startAgentRenewalDriver(store bootstrap.AgentStore) func() {
 	driver := bootstrap.NewRenewalAgentDriverFromEnv(store)
 	driver.Start()
-	log.Print("agent renewal driver: started")
+	logging.Info("agent renewal driver: started")
 	return driver.Stop
 }
 
@@ -977,9 +1262,14 @@ func deliveryChannelsFromEnv(store bootstrap.ConfigStore) []delivery.Channel {
 				Username: resolveConfigString(ctx, store, "notifications.smtp_username", "SMTP_USERNAME"),
 				Password: resolveConfigSecret(ctx, store, "notifications.smtp_password", "SMTP_PASSWORD"),
 			}
+		}, configured: func(ctx context.Context) bool {
+			return resolveConfigString(ctx, store, "notifications.smtp_host", "SMTP_HOST") != "" &&
+				resolveConfigString(ctx, store, "notifications.smtp_from", "SMTP_FROM") != ""
 		}},
 		&configuredChannel{name: "slack", build: func(ctx context.Context) delivery.Channel {
 			return &delivery.SlackChannel{WebhookURL: resolveConfigSecret(ctx, store, "notifications.slack_webhook_url", "SLACK_WEBHOOK_URL")}
+		}, configured: func(ctx context.Context) bool {
+			return resolveConfigSecret(ctx, store, "notifications.slack_webhook_url", "SLACK_WEBHOOK_URL") != ""
 		}},
 		&configuredChannel{name: "pagerduty", build: func(ctx context.Context) delivery.Channel {
 			return &delivery.PagerDutyChannel{
@@ -995,10 +1285,24 @@ func deliveryChannelsFromEnv(store bootstrap.ConfigStore) []delivery.Channel {
 				// PagerDutyChannel.Send already defaults it (pagerDutyEventsURL).
 				Endpoint: strings.TrimSpace(os.Getenv("KRYPTKEEPER_PAGERDUTY_EVENTS_URL")),
 			}
+		}, configured: func(ctx context.Context) bool {
+			return resolveConfigSecret(ctx, store, "notifications.pagerduty_routing_key", "PAGERDUTY_ROUTING_KEY") != ""
 		}},
 		&configuredChannel{name: "webhook", build: func(ctx context.Context) delivery.Channel {
-			return &delivery.WebhookChannel{URL: resolveConfigSecret(ctx, store, "notifications.webhook_url", "WEBHOOK_URL")}
+			s := bootstrap.ResolveWebhookSigning(ctx, store, startedAt)
+			return &delivery.WebhookChannel{URL: resolveConfigSecret(ctx, store, "notifications.webhook_url", "WEBHOOK_URL"), Secret: s.Secret, PreviousSecret: s.Previous, PreviousUntil: s.PreviousUntil}
+		}, configured: func(ctx context.Context) bool {
+			return resolveConfigSecret(ctx, store, "notifications.webhook_url", "WEBHOOK_URL") != ""
 		}},
+	}
+}
+
+// escalationResolver reads the escalation channel/target on every call, so a
+// config change applies to the next failure with no restart. store may be nil.
+func escalationResolver(store bootstrap.ConfigStore) bootstrap.EscalationResolver {
+	return func(ctx context.Context) (string, string) {
+		return resolveConfigString(ctx, store, "notifications.escalation_channel", "KRYPTKEEPER_NOTIFY_ESCALATION_CHANNEL"),
+			resolveConfigSecret(ctx, store, "notifications.escalation_target", "KRYPTKEEPER_NOTIFY_ESCALATION_TARGET")
 	}
 }
 
@@ -1116,7 +1420,85 @@ func ocspResolveCAID(engine ca.Service, issuer *x509.Certificate) (string, error
 			return c.ID, nil
 		}
 	}
+	// A rotated-out issuer (W23-19): its leaves' revocations live under the
+	// re-keyed CA's id.
+	retired, err := ocspRetiredIssuers(engine)
+	if err != nil {
+		return "", err
+	}
+	for _, ri := range retired {
+		if bytes.Equal(ri.Cert.Raw, issuer.Raw) {
+			return ri.CAID, nil
+		}
+	}
 	return "", ocsp.ErrUnknownIssuer
+}
+
+// ocspRetiredIssuers lists rotated-out issuers whose key still exists; an
+// engine without the ledger (test doubles) has none.
+func ocspRetiredIssuers(engine ca.Service) ([]ca.RetiredIssuer, error) {
+	src, ok := engine.(ca.RetiredIssuerSource)
+	if !ok {
+		return nil, nil
+	}
+	return src.RetiredIssuers()
+}
+
+// ocspResolveRetiredIssuer is the responder's second lookup (W23-19): the CA
+// certificate a rotation retired and its OLD key, matched by key hash. The
+// old key signs so the response verifies against the issuer the CertID names.
+// Once RetireRotatedKeys destroys the key the entry is gone and the request is
+// answered "unauthorized" like any unserved issuer.
+func ocspResolveRetiredIssuer(engine ca.Service, keys keystore.Store, keyHash []byte) (*x509.Certificate, crypto.Signer, error) {
+	retired, err := ocspRetiredIssuers(engine)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, ri := range retired {
+		if h := ocspPublicKeyHash(ri.Cert, len(keyHash)); h != nil && bytes.Equal(h, keyHash) {
+			signer, err := keys.Signer(ri.KeyID)
+			if err != nil {
+				return nil, nil, fmt.Errorf("retired issuer key: %w", err)
+			}
+			return ri.Cert, signer, nil
+		}
+	}
+	return nil, nil, ocsp.ErrUnknownIssuer
+}
+
+// ocspIssuerStatus reports whether issuer, or any CA above it, is revoked
+// (W23-35), so every certificate under a revoked CA answers revoked. The
+// revocation time comes from the record the revoke wrote: the revoked CA's
+// certificate under its parent (a root has a self-keyed record).
+func ocspIssuerStatus(engine ca.Service, rs ca.RevocationStore) ocsp.IssuerStatusFunc {
+	const maxDepth = 16 // bounds a corrupt ParentCAID cycle
+	return func(issuer *x509.Certificate) (bool, time.Time, int, error) {
+		id, err := ocspResolveCAID(engine, issuer)
+		if err != nil {
+			return false, time.Time{}, 0, err
+		}
+		for depth := 0; id != "" && depth < maxDepth; depth++ {
+			c, err := engine.GetCA(id)
+			if err != nil {
+				return false, time.Time{}, 0, fmt.Errorf("issuer status: %w", err)
+			}
+			if c.Status == "revoked" {
+				at, reason := time.Now().UTC(), 2 // cACompromise, as W23-34 records
+				if rs != nil && c.Certificate != nil {
+					holder := c.ParentCAID
+					if holder == "" {
+						holder = c.ID
+					}
+					if ok, when, rc, rerr := rs.IsRevoked(c.Certificate.SerialNumber, holder); rerr == nil && ok {
+						at, reason = when, rc
+					}
+				}
+				return true, at, reason, nil
+			}
+			id = c.ParentCAID
+		}
+		return false, time.Time{}, 0, nil
+	}
 }
 
 // ocspResolveIssuerByKeyHash finds the CA whose RFC 6960 IssuerKeyHash matches
@@ -1178,7 +1560,7 @@ func ocspPublicKeyHash(cert *x509.Certificate, size int) []byte {
 func removeCISeedAndExit() {
 	db, isPostgres, err := bootstrap.OpenCoreDB()
 	if err != nil {
-		log.Fatalf("--remove-ci-seed: core DB unavailable: %v", err)
+		logging.Fatalf("--remove-ci-seed: core DB unavailable: %v", err)
 	}
 	defer func() { _ = db.Close() }()
 
@@ -1188,10 +1570,10 @@ func removeCISeedAndExit() {
 	}
 	n, err := kkdb.RemoveCISeedData(db, engine)
 	if err != nil {
-		log.Fatalf("--remove-ci-seed: %v", err)
+		logging.Fatalf("--remove-ci-seed: %v", err)
 	}
 	if n == 0 {
-		log.Print("--remove-ci-seed: no CI seed rows found; nothing to do")
+		logging.Info("--remove-ci-seed: no CI seed rows found; nothing to do")
 	}
 	os.Exit(0)
 }
@@ -1206,7 +1588,7 @@ func buildCloudKMSStore(provider string, coreDB *sql.DB, isPostgres bool) (keyst
 		return nil, errors.New("KRYPTKEEPER_KMS_PROVIDER must be set to aws, gcp, or azure when KRYPTKEEPER_KEY_BACKEND=cloudkms")
 	}
 	if coreDB == nil {
-		log.Print("warning: cloud KMS running WITHOUT a core DB — key references are memory-only and a restart will orphan cloud keys (G-34)")
+		logging.Warn("cloud KMS running WITHOUT a core DB — key references are memory-only and a restart will orphan cloud keys (G-34)")
 	}
 	return keystore.NewCloudKMSStoreWithDB(provider, coreDB, isPostgres)
 }
@@ -1219,13 +1601,44 @@ func ceremonyOption(auth *bootstrap.Authenticator, auditProvider bootstrap.Audit
 	}
 	mgr, err := ca.NewCeremonyManager(coreDB, isPostgres, caEngine)
 	if err != nil {
-		log.Printf("key ceremonies disabled: %v", err)
+		logging.Infof("key ceremonies disabled: %v", err)
 		return nil
 	}
-	log.Print("key ceremony API: /api/v1/ceremonies (M-of-N root-CA ceremonies)")
+	mgr.SetNotifier(ca.LogCeremonyNotifier{})
+	go bootstrap.RunCeremonySweeper(context.Background(), mgr, auditProvider, time.Minute)
+	logging.Info("key ceremony API: /api/v1/ceremonies (M-of-N root-CA ceremonies)")
 	return bootstrap.WithExtraHandlers(func(mux *http.ServeMux) {
 		bootstrap.RegisterCeremonyHandlers(mux, auth, mgr, auditProvider)
 	})
+}
+
+// policyAdminOption mounts the W22-14 issuance-policy admin API. caEngine may
+// be nil, a non-*ca.Engine service, or an engine without a policy gate
+// (KRYPTKEEPER_ALLOW_NO_POLICY); each yields nil, which Run skips.
+func policyAdminOption(auth *bootstrap.Authenticator, auditProvider bootstrap.AuditProvider, caEngine ca.CeremonyEngine) bootstrap.ServerOption {
+	eng, ok := caEngine.(*ca.Engine)
+	if !ok || eng == nil {
+		return nil
+	}
+	return bootstrap.WithPolicyAdmin(auth, eng.PolicyEngine(), auditProvider)
+}
+
+// teamPolicyOption mounts the W33-20 team-policy admin API; nil without a core DB.
+func teamPolicyOption(auth *bootstrap.Authenticator, auditProvider bootstrap.AuditProvider, coreDB *sql.DB, isPostgres bool) bootstrap.ServerOption {
+	if coreDB == nil {
+		return nil
+	}
+	return bootstrap.WithTeamPolicyAdmin(auth, coreDB, isPostgres, auditProvider)
+}
+
+// policyDraftOption mounts the W30-09 NL policy drafting routes next to the
+// policy admin API; nil under the same conditions as policyAdminOption.
+func policyDraftOption(auth *bootstrap.Authenticator, auditProvider bootstrap.AuditProvider, caEngine ca.CeremonyEngine, cas bootstrap.CAProvider) bootstrap.ServerOption {
+	eng, ok := caEngine.(*ca.Engine)
+	if !ok || eng == nil {
+		return nil
+	}
+	return bootstrap.WithPolicyDraft(auth, eng.PolicyEngine(), auditProvider, cas)
 }
 
 // anomalyOption mounts the W12-03 anomaly report surface.
@@ -1233,4 +1646,58 @@ func anomalyOption(auth *bootstrap.Authenticator, scheduler *bootstrap.AnomalySc
 	return bootstrap.WithExtraHandlers(func(mux *http.ServeMux) {
 		bootstrap.RegisterAnomalyHandlers(mux, auth, scheduler)
 	})
+}
+
+// reportCoreDBOpenFailure makes the two migration refusals impossible to miss
+// in the boot log: the ALERT line is the migration.failed event (routing it to
+// notification channels is UC-I01's job), and the newer-schema text is logged
+// on its own line because CoreDBStartupDecision wraps it in a long message.
+func reportCoreDBOpenFailure(err error) {
+	var newer *kkdb.SchemaNewerError
+	if errors.As(err, &newer) {
+		logging.Info(newer.Error())
+	}
+	var failed *kkdb.MigrationError
+	if !errors.As(err, &failed) {
+		return
+	}
+	label := fmt.Sprintf("%06d_%s", failed.Version, failed.Name)
+	logging.Warnf("ALERT event=migration.failed migration=%s error=%v", label, failed.Err)
+	// Best effort: the audit store may be the very thing that is broken, and
+	// a failure here must never mask the fatal exit that follows.
+	raw, _ := json.Marshal(map[string]any{"migration": label, "error": failed.Err.Error()})
+	if aerr := appendAuditEntry(context.Background(), bootstrap.AuditEntry{
+		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		Action:        "schema.migrate.up",
+		ActorType:     "system",
+		ActorID:       "kryptkeeper",
+		ResourceType:  "schema",
+		ResourceID:    label,
+		Outcome:       bootstrap.AuditOutcomeFailure,
+		ChangeSummary: string(raw),
+	}); aerr != nil {
+		logging.Warnf("could not record schema.migrate.up failure in the audit log: %v", aerr)
+	}
+}
+
+// auditAppliedMigrations records what RunMigrations applied before an audit
+// provider existed, so an upgrade is reconstructable from the audit log.
+func auditAppliedMigrations(p bootstrap.AuditProvider) {
+	applied := kkdb.AppliedThisProcess()
+	if len(applied) == 0 {
+		return
+	}
+	raw, _ := json.Marshal(map[string]any{"applied": applied, "count": len(applied)})
+	if err := p.AppendEntry(context.Background(), bootstrap.AuditEntry{
+		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		Action:        "schema.migrate.up",
+		ActorType:     "system",
+		ActorID:       "kryptkeeper",
+		ResourceType:  "schema",
+		ResourceID:    fmt.Sprintf("%06d", applied[len(applied)-1]),
+		Outcome:       bootstrap.AuditOutcomeSuccess,
+		ChangeSummary: string(raw),
+	}); err != nil {
+		logging.Warnf("could not record schema.migrate.up in the audit log: %v", err)
+	}
 }

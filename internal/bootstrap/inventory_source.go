@@ -14,12 +14,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // W11-05: direct-CA inventory sync — see the estate before migrating it.
@@ -178,7 +179,7 @@ func newDigicertSource(ctx context.Context, configJSON, credentialRef string, cr
 	}
 	return &digicertSource{
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
-		apiKey:  strings.TrimSpace(string(keyBytes)),
+		apiKey:  credentialSecretString(keyBytes, "api_key"),
 		client:  inventoryHTTPClient(30 * time.Second),
 	}, nil
 }
@@ -290,9 +291,18 @@ func syncInventorySource(ctx context.Context, source InventorySource, sourceID s
 			continue
 		}
 		update := EstateUpdate{Origin: "synced", ManagementState: "external"}
+		// A known certificate someone took over stays managed: a re-sync
+		// (scheduled or manual) must never undo a takeover (B3). Origin is
+		// left alone too, so revert still derives the right prior state.
+		if errors.Is(err, errCertificateConflict) && certificateIsManaged(ctx, provider, fingerprint) {
+			update = EstateUpdate{}
+		}
 		if cert.UpstreamStatus == "revoked" {
 			update.RenewalStatus = string(RenewalStatusRevoked)
 			result.RevokedMarked++
+		}
+		if update == (EstateUpdate{}) {
+			continue
 		}
 		if _, err := provider.UpdateEstate(ctx, fingerprint, update); err != nil {
 			if len(result.Failed) < 20 {
@@ -302,6 +312,17 @@ func syncInventorySource(ctx context.Context, source InventorySource, sourceID s
 	}
 	_ = sourceID
 	return result, nil
+}
+
+// certificateIsManaged reports whether fingerprint is a managed certificate.
+// A lookup failure counts as managed: skipping one estate stamp is safe,
+// silently reverting a takeover is not.
+func certificateIsManaged(ctx context.Context, provider CertificateProvider, fingerprint string) bool {
+	d, ok, err := provider.GetCertificate(ctx, fingerprint)
+	if err != nil {
+		return true
+	}
+	return ok && d.ManagementState == "managed"
 }
 
 // --- store ------------------------------------------------------------------
@@ -487,6 +508,28 @@ type InventorySyncScheduler struct {
 
 	checkInterval time.Duration
 	stop          chan struct{}
+
+	haCoordinator *HACoordinator   // nil => single-replica behaviour (no gate)
+	now           func() time.Time // nil => time.Now; test seam
+}
+
+// haLockInventorySyncPrefix + source ID names the per-source sync lease, so
+// replicas may legitimately sync different sources but never the same one in
+// the same interval.
+const haLockInventorySyncPrefix = "inventory-sync:"
+
+// inventorySyncTimeout bounds one source's sync so a hung vendor cannot wedge
+// the scheduler.
+const inventorySyncTimeout = 30 * time.Minute
+
+// newInventorySourceForSync is a test seam (production = buildInventorySource).
+var newInventorySourceForSync = buildInventorySource
+
+func (s *InventorySyncScheduler) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 func NewInventorySyncSchedulerFromEnv(provider CertificateProvider) *InventorySyncScheduler {
@@ -496,12 +539,13 @@ func NewInventorySyncSchedulerFromEnv(provider CertificateProvider) *InventorySy
 		creds:         newOutboundCredentialStoreFromEnv(),
 		checkInterval: time.Hour,
 		stop:          make(chan struct{}),
+		haCoordinator: newHACoordinatorFromEnvLogged(),
 	}
 }
 
 func (s *InventorySyncScheduler) Start() {
 	if s.store == nil {
-		log.Print("inventory sync scheduler: store unavailable; scheduled syncs disabled (manual syncs via the API still work when the store returns)")
+		logging.Warn("inventory sync scheduler: store unavailable; scheduled syncs disabled (manual syncs via the API still work when the store returns)")
 		return
 	}
 	go func() {
@@ -523,10 +567,10 @@ func (s *InventorySyncScheduler) Stop() { close(s.stop) }
 func (s *InventorySyncScheduler) runDue(ctx context.Context) {
 	recs, err := s.store.List(ctx)
 	if err != nil {
-		log.Printf("inventory sync scheduler: list failed: %v", err)
+		logging.Warnf("inventory sync scheduler: list failed: %v", err)
 		return
 	}
-	now := time.Now().UTC()
+	now := s.clock().UTC()
 	for _, rec := range recs {
 		if rec.ScheduleMinutes <= 0 {
 			continue
@@ -537,19 +581,35 @@ func (s *InventorySyncScheduler) runDue(ctx context.Context) {
 				continue
 			}
 		}
-		source, err := buildInventorySource(ctx, rec, s.creds)
+		// Held for the whole interval and never released: that is what makes
+		// it one sync per source per interval. The holder renews on its next
+		// due tick; a crashed holder's lease lapses and a peer takes over.
+		if s.haCoordinator != nil {
+			lease := time.Duration(rec.ScheduleMinutes) * time.Minute
+			ok, err := s.haCoordinator.TryAcquire(ctx, haLockInventorySyncPrefix+rec.ID, lease)
+			if err != nil {
+				logging.Warnf("inventory sync scheduler: ha lock check failed for %s, skipping: %v", rec.ID, err)
+				continue
+			}
+			if !ok {
+				continue
+			}
+		}
+		source, err := newInventorySourceForSync(ctx, rec, s.creds)
 		if err != nil {
-			log.Printf("inventory sync scheduler: source %s unbuildable: %v", rec.ID, err)
+			logging.Infof("inventory sync scheduler: source %s unbuildable: %v", rec.ID, err)
 			continue
 		}
-		result, err := syncInventorySource(ctx, source, rec.ID, s.provider)
+		syncCtx, cancel := context.WithTimeout(ctx, inventorySyncTimeout)
+		result, err := syncInventorySource(syncCtx, source, rec.ID, s.provider)
+		cancel()
 		summary, _ := json.Marshal(result)
 		if err != nil {
 			summary = []byte(fmt.Sprintf(`{"error":%q}`, err.Error()))
-			log.Printf("inventory sync scheduler: sync %s failed: %v", rec.ID, err)
+			logging.Warnf("inventory sync scheduler: sync %s failed: %v", rec.ID, err)
 		}
 		if err := s.store.RecordSync(ctx, rec.ID, now.Format(time.RFC3339), string(summary)); err != nil {
-			log.Printf("inventory sync scheduler: record sync %s failed: %v", rec.ID, err)
+			logging.Warnf("inventory sync scheduler: record sync %s failed: %v", rec.ID, err)
 		}
 	}
 }

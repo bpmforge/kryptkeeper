@@ -1,0 +1,46 @@
+# Workload pods: each runs as a distinct fixed UID that the hub attests from the
+# Unix-socket peer credentials. svid-server is UID 2001, svid-client UID 2002;
+# svid-denied (UID 2003) is deliberately NOT registered.
+# Placeholders (__X__) are substituted by run.sh.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: svid-server
+  namespace: uat
+  labels: {app: svid-server}
+spec:
+  restartPolicy: Never
+  containers:
+    - name: svidclient
+      image: __CLIENT_IMAGE__
+      imagePullPolicy: Never
+      args: ["serve", "--listen", ":8443", "--allow", "spiffe://kk-uat.example/ns/uat/sa/client"]
+      ports: [{containerPort: 8443}]
+      securityContext: {runAsUser: 2001, runAsNonRoot: true, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+      volumeMounts: [{name: sock, mountPath: /run/kk-spiffe}]
+  volumes:
+    - {name: sock, hostPath: {path: /run/kk-spiffe, type: Directory}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: svid-server, namespace: uat}
+spec:
+  selector: {app: svid-server}
+  ports: [{port: 8443, targetPort: 8443}]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: svid-client
+  namespace: uat
+spec:
+  restartPolicy: Never
+  containers:
+    - name: svidclient
+      image: __CLIENT_IMAGE__
+      imagePullPolicy: Never
+      args: ["call", "--addr", "svid-server.uat.svc:8443", "--allow", "spiffe://kk-uat.example/ns/uat/sa/server"]
+      securityContext: {runAsUser: 2002, runAsNonRoot: true, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+      volumeMounts: [{name: sock, mountPath: /run/kk-spiffe}]
+  volumes:
+    - {name: sock, hostPath: {path: /run/kk-spiffe, type: Directory}}

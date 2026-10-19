@@ -58,6 +58,11 @@ COPY nginx-agent-uat.conf /etc/nginx/sites-enabled/agent-uat.conf
 RUN printf '#!/bin/sh\nif [ "$1" = "reload" ] && [ "$2" = "nginx" ]; then exec nginx -s reload; fi\necho "systemctl shim: unsupported: $*" >&2; exit 1\n' \
       > /usr/local/sbin/systemctl && chmod +x /usr/local/sbin/systemctl
 
+# W24-16: keystore and kubeconfig fixtures (JKS 3 certs, PKCS#12 2 certs,
+# kubeconfig 1 cert); the generator script is not part of the host image.
+COPY fixtures/ /opt/keystores/
+RUN rm -f /opt/keystores/gen-keystores.sh
+
 COPY kryptkeeper-agent /usr/local/bin/kryptkeeper-agent
 RUN chmod +x /usr/local/bin/kryptkeeper-agent
 

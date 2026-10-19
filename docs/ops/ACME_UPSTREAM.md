@@ -76,6 +76,18 @@ CA.
 A failed order reports the CA's own problem detail, or names the
 nameserver that never served the record.
 
+### `dns_provider: delegated` (acme-dns): the TXT is not removed
+
+Step 4 above does not hold for the CNAME-delegation provider. acme-dns has no
+delete call: it keeps the last two TXT values per account, and each value is
+a one-time digest of that order's key authorization, so a leftover value
+cannot validate anything. Nothing is removed after validation, and the
+connector's cleanup is a no-op.
+
+Set `dns_propagation` to `resolver`, `doh` or `none` for this provider. The
+`authoritative` check asks the zone's own nameservers, which do not follow the
+out-of-zone `_acme-challenge` CNAME to the acme-dns name.
+
 ## How propagation is checked (`dns_propagation`)
 
 The check only decides when the hub tells the CA to validate; the CA's
@@ -152,3 +164,13 @@ The hub reaches the CA through a guarded client (FG-8, OWASP-A10-002):
 `blocked destination` or `directory returned an error status`. The underlying
 error is written to the server log (`acme connector <id>: health probe
 failed`), not returned to API callers.
+
+## Known limitation: Retry-After does not survive a restart (v1)
+
+The connector backoff and the upstream Retry-After gate are held in process memory. A hub restarted (or failed
+over) while a CA is answering 429 forgets the remaining Retry-After and may place a few orders before it ends;
+the CA simply answers 429 again and the hub backs off from there. Measured in the renewal storm (leg B, a graceful
+restart during a 429 window): 3 orders up to 2.8 s early, no lost or duplicate issuance from this cause. With
+several replicas the gate is also per replica, not shared. Plan for it with CAs that penalise early retries (a
+stricter rate-limit tier): stagger restarts away from a known 429 window. Tracked as W35-01 (persist the gate
+across restarts and replicas). See `tests/live/storm/README.md`.

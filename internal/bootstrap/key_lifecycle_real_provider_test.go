@@ -69,3 +69,53 @@ func TestCompromiseFlowFlagsCertsThroughRealProviderAndSchema(t *testing.T) {
 		}
 	}
 }
+
+// Certificates the flow revokes keep renewal_status "revoked" in the real
+// inventory; reissue_required would have overwritten it.
+func TestCompromiseKeepsRevokedStatusThroughRealProvider(t *testing.T) {
+	db := setupIntegrationDB(t)
+	provider, engine := newIntegrationCAProvider(t, db)
+	ctx := context.Background()
+	caID := getFirstCAID(t, engine)
+
+	res, err := provider.IssueCertificate(ctx, CertificateIssueRequest{CAID: caID, CSRPEM: generateTestCSRPEM(t, "r.example.com", "r.example.com")})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	store, err := keystore.NewSoftwareStore(t.TempDir(), []byte("lifecycle-test-passphrase-32-by!"))
+	if err != nil {
+		t.Fatalf("keystore: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	if _, err := store.GenerateKey("burned", keystore.ECDSAP256); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	caStore := ca.NewMemStore()
+	if err := caStore.Save(&ca.CA{ID: caID, KeyID: "burned", Status: "active"}); err != nil {
+		t.Fatalf("save ca: %v", err)
+	}
+	m, err := NewKeyLifecycleManager(db, false, store,
+		WithLifecycleCARotation(&recordingRotator{}, caStore),
+		WithLifecycleReissue(provider, &countingReissuer{}),
+		WithLifecycleRevoker(provider))
+	if err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	if err := m.SetPolicy("burned", "alice", nil, 0); err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	report, err := m.MarkCompromised(ctx, "burned")
+	if err != nil {
+		t.Fatalf("compromise: %v", err)
+	}
+	if len(report.Revoked) != 1 {
+		t.Fatalf("cert must be revoked: %+v", report)
+	}
+	var status string
+	if err := db.QueryRow(`SELECT renewal_status FROM certificates WHERE fingerprint_sha256 = ?`, res.FingerprintSHA256).Scan(&status); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if status != "revoked" {
+		t.Fatalf("renewal_status = %q, want revoked", status)
+	}
+}

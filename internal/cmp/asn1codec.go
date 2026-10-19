@@ -95,6 +95,7 @@ type parsedMessage struct {
 	BodyBytes  []byte // content of the PKIBody CHOICE
 	BodyRaw    asn1.RawValue
 	Protection asn1.RawValue // zero value if the message carried no protection
+	cred       credCtx       // set by the protection gate (server.go)
 }
 
 // parsePKIMessage decodes a DER (or base64-of-DER) CMP PKIMessage into a

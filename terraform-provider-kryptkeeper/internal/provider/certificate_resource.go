@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -13,6 +14,7 @@ import (
 )
 
 var _ resource.Resource = &CertificateResource{}
+var _ resource.ResourceWithImportState = &CertificateResource{}
 
 func NewCertificateResource() resource.Resource { return &CertificateResource{} }
 
@@ -60,8 +62,8 @@ func (r *CertificateResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"csr_pem": schema.StringAttribute{
 				Required:      true,
 				Sensitive:     false,
-				Description:   "PEM-encoded Certificate Signing Request (CSR).",
-				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Description:   "PEM-encoded Certificate Signing Request (CSR). The hub does not return it, so an imported certificate has none in state and setting it in config afterwards does not force a replacement.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplaceIf(csrRequiresReplace, "Replace when the CSR changes, unless state holds none (imported certificate).", "Replace when the CSR changes, unless state holds none (imported certificate).")},
 			},
 			"certificate_pem": schema.StringAttribute{
 				Computed:    true,
@@ -69,7 +71,7 @@ func (r *CertificateResource) Schema(_ context.Context, _ resource.SchemaRequest
 			},
 			"chain_pem": schema.StringAttribute{
 				Computed:    true,
-				Description: "The full certificate chain (leaf + intermediates) in PEM format.",
+				Description: "The issuing CA chain (issuing CA up to the root) in PEM format.",
 			},
 			"fingerprint": schema.StringAttribute{
 				Computed:    true,
@@ -123,8 +125,6 @@ func (r *CertificateResource) Create(ctx context.Context, req resource.CreateReq
 		Data struct {
 			FingerprintSHA256 string `json:"fingerprint_sha256"`
 			CommonName        string `json:"common_name"`
-			CertificatePEM    string `json:"certificate_pem"`
-			ChainPEM          string `json:"chain_pem"`
 			ValidUntil        string `json:"valid_until"`
 		} `json:"data"`
 	}
@@ -136,9 +136,11 @@ func (r *CertificateResource) Create(ctx context.Context, req resource.CreateReq
 	plan.ID = types.StringValue(result.Data.FingerprintSHA256)
 	plan.Fingerprint = types.StringValue(result.Data.FingerprintSHA256)
 	plan.CommonName = types.StringValue(result.Data.CommonName)
-	plan.CertificatePEM = types.StringValue(result.Data.CertificatePEM)
-	plan.ChainPEM = types.StringValue(result.Data.ChainPEM)
 	plan.NotAfter = types.StringValue(result.Data.ValidUntil)
+	if err := r.loadPEMs(ctx, result.Data.FingerprintSHA256, plan.CAID.ValueString(), &plan); err != nil {
+		resp.Diagnostics.AddError("Error fetching issued certificate PEM", err.Error())
+		return
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -164,9 +166,9 @@ func (r *CertificateResource) Read(ctx context.Context, req resource.ReadRequest
 		Data struct {
 			FingerprintSHA256 string `json:"fingerprint_sha256"`
 			CommonName        string `json:"common_name"`
-			CertificatePEM    string `json:"certificate_pem"`
-			ChainPEM          string `json:"chain_pem"`
 			ValidUntil        string `json:"valid_until"`
+			CAID              string `json:"ca_id"`
+			TemplateID        string `json:"template_id"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
@@ -174,19 +176,61 @@ func (r *CertificateResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
+	// After terraform import ca_id and template_id are null; both force
+	// replacement, so take them from the hub.
+	if state.CAID.IsNull() && result.Data.CAID != "" {
+		state.CAID = types.StringValue(result.Data.CAID)
+	}
+	if state.TemplateID.IsNull() && result.Data.TemplateID != "" {
+		state.TemplateID = types.StringValue(result.Data.TemplateID)
+	}
 	state.Fingerprint = types.StringValue(result.Data.FingerprintSHA256)
 	state.CommonName = types.StringValue(result.Data.CommonName)
-	state.CertificatePEM = types.StringValue(result.Data.CertificatePEM)
-	state.ChainPEM = types.StringValue(result.Data.ChainPEM)
 	state.NotAfter = types.StringValue(result.Data.ValidUntil)
+	if err := r.loadPEMs(ctx, state.ID.ValueString(), state.CAID.ValueString(), &state); err != nil {
+		resp.Diagnostics.AddError("Error fetching certificate PEM", err.Error())
+		return
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
-// Update is not supported — certificates are immutable; re-issue with RequiresReplace.
-func (r *CertificateResource) Update(_ context.Context, _ resource.UpdateRequest, resp *resource.UpdateResponse) {
-	resp.Diagnostics.AddError("Certificate updates not supported",
-		"All certificate attributes are marked RequiresReplace. Terraform will destroy and re-create the certificate.")
+// loadPEMs fills certificate_pem and chain_pem. The hub's issue and get
+// responses carry no PEM, so the leaf comes from the download endpoint and
+// the chain from the issuing CA's chain endpoint.
+func (r *CertificateResource) loadPEMs(ctx context.Context, fingerprint, caID string, m *CertificateResourceModel) error {
+	leaf, err := r.client.Get(ctx, "/api/v1/certificates/"+fingerprint+"/download?format=pem")
+	if err != nil {
+		return err
+	}
+	chain, err := r.client.Get(ctx, "/api/v1/cas/"+caID+"/chain?format=pem")
+	if err != nil {
+		return err
+	}
+	m.CertificatePEM = types.StringValue(string(leaf))
+	m.ChainPEM = types.StringValue(string(chain))
+	return nil
+}
+
+// Update only ever adopts a csr_pem into an imported certificate: the hub does
+// not return the CSR, so state has none and the first plan after
+// terraform import shows csr_pem going from null to the config value. That is
+// recorded in state with no hub call. Every other attribute is RequiresReplace,
+// and a change of an existing CSR also replaces (csrRequiresReplace).
+func (r *CertificateResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state CertificateResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if !state.CSRPEM.IsNull() && state.CSRPEM.ValueString() != "" {
+		resp.Diagnostics.AddError("Certificate updates not supported",
+			"All certificate attributes are marked RequiresReplace. Terraform will destroy and re-create the certificate.")
+		return
+	}
+	state.CSRPEM = plan.CSRPEM
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *CertificateResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -199,4 +243,17 @@ func (r *CertificateResource) Delete(ctx context.Context, req resource.DeleteReq
 	if _, err := r.client.Post(ctx, "/api/v1/certificates/"+state.ID.ValueString()+"/revoke", body); err != nil {
 		resp.Diagnostics.AddError("Error revoking certificate", err.Error())
 	}
+}
+
+// ImportState adopts an existing certificate: the import id is the certificate fingerprint (SHA-256). The Read that
+// follows fills every other attribute from the hub.
+func (r *CertificateResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+// csrRequiresReplace reports whether a csr_pem change must re-issue the
+// certificate. An imported certificate has no CSR in state, so adopting the
+// config's value is not a change to the issued object.
+func csrRequiresReplace(_ context.Context, req planmodifier.StringRequest, resp *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+	resp.RequiresReplace = !req.StateValue.IsNull() && req.StateValue.ValueString() != ""
 }

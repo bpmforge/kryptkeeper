@@ -6,12 +6,15 @@ package bootstrap
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -277,5 +280,282 @@ func TestConfigHandlers_UnknownPathSegmentReturns404(t *testing.T) {
 	rec := doConfigRequest(mux, http.MethodGet, "/api/v1/config/", "test-token", "")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+// ---- W33-06 SSO break-glass guard ------------------------------------------
+
+func withLocalAdmin(auth *Authenticator) {
+	auth.config.loginEnabled = true
+	auth.config.loginUser = loginCredential{Email: "admin@example.com", PasswordHash: "hash", Role: "pki-admin", Subject: "team-1", Active: true}
+}
+
+type oidcStub struct {
+	url  string
+	hits int
+	mode string
+}
+
+func newOIDCStub(t *testing.T) *oidcStub {
+	t.Helper()
+	st := &oidcStub{mode: "ok"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		st.hits++
+		switch st.mode {
+		case "500":
+			w.WriteHeader(500)
+		case "mismatch":
+			_, _ = w.Write([]byte(`{"issuer":"https://evil.example","jwks_uri":"https://x/jwks"}`))
+		case "nojwks":
+			_, _ = w.Write([]byte(`{"issuer":"` + st.url + `"}`))
+		case "redirect":
+			http.Redirect(w, r, "http://169.254.169.254/", http.StatusFound)
+		default:
+			_, _ = w.Write([]byte(`{"issuer":"` + st.url + `/","jwks_uri":"` + st.url + `/jwks"}`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	st.url = srv.URL
+	prev := oidcProbeClient
+	c := *srv.Client()
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	oidcProbeClient = &c
+	t.Cleanup(func() { oidcProbeClient = prev })
+	return st
+}
+
+func TestSSOGuard_RejectsWithoutLocalAdmin(t *testing.T) {
+	store := newConfigTestStore(t)
+	mux, _ := newConfigTestMux(t, store)
+	rec := doConfigRequest(mux, http.MethodPut, "/api/v1/config/sso.oidc_audience", "test-token", `{"value":"aud"}`)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "local admin") {
+		t.Fatalf("PUT = %d %s", rec.Code, rec.Body)
+	}
+	if _, ok, _ := store.Get(t.Context(), "sso.oidc_audience"); ok {
+		t.Fatal("override persisted despite 409")
+	}
+}
+
+func TestSSOGuard_DiscoveryFailureBlocksSave(t *testing.T) {
+	store := newConfigTestStore(t)
+	mux, auth := newConfigTestMux(t, store)
+	withLocalAdmin(auth)
+	auth.configStore = store
+	st := newOIDCStub(t)
+	body := `{"value":"` + st.url + `"}`
+
+	for _, mode := range []string{"500", "mismatch", "nojwks", "redirect"} {
+		st.mode = mode
+		rec := doConfigRequest(mux, http.MethodPut, "/api/v1/config/sso.oidc_issuer", "test-token", body)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("%s: PUT = %d %s", mode, rec.Code, rec.Body)
+		}
+		if _, ok, _ := store.Get(t.Context(), "sso.oidc_issuer"); ok {
+			t.Fatalf("%s: override persisted despite 409", mode)
+		}
+	}
+	st.mode = "ok"
+	if rec := doConfigRequest(mux, http.MethodPut, "/api/v1/config/sso.oidc_issuer", "test-token", body); rec.Code != http.StatusNoContent {
+		t.Fatalf("valid doc PUT = %d %s", rec.Code, rec.Body)
+	}
+	// A bad discovery URL override is also probed against the effective issuer.
+	st.mode = "500"
+	if rec := doConfigRequest(mux, http.MethodPut, "/api/v1/config/sso.oidc_discovery_url", "test-token", `{"value":"`+st.url+`/d"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("discovery url PUT = %d", rec.Code)
+	}
+}
+
+func TestSSOGuard_ProbeRefusesNonHTTPSAndInternalTargets(t *testing.T) {
+	for _, u := range []string{"http://idp.example/.well-known/openid-configuration", "file:///etc/passwd", "ftp://x/y", "gopher://x"} {
+		if err := probeOIDCDiscovery(t.Context(), "https://idp.example", u); !errors.Is(err, errSSOGuardDiscovery) {
+			t.Fatalf("%s: err = %v", u, err)
+		}
+	}
+	// The real (default) client refuses link-local metadata and loopback.
+	for _, u := range []string{"https://169.254.169.254/latest", "https://127.0.0.1:1/x", "https://[::1]:1/x"} {
+		if err := probeOIDCDiscovery(t.Context(), "https://idp.example", u); !errors.Is(err, errSSOGuardDiscovery) {
+			t.Fatalf("%s: err = %v", u, err)
+		}
+	}
+}
+
+func TestSSOGuard_ClearingIssuerAllowed(t *testing.T) {
+	store := newConfigTestStore(t)
+	mux, auth := newConfigTestMux(t, store)
+	withLocalAdmin(auth)
+	auth.configStore = store
+	st := newOIDCStub(t)
+	if rec := doConfigRequest(mux, http.MethodPut, "/api/v1/config/sso.oidc_issuer", "test-token", `{"value":""}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("clear = %d %s", rec.Code, rec.Body)
+	}
+	if st.hits != 0 {
+		t.Fatalf("probe called %d times for a clear", st.hits)
+	}
+}
+
+func TestSSOGuard_DeleteAlwaysAllowed(t *testing.T) {
+	store := newConfigTestStore(t)
+	mux, auth := newConfigTestMux(t, store)
+	if err := store.Set(t.Context(), "sso.oidc_issuer", "https://bad.example", "seed"); err != nil {
+		t.Fatal(err)
+	}
+	if auth.hasEnabledLocalAdmin() {
+		t.Fatal("test precondition: no local admin")
+	}
+	if rec := doConfigRequest(mux, http.MethodDelete, "/api/v1/config/sso.oidc_issuer", "test-token", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestSSOGuard_NonGuardedKeyUnaffected(t *testing.T) {
+	store := newConfigTestStore(t)
+	mux, _ := newConfigTestMux(t, store)
+	if rec := doConfigRequest(mux, http.MethodPut, "/api/v1/config/notifications.smtp_host", "test-token", `{"value":"smtp.example.com"}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("PUT = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestSSOGuard_RefusalIsAudited(t *testing.T) {
+	store := newConfigTestStore(t)
+	audit := &memAuditProvider{}
+	t.Setenv("AUTH_MODE", "bootstrap")
+	t.Setenv("APP_BOOTSTRAP_TOKEN", "test-token")
+	t.Setenv("APP_API_KEY_PEPPER", "test-pepper-32chars-minimum!!!!!")
+	t.Setenv("APP_API_KEY_AUTH_ENABLED", "true")
+	mux := http.NewServeMux()
+	registerConfigHandlers(mux, NewAuthenticatorFromEnv(), store, audit)
+	if rec := doConfigRequest(mux, http.MethodPut, "/api/v1/config/sso.oidc_jwks_json", "test-token", `{"value":"{}"}`); rec.Code != http.StatusConflict {
+		t.Fatalf("PUT = %d", rec.Code)
+	}
+	rows := audit.actions("config.set")
+	if len(rows) != 1 || rows[0].Outcome != AuditOutcomeFailure {
+		t.Fatalf("audit rows = %+v", rows)
+	}
+}
+
+func TestSSOGuard_BreakGlassEndToEnd(t *testing.T) {
+	e := newBGLoginEnv(t) // local admin admin@example.com / "pw", break-glass flagged
+	store := newConfigTestStore(t)
+	e.auth.configStore = store
+	registerConfigHandlers(e.mux, e.auth, store, e.audit)
+
+	// A prior bad save (simulated directly against the store).
+	if err := store.Set(t.Context(), "sso.oidc_issuer", "https://dead.invalid", "seed"); err != nil {
+		t.Fatal(err)
+	}
+	rec := e.login("admin@example.com", "pw")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("breakglass login = %d %s", rec.Code, rec.Body)
+	}
+	tok := bgDecode[struct {
+		AccessToken string `json:"access_token"`
+	}](t, rec).AccessToken
+	if tok == "" {
+		t.Fatal("no token")
+	}
+	if rec := doConfigRequest(e.mux, http.MethodDelete, "/api/v1/config/sso.oidc_issuer", tok, ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("DELETE = %d %s", rec.Code, rec.Body)
+	}
+	rec = doConfigRequest(e.mux, http.MethodGet, "/api/v1/config", tok, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET = %d %s", rec.Code, rec.Body)
+	}
+	var list configListResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if s, ok := findSetting(list.Data, "sso.oidc_issuer"); !ok || s.EffectiveSource != "env" {
+		t.Fatalf("sso.oidc_issuer = %+v", s)
+	}
+}
+
+type recordingConfigAudit struct {
+	stubAuditProviderForCA
+	mu      sync.Mutex
+	entries []AuditEntry
+}
+
+func (a *recordingConfigAudit) AppendEntry(_ context.Context, e AuditEntry) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.entries = append(a.entries, e)
+	return nil
+}
+
+func (a *recordingConfigAudit) has(action string, outcome AuditOutcome) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, e := range a.entries {
+		if e.Action == action && e.Outcome == outcome {
+			return true
+		}
+	}
+	return false
+}
+
+func newRecordingConfigMux(t *testing.T) (*http.ServeMux, *Authenticator, *recordingConfigAudit) {
+	t.Helper()
+	t.Setenv("AUTH_MODE", "bootstrap")
+	t.Setenv("APP_BOOTSTRAP_TOKEN", "test-token")
+	t.Setenv("APP_API_KEY_PEPPER", "test-pepper-32chars-minimum!!!!!")
+	t.Setenv("APP_API_KEY_AUTH_ENABLED", "true")
+	auth := NewAuthenticatorFromEnv()
+	rec := &recordingConfigAudit{}
+	mux := http.NewServeMux()
+	registerConfigHandlers(mux, auth, newConfigTestStore(t), rec)
+	return mux, auth, rec
+}
+
+func newRecordingConfigMuxWithStore(t *testing.T, store ConfigStore) (*http.ServeMux, *Authenticator, *recordingConfigAudit) {
+	t.Helper()
+	t.Setenv("AUTH_MODE", "bootstrap")
+	t.Setenv("APP_BOOTSTRAP_TOKEN", "test-token")
+	t.Setenv("APP_API_KEY_PEPPER", "test-pepper-32chars-minimum!!!!!")
+	t.Setenv("APP_API_KEY_AUTH_ENABLED", "true")
+	auth := NewAuthenticatorFromEnv()
+	rec := &recordingConfigAudit{}
+	mux := http.NewServeMux()
+	registerConfigHandlers(mux, auth, store, rec)
+	return mux, auth, rec
+}
+
+func TestSLOObjectiveUpdateIsAudited(t *testing.T) {
+	mux, _, rec := newRecordingConfigMux(t)
+	path := "/api/v1/config/slo.renewal_success_objective"
+
+	if r := doConfigRequest(mux, http.MethodPut, path, "test-token", `{"value":"0.97"}`); r.Code != http.StatusNoContent {
+		t.Fatalf("PUT status = %d, body = %s", r.Code, r.Body.String())
+	}
+	if !rec.has("config.set", AuditOutcomeSuccess) || !rec.has("slo.objective.update", AuditOutcomeSuccess) {
+		t.Fatalf("admin PUT must audit config.set and slo.objective.update: %+v", rec.entries)
+	}
+	if r := doConfigRequest(mux, http.MethodDelete, path, "test-token", ""); r.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d", r.Code)
+	}
+	if !rec.has("config.reset", AuditOutcomeSuccess) {
+		t.Fatalf("reset must audit config.reset: %+v", rec.entries)
+	}
+
+	mux2, auth2, rec2 := newRecordingConfigMux(t)
+	_, token, err := auth2.CreateAPIKey("non-admin", "team-1", "service-account", []string{"read:certs"}, "", "", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := doConfigRequest(mux2, http.MethodPut, path, token, `{"value":"0.97"}`); r.Code != http.StatusForbidden {
+		t.Fatalf("non-admin status = %d, want 403", r.Code)
+	}
+	if !rec2.has("config.set", AuditOutcomeDenied) || rec2.has("slo.objective.update", AuditOutcomeSuccess) {
+		t.Fatalf("denied PUT must audit only config.set denied: %+v", rec2.entries)
+	}
+}
+
+func TestInvalidObjectiveIs400(t *testing.T) {
+	mux, _, rec := newRecordingConfigMux(t)
+	r := doConfigRequest(mux, http.MethodPut, "/api/v1/config/slo.issuance_success_objective", "test-token", `{"value":"1"}`)
+	if r.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", r.Code)
+	}
+	if !rec.has("config.set", AuditOutcomeFailure) || rec.has("slo.objective.update", AuditOutcomeSuccess) {
+		t.Fatalf("rejected value must audit config.set failure only: %+v", rec.entries)
 	}
 }

@@ -9,15 +9,18 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"kryptkeeper/internal/ca"
 	"kryptkeeper/internal/keystore"
+	"kryptkeeper/internal/logging"
 	"kryptkeeper/internal/metrics"
+	"kryptkeeper/internal/notifications/itsm"
 )
 
 // ServerOption extends Run/RunWithProtocols without breaking their
@@ -32,7 +35,27 @@ type ServerConfig struct {
 	Mux             *http.ServeMux
 	actionExecutors map[string]ActionExecutor
 	plugins         *DeliveryPluginManager
+	itsm            *itsm.Service
 	siem            *SIEMRouter
+	scepOffReason   string
+	extraReadiness  []ReadinessProbe
+	// draining flips true when shutdown begins; /readyz reports 503 from then on.
+	draining *atomic.Bool
+	// onDrain runs at the start of the drain window (see WithDrainStartHook).
+	onDrain func()
+	// policyEngine is set by WithPolicyAdmin; nil means no migration key floor.
+	policyEngine *ca.PolicyEngine
+}
+
+// WithReadinessProbe adds a probe /readyz runs after the built-in dependency
+// checks (W23-27). /readyz cannot be re-registered from outside (duplicate
+// mux pattern panics), so this is the seam.
+func WithReadinessProbe(p ReadinessProbe) ServerOption {
+	return func(c *ServerConfig) {
+		if p != nil {
+			c.extraReadiness = append(c.extraReadiness, p)
+		}
+	}
 }
 
 // ActionExecutor carries out an approved pending action of one type for
@@ -68,8 +91,24 @@ func WithSIEMRouter(r *SIEMRouter) ServerOption {
 	return func(c *ServerConfig) { c.siem = r }
 }
 
+// WithSCEPOffReason tells the integrations status why SCEP is not serving on
+// this hub ("" when it is, or when it was never asked for). The cause is only
+// known to the process wiring, so it is passed in rather than re-derived.
+func WithSCEPOffReason(reason string) ServerOption {
+	return func(c *ServerConfig) { c.scepOffReason = reason }
+}
+
+// WithDrainStartHook registers fn to run as soon as shutdown begins, before
+// the drain wait. A draining replica must not keep leading: fn is where the
+// process hands back HA scheduler leases so a peer takes over in seconds
+// instead of waiting for expiry. fn must be idempotent (deferred stops run
+// again later) and is waited for, bounded, before the listener closes.
+func WithDrainStartHook(fn func()) ServerOption {
+	return func(c *ServerConfig) { c.onDrain = fn }
+}
+
 func applyServerOptions(mux *http.ServeMux, opts []ServerOption) *ServerConfig {
-	cfg := &ServerConfig{Mux: mux}
+	cfg := &ServerConfig{Mux: mux, draining: new(atomic.Bool)}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(cfg)
@@ -86,18 +125,30 @@ func applyServerOptions(mux *http.ServeMux, opts []ServerOption) *ServerConfig {
 // be the only option, which meant every protocol client, including EST
 // (RFC 7030 mandates TLS), spoke cleartext to a PKI).
 func RunWithProtocols(addr string, tlsConfig *tls.Config, auth *Authenticator, certSummaryProvider CertSummaryProvider, auditProvider AuditProvider, caProvider CAProvider, templateProvider TemplateProvider, certificateProvider CertificateProvider, protocolProvider ProtocolProvider, discoveryProvider DiscoveryProvider, notificationProvider NotificationProvider, dashboardActionProvider DashboardActionProvider, protocolMux *http.ServeMux, keys keystore.Store, keyBackend string, opts ...ServerOption) error {
+	logging.EnsureDefault()
 	mux := http.NewServeMux()
 	cfg := applyServerOptions(mux, opts)
+	installExceptions(cfg, auth, certificateProvider, caProvider, auditProvider) // W22-28: before registerHandlers, which reads cfg.actionExecutors
 	registerHandlers(cfg, auth, certSummaryProvider, auditProvider, caProvider, templateProvider, certificateProvider, protocolProvider, discoveryProvider, notificationProvider, dashboardActionProvider, keys)
 	RegisterKeyHandlers(mux, auth, keys, auditProvider, keyBackend)
 	RegisterBackupHandlers(mux, auth, keys, auditProvider)
 	// W11-07: the SSH certificate authority.
 	RegisterSSHCertHandlers(mux, auth, keys, templateProvider, auditProvider)
+	RegisterOwnershipCMDBHandlers(mux, auth, certificateProvider, auditProvider)
+	chatopsActions := NewPendingActionStoreFromEnv()
+	chatopsIDs := chatopsIdentityStoreForActions(chatopsActions)
+	RegisterChatopsHandlers(mux, auth, chatopsIDs, auditProvider)
+	RegisterChatopsTeamsHandlers(mux, chatopsUserProvider(auth), auditProvider, chatopsIDs, nil, nil)
+	startChatopsApprovalPosting(chatopsActions)
+	registerGovernanceHandlers(mux, auth, auditProvider)
+	RegisterOwnershipOrphanHandlers(mux, auth, certificateProvider, auth.userProvider, auditProvider)
+	RegisterAuditExportHandlers(mux, auth, NewCustomRoleStoreFromEnv(), auditProvider)
+	RegisterApprovalInbox(mux, auth, auditProvider, templateProvider)
 	mountProtocolHandlers(mux, protocolMux)
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           withSecurityHeaders(withRequestID(withAPIRateLimiting(withWriteAuthorization(mux, auth, NewCustomRoleStoreFromEnv(), auditProvider), auth))),
+		Handler:           withAuditTenant(withSecurityHeaders(withRequestID(withAccessLog(withMetricsAuth(withHTTPMetrics(withAPIRateLimiting(withWriteAuthorization(mux, auth, NewCustomRoleStoreFromEnv(), auditProvider), auth))))))),
 		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -105,7 +156,7 @@ func RunWithProtocols(addr string, tlsConfig *tls.Config, auth *Authenticator, c
 		IdleTimeout:       60 * time.Second,
 	}
 
-	return runServer(srv)
+	return runServer(srv, cfg.draining, cfg.onDrain)
 }
 
 // Run starts the server without protocol handlers (APP_CERTIFICATE_PROVIDER
@@ -115,18 +166,30 @@ func RunWithProtocols(addr string, tlsConfig *tls.Config, auth *Authenticator, c
 // depend on the crypto engine being active, since request/auth/HTTP-level
 // counters are meaningful regardless of whether this instance issues certs.
 func Run(addr string, tlsConfig *tls.Config, auth *Authenticator, certSummaryProvider CertSummaryProvider, auditProvider AuditProvider, caProvider CAProvider, templateProvider TemplateProvider, certificateProvider CertificateProvider, protocolProvider ProtocolProvider, discoveryProvider DiscoveryProvider, notificationProvider NotificationProvider, dashboardActionProvider DashboardActionProvider, keys keystore.Store, keyBackend string, opts ...ServerOption) error {
+	logging.EnsureDefault()
 	mux := http.NewServeMux()
 	cfg := applyServerOptions(mux, opts)
+	installExceptions(cfg, auth, certificateProvider, caProvider, auditProvider) // W22-28: before registerHandlers, which reads cfg.actionExecutors
 	registerHandlers(cfg, auth, certSummaryProvider, auditProvider, caProvider, templateProvider, certificateProvider, protocolProvider, discoveryProvider, notificationProvider, dashboardActionProvider, keys)
 	RegisterKeyHandlers(mux, auth, keys, auditProvider, keyBackend)
 	RegisterBackupHandlers(mux, auth, keys, auditProvider)
 	// W11-07: the SSH certificate authority.
 	RegisterSSHCertHandlers(mux, auth, keys, templateProvider, auditProvider)
+	RegisterOwnershipCMDBHandlers(mux, auth, certificateProvider, auditProvider)
+	chatopsActions := NewPendingActionStoreFromEnv()
+	chatopsIDs := chatopsIdentityStoreForActions(chatopsActions)
+	RegisterChatopsHandlers(mux, auth, chatopsIDs, auditProvider)
+	RegisterChatopsTeamsHandlers(mux, chatopsUserProvider(auth), auditProvider, chatopsIDs, nil, nil)
+	startChatopsApprovalPosting(chatopsActions)
+	registerGovernanceHandlers(mux, auth, auditProvider)
+	RegisterOwnershipOrphanHandlers(mux, auth, certificateProvider, auth.userProvider, auditProvider)
+	RegisterAuditExportHandlers(mux, auth, NewCustomRoleStoreFromEnv(), auditProvider)
+	RegisterApprovalInbox(mux, auth, auditProvider, templateProvider)
 	mux.HandleFunc("/metrics", metricsHandler)
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           withSecurityHeaders(withRequestID(withAPIRateLimiting(withWriteAuthorization(mux, auth, NewCustomRoleStoreFromEnv(), auditProvider), auth))),
+		Handler:           withAuditTenant(withSecurityHeaders(withRequestID(withAccessLog(withMetricsAuth(withHTTPMetrics(withAPIRateLimiting(withWriteAuthorization(mux, auth, NewCustomRoleStoreFromEnv(), auditProvider), auth))))))),
 		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
@@ -134,7 +197,7 @@ func Run(addr string, tlsConfig *tls.Config, auth *Authenticator, certSummaryPro
 		IdleTimeout:       60 * time.Second,
 	}
 
-	return runServer(srv)
+	return runServer(srv, cfg.draining, cfg.onDrain)
 }
 
 // metricsHandler serves the Prometheus text exposition format, matching the
@@ -175,13 +238,34 @@ func mountProtocolHandlers(mux *http.ServeMux, protocolMux *http.ServeMux) {
 	mux.Handle("/metrics", protocolMux)
 }
 
-func runServer(srv *http.Server) error {
+const (
+	defaultReadinessDrainSeconds = 0 // chart and image set 5; 0 keeps the pre-drain behaviour for dev and tests
+	maxReadinessDrainSeconds     = 120
+	httpShutdownTimeout          = 10 * time.Second
+	drainHookTimeout             = 15 * time.Second
+)
+
+// readinessDrainFromEnv is the window between SIGTERM and closing the
+// listener. Kubernetes removes a terminating pod from Service endpoints
+// asynchronously, so for a few seconds new connections can still arrive.
+func readinessDrainFromEnv() time.Duration {
+	return time.Duration(envClampedInt("KRYPTKEEPER_READINESS_DRAIN_SECONDS", defaultReadinessDrainSeconds, 0, maxReadinessDrainSeconds)) * time.Second
+}
+
+func runServer(srv *http.Server, draining *atomic.Bool, onDrain func()) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	return runServerCtx(ctx, srv, draining, onDrain, readinessDrainFromEnv(), httpShutdownTimeout)
+}
 
+// runServerCtx serves until ctx is done, then (1) marks the hub not-ready,
+// (2) keeps serving for drain so the endpoint removal propagates, (3) calls
+// http.Server.Shutdown. Background schedulers are stopped by the caller's
+// defers once this returns, so they are not touched here.
+func runServerCtx(ctx context.Context, srv *http.Server, draining *atomic.Bool, onDrain func(), drain, shutdownTimeout time.Duration) error {
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("starting kryptkeeper on %s (tls=%v)", srv.Addr, srv.TLSConfig != nil)
+		logging.Infof("starting kryptkeeper on %s (tls=%v)", srv.Addr, srv.TLSConfig != nil)
 		var err error
 		if srv.TLSConfig != nil {
 			// Cert/key are already embedded in srv.TLSConfig.Certificates
@@ -201,23 +285,51 @@ func runServer(srv *http.Server) error {
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if draining != nil {
+			draining.Store(true)
+		}
+		hookDone := make(chan struct{})
+		go func() {
+			defer close(hookDone)
+			if onDrain != nil {
+				onDrain()
+			}
+		}()
+		if drain > 0 {
+			logging.Infof("shutdown signal received: /readyz now 503, draining for %s", drain)
+			select {
+			case <-time.After(drain):
+			case err := <-errCh:
+				// Serve loop died during the drain; nothing left to shut down.
+				if err != nil {
+					return fmt.Errorf("server exited with error: %w", err)
+				}
+				return nil
+			}
+		}
+		select {
+		case <-hookDone:
+		case <-time.After(drainHookTimeout):
+			logging.Warnf("drain-start hook still running after %s; continuing shutdown", drainHookTimeout)
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 
 		shutdownErr := srv.Shutdown(shutdownCtx)
 		if shutdownErr != nil {
-			log.Printf("graceful shutdown failed: %v", shutdownErr)
+			logging.Warnf("graceful shutdown failed: %v", shutdownErr)
 			if closeErr := srv.Close(); closeErr != nil {
-				log.Printf("force close failed: %v", closeErr)
+				logging.Warnf("force close failed: %v", closeErr)
 			}
 		}
 		if err := <-errCh; err != nil {
 			return fmt.Errorf("server exited with error: %w", err)
 		}
-		if shutdownErr != nil {
-			return fmt.Errorf("graceful shutdown failed: %w", shutdownErr)
-		}
-		log.Print("server stopped")
+		// Connections that outlive the timeout (long-lived SSE streams) were
+		// force-closed above. That is a normal end of a signalled shutdown, not
+		// a failure: returning an error makes main call logging.Fatal, which
+		// exits 1 and skips every deferred scheduler Stop/lease release.
+		logging.Info("server stopped")
 		return nil
 	case err := <-errCh:
 		if err != nil {

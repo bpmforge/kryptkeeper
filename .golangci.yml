@@ -56,6 +56,25 @@ linters:
             - pkg: "kryptkeeper/internal/mcpserver"
               desc: "internal/mcpserver is the proposal-only MCP surface (wired only from cmd/kryptkeeper-mcp); other internal packages must not depend on it"
 
+        # W30-11: every line the hub writes is a JSON slog record. The std
+        # `log` package bypasses the redacting handler and the level/request_id
+        # keys, so it is banned in cmd/ and internal/ outside tests (and outside internal/logging,
+        # which bridges slog back to *log.Logger for third-party callers).
+        no-std-log:
+          list-mode: lax
+          files:
+            - "**/cmd/**/*.go"
+            - "**/internal/**/*.go"
+            - "!$test"
+            - "!**/internal/logging/**"
+          # depguard matches by path prefix, so "log" alone would also flag
+          # log/slog; lax mode lets the allow entry carve it out.
+          allow:
+            - "log/slog"
+          deny:
+            - pkg: "log"
+              desc: "use internal/logging (slog JSON); the std log package is banned outside tests"
+
   exclusions:
     # v1 applied its built-in exclusion set by default; v2 makes that
     # opt-in. These presets reproduce it so the gate neither loosens nor

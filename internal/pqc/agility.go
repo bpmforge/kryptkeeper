@@ -31,6 +31,12 @@ type DeprecationPolicy struct {
 // Matches reports whether a certificate is subject to this policy.
 func (p DeprecationPolicy) Matches(cert CertRecord) bool {
 	algoMatch := len(p.Algorithms) == 0
+	// A size-only policy cannot say anything about a cert whose size is
+	// unknown (PQC keys carry no bit length): matching it would flag
+	// ML-DSA certs as "weak" for a bound that does not apply to them.
+	if algoMatch && cert.KeySize == 0 {
+		return false
+	}
 	alg := strings.ToUpper(cert.Algorithm)
 	for _, a := range p.Algorithms {
 		if strings.Contains(alg, strings.ToUpper(a)) {

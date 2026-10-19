@@ -6,6 +6,9 @@ package main
 
 import (
 	"errors"
+	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -142,4 +145,106 @@ func waitFree(t *testing.T, g *renewGuard) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("slot never released")
+}
+
+// holdPort listens on network/addr (":0" port) and returns the port, or skips
+// the test when the host lacks that family.
+func holdPort(t *testing.T, network, addr string) string {
+	t.Helper()
+	ln, err := net.Listen(network, addr)
+	if err != nil {
+		t.Skipf("%s unavailable: %v", network, err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	return port
+}
+
+func TestProbeHTTP01Port_DetectsIPv4OnlyListener(t *testing.T) {
+	port := holdPort(t, "tcp4", "0.0.0.0:0")
+	err := probeHTTP01Port(":" + port)
+	if err == nil {
+		t.Fatal("probe passed although an IPv4 listener holds the port")
+	}
+	for _, want := range []string{"port 80 in use or not permitted", "IPv4"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err, want)
+		}
+	}
+}
+
+func TestProbeHTTP01Port_DetectsIPv6OnlyListener(t *testing.T) {
+	port := holdPort(t, "tcp6", "[::]:0")
+	err := probeHTTP01Port(":" + port)
+	if err == nil {
+		t.Fatal("probe passed although an IPv6 listener holds the port")
+	}
+	if !strings.Contains(err.Error(), "IPv6") || !strings.Contains(err.Error(), "port 80 in use or not permitted") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestProbeHTTP01Port_FreePortOK(t *testing.T) {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("tcp4 unavailable: %v", err)
+	}
+	_, port, _ := net.SplitHostPort(ln.Addr().String())
+	_ = ln.Close()
+	if err := probeHTTP01Port(":" + port); err != nil {
+		t.Fatalf("free port reported busy: %v", err)
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProbeHTTP01Port_BadAddr(t *testing.T) {
+	if err := probeHTTP01Port("no-port"); err == nil {
+		t.Fatal("want error for an address without a port")
+	}
+}
+
+func TestDispatchRenewals_PreflightFailureBacksOff(t *testing.T) {
+	clock := time.Unix(1_700_000_000, 0)
+	g := testGuard(&clock)
+	var probes atomic.Int32
+	blocked := true
+	g.preflight = func() error {
+		probes.Add(1)
+		if blocked {
+			return errors.New("IPv4 listener holds :80")
+		}
+		return nil
+	}
+	var runs atomic.Int32
+	done := make(chan struct{}, 2)
+	run := func(agentclient.RenewalTask) error { runs.Add(1); done <- struct{}{}; return nil }
+	task := agentclient.RenewalTask{TaskID: "t", Fingerprint: "ab", Action: "renew"}
+
+	g.dispatchRenewals([]agentclient.RenewalTask{task}, run)
+	g.dispatchRenewals([]agentclient.RenewalTask{task}, run) // inside the backoff: not even probed
+	if runs.Load() != 0 || probes.Load() != 1 {
+		t.Fatalf("runs=%d probes=%d, want 0 runs and 1 probe", runs.Load(), probes.Load())
+	}
+	waitFree(t, g)
+
+	blocked = false
+	clock = clock.Add(61 * time.Second)
+	g.dispatchRenewals([]agentclient.RenewalTask{task}, run)
+	<-done
+	if runs.Load() != 1 {
+		t.Fatalf("runs=%d, want 1 retry after backoff", runs.Load())
+	}
+}
+
+func TestDispatchRenewals_NilPreflightUnchanged(t *testing.T) {
+	g := newRenewGuard()
+	if g.preflight != nil {
+		t.Fatal("preflight must default to nil")
+	}
+	done := make(chan struct{}, 1)
+	g.dispatchRenewals([]agentclient.RenewalTask{{TaskID: "t", Fingerprint: "ab", Action: "renew"}},
+		func(agentclient.RenewalTask) error { done <- struct{}{}; return nil })
+	<-done
 }

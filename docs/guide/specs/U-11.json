@@ -1,0 +1,203 @@
+{
+  "task": "U-11",
+  "title": "Edit a template and read its revisions",
+  "sourceStory": "STORIES.md#u-11",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/templates"
+      },
+      "caption": "Open /templates",
+      "slug": "templates-list",
+      "expect": {
+        "role": "button",
+        "name": "New template"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-11/01-templates-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "css": "tr",
+        "filterText": "Web Server (90 day)"
+      },
+      "caption": "Click **tr**",
+      "slug": "template-detail-revisions",
+      "expect": {
+        "text": "Revision history"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-11/02-template-detail-revisions.png",
+        "annotated": "docs/guide/screenshots/U-11/02-template-detail-revisions-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 266,
+          "y": 286,
+          "w": 587,
+          "h": 47
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Edit",
+        "exact": true
+      },
+      "caption": "Click **Edit**",
+      "slug": "edit-dialog",
+      "expect": {
+        "role": "button",
+        "name": "Save changes"
+      },
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-11/03-edit-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Validity period",
+        "within": "[role=dialog]"
+      },
+      "value": "60d",
+      "caption": "Fill **Validity period** with \"60d\"",
+      "slug": "Validity period",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-11/04-validity-period.png",
+        "annotated": "docs/guide/screenshots/U-11/04-validity-period-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 212,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Save changes"
+      },
+      "caption": "Click **Save changes**",
+      "slug": "template-saved",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-11/05-template-saved.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:39:44.045Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-11",
+    "steps": 5,
+    "shots": 5,
+    "annotated": 2,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/templates"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-11/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-11/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

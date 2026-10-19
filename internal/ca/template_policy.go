@@ -11,10 +11,12 @@ package ca
 // returning ErrPolicyViolation with field-level detail on any constraint breach.
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -29,6 +31,45 @@ type TemplatePolicy struct {
 	MaxValidity       time.Duration // 0 = no maximum
 	AllowedEKUs       []x509.ExtKeyUsage
 	Names             *NamePolicy // nil = names unrestricted (SUP-A04-3)
+	EnrollRoles       []string    // empty = any role may enroll (W23-42)
+}
+
+// ErrEnrollmentDenied is returned when the caller's role is not listed in a
+// template's enrollment_permissions (W23-42).
+var ErrEnrollmentDenied = errors.New("role not permitted to enroll from this template")
+
+type callerRoleKey struct{}
+
+// WithCallerRole stamps the authenticated caller's role on ctx so the issuing
+// provider can enforce a template's enrollment_permissions.
+func WithCallerRole(ctx context.Context, role string) context.Context {
+	return context.WithValue(ctx, callerRoleKey{}, role)
+}
+
+// CallerRoleFrom returns the role stamped by WithCallerRole; ok is false when
+// none was set or it is blank.
+func CallerRoleFrom(ctx context.Context) (string, bool) {
+	role, ok := ctx.Value(callerRoleKey{}).(string)
+	return role, ok && role != ""
+}
+
+// CheckEnrollment enforces a template's enroll list. An empty list means
+// unrestricted (the stored default is allow-all). A restricted template fails
+// closed: a missing role in ctx is a denial, never a pass.
+func CheckEnrollment(ctx context.Context, templateID string, enroll []string) error {
+	if len(enroll) == 0 {
+		return nil
+	}
+	role, ok := CallerRoleFrom(ctx)
+	if !ok {
+		return fmt.Errorf("%w: template %s (no caller role)", ErrEnrollmentDenied, templateID)
+	}
+	for _, allowed := range enroll {
+		if allowed == role {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: template %s", ErrEnrollmentDenied, templateID)
 }
 
 // PolicyViolation describes a single constraint breach.

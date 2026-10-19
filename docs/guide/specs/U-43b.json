@@ -1,0 +1,113 @@
+{
+  "task": "U-43b",
+  "title": "Propose a machine identity and approve it (NHI): approver side",
+  "sourceStory": "STORIES.md#u-43b",
+  "persona": "marcus.webb (approver)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/nhi"
+      },
+      "caption": "Open /nhi",
+      "slug": "machine-identities-pending",
+      "expect": {
+        "role": "button",
+        "name": "Approve billing-bot"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-43b/01-machine-identities-pending.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Approve billing-bot"
+      },
+      "caption": "Click **Approve billing-bot**",
+      "slug": "approved-join-token-once",
+      "redact": [
+        "code",
+        "pre",
+        "input[readonly]"
+      ],
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-43b/02-approved-join-token-once.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "principal": "marcus",
+  "lastRun": {
+    "at": "2026-10-18T12:48:33.792Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-43b",
+    "steps": 2,
+    "shots": 2,
+    "annotated": 0,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/nhi"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-43b/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-43b/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

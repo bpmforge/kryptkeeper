@@ -7,6 +7,7 @@ package ca
 import (
 	"context"
 	"crypto/x509"
+	"fmt"
 )
 
 // IssuedCertificateRecorder persists a certificate issued through a protocol
@@ -35,4 +36,25 @@ type IssuedCertificateRecorder interface {
 // test doubles need nothing new.
 type TemplateIssuedCertificateRecorder interface {
 	RecordIssuedCertificateWithTemplate(ctx context.Context, caID string, cert *x509.Certificate, chainPEM []byte, source, templateID string) error
+}
+
+// RetryOnSerialCollision runs attempt up to maxAttempts times (n is the
+// zero-based attempt number). An error satisfying IsSerialCollision triggers
+// another run, so attempt must re-generate the serial (call the engine
+// again). Any other error is returned unchanged; exhaustion returns an error
+// wrapping ErrSerialCollision. Fail closed: the caller stores nothing on error.
+func RetryOnSerialCollision(maxAttempts int, attempt func(n int) error) error {
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	for n := 0; n < maxAttempts; n++ {
+		err := attempt(n)
+		if err == nil {
+			return nil
+		}
+		if !IsSerialCollision(err) {
+			return err
+		}
+	}
+	return fmt.Errorf("%w after %d attempts", ErrSerialCollision, maxAttempts)
 }

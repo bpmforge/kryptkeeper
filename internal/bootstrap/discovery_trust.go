@@ -7,8 +7,12 @@ package bootstrap
 import (
 	"context"
 	"crypto/x509"
+	"database/sql"
+	"encoding/base64"
 	"encoding/pem"
-	"log"
+	"fmt"
+	"kryptkeeper/internal/logging"
+	"slices"
 	"sync"
 	"time"
 
@@ -71,11 +75,37 @@ func parseCACertsPEM(s string) []*x509.Certificate {
 type discoveryTrust struct {
 	mu          sync.RWMutex
 	hubCAs      hubCASource
+	authorized  authorizedIssuerSource
 	systemRoots func() (*x509.CertPool, error)
 
 	sysOnce sync.Once
 	sys     *x509.CertPool
 	sysErr  error
+}
+
+// authorizedIssuerSource returns the issuers a stored tenant has declared.
+type authorizedIssuerSource func(ctx context.Context, tenant string) ([]AuthorizedIssuer, error)
+
+func (t *discoveryTrust) SetAuthorizedSource(fn authorizedIssuerSource) {
+	t.mu.Lock()
+	t.authorized = fn
+	t.mu.Unlock()
+}
+
+// dbAuthorizedSource reads a tenant's authorized issuers from db. The schema is
+// ensured on first use so a database the migrations have not reached still
+// answers (an empty list), rather than leaving every issuer class unjudged.
+func dbAuthorizedSource(db *sql.DB, ph func(int) string) authorizedIssuerSource {
+	store := &dbAuthorizedIssuerStore{db: db, ph: ph}
+	var once sync.Once
+	var ensureErr error
+	return func(ctx context.Context, tenant string) ([]AuthorizedIssuer, error) {
+		once.Do(func() { ensureErr = store.EnsureSchema(ctx) })
+		if ensureErr != nil {
+			return nil, ensureErr
+		}
+		return store.List(ctx, &tenant)
+	}
 }
 
 func (t *discoveryTrust) SetHubCASource(fn hubCASource) {
@@ -106,7 +136,7 @@ func (t *discoveryTrust) system() (*x509.CertPool, error) {
 // incomplete anchor set, which would mislabel a managed or public cert as
 // someone else's private one. Chain CA marking still happens either way.
 func (t *discoveryTrust) classify(ctx context.Context, results []scanner.DiscoveredEndpoint) {
-	if !anyServed(results) {
+	if !anyCerts(results) {
 		return
 	}
 	anchors, ok := t.anchors(ctx)
@@ -117,26 +147,52 @@ func (t *discoveryTrust) classify(ctx context.Context, results []scanner.Discove
 			continue
 		}
 		scanner.ApplyTrust(&results[i], anchors, now)
+		scanner.ApplyIssuerClass(&results[i], anchors, now)
 	}
 }
 
 func (t *discoveryTrust) anchors(ctx context.Context) (scanner.TrustAnchors, bool) {
+	tenant := discoveryStampTenant(ctx)
 	sys, err := t.system()
 	if err != nil || sys == nil {
-		log.Printf("discovery: system roots unavailable, leaving served chains unclassified: %v", err)
+		logging.Warnf("discovery: system roots unavailable, leaving served chains unclassified: %v", err)
 		return scanner.TrustAnchors{}, false
 	}
 	t.mu.RLock()
-	src := t.hubCAs
+	src, authSrc := t.hubCAs, t.authorized
 	t.mu.RUnlock()
 	var hub []*x509.Certificate
 	if src != nil {
 		if hub, err = src(ctx); err != nil {
-			log.Printf("discovery: hub CAs unavailable, leaving served chains unclassified: %v", err)
+			logging.Warnf("discovery: hub CAs unavailable, leaving served chains unclassified: %v", err)
 			return scanner.TrustAnchors{}, false
 		}
 	}
-	return scanner.TrustAnchors{System: sys, Hub: hub}, true
+	a := scanner.TrustAnchors{System: sys, Hub: hub, IssuerClassKnown: true}
+	if authSrc != nil {
+		list, err := authSrc(ctx, tenant)
+		if err != nil {
+			// trust_class does not depend on the declared issuers, so the chain
+			// is still judged; only issuer_class is left unset (and keeps its
+			// previous value in the database) rather than guessed.
+			logging.Warnf("discovery: authorized issuers unavailable, leaving issuer class unjudged: %v", err)
+			a.IssuerClassKnown = false
+		} else {
+			a.Authorized, a.IssuerRules = authorizedIssuerAnchors(list)
+		}
+	}
+	return a, true
+}
+
+// anyCerts reports whether any result carries a certificate: served chains get
+// a trust verdict, every other source (SSH files, stores) an issuer class.
+func anyCerts(results []scanner.DiscoveredEndpoint) bool {
+	for _, ep := range results {
+		if len(ep.Certs) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func anyServed(results []scanner.DiscoveredEndpoint) bool {
@@ -250,3 +306,205 @@ func effectiveTrustClass(item CertificateItem) string {
 // was never classified reads as unknown. Used wherever the class of a
 // certificate seen on the network is reported, so every view agrees.
 const effectiveTrustClassSQL = `(CASE WHEN COALESCE(c.management_state, '') = 'managed' THEN 'managed' WHEN COALESCE(c.trust_class, '') = '' THEN 'unknown' ELSE c.trust_class END)`
+
+// Inventory classes are the headline view of a certificate estate (W34-00
+// design 1.3): one bucket per certificate, derived from management_state and
+// issuer_class, never stored. Two axes stay in the data (management_state,
+// issuer_class) so reports lose nothing; this is the label the UI shows.
+const (
+	InventoryManaged            = "managed"
+	InventoryOursUnmanaged      = "ours_unmanaged"
+	InventoryAuthorizedExternal = "authorized_external"
+	InventoryUnknownIssuer      = "unknown_issuer"
+	InventorySelfSigned         = "self_signed"
+)
+
+// InventoryClasses is the closed vocabulary, worst (least trusted) first: the
+// order an endpoint presenting several certificates is summarised in.
+var InventoryClasses = []string{InventoryUnknownIssuer, InventorySelfSigned, InventoryOursUnmanaged, InventoryAuthorizedExternal, InventoryManaged}
+
+// IsInventoryClass reports membership of the closed vocabulary.
+func IsInventoryClass(s string) bool { return slices.Contains(InventoryClasses, s) }
+
+// InventoryClassCounts tallies distinct leaf certificates per inventory class.
+type InventoryClassCounts struct {
+	Managed            int `json:"managed"`
+	OursUnmanaged      int `json:"ours_unmanaged"`
+	AuthorizedExternal int `json:"authorized_external"`
+	UnknownIssuer      int `json:"unknown_issuer"`
+	SelfSigned         int `json:"self_signed"`
+}
+
+func (c *InventoryClassCounts) add(class string, n int) {
+	switch class {
+	case InventoryManaged:
+		c.Managed += n
+	case InventoryOursUnmanaged:
+		c.OursUnmanaged += n
+	case InventoryAuthorizedExternal:
+		c.AuthorizedExternal += n
+	case InventorySelfSigned:
+		c.SelfSigned += n
+	default:
+		c.UnknownIssuer += n
+	}
+}
+
+// effectiveIssuerClassSQL is the issuer class of a certificates row aliased c.
+// A row scanned before issuer_class existed has none, so it is derived from
+// the trust verdict it does have; a hub-managed row is the hub's by definition.
+const effectiveIssuerClassSQL = `COALESCE(NULLIF(c.issuer_class, ''), CASE
+    WHEN COALESCE(c.management_state, '') = 'managed' OR c.trust_class = 'managed' THEN 'hub'
+    WHEN c.trust_class = 'self_signed' THEN 'self_signed'
+    WHEN c.trust_class = 'public' THEN 'public'
+    WHEN c.trust_class = 'private_other' THEN 'private_unknown'
+    ELSE 'unknown' END)`
+
+// inventoryClassSQL is the inventory class of a certificates row aliased c.
+// A certificate is "managed" only when the hub renews it; one the hub issued
+// but nobody renews is ours_unmanaged.
+const inventoryClassSQL = `(CASE
+    WHEN COALESCE(c.management_state, '') = 'managed' THEN 'managed'
+    WHEN ` + effectiveIssuerClassSQL + ` = 'self_signed' THEN 'self_signed'
+    WHEN ` + effectiveIssuerClassSQL + ` = 'hub' THEN 'ours_unmanaged'
+    WHEN ` + effectiveIssuerClassSQL + ` = 'authorized' THEN 'authorized_external'
+    ELSE 'unknown_issuer' END)`
+
+// inventoryClassPredicate selects rows of one class; class is interpolated, so
+// it is re-checked against the closed vocabulary.
+func inventoryClassPredicate(class, activeCond, notCA string) string {
+	if !IsInventoryClass(class) {
+		return "1 = 0"
+	}
+	return activeCond + " AND " + notCA + " AND " + inventoryClassSQL + " = '" + class + "'"
+}
+
+func loadInventoryClassCounts(ctx context.Context, db *sql.DB, activeCond, notCA string, args ...any) (InventoryClassCounts, error) {
+	rows, err := db.QueryContext(ctx, `
+SELECT `+inventoryClassSQL+` AS class, COUNT(DISTINCT ce.certificate_fingerprint)
+FROM certificate_endpoints ce
+LEFT JOIN certificates c ON ce.certificate_fingerprint = c.fingerprint_sha256
+WHERE `+activeCond+` AND `+notCA+`
+GROUP BY `+inventoryClassSQL, args...)
+	if err != nil {
+		return InventoryClassCounts{}, err
+	}
+	defer rows.Close()
+	var out InventoryClassCounts
+	for rows.Next() {
+		var class string
+		var n int
+		if err := rows.Scan(&class, &n); err != nil {
+			return InventoryClassCounts{}, err
+		}
+		out.add(class, n)
+	}
+	return out, rows.Err()
+}
+
+// setInventoryClasses summarises each endpoint's leaf certificates as the
+// least-trusted class among them.
+func setInventoryClasses(endpoints []DiscoveryEndpoint) {
+	for i := range endpoints {
+		best := -1
+		for _, mc := range endpoints[i].MappedCerts {
+			if mc.ChainCA || mc.InventoryClass == "" {
+				continue
+			}
+			if rank := slices.Index(InventoryClasses, mc.InventoryClass); rank >= 0 && (best < 0 || rank < best) {
+				best = rank
+			}
+		}
+		if best >= 0 {
+			endpoints[i].InventoryClass = InventoryClasses[best]
+		}
+	}
+}
+
+// issuerReclassifyChunk bounds how many stored certificates are re-judged per
+// query batch when a declared issuer changes.
+const issuerReclassifyMax = 20000
+
+// reclassifyIssuers re-derives issuer_class for the discovery-found
+// certificates seen on a tenant's endpoints, from the stored leaf alone: the
+// served chain is not kept, so an spki_sha256 rule (which needs the issuer
+// certificate) is only re-evaluated by the next scan.
+func (t *discoveryTrust) reclassifyIssuers(ctx context.Context, db *sql.DB, ph func(int) string, tenant string) error {
+	anchors, ok := t.anchors(withDiscoveryTenant(ctx, tenant))
+	if !ok || !anchors.IssuerClassKnown {
+		return nil
+	}
+	rows, err := db.QueryContext(ctx, `
+SELECT DISTINCT c.fingerprint_sha256, COALESCE(c.raw_cert_b64, ''), COALESCE(c.trust_class, ''), COALESCE(c.issuer_class, '')
+FROM certificates c
+JOIN certificate_endpoints ce ON ce.certificate_fingerprint = c.fingerprint_sha256
+JOIN endpoints e ON e.id = ce.endpoint_id
+WHERE e.tenant = `+ph(1)+` AND COALESCE(c.management_state, '') <> 'managed' LIMIT `+fmt.Sprint(issuerReclassifyMax), tenant)
+	if err != nil {
+		return err
+	}
+	type stored struct{ fp, raw, trust, issuer string }
+	var all []stored
+	for rows.Next() {
+		var s stored
+		if err := rows.Scan(&s.fp, &s.raw, &s.trust, &s.issuer); err != nil {
+			rows.Close()
+			return err
+		}
+		all = append(all, s)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	now := time.Now()
+	for _, s := range all {
+		der, err := base64.StdEncoding.DecodeString(s.raw)
+		if err != nil || len(der) == 0 {
+			continue
+		}
+		leaf, err := x509.ParseCertificate(der)
+		if err != nil {
+			continue
+		}
+		trust := s.trust
+		if trust == scanner.TrustUnknown {
+			trust = ""
+		}
+		next := scanner.ClassifyIssuer([]*x509.Certificate{leaf}, trust, anchors, now)
+		// A hub or self-signed verdict from the full chain is never weakened
+		// by a leaf-only re-judgement.
+		if next == s.issuer || s.issuer == scanner.IssuerHub || s.issuer == scanner.IssuerSelfSigned {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, `UPDATE certificates SET issuer_class = `+ph(1)+` WHERE fingerprint_sha256 = `+ph(2), next, s.fp); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *sqliteDiscoveryStore) ReclassifyIssuers(ctx context.Context, tenant string) error {
+	return s.trust.reclassifyIssuers(ctx, s.db, sqlitePlaceholder, tenant)
+}
+
+func (s *postgresDiscoveryStore) ReclassifyIssuers(ctx context.Context, tenant string) error {
+	return s.trust.reclassifyIssuers(ctx, s.db, postgresPlaceholder, tenant)
+}
+
+// ReclassifyIssuers re-derives issuer classes on the DB provider's store.
+func (p *dbDiscoveryProvider) ReclassifyIssuers(ctx context.Context, tenant string) error {
+	if s, ok := p.store.(issuerReclassifier); ok {
+		return s.ReclassifyIssuers(ctx, tenant)
+	}
+	return nil
+}
+
+// ReclassifyIssuers delegates to whichever provider is active.
+func (c *configuredDiscoveryProvider) ReclassifyIssuers(ctx context.Context, tenant string) error {
+	if r, ok := c.current(ctx).(issuerReclassifier); ok {
+		return r.ReclassifyIssuers(ctx, tenant)
+	}
+	return nil
+}

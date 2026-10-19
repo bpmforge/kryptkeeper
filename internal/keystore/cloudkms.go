@@ -13,13 +13,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	"github.com/aws/aws-sdk-go-v2/service/kms/types"
+
+	"kryptkeeper/internal/logging"
 )
 
 // CloudKMSConfig holds configuration for a cloud KMS backend.
@@ -79,6 +80,12 @@ type CloudKMSStore struct {
 	// so tests assert the call without touching a cloud; nil uses the real
 	// per-provider dispatch.
 	destroyKey func(ctx context.Context, cfg CloudKMSConfig) error
+	// cancelDestroy reverses destroyKey inside the provider's recovery window
+	// (W23-22). Injectable like destroyKey; nil uses cancelCloudKeyDeletion.
+	cancelDestroy func(ctx context.Context, cfg CloudKMSConfig) error
+	// tombstones remember keys whose provider-side deletion is scheduled; the
+	// reference itself is gone once Delete succeeds.
+	tombstones map[string]*cloudKMSTombstone
 }
 
 type cloudKMSKeyEntry struct {
@@ -107,10 +114,18 @@ func NewCloudKMSStoreWithDB(provider string, db *sql.DB, postgres bool) (*CloudK
 		db:       db,
 		postgres: postgres,
 		keys:     make(map[string]*cloudKMSKeyEntry),
+
+		tombstones: make(map[string]*cloudKMSTombstone),
 	}
 	if db != nil {
 		if err := s.ensureRefSchema(); err != nil {
 			return nil, fmt.Errorf("cloud kms ref table: %w", err)
+		}
+		if err := s.ensureTombstoneSchema(); err != nil {
+			return nil, fmt.Errorf("cloud kms pending-deletion table: %w", err)
+		}
+		if err := s.loadTombstones(); err != nil {
+			return nil, fmt.Errorf("cloud kms pending deletions unloadable: %w", err)
 		}
 		if err := s.loadRefsFromDB(); err != nil {
 			// S-50 discipline: a failed load must not silently present an
@@ -160,12 +175,12 @@ func (s *CloudKMSStore) loadRefsFromDB() error {
 		}
 		block, _ := pem.Decode([]byte(pubPEM))
 		if block == nil {
-			log.Printf("cloud kms: key %q has an unparseable stored public key; skipping (it will be missing from the keystore)", id)
+			logging.Infof("cloud kms: key %q has an unparseable stored public key; skipping (it will be missing from the keystore)", id)
 			continue
 		}
 		pubKey, err := x509.ParsePKIXPublicKey(block.Bytes)
 		if err != nil {
-			log.Printf("cloud kms: key %q public key unparseable: %v; skipping", id, err)
+			logging.Infof("cloud kms: key %q public key unparseable: %v; skipping", id, err)
 			continue
 		}
 		s.keys[id] = &cloudKMSKeyEntry{
@@ -235,7 +250,7 @@ func (s *CloudKMSStore) GenerateKey(id string, algo Algorithm) (KeyMetadata, err
 	if entry := s.keys[id]; entry != nil {
 		if perr := s.persistRef(id, entry); perr != nil {
 			delete(s.keys, id)
-			log.Printf("CLOUD KMS KEY ORPHANED: created %s (%s) but its reference could not be persisted — reap it manually: %v",
+			logging.Warnf("CLOUD KMS KEY ORPHANED: created %s (%s) but its reference could not be persisted — reap it manually: %v",
 				entry.config.KeyURI, id, perr)
 			return KeyMetadata{}, fmt.Errorf("kms key created (%s) but its reference could not be recorded: %w", entry.config.KeyURI, perr)
 		}
@@ -303,10 +318,12 @@ func awsKeySpec(algo Algorithm) (types.KeySpec, error) {
 		return types.KeySpecEccNistP384, nil
 	case RSA2048:
 		return types.KeySpecRsa2048, nil
+	case RSA3072:
+		return types.KeySpecRsa3072, nil
 	case RSA4096:
 		return types.KeySpecRsa4096, nil
 	default:
-		return "", fmt.Errorf("aws kms: unsupported algorithm %s", algo)
+		return "", fmt.Errorf("%w: aws kms: %s", ErrUnsupportedAlgo, algo)
 	}
 }
 
@@ -377,6 +394,9 @@ func (s *CloudKMSStore) Delete(id string) error {
 	if err := destroy(context.Background(), entry.config); err != nil {
 		return fmt.Errorf("cloud key destruction refused for %s — reference retained: %w", entry.config.KeyURI, err)
 	}
+	// The provider now holds the key in its recovery window. Remember it
+	// BEFORE the reference is dropped, or a cancel could never find it again.
+	s.recordTombstone(entry)
 	if s.db != nil {
 		q := fmt.Sprintf(`DELETE FROM cloud_kms_keys WHERE id = %s AND provider = %s`, s.ph(1), s.ph(2))
 		if _, err := s.db.Exec(q, id, s.provider); err != nil {
@@ -389,6 +409,7 @@ func (s *CloudKMSStore) Delete(id string) error {
 
 // Ensure interfaces are satisfied at compile time.
 var _ Store = (*CloudKMSStore)(nil)
+var _ DeletionCanceller = (*CloudKMSStore)(nil)
 var _ crypto.Signer = (*CloudKMSSigner)(nil)
 
 // RotateKey is not supported for cloud KMS — key rotation is handled by the KMS provider.

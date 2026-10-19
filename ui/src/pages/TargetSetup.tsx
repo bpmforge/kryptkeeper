@@ -1,13 +1,18 @@
 import { useState } from "react";
+import { scrollableProps } from "../lib/scrollable";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Copy, Check } from "lucide-react";
 import {
   api,
   type CredentialMeta,
+  type CertTargetBinding,
   type CredentialPreflight,
+  type EffectiveSetting,
+  type HostKeyProbe,
+  type PrivilegeBundle,
   type ManagedTarget,
 } from "../lib/api";
-import type { AgentType } from "../lib/models";
+import { extractList, type AgentType, type CertificateRecord } from "../lib/models";
 import {
   Badge,
   Button,
@@ -18,6 +23,7 @@ import {
   Textarea,
 } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
+import { TargetPreflightPanel } from "../components/TargetPreflightPanel";
 import { Wizard, type WizardStepDef } from "../components/Wizard";
 import { CapabilityList } from "../components/PluginCapabilities";
 import { capabilityTier, tierLabel, tierTone, type PluginManifest } from "../lib/plugins";
@@ -167,12 +173,162 @@ const CREDENTIAL_SHAPES: Record<string, { type: string; fields: CredField[] }> =
   },
 };
 
+// W34-14 (D-209): how the SSH account is elevated on a Linux target. One-line
+// consequences follow docs/board/specs/W34-00-DESIGN.md section 3.3.
+type PrivilegeMode = "none" | "nopasswd" | "password" | "helper";
+
+const PRIVILEGE_MODES: { value: PrivilegeMode; label: string; consequence: string }[] = [
+  {
+    value: "helper",
+    label: "Helper (recommended)",
+    consequence:
+      "One sudoers line grants a hash-pinned helper; the key can do only the helper's verbs (list, stat, read-cert, install, reload).",
+  },
+  {
+    value: "nopasswd",
+    label: "Raw sudo allowlist",
+    consequence:
+      "The sudoers drop-in lists find, stat, cat, ss, install and reload commands; with path globs that is effectively root read/write for anyone holding the key.",
+  },
+  {
+    value: "password",
+    label: "Sudo password",
+    consequence:
+      "The password is stored encrypted and never returned; the account is root while it is valid, and rotating it breaks scans until updated.",
+  },
+  {
+    value: "none",
+    label: "None",
+    consequence:
+      "Read-only scan of world-readable certificates; privileged paths are reported as INSUFFICIENT_PRIVILEGE and cannot be renewed.",
+  },
+];
+
+function isPrivilegeMode(v: string | undefined): v is PrivilegeMode {
+  return v === "none" || v === "nopasswd" || v === "password" || v === "helper";
+}
+
+// The preselected mode is an operator setting (agentless.default_privilege_mode);
+// helper when it is unset or unreadable. Any mode stays selectable per credential.
+function defaultPrivilegeMode(settings: EffectiveSetting[] | undefined): PrivilegeMode {
+  const v = settings?.find((s) => s.key === "agentless.default_privilege_mode")?.value?.trim();
+  return isPrivilegeMode(v) ? v : "helper";
+}
+
+function downloadText(filename: string, text: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// Sudoers drop-in, helper (with the hash to verify) and the checklist for the
+// host owner (W34-16). Served by the hub, so the hash always matches the helper.
+function PrivilegeBundlePanel({ bundle }: { bundle: PrivilegeBundle }) {
+  return (
+    <div className="space-y-2 rounded-lg border border-border p-3" data-testid="privilege-bundle">
+      <div className="flex flex-wrap gap-2">
+        <Button tone="secondary" onClick={() => downloadText(`kryptkeeper-${bundle.user}.sudoers`, bundle.sudoers)}>
+          Download sudoers
+        </Button>
+        {bundle.helper ? (
+          <Button tone="secondary" onClick={() => downloadText("kryptkeeper-helper", bundle.helper ?? "")}>
+            Download helper
+          </Button>
+        ) : null}
+      </div>
+      {bundle.helper_sha256 ? (
+        <p className="text-xs text-muted-foreground">
+          Helper sha256 (verify on the host): <code className="font-mono break-all">{bundle.helper_sha256}</code>
+        </p>
+      ) : null}
+      {bundle.warnings.map((w) => (
+        <p key={w} className="text-xs text-state-over" role="note">
+          {w}
+        </p>
+      ))}
+      <ol className="list-decimal space-y-1 pl-5 text-xs text-muted-foreground">
+        {bundle.checklist.map((c) => (
+          <li key={c}>{c}</li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function PrivilegeModeFields({
+  mode,
+  onMode,
+  password,
+  onPassword,
+  sha,
+  onSha,
+  bundle,
+}: {
+  bundle?: PrivilegeBundle;
+  mode: PrivilegeMode;
+  onMode: (m: PrivilegeMode) => void;
+  password: string;
+  onPassword: (v: string) => void;
+  sha: string;
+  onSha: (v: string) => void;
+}) {
+  return (
+    <fieldset className="space-y-2 text-sm text-foreground">
+      <legend className="font-medium">Privilege on the target</legend>
+      {PRIVILEGE_MODES.map((m) => (
+        <label key={m.value} className="flex items-start gap-2">
+          <input
+            type="radio"
+            name="sudo_mode"
+            value={m.value}
+            checked={mode === m.value}
+            onChange={() => onMode(m.value)}
+            className="mt-1"
+          />
+          <span>
+            <span className="block">{m.label}</span>
+            <span className="block text-xs text-muted-foreground">{m.consequence}</span>
+          </span>
+        </label>
+      ))}
+      {mode === "password" && (
+        <label className="block space-y-1">
+          <span>Sudo password</span>
+          <Input
+            type="password"
+            value={password}
+            onChange={(e) => onPassword(e.target.value)}
+            autoComplete="off"
+          />
+        </label>
+      )}
+      {mode === "helper" && (
+        <label className="block space-y-1">
+          <span>Helper SHA-256</span>
+          <Input
+            value={sha}
+            onChange={(e) => onSha(e.target.value)}
+            placeholder="64 hex characters from the privilege bundle"
+            spellCheck={false}
+          />
+        </label>
+      )}
+      {mode !== "none" && bundle && <PrivilegeBundlePanel bundle={bundle} />}
+    </fieldset>
+  );
+}
+
 function CredentialPicker({
   installMode,
   value,
   onChange,
   shapeOverride,
+  bundleHints,
 }: {
+  bundleHints?: { serverType?: string; certPath?: string; keyPath?: string };
   installMode: string;
   value: string;
   onChange: (ref: string, name?: string) => void;
@@ -185,8 +341,38 @@ function CredentialPicker({
   const [error, setError] = useState<string | null>(null);
 
   const listQ = useQuery({ queryKey: ["credentials"], queryFn: api.credentials });
-  const items: CredentialMeta[] = listQ.data?.data?.items ?? [];
+  const allItems: CredentialMeta[] = listQ.data?.data?.items ?? [];
   const shape = shapeOverride ?? CREDENTIAL_SHAPES[installMode];
+  // Only credentials of the kind this install mode consumes: offering e.g. a
+  // Jira api_token for SSH blocks Next on a credential the executor refuses.
+  const items = shape ? allItems.filter((c) => c.credential_type === shape.type) : allItems;
+
+  // Only Linux (ssh) targets elevate with sudo; the macOS keychain path does not.
+  const hasPrivilege = shape?.type === "ssh_key" && installMode === "ssh";
+  const configQ = useQuery({ queryKey: ["runtime-config"], queryFn: api.runtimeConfig, enabled: hasPrivilege });
+  const [pickedMode, setPickedMode] = useState<PrivilegeMode | null>(null);
+  const [sudoPassword, setSudoPassword] = useState("");
+  const [helperSha, setHelperSha] = useState("");
+  const privilegeMode = pickedMode ?? defaultPrivilegeMode(configQ.data?.data);
+  const bundleQ = useQuery({
+    queryKey: ["privilege-bundle", privilegeMode, bundleHints?.serverType, bundleHints?.certPath, bundleHints?.keyPath],
+    queryFn: () =>
+      api.privilegeBundle({
+        mode: privilegeMode,
+        serverType: bundleHints?.serverType,
+        certPath: bundleHints?.certPath,
+        keyPath: bundleHints?.keyPath,
+      }),
+    enabled: hasPrivilege && creating && privilegeMode !== "none",
+  });
+  const bundle = privilegeMode === "none" ? undefined : bundleQ.data?.data;
+  // Prefilled from the hub's own helper so the pin cannot be mistyped; the
+  // operator may still overwrite it (for example with a site-built helper).
+  const effectiveHelperSha = helperSha || (privilegeMode === "helper" ? (bundle?.helper_sha256 ?? "") : "");
+  const privilegeInvalid =
+    hasPrivilege &&
+    ((privilegeMode === "password" && sudoPassword === "") ||
+      (privilegeMode === "helper" && !/^[0-9a-fA-F]{64}$/.test(effectiveHelperSha.trim())));
 
   // W18-11: a Windows credential can be tested the moment it is picked.
   // Discovery and install need different privilege, and learning that at
@@ -204,12 +390,22 @@ function CredentialPicker({
       api.createCredential({
         name: name.trim(),
         credential_type: shape.type,
-        payload: fields,
+        payload: hasPrivilege
+          ? {
+              ...fields,
+              sudo_mode: privilegeMode,
+              ...(privilegeMode === "password" ? { sudo_password: sudoPassword } : {}),
+              ...(privilegeMode === "helper" ? { helper_sha256: effectiveHelperSha.trim() } : {}),
+            }
+          : fields,
       }),
     onSuccess: (res) => {
       setCreating(false);
       setName("");
       setFields({});
+      setPickedMode(null);
+      setSudoPassword("");
+      setHelperSha("");
       setError(null);
       void qc.invalidateQueries({ queryKey: ["credentials"] });
       if (res?.data?.id) onChange(res.data.id, res.data.name);
@@ -347,13 +543,24 @@ function CredentialPicker({
               )}
             </label>
           ))}
+          {hasPrivilege && (
+            <PrivilegeModeFields
+              mode={privilegeMode}
+              onMode={setPickedMode}
+              password={sudoPassword}
+              onPassword={setSudoPassword}
+              sha={effectiveHelperSha}
+              onSha={setHelperSha}
+              bundle={bundle}
+            />
+          )}
           <p className="text-xs text-muted-foreground">
             Stored encrypted. It can be used and deleted, never read back.
           </p>
           {error && <p className="text-sm text-state-over">{error}</p>}
           <Button
             tone="primary"
-            disabled={createM.isPending || !name.trim()}
+            disabled={createM.isPending || !name.trim() || privilegeInvalid}
             onClick={() => createM.mutate()}
           >
             {createM.isPending ? "Creating…" : "Create & use"}
@@ -368,37 +575,87 @@ function hubURL(): string {
   return window.location.origin;
 }
 
+// Pairing window: an agent registered up to this long before the mint click
+// (clock skew between browser and hub) still counts as the one we minted for.
+const MINT_SKEW_MS = 2000;
+
 function AgentSetupPanel() {
+  const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [type, setType] = useState<AgentType>("linux");
   const [copied, setCopied] = useState(false);
+  // The minted token lives in component state only: it is shown once and is
+  // never written to storage, the URL or the query cache.
+  const [minted, setMinted] = useState<{
+    id: string;
+    token: string;
+    expires_at: string;
+    name: string;
+    type: AgentType;
+    at: number;
+  } | null>(null);
 
-  const registerMutation = useMutation({
-    mutationFn: () => api.registerAgent({ name: name.trim(), type }),
-  });
-  const registration = registerMutation.data;
-
-  const pairingQuery = useQuery({
-    queryKey: ["target-setup-agent-pairing", registration?.agent_id],
-    queryFn: () => api.agents(),
-    enabled: !!registration,
-    refetchInterval: (query) => {
-      const agent = query.state.data?.agents.find(
-        (a) => a.id === registration?.agent_id,
-      );
-      return agent?.last_seen ? false : 3000;
+  const mintMutation = useMutation({
+    mutationFn: () => api.mintAgentEnrollmentToken({ label: name.trim() }),
+    onSuccess: (res) => {
+      setMinted({
+        ...res.data,
+        name: name.trim(),
+        type,
+        at: Date.now(),
+      });
+      void queryClient.invalidateQueries({ queryKey: ["agent-enrollment-tokens"] });
     },
   });
 
-  const pairedAgent = registration
-    ? pairingQuery.data?.agents.find((a) => a.id === registration.agent_id)
-    : undefined;
-  const isPaired = !!pairedAgent?.last_seen;
+  const isPairedAgent = (a: {
+    name: string;
+    registered_at: string;
+    last_seen?: string | null;
+  }) =>
+    !!minted &&
+    a.name === minted.name &&
+    Date.parse(a.registered_at) >= minted.at - MINT_SKEW_MS &&
+    !!a.last_seen;
 
-  const installCommand = registration
+  const pairingQuery = useQuery({
+    queryKey: ["target-setup-agent-pairing", minted?.id],
+    queryFn: () => api.agents(),
+    enabled: !!minted,
+    refetchInterval: (query) =>
+      query.state.data?.agents.some(isPairedAgent) ? false : 3000,
+  });
+
+  const pairedAgent = minted
+    ? pairingQuery.data?.agents.find(isPairedAgent)
+    : undefined;
+  const isPaired = !!pairedAgent;
+
+  const tokensQuery = useQuery({
+    queryKey: ["agent-enrollment-tokens"],
+    // Expiry is judged when the list is fetched (not during render).
+    queryFn: async () => {
+      const res = await api.agentEnrollmentTokens();
+      const now = Date.now();
+      return (res.data ?? []).filter(
+        (t) =>
+          !t.redeemed_at && !t.revoked_at && Date.parse(t.expires_at) > now,
+      );
+    },
+    retry: false,
+  });
+  const revokeMutation = useMutation({
+    mutationFn: (id: string) => api.revokeAgentEnrollmentToken(id),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["agent-enrollment-tokens"] }),
+  });
+  const activeTokens = tokensQuery.data ?? [];
+
+  const installCommand = minted
     ? `KRYPTKEEPER_HUB_URL=${hubURL()} \\
-KRYPTKEEPER_AGENT_ID=${registration.agent_id} \\
-KRYPTKEEPER_AGENT_TOKEN=${registration.token} \\
+KRYPTKEEPER_AGENT_NAME=${minted.name} \\
+KRYPTKEEPER_AGENT_TYPE=${minted.type} \\
+KRYPTKEEPER_ENROLL_TOKEN=${minted.token} \\
   kryptkeeper-agent`
     : "";
 
@@ -412,7 +669,7 @@ KRYPTKEEPER_AGENT_TOKEN=${registration.token} \\
     <div className="space-y-4">
       <Panel
         title="1. Generate an enrollment token"
-        subtitle="Each agent gets a unique ID and token minted on registration -- never reused across hosts."
+        subtitle="A single-use token lets one agent register itself. It expires in 24 hours and is never reusable across hosts."
       >
         <div className="space-y-3">
           <label className="block space-y-1 text-sm text-foreground">
@@ -421,7 +678,7 @@ KRYPTKEEPER_AGENT_TOKEN=${registration.token} \\
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="web-01.prod"
-              disabled={!!registration}
+              disabled={!!minted}
             />
           </label>
           <label className="block space-y-1 text-sm text-foreground">
@@ -429,7 +686,7 @@ KRYPTKEEPER_AGENT_TOKEN=${registration.token} \\
             <Select
               value={type}
               onChange={(e) => setType(e.target.value as AgentType)}
-              disabled={!!registration}
+              disabled={!!minted}
             >
               {AGENT_TYPE_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>
@@ -440,44 +697,57 @@ KRYPTKEEPER_AGENT_TOKEN=${registration.token} \\
           </label>
           <Button
             tone="primary"
-            onClick={() => registerMutation.mutate()}
-            disabled={
-              registerMutation.isPending || !!registration || !name.trim()
-            }
+            onClick={() => mintMutation.mutate()}
+            disabled={mintMutation.isPending || !!minted || !name.trim()}
           >
-            {registration ? "Token generated" : "Generate token"}
+            {minted ? "Token generated" : "Generate token"}
           </Button>
-          {registerMutation.isError && (
+          {mintMutation.isError && (
             <p role="alert" className="text-xs text-state-over">
-              {registerMutation.error instanceof Error
-                ? registerMutation.error.message
+              {mintMutation.error instanceof Error
+                ? mintMutation.error.message
                 : "Failed to generate a token."}
             </p>
           )}
         </div>
       </Panel>
 
-      {registration && (
+      {minted && (
         <>
           <Panel
             title="2. Install the agent"
-            subtitle="Run this on the target host. The token is single-use for enrollment; the agent persists it for future heartbeats."
+            subtitle="Run this on the target host. The agent exchanges the token for its own credential on first start."
           >
             <div className="space-y-3">
-              <pre className="overflow-x-auto rounded-xl bg-card p-4 text-xs text-foreground">
-                {installCommand}
-              </pre>
-              <Button onClick={() => void copyCommand()}>
-                {copied ? (
-                  <>
-                    <Check className="h-4 w-4" /> Copied
-                  </>
-                ) : (
-                  <>
-                    <Copy className="h-4 w-4" /> Copy command
-                  </>
-                )}
-              </Button>
+              <p role="status" className="text-sm font-medium text-state-attn">
+                Copy this now: you will not see this token again.
+              </p>
+              {isPaired ? (
+                <p className="text-sm text-muted-foreground">
+                  The token has been used and is no longer shown.
+                </p>
+              ) : (
+                <>
+                  <pre className="overflow-x-auto rounded-xl bg-card p-4 text-xs text-foreground" {...scrollableProps}>
+                    {installCommand}
+                  </pre>
+                  <p className="text-xs text-muted-foreground">
+                    Token expires {new Date(minted.expires_at).toLocaleString()}{" "}
+                    and works once.
+                  </p>
+                  <Button onClick={() => void copyCommand()}>
+                    {copied ? (
+                      <>
+                        <Check className="h-4 w-4" /> Copied
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="h-4 w-4" /> Copy command
+                      </>
+                    )}
+                  </Button>
+                </>
+              )}
             </div>
           </Panel>
 
@@ -506,6 +776,46 @@ KRYPTKEEPER_AGENT_TOKEN=${registration.token} \\
           </Panel>
         </>
       )}
+
+      {activeTokens.length > 0 && (
+        <Panel
+          title="Unused enrollment tokens"
+          subtitle="Revoke a token you no longer need; a revoked token can never register an agent."
+        >
+          <ul className="space-y-2">
+            {activeTokens.map((t) => (
+              <li
+                key={t.id}
+                className="flex items-center justify-between gap-3 text-sm"
+              >
+                <span>
+                  {t.label || "unnamed"}
+                  {t.expires_at && (
+                    <span className="text-muted-foreground">
+                      {" "}
+                      - expires {new Date(t.expires_at).toLocaleString()}
+                    </span>
+                  )}
+                </span>
+                <Button
+                  onClick={() => revokeMutation.mutate(t.id)}
+                  disabled={revokeMutation.isPending}
+                  aria-label={`Revoke token ${t.label || t.id}`}
+                >
+                  Revoke
+                </Button>
+              </li>
+            ))}
+          </ul>
+          {revokeMutation.isError && (
+            <p role="alert" className="text-xs text-state-over">
+              {revokeMutation.error instanceof Error
+                ? revokeMutation.error.message
+                : "Failed to revoke the token."}
+            </p>
+          )}
+        </Panel>
+      )}
     </div>
   );
 }
@@ -526,7 +836,149 @@ type AgentlessForm = {
   installKeyPath: string;
   pluginId: string;
   pluginSettings: Record<string, string>;
+  // W24-09/W24-10: the pinned SSH host key and the operator's explicit
+  // confirmation of its fingerprint. A changed host invalidates both.
+  sshHostKey: string;
+  hostKeyConfirmed: boolean;
 };
+
+// BindCertificatesPanel (W27-05): after a target exists, authorize which
+// certificates the renewal scheduler may renew onto it. Bind failures are
+// shown per certificate; they never undo the target.
+function BindCertificatesPanel({
+  target,
+  initialError,
+}: {
+  target: ManagedTarget;
+  initialError: string | null;
+}) {
+  const queryClient = useQueryClient();
+  const [selected, setSelected] = useState<string[]>([]);
+  const [errors, setErrors] = useState<{ fp: string; message: string }[]>(
+    initialError ? [{ fp: "handed-off certificate", message: initialError }] : [],
+  );
+
+  const bindingsQ = useQuery({
+    queryKey: ["target-bindings", target.id],
+    queryFn: () => api.certTargetBindings(target.id),
+    retry: false,
+  });
+  const certsQ = useQuery({
+    queryKey: ["certificates", "bindable"],
+    queryFn: () => api.certificates({ limit: 200 }),
+    retry: false,
+  });
+  const bindings: CertTargetBinding[] = bindingsQ.data?.data ?? [];
+  const certs = extractList<CertificateRecord>(certsQ.data?.data, ["items"]);
+  const nameByFp = new Map(certs.map((c) => [c.fingerprint_sha256, c.common_name]));
+  const boundFps = new Set(bindings.map((b) => b.cert_fingerprint));
+  const candidates = certs.filter((c) => !boundFps.has(c.fingerprint_sha256));
+
+  const bindMutation = useMutation({
+    mutationFn: async (fps: string[]) => {
+      const failed: { fp: string; message: string }[] = [];
+      for (const fp of fps) {
+        try {
+          await api.bindCertToTarget(target.id, fp);
+        } catch (e) {
+          failed.push({
+            fp: nameByFp.get(fp) || fp,
+            message: e instanceof Error ? e.message : "Binding failed.",
+          });
+        }
+      }
+      return failed;
+    },
+    onSuccess: (failed) => {
+      setErrors(failed);
+      setSelected([]);
+      void queryClient.invalidateQueries({ queryKey: ["target-bindings", target.id] });
+    },
+  });
+
+  const unbindMutation = useMutation({
+    mutationFn: (fp: string) => api.unbindCertFromTarget(target.id, fp),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["target-bindings", target.id] }),
+    onError: (e) =>
+      setErrors([{ fp: "unbind", message: e instanceof Error ? e.message : "Unbind failed." }]),
+  });
+
+  return (
+    <section aria-label="Bind certificates" className="space-y-3 rounded-xl border border-border p-3">
+      <h3 className="text-sm font-medium text-foreground">Bind certificates</h3>
+      <p className="text-xs text-muted-foreground">
+        Only bound certificates are auto-renewed onto this target. A wildcard
+        certificate can be bound to several targets.
+      </p>
+      {candidates.length > 0 ? (
+        <fieldset className="space-y-1">
+          <legend className="text-sm text-foreground">Certificates to bind</legend>
+          {candidates.map((c) => (
+            <label key={c.fingerprint_sha256} className="flex items-center gap-2 text-sm text-foreground">
+              <input
+                type="checkbox"
+                checked={selected.includes(c.fingerprint_sha256)}
+                onChange={() =>
+                  setSelected((cur) =>
+                    cur.includes(c.fingerprint_sha256)
+                      ? cur.filter((x) => x !== c.fingerprint_sha256)
+                      : [...cur, c.fingerprint_sha256],
+                  )
+                }
+              />
+              <span>{c.common_name || c.fingerprint_sha256}</span>
+            </label>
+          ))}
+        </fieldset>
+      ) : (
+        <p className="text-xs text-muted-foreground">No further certificates available to bind.</p>
+      )}
+      <Button
+        tone="primary"
+        disabled={selected.length === 0 || bindMutation.isPending}
+        onClick={() => bindMutation.mutate(selected)}
+      >
+        {bindMutation.isPending ? "Binding…" : "Bind selected"}
+      </Button>
+      {errors.length > 0 ? (
+        <ul className="space-y-1 text-xs text-state-over" role="alert">
+          {errors.map((e) => (
+            <li key={e.fp + e.message}>
+              {e.fp}: {e.message}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div>
+        <h4 className="text-sm text-foreground">Bound certificates</h4>
+        {bindings.length === 0 ? (
+          <p className="text-xs text-muted-foreground">None bound yet.</p>
+        ) : (
+          <ul aria-label="Bound certificates" className="space-y-1">
+            {bindings.map((b) => {
+              const name = nameByFp.get(b.cert_fingerprint) || b.cert_fingerprint;
+              return (
+                <li key={b.cert_fingerprint} className="flex items-center gap-2 text-sm text-foreground">
+                  <span>{name}</span>
+                  <code className="text-xs text-muted-foreground">{b.cert_fingerprint.slice(0, 16)}</code>
+                  <Button
+                    tone="secondary"
+                    aria-label={`Unbind ${name}`}
+                    disabled={unbindMutation.isPending}
+                    onClick={() => unbindMutation.mutate(b.cert_fingerprint)}
+                  >
+                    Unbind
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
 
 function AgentlessSetupWizard() {
   // Switching OS must not leave behind a mode that OS cannot perform --
@@ -540,8 +992,11 @@ function AgentlessSetupWizard() {
         targetOS: next,
         installMode: installs.includes(f.installMode) ? f.installMode : installs[0],
         discoveryMode: discoveries.includes(f.discoveryMode) ? f.discoveryMode : discoveries[0],
+        sshHostKey: "",
+        hostKeyConfirmed: false,
       };
     });
+    setProbe(null);
   }
 
   const prefill =
@@ -550,6 +1005,9 @@ function AgentlessSetupWizard() {
       : new URLSearchParams();
   const prefillHost = prefill.get("host") ?? "";
   const prefillMode = prefill.get("install_mode") ?? "";
+  // Fingerprint of the certificate a takeover handed off (W27-13); shown
+  // read-only here.
+  const prefillCertificate = prefill.get("certificate") ?? "";
   const [form, setForm] = useState<AgentlessForm>({
     name: prefillHost ? `${prefillHost}` : "",
     host: prefillHost,
@@ -566,7 +1024,11 @@ function AgentlessSetupWizard() {
     installKeyPath: "",
     pluginId: "",
     pluginSettings: {},
+    sshHostKey: "",
+    hostKeyConfirmed: false,
   });
+  const [probe, setProbe] = useState<HostKeyProbe | null>(null);
+  const needsHostKey = form.installMode === "ssh" || form.installMode === "keychain";
   // W20-21: only enabled plugins can drive a target.
   const pluginsQ = useQuery({
     queryKey: ["delivery-plugins"],
@@ -578,10 +1040,13 @@ function AgentlessSetupWizard() {
   const chosenPlugin = enabledPlugins.find((p) => p.id === form.pluginId);
   const chosenManifest = chosenPlugin?.versions.find((v) => v.version === chosenPlugin.enabled_version)?.manifest;
   const [created, setCreated] = useState<ManagedTarget | null>(null);
+  // A failed bind of the handed-off certificate must not fail the create:
+  // the target exists, so the error is surfaced in the bind panel instead.
+  const [handoffBindError, setHandoffBindError] = useState<string | null>(null);
 
   const createMutation = useMutation({
-    mutationFn: () =>
-      api.createTarget({
+    mutationFn: async () => {
+      const res = await api.createTarget({
         name: form.name.trim(),
         host: form.host.trim(),
         discovery_mode: form.discoveryMode,
@@ -609,16 +1074,56 @@ function AgentlessSetupWizard() {
             : undefined,
         plugin_id: form.installMode === "plugin" ? form.pluginId : undefined,
         plugin_settings: form.installMode === "plugin" ? form.pluginSettings : undefined,
-      }),
-    onSuccess: (res) => setCreated(res.data),
+        ssh_host_key: needsHostKey ? form.sshHostKey : undefined,
+      });
+      let bindError: string | null = null;
+      if (prefillCertificate) {
+        try {
+          await api.bindCertToTarget(res.data.id, prefillCertificate);
+        } catch (e) {
+          bindError = e instanceof Error ? e.message : "Binding failed.";
+        }
+      }
+      return { target: res.data, bindError };
+    },
+    onSuccess: ({ target, bindError }) => {
+      setHandoffBindError(bindError);
+      setCreated(target);
+    },
+  });
+
+  const probeM = useMutation({
+    mutationFn: () => api.probeTargetHostKey({ host: form.host.trim() }),
+    onSuccess: (r) => {
+      setProbe(r.data);
+      setForm((f) => ({
+        ...f,
+        sshHostKey: r.data.ssh_host_key,
+        hostKeyConfirmed: false,
+      }));
+    },
   });
 
   const set = <K extends keyof AgentlessForm>(
     key: K,
     value: AgentlessForm[K],
-  ) => setForm((f) => ({ ...f, [key]: value }));
+  ) => {
+    if (key === "host" || key === "installMode") {
+      // A changed host (or mode) invalidates any fetched key and its confirmation.
+      setProbe(null);
+      probeM.reset();
+      setForm((f) => ({
+        ...f,
+        [key]: value,
+        sshHostKey: "",
+        hostKeyConfirmed: false,
+      }));
+      return;
+    }
+    setForm((f) => ({ ...f, [key]: value }));
+  };
 
-  const steps: WizardStepDef[] = [
+  const allSteps: WizardStepDef[] = [
     {
       id: "host",
       title: "Host",
@@ -644,6 +1149,17 @@ function AgentlessSetupWizard() {
               placeholder="db-01.internal.example.com"
             />
           </label>
+          {prefillCertificate ? (
+            <label className="block space-y-1 text-sm text-foreground">
+              <span>Certificate</span>
+              <Input
+                aria-label="Certificate"
+                value={prefillCertificate}
+                readOnly
+                className="font-mono"
+              />
+            </label>
+          ) : null}
           <fieldset className="space-y-2">
             <legend className="text-sm text-foreground">Operating system</legend>
             <p className="text-xs text-muted-foreground">
@@ -815,6 +1331,11 @@ function AgentlessSetupWizard() {
           <CredentialPicker
             installMode={form.installMode}
             shapeOverride={form.installMode === "plugin" ? pluginCredentialShape(chosenManifest) : undefined}
+            bundleHints={{
+              serverType: form.autoRenew ? form.installServerType : undefined,
+              certPath: form.autoRenew ? form.installCertPath.trim() : undefined,
+              keyPath: form.autoRenew ? form.installKeyPath.trim() : undefined,
+            }}
             value={form.credentialRef}
             onChange={(ref, name) => {
               set("credentialRef", ref);
@@ -898,7 +1419,68 @@ function AgentlessSetupWizard() {
         </div>
       ),
     },
+    {
+      id: "hostkey",
+      title: "Host key",
+      validate: () => {
+        if (!form.sshHostKey) return "Fetch the host key first.";
+        if (!form.hostKeyConfirmed) {
+          return "Confirm the fingerprint before saving.";
+        }
+        return null;
+      },
+      render: () => (
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Pin this host's SSH key so later connections to {form.host.trim() || "the host"} are
+            refused if it changes. Fetch the key, then verify the fingerprint out of band.
+          </p>
+          <Button
+            onClick={() => probeM.mutate()}
+            disabled={!form.host.trim() || probeM.isPending}
+          >
+            {probeM.isPending ? "Fetching..." : "Fetch host key"}
+          </Button>
+          {probeM.isError ? (
+            <StateMessage
+              tone="error"
+              title="Host key fetch failed"
+              message={
+                probeM.error instanceof Error
+                  ? probeM.error.message
+                  : "Could not reach the host."
+              }
+            />
+          ) : null}
+          {probe ? (
+            <div className="space-y-2 rounded-xl border border-border p-3 text-sm text-foreground">
+              <p>
+                <span className="text-muted-foreground">Algorithm:</span>{" "}
+                {probe.algorithm}
+              </p>
+              <p>
+                <span className="text-muted-foreground">SHA-256 fingerprint:</span>{" "}
+                <code aria-label="Host key fingerprint">{probe.fingerprint_sha256}</code>
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Compare with{" "}
+                <code>ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</code> on the host.
+              </p>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={form.hostKeyConfirmed}
+                  onChange={(e) => set("hostKeyConfirmed", e.target.checked)}
+                />
+                <span>I have verified this fingerprint</span>
+              </label>
+            </div>
+          ) : null}
+        </div>
+      ),
+    },
   ];
+  const steps = allSteps.filter((st) => st.id !== "hostkey" || needsHostKey);
 
   if (created) {
     return (
@@ -908,6 +1490,19 @@ function AgentlessSetupWizard() {
             tone="success"
             title={`${created.name} declared`}
             message={`${created.host} — discovery: ${created.discovery_mode}, install: ${created.install_mode}`}
+          />
+          {created.ssh_host_key_fingerprint ? (
+            <p className="text-sm text-foreground">
+              <span className="text-muted-foreground">Pinned host key:</span>{" "}
+              <code>{created.ssh_host_key_fingerprint}</code>
+            </p>
+          ) : null}
+          {created.install_mode === "ssh" && created.credential_ref ? (
+            <TargetPreflightPanel targetId={created.id} />
+          ) : null}
+          <BindCertificatesPanel
+            target={created}
+            initialError={handoffBindError}
           />
           <Button
             tone="primary"
@@ -929,7 +1524,10 @@ function AgentlessSetupWizard() {
                 installKeyPath: "",
                 pluginId: "",
                 pluginSettings: {},
+                sshHostKey: "",
+                hostKeyConfirmed: false,
               });
+              setProbe(null);
             }}
           >
             Add another target
@@ -998,6 +1596,8 @@ export default function TargetSetup() {
           type="button"
           role="radio"
           aria-checked={mode === "agent"}
+          aria-labelledby="setup-mode-agent-title"
+          aria-describedby="setup-mode-agent-desc"
           onClick={() => setMode("agent")}
           className={`rounded-2xl border p-4 text-left transition ${
             mode === "agent"
@@ -1005,8 +1605,8 @@ export default function TargetSetup() {
               : "border-border bg-foreground/[0.02] hover:border-primary/40"
           }`}
         >
-          <div className="font-semibold text-foreground">Agent</div>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <div id="setup-mode-agent-title" className="font-semibold text-foreground">Agent</div>
+          <p id="setup-mode-agent-desc" className="mt-1 text-xs text-muted-foreground">
             A lightweight agent runs on the host, discovering and auto-renewing
             certificates with no inbound access required.
           </p>
@@ -1015,6 +1615,8 @@ export default function TargetSetup() {
           type="button"
           role="radio"
           aria-checked={mode === "agentless"}
+          aria-labelledby="setup-mode-agentless-title"
+          aria-describedby="setup-mode-agentless-desc"
           onClick={() => setMode("agentless")}
           className={`rounded-2xl border p-4 text-left transition ${
             mode === "agentless"
@@ -1022,8 +1624,8 @@ export default function TargetSetup() {
               : "border-border bg-foreground/[0.02] hover:border-primary/40"
           }`}
         >
-          <div className="font-semibold text-foreground">Agentless</div>
-          <p className="mt-1 text-xs text-muted-foreground">
+          <div id="setup-mode-agentless-title" className="font-semibold text-foreground">Agentless</div>
+          <p id="setup-mode-agentless-desc" className="mt-1 text-xs text-muted-foreground">
             Declare a target's host and how it should be discovered, renewed,
             and installed -- no software runs on the target.
           </p>

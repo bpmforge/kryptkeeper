@@ -210,6 +210,7 @@ func (s ledgerFailStore) RecordKeyRotation(ca.KeyRotation) error {
 // rotation, or the caller could retry and generate an unnecessary second
 // new key on a CA that already rotated successfully.
 func TestRotateCAKeyHandler_LedgerFailureReturns200WithPersistedFalse(t *testing.T) {
+	t.Setenv("KRYPTKEEPER_KEY_DUAL_CONTROL", "false") // direct-path test; D-122 default is ON
 	t.Setenv("AUTH_MODE", "bootstrap")
 	t.Setenv("APP_BOOTSTRAP_TOKEN", "test-token")
 	auth := NewAuthenticatorFromEnv()

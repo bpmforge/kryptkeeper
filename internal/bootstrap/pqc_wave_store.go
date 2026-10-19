@@ -11,12 +11,30 @@ import (
 	"encoding/hex"
 	"fmt"
 	"time"
+
+	"kryptkeeper/internal/pqc"
 )
 
 // MigrationWaveMember is a certificate assigned to a migration wave.
 type MigrationWaveMember struct {
 	Fingerprint string `json:"fingerprint"`
 	CommonName  string `json:"common_name"`
+	// DeliveryStatus is the member's latest wave-execution delivery outcome
+	// (pqc.MemberDeliveryUnsupported or pqc.MemberFailed), empty when none is
+	// recorded or the last run delivered it (W31-21). A member with a
+	// non-delivered outcome has a successor cert the endpoint is not serving,
+	// so wave progress must not count it as migrated (D-105).
+	DeliveryStatus string `json:"delivery_status,omitempty"`
+}
+
+// waveMemberUndelivered reports whether a stored delivery status means the
+// member's successor was issued but never reached its endpoint.
+func waveMemberUndelivered(status string) bool {
+	switch status {
+	case pqc.MemberDeliveryUnsupported, pqc.MemberFailed, waveStatusRegressed:
+		return true
+	}
+	return false
 }
 
 // MigrationWave is a tracked PQC migration set with an owner and target date.
@@ -83,6 +101,9 @@ type MigrationWaveStore interface {
 	AddMember(ctx context.Context, waveID string, m MigrationWaveMember) error
 	RemoveMember(ctx context.Context, waveID, fingerprint string) error
 	UpdateWaveStatus(ctx context.Context, waveID, status string) error
+	// SetMemberDelivery records (or, with an empty status, clears) a member's
+	// latest delivery outcome (W31-21).
+	SetMemberDelivery(ctx context.Context, waveID, fingerprint, status string) error
 }
 
 const migrationWaveSchema = `
@@ -102,6 +123,8 @@ CREATE INDEX IF NOT EXISTS idx_wave_members_wave ON migration_wave_members(wave_
 // just created.
 func ensureWaveStatusColumn(db *sql.DB) {
 	_, _ = db.Exec("ALTER TABLE migration_waves ADD COLUMN status TEXT NOT NULL DEFAULT 'proposed'") // best-effort upgrade: duplicate-column error = already migrated
+	// W31-21: per-member delivery outcome, added the same way (no migration).
+	_, _ = db.Exec("ALTER TABLE migration_wave_members ADD COLUMN delivery_status TEXT") // best-effort upgrade: duplicate-column error = already migrated
 }
 
 type dbMigrationWaveStore struct {
@@ -172,7 +195,7 @@ func (s *dbMigrationWaveStore) ListWaves(ctx context.Context) ([]MigrationWave, 
 	}
 
 	mrows, err := s.db.QueryContext(ctx,
-		"SELECT wave_id, fingerprint, common_name FROM migration_wave_members")
+		"SELECT wave_id, fingerprint, common_name, delivery_status FROM migration_wave_members")
 	if err != nil {
 		return nil, err
 	}
@@ -180,11 +203,12 @@ func (s *dbMigrationWaveStore) ListWaves(ctx context.Context) ([]MigrationWave, 
 	for mrows.Next() {
 		var waveID string
 		var m MigrationWaveMember
-		var cn sql.NullString
-		if err := mrows.Scan(&waveID, &m.Fingerprint, &cn); err != nil {
+		var cn, delivery sql.NullString
+		if err := mrows.Scan(&waveID, &m.Fingerprint, &cn, &delivery); err != nil {
 			return nil, err
 		}
 		m.CommonName = cn.String
+		m.DeliveryStatus = delivery.String
 		if i, ok := index[waveID]; ok {
 			waves[i].Members = append(waves[i].Members, m)
 		}
@@ -196,6 +220,17 @@ func (s *dbMigrationWaveStore) UpdateWaveStatus(ctx context.Context, waveID, sta
 	_, err := s.db.ExecContext(ctx,
 		fmt.Sprintf("UPDATE migration_waves SET status = %s WHERE id = %s", s.ph(1), s.ph(2)),
 		status, waveID)
+	return err
+}
+
+func (s *dbMigrationWaveStore) SetMemberDelivery(ctx context.Context, waveID, fingerprint, status string) error {
+	var v any
+	if status != "" {
+		v = status
+	}
+	_, err := s.db.ExecContext(ctx,
+		fmt.Sprintf("UPDATE migration_wave_members SET delivery_status = %s WHERE wave_id = %s AND fingerprint = %s", s.ph(1), s.ph(2), s.ph(3)),
+		v, waveID, fingerprint)
 	return err
 }
 

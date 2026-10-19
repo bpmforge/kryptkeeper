@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"kryptkeeper/internal/audittrust"
@@ -180,14 +182,81 @@ func TestAuditCheckpointIsSignedAndVerifiable(t *testing.T) {
 	}
 }
 
-// Unconfigured signing must refuse, never mint a checkpoint under an
-// ephemeral key that nobody can verify after a restart.
-func TestAuditCheckpointRefusesWithoutConfiguredKey(t *testing.T) {
+// W22-04: with no env seed the hub generates and persists one, so the
+// checkpoint endpoint works out of the box and stays verifiable across
+// restarts (second call = same key).
+func TestAuditCheckpointAutoProvisionsSeed(t *testing.T) {
+	dir := t.TempDir()
 	t.Setenv("AUDIT_TRANSPARENCY_SIGNING_SEED", "")
+	t.Setenv("KRYPTKEEPER_DATA_DIR", dir)
+	mux := auditTrustMux(t, auditTrustFixture(3))
+	pubOf := func() string {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, authedReq(http.MethodGet, "/api/v1/audit/transparency/checkpoint", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		var env struct {
+			Data struct {
+				PublicKey string `json:"public_key"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatal(err)
+		}
+		return env.Data.PublicKey
+	}
+	first := pubOf()
+	info, err := os.Stat(filepath.Join(dir, "audit-transparency.seed"))
+	if err != nil {
+		t.Fatalf("seed file not persisted: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("seed file mode %v, want 0600", info.Mode().Perm())
+	}
+	if second := pubOf(); second != first {
+		t.Fatal("second call must reuse the persisted seed")
+	}
+}
+
+// The persisted-key rule has no ephemeral escape hatch: an unwritable
+// data dir refuses rather than minting a key nobody can verify later.
+func TestAuditCheckpointRefusesWhenSeedUnwritable(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AUDIT_TRANSPARENCY_SIGNING_SEED", "")
+	t.Setenv("KRYPTKEEPER_DATA_DIR", blocker)
 	rec := httptest.NewRecorder()
 	auditTrustMux(t, auditTrustFixture(3)).ServeHTTP(rec, authedReq(http.MethodGet, "/api/v1/audit/transparency/checkpoint", nil))
 	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("unconfigured signing must refuse, got %d", rec.Code)
+		t.Fatalf("unwritable seed dir must refuse, got %d", rec.Code)
+	}
+}
+
+func TestAuditCheckpointInvalidEnvSeedStaysHardError(t *testing.T) {
+	t.Setenv("AUDIT_TRANSPARENCY_SIGNING_SEED", "not-a-seed")
+	t.Setenv("KRYPTKEEPER_DATA_DIR", t.TempDir())
+	rec := httptest.NewRecorder()
+	auditTrustMux(t, auditTrustFixture(3)).ServeHTTP(rec, authedReq(http.MethodGet, "/api/v1/audit/transparency/checkpoint", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("invalid seed must refuse, got %d", rec.Code)
+	}
+}
+
+// Pins the verifier's leaf encoding to the server's: if they drift,
+// every offline proof silently fails.
+func TestCanonicalLeafMatchesBootstrap(t *testing.T) {
+	for _, e := range auditTrustFixture(3).entries {
+		raw, _ := json.Marshal(e)
+		got, err := audittrust.CanonicalLeaf(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(canonicalAuditLeaf(e)) {
+			t.Fatalf("leaf drift:\n%s\n%s", got, canonicalAuditLeaf(e))
+		}
 	}
 }
 

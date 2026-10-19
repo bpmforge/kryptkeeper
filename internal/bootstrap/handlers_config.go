@@ -45,6 +45,10 @@ func registerConfigHandlers(mux *http.ServeMux, auth *Authenticator, store Confi
 			writeForbidden(w, "forbidden")
 			return
 		}
+		// Effective settings expose instance-wide SSO/SMTP values and who set them.
+		if denyNonSuperAdminGlobal(w, r, auditProvider, pd, "config.list", "config", "config") {
+			return
+		}
 		if store == nil {
 			emitAuditEvent(r, auditProvider, pd.ID, "config.list", "config", "config", AuditOutcomeFailure)
 			writeServiceUnavailable(w, "config store unavailable")
@@ -88,6 +92,9 @@ func registerConfigHandlers(mux *http.ServeMux, auth *Authenticator, store Confi
 				writeForbidden(w, "admin role required")
 				return
 			}
+			if denyNonSuperAdminGlobal(w, r, auditProvider, pd, "config.set", "config", key) {
+				return
+			}
 			if store == nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "config.set", "config", key, AuditOutcomeFailure)
 				writeServiceUnavailable(w, "config store unavailable")
@@ -100,6 +107,13 @@ func registerConfigHandlers(mux *http.ServeMux, auth *Authenticator, store Confi
 			if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, configValueMaxLen+1024)).Decode(&req); err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "config.set", "config", key, AuditOutcomeFailure)
 				writeBadRequest(w, "invalid request body")
+				return
+			}
+			// W33-06: refuse (before anything is persisted) an SSO override
+			// that could lock every login out.
+			if err := auth.ssoOverrideGuard(r.Context(), key, req.Value); err != nil {
+				emitAuditEvent(r, auditProvider, pd.ID, "config.set", "config", key, AuditOutcomeFailure)
+				writeConflict(w, err.Error())
 				return
 			}
 			if err := store.Set(r.Context(), key, req.Value, pd.ID); err != nil {
@@ -115,12 +129,22 @@ func registerConfigHandlers(mux *http.ServeMux, auth *Authenticator, store Confi
 			// not appear in any API response, including the response to
 			// the very request that set it (acceptance #2).
 			emitAuditEvent(r, auditProvider, pd.ID, "config.set", "config", key, AuditOutcomeSuccess)
+			if extra, ok := configKeyAuditAction(key); ok {
+				detail := "updated"
+				if def, _ := lookupConfigKey(key); !def.Secret {
+					detail = "value=" + req.Value
+				}
+				emitAuditEventDetail(r, auditProvider, pd.ID, extra, "config", key, AuditOutcomeSuccess, detail)
+			}
 			w.WriteHeader(http.StatusNoContent)
 
 		case http.MethodDelete:
 			if !isAdminRole(pd.Role) {
 				emitAuditEvent(r, auditProvider, pd.ID, "config.reset", "config", key, AuditOutcomeDenied)
 				writeForbidden(w, "admin role required")
+				return
+			}
+			if denyNonSuperAdminGlobal(w, r, auditProvider, pd, "config.reset", "config", key) {
 				return
 			}
 			if store == nil {
@@ -139,6 +163,9 @@ func registerConfigHandlers(mux *http.ServeMux, auth *Authenticator, store Confi
 				return
 			}
 			emitAuditEvent(r, auditProvider, pd.ID, "config.reset", "config", key, AuditOutcomeSuccess)
+			if extra, ok := configKeyAuditAction(key); ok {
+				emitAuditEventDetail(r, auditProvider, pd.ID, extra, "config", key, AuditOutcomeSuccess, "reset to default")
+			}
 			w.WriteHeader(http.StatusNoContent)
 
 		default:

@@ -15,7 +15,7 @@
   /* State colours. These are the ONLY chromatic tokens in the chrome:
      if something is coloured here, it means something. */
   --state-auto: #1f6f4f;   /* renews without a human */
-  --state-attn: #a26611;   /* needs attention — 4.60:1, AA */
+  --state-attn: #8a560c;   /* needs attention — 5.37:1 on the 10% tint, AA (W33-12 axe) */
   --state-over: #a8342a;   /* overdue / expired */
   --state-idle: #8a8d93;   /* manual, no automation configured */
 
@@ -41,7 +41,7 @@
   --secondary: #f0f0ec;
   --secondary-foreground: #17191c;
   --muted: #f0f0ec;
-  --muted-foreground: #707378;  /* 4.64:1 on paper — AA */
+  --muted-foreground: #63666b;  /* 5.61:1 on paper, 5.37:1 on surface-2, 4.94:1 on error tint — AA (W26 axe) */
   --accent: #f0f0ec;
   --accent-foreground: #17191c;
   --destructive: #a8342a;
@@ -68,9 +68,9 @@
      inverted. State colours lift for legibility on a dark ground. */
   color-scheme: dark;
 
-  --state-auto: #5c8f6b;
+  --state-auto: #78ab87;  /* 5.60:1 on the 10% tint, AA (W33-12 axe) */
   --state-attn: #d8a657;
-  --state-over: #cc6553;  /* 4.65:1 on graphite — AA */
+  --state-over: #e5826e;  /* 5.47:1 on the 10% tint, AA (W33-12 axe) */
   --state-idle: #8d8880;
 
   --surface-0: #1a1917;
@@ -139,70 +139,53 @@ body::before {
   background-size: 32px 32px;
 }
 
-/* ─── Glass panel ────────────────────────────────────────────── */
+/* ─── Legacy surface classes ─────────────────────────────────────
+   These predate the token system and used to hard-code a cyan/violet
+   brand plus glass and brand variables that no longer exist, so
+   .glass rendered with no border and the global focus outline had no
+   colour. They now resolve to tokens so light and dark both follow
+   Direction A: neutral chrome, colour only for state. */
 .glass {
-  background: var(--glass-bg);
-  border: 1px solid var(--glass-border);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
 }
 
-/* ─── Gradient text ─────────────────────────────────────────── */
 .gradient-text {
-  background: linear-gradient(135deg, #22d3ee 0%, #a78bfa 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: var(--foreground);
 }
 
-/* ─── Glow ring for accent elements ─────────────────────────── */
-.glow-cyan {
-  box-shadow: var(--brand-cyan-glow);
-}
+.glow-cyan,
 .glow-violet {
-  box-shadow: var(--brand-violet-glow);
+  box-shadow: none;
 }
 
-/* ─── Gradient border card ──────────────────────────────────── */
+/* Kept as a positioning hook only; the decorative gradient ring is gone. */
 .gradient-border {
   position: relative;
 }
-.gradient-border::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1px;
-  background: linear-gradient(135deg, rgba(34,211,238,0.3), rgba(167,139,250,0.2), transparent);
-  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
-}
 
-/* ─── Stat tile gradient backgrounds ────────────────────────── */
-.stat-cyan   { background: linear-gradient(135deg, rgba(34,211,238,0.12) 0%, rgba(8,145,178,0.06) 100%); }
-.stat-violet { background: linear-gradient(135deg, rgba(167,139,250,0.12) 0%, rgba(124,58,237,0.06) 100%); }
-.stat-rose   { background: linear-gradient(135deg, rgba(251,113,133,0.12) 0%, rgba(225,29,72,0.06) 100%); }
-.stat-amber  { background: linear-gradient(135deg, rgba(251,191,36,0.12) 0%, rgba(217,119,6,0.06) 100%); }
-.stat-emerald{ background: linear-gradient(135deg, rgba(52,211,153,0.12) 0%, rgba(5,150,105,0.06) 100%); }
+/* ─── Stat tile backgrounds: neutral, or a 6% tint of a state colour ── */
+.stat-cyan,
+.stat-violet { background: var(--surface-2); }
+.stat-rose    { background: color-mix(in srgb, var(--state-over) 6%, var(--surface-1)); }
+.stat-amber   { background: color-mix(in srgb, var(--state-attn) 6%, var(--surface-1)); }
+.stat-emerald { background: color-mix(in srgb, var(--state-auto) 6%, var(--surface-1)); }
 
 /* ─── Scrollbar ─────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(34,211,238,0.3); }
+::-webkit-scrollbar-thumb { background: var(--input); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
 
-/* ─── Focus ring consistent with brand cyan ─────────────────── */
-:focus-visible { outline: 2px solid var(--brand-cyan); outline-offset: 2px; }
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 
 /* ─── Sidebar nav active indicator ─────────────────────────── */
 .nav-item-active {
-  background: linear-gradient(90deg, rgba(34,211,238,0.15), rgba(34,211,238,0.05));
-  color: #22d3ee;
-  border-left: 2px solid #22d3ee;
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--primary);
+  border-left: 2px solid var(--primary);
 }
-.nav-item-active svg { color: #22d3ee; }
+.nav-item-active svg { color: var(--primary); }
 
 /* ─── Risk gauge ─────────────────────────────────────────────── */
 .risk-gauge-track {
@@ -292,6 +275,15 @@ body::before {
   }
   html {
     @apply font-sans;
+  }
+  /* W33-13: action buttons and nav items are at least 44x44 CSS px (UX_SPEC, stricter than
+     WCAG 2.5.8's 24px). Sizes in button-variants.ts are h-6..h-9, so the floor lives here.
+     Exempt (WCAG 2.5.8 "inline"): a button/link set inside a sentence (`p button`). */
+  nav a,
+  [data-slot="button"],
+  main button:not(p button) {
+    min-height: 44px;
+    min-width: 44px;
   }
 }
 /* ─── Reduced motion ──────────────────────────────────────────────

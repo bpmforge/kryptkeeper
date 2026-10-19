@@ -6,6 +6,8 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -190,5 +192,185 @@ func TestRolloutZeroCanaryPromotesImplicitGate(t *testing.T) {
 		if id == "n2" || id == "n3" {
 			t.Fatalf("fleet must not be touched after the implicit-canary failure: %v", touched)
 		}
+	}
+}
+
+// --- W27-15: staged rollout orchestration ---
+
+// stagedHarness fakes per-node ops and records every call. serving holds the
+// fingerprint each node would serve: Flip sets "new", Restore sets "old";
+// Stage and Discard never change it.
+type stagedHarness struct {
+	calls                    []string
+	serving                  map[string]string
+	failStage, failFlip      map[string]bool
+	failRestore, failDiscard map[string]bool
+	failCommit               map[string]bool
+}
+
+func newStagedHarness(ids ...string) *stagedHarness {
+	h := &stagedHarness{serving: map[string]string{}, failStage: map[string]bool{}, failFlip: map[string]bool{},
+		failRestore: map[string]bool{}, failDiscard: map[string]bool{}, failCommit: map[string]bool{}}
+	for _, id := range ids {
+		h.serving[id] = "old"
+	}
+	return h
+}
+
+func (h *stagedHarness) ops() StagedNodeOps {
+	rec := func(op string, n RolloutNode) { h.calls = append(h.calls, op+":"+n.ID) }
+	return StagedNodeOps{
+		Stage: func(_ context.Context, n RolloutNode) (string, error) {
+			rec("stage", n)
+			if h.failStage[n.ID] {
+				return "", errors.New("stage boom")
+			}
+			return "", nil
+		},
+		Flip: func(_ context.Context, n RolloutNode) (string, error) {
+			rec("flip", n)
+			if h.failFlip[n.ID] {
+				return "", errors.New("flip boom")
+			}
+			h.serving[n.ID] = "new"
+			return "", nil
+		},
+		Restore: func(_ context.Context, n RolloutNode) error {
+			rec("restore", n)
+			if h.failRestore[n.ID] {
+				return errors.New("restore boom")
+			}
+			h.serving[n.ID] = "old"
+			return nil
+		},
+		Commit: func(_ context.Context, n RolloutNode) error {
+			rec("commit", n)
+			if h.failCommit[n.ID] {
+				return errors.New("commit boom")
+			}
+			return nil
+		},
+		Discard: func(_ context.Context, n RolloutNode) error {
+			rec("discard", n)
+			if h.failDiscard[n.ID] {
+				return errors.New("discard boom")
+			}
+			return nil
+		},
+	}
+}
+
+func (h *stagedHarness) count(prefix string) int {
+	c := 0
+	for _, s := range h.calls {
+		if strings.HasPrefix(s, prefix) {
+			c++
+		}
+	}
+	return c
+}
+
+func stagedGroup() RolloutGroup {
+	return RolloutGroup{Name: "g", Nodes: []RolloutNode{{ID: "n1", IsCanary: true}, {ID: "n2"}, {ID: "n3"}}}
+}
+
+func outcomes(res RolloutResult) string {
+	var s []string
+	for _, n := range res.NodeResults {
+		s = append(s, n.Outcome)
+	}
+	return strings.Join(s, ",")
+}
+
+func TestStagedRolloutNode3FlipFailureLeavesAllOnOldFingerprint(t *testing.T) {
+	h := newStagedHarness("n1", "n2", "n3")
+	h.failFlip["n3"] = true
+	res := RunStagedRolloutGroup(context.Background(), stagedGroup(), h.ops(), time.Now())
+	for id, fp := range h.serving {
+		if fp != "old" {
+			t.Fatalf("%s serves %s, want old (3 of 3 identical)", id, fp)
+		}
+	}
+	if outcomes(res) != "rolled_back,rolled_back,failed" || !res.Halted || res.Mode != "staged" {
+		t.Fatalf("got %s %+v", outcomes(res), res)
+	}
+}
+
+func TestStagedRolloutCanaryStageFailureTouchesNoOtherNode(t *testing.T) {
+	h := newStagedHarness("n1", "n2", "n3")
+	h.failStage["n1"] = true
+	res := RunStagedRolloutGroup(context.Background(), stagedGroup(), h.ops(), time.Now())
+	for _, c := range h.calls {
+		if strings.HasSuffix(c, ":n2") || strings.HasSuffix(c, ":n3") {
+			t.Fatalf("other nodes must see no calls, saw %v", h.calls)
+		}
+	}
+	if outcomes(res) != "failed,skipped,skipped" || !res.Halted {
+		t.Fatalf("got %s", outcomes(res))
+	}
+}
+
+func TestStagedRolloutMidStageFailureDiscardsStagedNodes(t *testing.T) {
+	h := newStagedHarness("n1", "n2", "n3")
+	h.failStage["n3"] = true
+	res := RunStagedRolloutGroup(context.Background(), stagedGroup(), h.ops(), time.Now())
+	if h.count("flip:") != 0 || h.count("discard:") != 2 {
+		t.Fatalf("want 0 flips and 2 discards, calls %v", h.calls)
+	}
+	if outcomes(res) != "skipped,skipped,failed" {
+		t.Fatalf("got %s", outcomes(res))
+	}
+}
+
+func TestStagedRolloutHappyPathStagesAllBeforeAnyFlipThenCommits(t *testing.T) {
+	h := newStagedHarness("n1", "n2", "n3")
+	res := RunStagedRolloutGroup(context.Background(), stagedGroup(), h.ops(), time.Now())
+	want := "stage:n1,stage:n2,stage:n3,flip:n1,flip:n2,flip:n3,commit:n1,commit:n2,commit:n3"
+	if strings.Join(h.calls, ",") != want {
+		t.Fatalf("call order\n got %v\nwant %s", h.calls, want)
+	}
+	if res.Halted || outcomes(res) != "installed,installed,installed" {
+		t.Fatalf("got %s", outcomes(res))
+	}
+}
+
+func TestStagedRolloutCommitFailureStaysInstalledWithWarning(t *testing.T) {
+	h := newStagedHarness("n1", "n2")
+	h.failCommit["n2"] = true
+	g := RolloutGroup{Name: "g", Nodes: []RolloutNode{{ID: "n1"}, {ID: "n2"}}}
+	res := RunStagedRolloutGroup(context.Background(), g, h.ops(), time.Now())
+	if outcomes(res) != "installed,installed" || !strings.Contains(res.NodeResults[1].Detail, "commit warning") {
+		t.Fatalf("got %+v", res.NodeResults)
+	}
+}
+
+func TestStagedRolloutOutsideWindowCallsNothing(t *testing.T) {
+	h := newStagedHarness("n1", "n2", "n3")
+	now := time.Now().UTC()
+	g := stagedGroup()
+	g.Window = MaintenanceWindow{StartHour: (now.Hour() + 2) % 24, EndHour: (now.Hour() + 4) % 24}
+	res := RunStagedRolloutGroup(context.Background(), g, h.ops(), now)
+	if len(h.calls) != 0 || !res.Deferred || outcomes(res) != "skipped,skipped,skipped" {
+		t.Fatalf("calls=%v res=%+v", h.calls, res)
+	}
+}
+
+func TestStagedRolloutRestoreFailureReportsRollbackFailed(t *testing.T) {
+	h := newStagedHarness("n1", "n2", "n3")
+	h.failFlip["n3"] = true
+	h.failRestore["n1"] = true
+	res := RunStagedRolloutGroup(context.Background(), stagedGroup(), h.ops(), time.Now())
+	if outcomes(res) != "rollback_failed,rolled_back,failed" {
+		t.Fatalf("got %s", outcomes(res))
+	}
+}
+
+func TestStagedRolloutDiscardFailureReportsRollbackFailed(t *testing.T) {
+	h := newStagedHarness("n1", "n2", "n3")
+	h.failFlip["n1"] = true
+	h.failDiscard["n3"] = true
+	res := RunStagedRolloutGroup(context.Background(), stagedGroup(), h.ops(), time.Now())
+	if outcomes(res) != "failed,skipped,rollback_failed" {
+		t.Fatalf("got %s", outcomes(res))
 	}
 }

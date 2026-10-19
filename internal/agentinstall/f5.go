@@ -40,7 +40,7 @@ type F5Pusher struct {
 
 func NewF5Pusher(cfg F5Config, client *http.Client) *F5Pusher {
 	if client == nil {
-		client = http.DefaultClient
+		client = guardedPushClient(nil)
 	}
 	return &F5Pusher{cfg: cfg, client: client, verify: defaultVerifier}
 }

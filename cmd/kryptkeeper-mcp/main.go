@@ -31,14 +31,16 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/server"
+	"kryptkeeper/internal/logging"
 
 	"kryptkeeper/internal/mcpserver"
+	"kryptkeeper/internal/metrics"
 )
 
 // defaultHTTPAddr is loopback-only: the StreamableHTTP transport does not
@@ -108,24 +110,26 @@ func main() {
 		}
 	}
 
+	logging.Setup(logging.ConfigFromEnv(os.Getenv))
+
 	transport, err := transportFromEnv(os.Getenv("KRYPTKEEPER_MCP_TRANSPORT"))
 	if err != nil {
-		log.Fatal(err)
+		logging.Fatal(err)
 	}
 	var httpCfg mcpserver.HTTPConfig
 	if transport == "http" {
 		if httpCfg, err = httpConfigFromEnv(os.Getenv); err != nil {
-			log.Fatal(err)
+			logging.Fatal(err)
 		}
 	}
 
 	hubURL := os.Getenv("KRYPTKEEPER_HUB_URL")
 	if hubURL == "" {
-		log.Fatal("KRYPTKEEPER_HUB_URL is required")
+		logging.Fatal("KRYPTKEEPER_HUB_URL is required")
 	}
 	token := os.Getenv("KRYPTKEEPER_MCP_TOKEN")
 	if token == "" {
-		log.Fatal("KRYPTKEEPER_MCP_TOKEN is required (a Hub bearer token; use the mcp-agent role, not an approver-capable one)")
+		logging.Fatal("KRYPTKEEPER_MCP_TOKEN is required (a Hub bearer token; use the mcp-agent role, not an approver-capable one)")
 	}
 
 	hub := mcpserver.NewHubClient(hubURL, token)
@@ -148,25 +152,34 @@ func main() {
 	self, err := hub.CheckSelfRole(checkCtx)
 	cancel()
 	if err != nil {
-		log.Fatalf("could not verify this token's role before starting (hub unreachable or token invalid) -- refusing to start rather than run with an unverified role: %v", err)
+		logging.Fatalf("could not verify this token's role before starting (hub unreachable or token invalid) -- refusing to start rather than run with an unverified role: %v", err)
 	}
 	if self.CanApproveActions {
-		log.Fatalf("refusing to start: this token's role (%q) can approve pending actions -- provision the MCP server with a non-approver role (e.g. mcp-agent)", self.Role)
+		logging.Fatalf("refusing to start: this token's role (%q) can approve pending actions -- provision the MCP server with a non-approver role (e.g. mcp-agent)", self.Role)
 	}
+
+	// Started after the role check so readiness never reports a token that
+	// failed it. Nothing here writes to stdout: that is the stdio protocol.
+	go func() {
+		cfg := newOpsConfig(metrics.OpsAddrFromEnv(os.Getenv, defaultOpsAddr), hub, time.Now)
+		if err := metrics.ServeOps(context.Background(), cfg); err != nil {
+			slog.Warn("mcp ops listener not started", "addr", cfg.Addr, "error", err)
+		}
+	}()
 
 	srv := mcpserver.NewServer(hub)
 
 	switch transport {
 	case "http":
 		addr := httpAddrFromEnv(os.Getenv("KRYPTKEEPER_MCP_HTTP_ADDR"))
-		log.Printf("kryptkeeper-mcp %s: serving over HTTP (hub=%s, role=%s, addr=%s)", mcpserver.Version, hubURL, self.Role, addr)
+		logging.Infof("kryptkeeper-mcp %s: serving over HTTP (hub=%s, role=%s, addr=%s)", mcpserver.Version, hubURL, self.Role, addr)
 		if err := mcpserver.ServeHTTP(srv, addr, httpCfg); err != nil {
-			log.Fatalf("mcp server: %v", err)
+			logging.Fatalf("mcp server: %v", err)
 		}
 	default:
-		log.Printf("kryptkeeper-mcp %s: serving over stdio (hub=%s, role=%s)", mcpserver.Version, hubURL, self.Role)
+		logging.Infof("kryptkeeper-mcp %s: serving over stdio (hub=%s, role=%s)", mcpserver.Version, hubURL, self.Role)
 		if err := server.ServeStdio(srv); err != nil {
-			log.Fatalf("mcp server: %v", err)
+			logging.Fatalf("mcp server: %v", err)
 		}
 	}
 }

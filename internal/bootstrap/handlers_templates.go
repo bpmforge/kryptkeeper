@@ -5,17 +5,19 @@
 package bootstrap
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
-func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider TemplateProvider, auditProvider AuditProvider) {
+func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider TemplateProvider, auditProvider AuditProvider, approvals ApprovalStore) {
 	mux.HandleFunc("/api/v1/templates", func(w http.ResponseWriter, r *http.Request) {
 		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
 		if err != nil {
@@ -71,18 +73,19 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "template.create", "template", "templates", AuditOutcomeFailure)
-				log.Printf("template create unavailable: %v", err)
+				logging.Warnf("template create unavailable: %v", err)
 				writeServiceUnavailable(w, "template unavailable")
 				return
 			}
 
 			if !tenantBypass(pd) && pd.Tenant != DefaultTenant && activeTenantStore != nil {
 				if merr := activeTenantStore.SetTemplateTenant(r.Context(), created.ID, pd.Tenant); merr != nil {
-					log.Printf("auto-map template %s to tenant %s failed: %v", created.ID, pd.Tenant, merr)
+					logging.Warnf("auto-map template %s to tenant %s failed: %v", created.ID, pd.Tenant, merr)
 				}
 			}
 
-			emitAuditEvent(r, auditProvider, pd.ID, "template.create", "template", created.ID, AuditOutcomeSuccess)
+			emitAuditEventDetail(r, auditProvider, pd.ID, "template.create", "template", created.ID, AuditOutcomeSuccess,
+				`{"revision":{"new":`+strconv.Itoa(created.Revision)+`}}`)
 			resp := struct {
 				Data TemplateItem `json:"data"`
 			}{Data: created}
@@ -91,7 +94,7 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 			w.Header().Set("ETag", strconv.Itoa(created.Revision))
 			w.WriteHeader(http.StatusCreated)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/templates create response: %v", err)
+				logging.Warnf("failed to encode /api/v1/templates create response: %v", err)
 			}
 			return
 		}
@@ -108,16 +111,29 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 			Active: parseTemplateActive(r.URL.Query().Get("active")),
 		}
 
-		result, err := provider.ListTemplates(r.Context(), query)
+		// L-20: filter the whole set before computing total/next_cursor.
+		tplScoped := activeTenantStore != nil && !tenantBypass(pd)
+		var result TemplateListResult
+		if tplScoped {
+			all, derr := drainPages(func(offset, limit int) ([]TemplateItem, int, error) {
+				wq := query
+				wq.Offset, wq.Limit = offset, limit
+				res, e := provider.ListTemplates(r.Context(), wq)
+				return res.Items, res.Total, e
+			})
+			err = derr
+			all = filterTemplatesByTenant(r.Context(), activeTenantStore, pd, all)
+			result = TemplateListResult{Items: pageSlice(all, query.Offset, query.Limit), Total: len(all), Limit: query.Limit}
+		} else {
+			result, err = provider.ListTemplates(r.Context(), query)
+		}
 		if err != nil {
 			emitAuditEvent(r, auditProvider, pd.ID, "template.list", "template", "templates", AuditOutcomeFailure)
-			log.Printf("template list unavailable: %v", err)
+			logging.Warnf("template list unavailable: %v", err)
 			writeServiceUnavailable(w, "template list unavailable")
 			return
 		}
 		emitAuditEvent(r, auditProvider, pd.ID, "template.list", "template", "templates", AuditOutcomeSuccess)
-
-		result.Items = filterTemplatesByTenant(r.Context(), activeTenantStore, pd, result.Items)
 
 		resp := struct {
 			Data []TemplateItem `json:"data"`
@@ -147,7 +163,7 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/templates response: %v", err)
+			logging.Warnf("failed to encode /api/v1/templates response: %v", err)
 		}
 	})
 
@@ -167,6 +183,10 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 		}
 
 		tail := strings.TrimPrefix(r.URL.Path, "/api/v1/templates/")
+		if strings.HasSuffix(tail, "/revisions") {
+			serveTemplateRevisions(w, r, pd, strings.TrimSuffix(tail, "/revisions"), provider, auditProvider)
+			return
+		}
 		if strings.HasSuffix(tail, "/clone") {
 			if r.Method != http.MethodPost {
 				writeMethodNotAllowed(w, "POST")
@@ -219,14 +239,14 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "template.clone", "template", id, AuditOutcomeFailure)
-				log.Printf("template clone unavailable: %v", err)
+				logging.Warnf("template clone unavailable: %v", err)
 				writeServiceUnavailable(w, "template unavailable")
 				return
 			}
 
 			if !tenantBypass(pd) && pd.Tenant != DefaultTenant && activeTenantStore != nil {
 				if merr := activeTenantStore.SetTemplateTenant(r.Context(), cloned.ID, pd.Tenant); merr != nil {
-					log.Printf("auto-map cloned template %s to tenant %s failed: %v", cloned.ID, pd.Tenant, merr)
+					logging.Warnf("auto-map cloned template %s to tenant %s failed: %v", cloned.ID, pd.Tenant, merr)
 				}
 			}
 			emitAuditEvent(r, auditProvider, pd.ID, "template.clone", "template", id, AuditOutcomeSuccess)
@@ -238,7 +258,7 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 			w.Header().Set("ETag", strconv.Itoa(cloned.Revision))
 			w.WriteHeader(http.StatusCreated)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/templates/{id}/clone response: %v", err)
+				logging.Warnf("failed to encode /api/v1/templates/{id}/clone response: %v", err)
 			}
 			return
 		}
@@ -273,6 +293,20 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 		}
 
 		if r.Method == http.MethodDelete {
+			if refd, gerr := templateReferencedByPendingApproval(r.Context(), approvals, id); gerr != nil {
+				// Fail closed: deleting a template an in-flight request may
+				// need is not undoable.
+				emitAuditEvent(r, auditProvider, pd.ID, "template.delete", "template", id, AuditOutcomeFailure)
+				logging.Warnf("template delete: approval lookup failed: %v", gerr)
+				writeServiceUnavailable(w, "approval store unavailable")
+				return
+			} else if refd {
+				emitAuditEvent(r, auditProvider, pd.ID, "template.delete", "template", id, AuditOutcomeFailure)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"error":"conflict","message":"template is referenced by an in-flight request; disable it with PATCH active=false instead"}`))
+				return
+			}
 			err := provider.DeleteTemplate(r.Context(), id)
 			if err != nil {
 				if errors.Is(err, errTemplateNotFound) {
@@ -289,7 +323,7 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 				}
 
 				emitAuditEvent(r, auditProvider, pd.ID, "template.delete", "template", id, AuditOutcomeFailure)
-				log.Printf("template delete unavailable: %v", err)
+				logging.Warnf("template delete unavailable: %v", err)
 				writeServiceUnavailable(w, "template unavailable")
 				return
 			}
@@ -319,6 +353,7 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 				return
 			}
 
+			before, _, _ := provider.GetTemplate(r.Context(), id)
 			updated, err := provider.PatchTemplate(r.Context(), id, patchReq)
 			if err != nil {
 				if errors.Is(err, errTemplateNotFound) {
@@ -342,19 +377,23 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 				}
 
 				emitAuditEvent(r, auditProvider, pd.ID, "template.update", "template", id, AuditOutcomeFailure)
-				log.Printf("template patch unavailable: %v", err)
+				logging.Warnf("template patch unavailable: %v", err)
 				writeServiceUnavailable(w, "template unavailable")
 				return
 			}
 
-			emitAuditEvent(r, auditProvider, pd.ID, "template.update", "template", id, AuditOutcomeSuccess)
+			detail := templateChangeSummary(before, updated)
+			emitAuditEventDetail(r, auditProvider, pd.ID, "template.update", "template", id, AuditOutcomeSuccess, detail)
+			if before.Active && !updated.Active {
+				emitAuditEventDetail(r, auditProvider, pd.ID, "template.disable", "template", id, AuditOutcomeSuccess, detail)
+			}
 			resp := struct {
 				Data TemplateItem `json:"data"`
 			}{Data: updated}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/templates/{id} patch response: %v", err)
+				logging.Warnf("failed to encode /api/v1/templates/{id} patch response: %v", err)
 			}
 			return
 		}
@@ -380,6 +419,7 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 				return
 			}
 
+			before, _, _ := provider.GetTemplate(r.Context(), id)
 			replaced, err := provider.ReplaceTemplate(r.Context(), id, req, expectedRevision)
 			if err != nil {
 				if errors.Is(err, errTemplateNotFound) {
@@ -410,12 +450,16 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 				}
 
 				emitAuditEvent(r, auditProvider, pd.ID, "template.replace", "template", id, AuditOutcomeFailure)
-				log.Printf("template replace unavailable: %v", err)
+				logging.Warnf("template replace unavailable: %v", err)
 				writeServiceUnavailable(w, "template unavailable")
 				return
 			}
 
-			emitAuditEvent(r, auditProvider, pd.ID, "template.replace", "template", id, AuditOutcomeSuccess)
+			detail := templateChangeSummary(before, replaced)
+			emitAuditEventDetail(r, auditProvider, pd.ID, "template.replace", "template", id, AuditOutcomeSuccess, detail)
+			if before.Active && !replaced.Active {
+				emitAuditEventDetail(r, auditProvider, pd.ID, "template.disable", "template", id, AuditOutcomeSuccess, detail)
+			}
 			resp := struct {
 				Data TemplateItem `json:"data"`
 			}{Data: replaced}
@@ -423,7 +467,7 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 			w.Header().Set("ETag", strconv.Itoa(replaced.Revision))
 			w.WriteHeader(http.StatusOK)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/templates/{id} put response: %v", err)
+				logging.Warnf("failed to encode /api/v1/templates/{id} put response: %v", err)
 			}
 			return
 		}
@@ -436,7 +480,7 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 		item, found, err := provider.GetTemplate(r.Context(), id)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, pd.ID, "template.get", "template", id, AuditOutcomeFailure)
-			log.Printf("template get unavailable: %v", err)
+			logging.Warnf("template get unavailable: %v", err)
 			writeServiceUnavailable(w, "template unavailable")
 			return
 		}
@@ -454,9 +498,101 @@ func registerTemplateHandlers(mux *http.ServeMux, auth *Authenticator, provider 
 		w.Header().Set("ETag", strconv.Itoa(item.Revision))
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/templates/{id} response: %v", err)
+			logging.Warnf("failed to encode /api/v1/templates/{id} response: %v", err)
 		}
 	})
+}
+
+// templateChangeSummary is the audit detail of a template edit: the revision
+// move and each changed field's old and new value (W23-44).
+func templateChangeSummary(before, after TemplateItem) string {
+	detail := struct {
+		Revision struct {
+			Old int `json:"old"`
+			New int `json:"new"`
+		} `json:"revision"`
+		Changes []TemplateFieldChange `json:"changes"`
+	}{Changes: diffTemplates(before, after)}
+	detail.Revision.Old, detail.Revision.New = before.Revision, after.Revision
+	raw, err := json.Marshal(detail)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
+}
+
+// templateReferencedByPendingApproval reports whether a pending approval
+// request names the template. A nil store means no approval gate is wired.
+func templateReferencedByPendingApproval(ctx context.Context, approvals ApprovalStore, templateID string) (bool, error) {
+	if approvals == nil {
+		return false, nil
+	}
+	const page = 200
+	for offset := 0; ; offset += page {
+		reqs, _, err := approvals.List(ctx, "pending", page, offset)
+		if err != nil {
+			return false, err
+		}
+		for _, a := range reqs {
+			if a.TemplateID == templateID {
+				return true, nil
+			}
+		}
+		if len(reqs) < page {
+			return false, nil
+		}
+	}
+}
+
+// serveTemplateRevisions handles GET /api/v1/templates/{id}/revisions. The
+// tenant check matches clone/get: a template hidden from the caller's tenant
+// never exposes its snapshots.
+func serveTemplateRevisions(w http.ResponseWriter, r *http.Request, pd AuthPrincipal, id string, provider TemplateProvider, auditProvider AuditProvider) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, "GET")
+		return
+	}
+	if id == "" || strings.Contains(id, "/") {
+		emitAuditEvent(r, auditProvider, pd.ID, "template.revisions", "template", id, AuditOutcomeFailure)
+		writeNotFound(w, "template not found")
+		return
+	}
+	if !templateVisibleToTenant(r.Context(), activeTenantStore, pd, id) {
+		emitAuditEvent(r, auditProvider, pd.ID, "template.revisions", "template", id, AuditOutcomeDenied)
+		writeForbidden(w, "forbidden")
+		return
+	}
+	lister, ok := provider.(TemplateRevisionLister)
+	if !ok {
+		emitAuditEvent(r, auditProvider, pd.ID, "template.revisions", "template", id, AuditOutcomeFailure)
+		writeServiceUnavailable(w, "revision history not supported by this provider")
+		return
+	}
+	revs, found, err := lister.ListTemplateRevisions(r.Context(), id)
+	if errors.Is(err, errTemplateRevisionsUnsupported) {
+		emitAuditEvent(r, auditProvider, pd.ID, "template.revisions", "template", id, AuditOutcomeFailure)
+		writeServiceUnavailable(w, "revision history not supported by this provider")
+		return
+	}
+	if err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "template.revisions", "template", id, AuditOutcomeFailure)
+		logging.Warnf("template revisions unavailable: %v", err)
+		writeServiceUnavailable(w, "template unavailable")
+		return
+	}
+	if !found {
+		emitAuditEvent(r, auditProvider, pd.ID, "template.revisions", "template", id, AuditOutcomeFailure)
+		writeNotFound(w, "template not found")
+		return
+	}
+	emitAuditEvent(r, auditProvider, pd.ID, "template.revisions", "template", id, AuditOutcomeSuccess)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(struct {
+		Data []TemplateRevision `json:"data"`
+	}{Data: revs}); err != nil {
+		logging.Warnf("failed to encode /api/v1/templates/{id}/revisions response: %v", err)
+	}
 }
 
 // maxTemplateBodyBytes bounds a template document; policy blocks and name
@@ -482,7 +618,7 @@ func parseTemplatePatchRequest(body io.Reader) (TemplatePatchRequest, error) {
 
 	for key := range payload {
 		switch key {
-		case "display_name", "auto_enroll", "active", "allowed_algorithms":
+		case "display_name", "auto_enroll", "active", "allowed_algorithms", "enrollment_permissions":
 			// mutable — allowed_algorithms is a policy knob, not identity (W18-15)
 		case "id", "name", "oid", "key_usage", "extended_key_usage", "min_key_size", "validity_period", "renewal_overlap", "revision", "schema_version", "issued_count", "created_at", "updated_at":
 			return TemplatePatchRequest{}, errTemplateImmutableField
@@ -519,6 +655,13 @@ func parseTemplatePatchRequest(body io.Reader) (TemplatePatchRequest, error) {
 			return TemplatePatchRequest{}, errTemplateInvalidPatch
 		}
 		req.AllowedAlgorithms = &algos
+	}
+	if rawPerms, ok := payload["enrollment_permissions"]; ok {
+		var perms EnrollmentPermissions
+		if err := json.Unmarshal(rawPerms, &perms); err != nil {
+			return TemplatePatchRequest{}, errTemplateInvalidPatch
+		}
+		req.EnrollmentPermissions = &perms
 	}
 
 	return req, nil

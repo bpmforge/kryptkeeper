@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -12,6 +13,7 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -266,5 +268,40 @@ func TestBaseTLSConfig_ClientCertRequestIsOptIn(t *testing.T) {
 		if cfg.MinVersion != tls.VersionTLS12 {
 			t.Fatalf("MinVersion = %x", cfg.MinVersion)
 		}
+	}
+}
+
+func TestResolveTLSMode_FirstRunNoCA(t *testing.T) {
+	t.Setenv("KRYPTKEEPER_TLS_DISABLE", "")
+	t.Setenv("KRYPTKEEPER_TLS_CERT_FILE", "")
+	t.Setenv("KRYPTKEEPER_TLS_KEY_FILE", "")
+	t.Setenv("KRYPTKEEPER_TLS_SELF_ISSUE", "")
+	engine := ca.NewEngine(nil, ca.NewMemStore())
+	dataDir, exportDir := t.TempDir(), t.TempDir()
+	t.Setenv("KRYPTKEEPER_TLS_TRUST_EXPORT_DIR", exportDir)
+
+	cfg, warn, err := resolveTLSMode(true, engine, nil, "", dataDir, ":0")
+	if err != nil || cfg == nil || !strings.Contains(warn, "first-run") {
+		t.Fatalf("default mode with no CA must warn and still serve TLS, got cfg=%v warn=%q err=%v", cfg, warn, err)
+	}
+	if len(cfg.Certificates) != 1 || cfg.Certificates[0].Leaf == nil || cfg.Certificates[0].Leaf.Subject.CommonName != "kryptkeeper first-run (ephemeral)" {
+		t.Fatalf("first-run listener must use the ephemeral self-signed certificate, got %+v", cfg.Certificates)
+	}
+	// The public half is published as ca.pem (data dir and trust export) so the
+	// compose dashboard and healthcheck can verify the listener; no key in it.
+	for _, dir := range []string{filepath.Join(dataDir, "tls"), exportDir} {
+		got, err := os.ReadFile(filepath.Join(dir, "ca.pem"))
+		if err != nil {
+			t.Fatalf("first-run must publish ca.pem in %s: %v", dir, err)
+		}
+		block, _ := pem.Decode(got)
+		if block == nil || block.Type != "CERTIFICATE" || !bytes.Equal(block.Bytes, cfg.Certificates[0].Certificate[0]) || bytes.Contains(got, []byte("PRIVATE")) {
+			t.Fatalf("%s/ca.pem must be exactly the ephemeral certificate", dir)
+		}
+	}
+
+	t.Setenv("KRYPTKEEPER_TLS_SELF_ISSUE", "true")
+	if _, _, err := resolveTLSMode(true, engine, nil, "", t.TempDir(), ":0"); err == nil || !strings.Contains(err.Error(), "first-run") {
+		t.Fatalf("explicit self-issue with no CA must fail clearly, got %v", err)
 	}
 }

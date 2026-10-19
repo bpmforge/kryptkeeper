@@ -24,6 +24,14 @@ rules:
   - apiGroups: ["cert-manager.io"]
     resources: ["certificaterequests/status"]
     verbs: ["patch", "update"]
+  # Setting the Denied condition is an approval decision; cert-manager's
+  # webhook requires "approve" on the signer for it.
+  - apiGroups: ["cert-manager.io"]
+    resources: ["signers"]
+    verbs: ["approve"]
+    resourceNames:
+      - issuers.certmanager.kryptkeeper.io/*
+      - clusterissuers.certmanager.kryptkeeper.io/*
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
@@ -42,3 +50,36 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "kryptkeeper-certmanager-issuer.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- if .Values.certManager.approverRBAC }}
+---
+# cert-manager's built-in approver may only approve its own signers; let it
+# approve requests for this issuer so Certificates are not left unapproved.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kryptkeeper-certmanager-issuer.fullname" . }}-approver
+  labels:
+    {{- include "kryptkeeper-certmanager-issuer.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["cert-manager.io"]
+    resources: ["signers"]
+    verbs: ["approve"]
+    resourceNames:
+      - issuers.certmanager.kryptkeeper.io/*
+      - clusterissuers.certmanager.kryptkeeper.io/*
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kryptkeeper-certmanager-issuer.fullname" . }}-approver
+  labels:
+    {{- include "kryptkeeper-certmanager-issuer.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kryptkeeper-certmanager-issuer.fullname" . }}-approver
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.certManager.serviceAccountName }}
+    namespace: {{ .Values.certManager.namespace }}
+{{- end }}

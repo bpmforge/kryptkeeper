@@ -8,7 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/url"
 	"strconv"
 	"time"
@@ -52,7 +52,7 @@ func newWinRMTargetScanner(targets ManagedTargetStore, creds OutboundCredentialS
 	return func(ctx context.Context, targetID string) scanner.ScanResult {
 		started := time.Now().UTC()
 		fail := func(host string, err error) scanner.ScanResult {
-			log.Printf("winrm discovery %s: %v", targetID, err)
+			logging.Infof("winrm discovery %s: %v", targetID, err)
 			return scanner.ScanResult{Status: "failed", StartedAt: started, ErrorCount: 1,
 				Endpoints: []scanner.DiscoveredEndpoint{{Host: host, Port: 5986, Protocol: "winrm-https", Error: err.Error(), ScannedAt: started}}}
 		}
@@ -119,6 +119,15 @@ func newWinRMTargetScanner(targets ManagedTargetStore, creds OutboundCredentialS
 			isLeaf := i < len(res.Certs) && res.Certs[i].Source == "agentless-winrm:My"
 			ep.Certs = append(ep.Certs, scanner.CertToDiscovered(c, host, isLeaf))
 		}
+		// W34-12: install posture. The posture pass only sees http.sys-bound
+		// ports, so ListenersScanned stays false: absent listener evidence for
+		// other ports must not be read as "nothing listens there".
+		if res.FilesScanned {
+			ep.HostObs = &scanner.HostObservations{TargetID: t.ID, FilesScanned: true, Files: hostFiles(res.Files),
+				Listeners: winBindingEvidence(res.WinBindings)}
+		} else if res.PostureErr != "" {
+			logging.Infof("winrm discovery %s: posture pass: %s", targetID, res.PostureErr)
+		}
 		result := scanner.ScanResult{Status: "completed", StartedAt: started, TotalScanned: 1, CertsFound: len(ep.Certs), Endpoints: []scanner.DiscoveredEndpoint{ep}}
 		if len(res.Errors) > 0 {
 			result.ErrorCount = len(res.Errors)
@@ -132,11 +141,27 @@ func newWinRMTargetScanner(targets ManagedTargetStore, creds OutboundCredentialS
 				result.Endpoints[0] = ep
 				result.Status = "failed"
 			} else {
-				log.Printf("winrm discovery %s: %d warning(s), first: %s", targetID, len(res.Errors), res.Errors[0])
+				logging.Infof("winrm discovery %s: %d warning(s), first: %s", targetID, len(res.Errors), res.Errors[0])
 			}
 		}
 		return result
 	}
+}
+
+// winBindingEvidence turns http.sys certificate bindings into listener
+// evidence at full weight: the host itself says what serves the port.
+func winBindingEvidence(bindings []agentdiscovery.WinBinding) []scanner.PortEvidence {
+	var out []scanner.PortEvidence
+	seen := map[string]bool{}
+	for _, b := range bindings {
+		tech := agentdiscovery.WinBindingTech(b)
+		if b.Port == 0 || tech == "other" || seen[fmt.Sprint(b.Port, tech)] {
+			continue
+		}
+		seen[fmt.Sprint(b.Port, tech)] = true
+		out = append(out, scanner.PortEvidence{Port: b.Port, Evidence: scanner.ListenerEvidence("http.sys "+b.IPPort, tech, "", false)})
+	}
+	return out
 }
 
 // SetWinRMScanner installs the runner on the DB provider's store.

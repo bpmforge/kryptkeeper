@@ -73,14 +73,18 @@ func TestResolveDefaultCA(t *testing.T) {
 			t.Fatalf("got %q, %v, roots=%d", id, err, svc.rootCalls)
 		}
 	})
-	t.Run("empty without flag is an error", func(t *testing.T) {
+	t.Run("empty without flag is first-run mode", func(t *testing.T) {
 		svc := &fakeCASvc{}
-		_, err := resolveDefaultCA(svc, envMap(nil))
-		if err == nil || svc.rootCalls != 0 {
-			t.Fatalf("want error and no root, got %v roots=%d", err, svc.rootCalls)
+		id, err := resolveDefaultCA(svc, envMap(nil))
+		if err != nil || id != "" || svc.rootCalls != 0 {
+			t.Fatalf("want empty id, nil error, no root; got %q, %v roots=%d", id, err, svc.rootCalls)
 		}
-		if !strings.Contains(err.Error(), "KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT=true") || !strings.Contains(err.Error(), ".env") {
-			t.Fatalf("error must tell compose users which .env line to add, got %q", err)
+	})
+	t.Run("empty with ListCAs error stays fatal", func(t *testing.T) {
+		svc := &fakeCASvc{listErr: errors.New("db locked")}
+		id, err := resolveDefaultCA(svc, envMap(nil))
+		if err == nil || id != "" || strings.Contains(err.Error(), "first-run") {
+			t.Fatalf("a read failure must not become first-run mode, got %q, %v", id, err)
 		}
 	})
 	t.Run("flag left set never mints a second root", func(t *testing.T) {

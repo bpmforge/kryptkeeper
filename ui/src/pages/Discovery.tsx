@@ -6,7 +6,7 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { api, type ManagedTarget } from "../lib/api";
+import { api, type DiscoverySchedule, type ManagedTarget } from "../lib/api";
 import {
   Badge,
   Button,
@@ -18,19 +18,34 @@ import {
   StateMessage,
 } from "../components/ops-ui";
 import { PageHeader } from "../components/PageHeader";
-import { canManageDiscovery, useAuthz } from "../lib/auth";
+import { BulkTakeoverDialog } from "./Certificates";
+import { canManageCertificates, canManageDiscovery, useAuthz } from "../lib/auth";
+import { AcceptRiskDialog, type AcceptRiskTarget } from "../components/AcceptRiskDialog";
+import { FindingFunnelPanel } from "../components/FindingFunnel";
 import { extractList } from "../lib/models";
+import { useOperationEvents } from "../hooks/useOperationEvents";
 import {
   observedProtocol,
   primaryTrustClass,
   topFindingChips,
+  findingLabel,
 } from "../lib/discoveryDisplay";
+import { formatDateTime } from "../components/ui";
+import { scrollableProps } from "../lib/scrollable";
+import { humanizeEnum } from "../lib/utils";
+import {
+  applyAuthorizedIssuer,
+  INVENTORY_CLASSES,
+  INVENTORY_CLASS_LABEL,
+  inventoryClassLabel,
+} from "../lib/inventoryClass";
 import {
   TRUST_CLASSES,
   TRUST_CLASS_LABEL,
   trustClassLabel,
 } from "../lib/trustClass";
 import type {
+  CertificateRecord,
   DiscoveryEndpointRecord,
   DiscoveryScanJobRecord,
   DiscoverySummary,
@@ -47,6 +62,8 @@ import {
 // store), not a host/CIDR — see internal/bootstrap/handlers_discovery.go's
 // scanTypeWinRM case and the /discovery/scans enum in docs/openapi.yaml.
 const scanTypeWinRM = "winrm";
+// W24-10: ssh scans a Linux/Unix managed target (install_mode ssh) by id too.
+const scanTypeSSH = "ssh";
 
 // ui/src/lib/models.ts is a hand-written mirror of the OpenAPI spec and is
 // out of write_scope for this ticket (W3-02); DiscoverySummary there
@@ -86,13 +103,20 @@ function isRiskyEndpoint(ep: {
 // every endpoint.
 function EndpointPosture({ ep }: { ep: DiscoveryEndpointRecord }) {
   const trust = primaryTrustClass(ep);
+  const inventory = ep.inventory_class;
   const chips = topFindingChips(ep);
-  if (!trust && chips.shown.length === 0) {
+  if (!trust && !inventory && chips.shown.length === 0) {
     return <span className="text-muted-foreground">—</span>;
   }
   return (
     <div className="flex flex-wrap items-center gap-1">
-      {trust ? <Badge tone="neutral">{trustClassLabel(trust)}</Badge> : null}
+      {inventory ? (
+        <Badge tone={inventory === "unknown_issuer" ? "warning" : "neutral"}>
+          {inventoryClassLabel(inventory)}
+        </Badge>
+      ) : trust ? (
+        <Badge tone="neutral">{trustClassLabel(trust)}</Badge>
+      ) : null}
       {chips.shown.map((c) => (
         <span
           key={c.code}
@@ -115,29 +139,172 @@ function EndpointPosture({ ep }: { ep: DiscoveryEndpointRecord }) {
   );
 }
 
-function FindingFunnelPanel({ findings }: { findings?: FindingFunnelSummary }) {
-  // Finding exceptions (risk acceptance) are not available until v0.10, so
-  // only the raw count is shown; effective/suppressed would be misleading.
-  const raw = findings?.raw ?? 0;
-
-  return (
-    <Panel title="Findings" subtitle="Certificate flags (expired, self-signed, weak key...) and endpoint TLS issues">
-      <div className="text-center">
-        <div className="text-3xl font-bold text-foreground">{raw}</div>
-        <div className="mt-1 text-xs uppercase tracking-[0.2em] text-muted-foreground">
-          Total findings
-        </div>
-      </div>
-    </Panel>
-  );
-}
-
 type DiscoveryFilters = {
   protocol: string;
   riskyOnly: boolean;
   trustClass: string;
+  inventoryClass: string;
   scanStatus: string;
 };
+
+const thClass =
+  "px-4 py-3 text-left text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground";
+
+function fmtTime(iso: string | null): string {
+  return iso ? formatDateTime(iso) : "—";
+}
+
+// W24-05: per-target scan cadence. Minutes in the UI, seconds on the wire.
+// The UI never computes next run; it prints what the API says (which does
+// not advance while a job is running).
+function SchedulesPanel({
+  canManage,
+  onError,
+}: {
+  canManage: boolean;
+  onError: (e: unknown) => void;
+}) {
+  const queryClient = useQueryClient();
+  const schedules = useQuery({
+    queryKey: ["discovery-schedules"],
+    queryFn: api.discoverySchedules,
+    refetchInterval: 15000,
+  });
+  const [intervalDraft, setIntervalDraft] = useState<Record<string, string>>(
+    {},
+  );
+  const mutation = useMutation({
+    mutationFn: (body: { key: string; interval_seconds: number | null }) =>
+      api.updateDiscoverySchedule(body),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ["discovery-schedules"] }),
+    onError,
+  });
+  const rows: DiscoverySchedule[] = schedules.data?.data ?? [];
+
+  return (
+    <Panel
+      title="Scan schedules"
+      subtitle="Per-target scan interval, last run and next run"
+    >
+      {schedules.isLoading ? (
+        <StateMessage
+          title="Loading schedules"
+          message="Fetching scan schedules..."
+        />
+      ) : rows.length === 0 ? (
+        <StateMessage
+          title="No scheduled targets"
+          message="No scheduled targets. Set KRYPTKEEPER_DISCOVERY_SCAN_INTERVAL and a target list, or add a WinRM managed target."
+        />
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-border" {...scrollableProps}>
+          <table className="min-w-full divide-y divide-border">
+            <thead className="bg-background/80">
+              <tr>
+                <th scope="col" className={thClass}>Target</th>
+                <th scope="col" className={thClass}>Interval</th>
+                <th scope="col" className={thClass}>Last run</th>
+                <th scope="col" className={thClass}>Next run</th>
+                <th scope="col" className={thClass}>State</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {rows.map((s) => {
+                const current =
+                  s.interval_seconds != null ? String(s.interval_seconds / 60) : "";
+                const draft = intervalDraft[s.key] ?? current;
+                const minutes = Number(draft);
+                const valid =
+                  draft.trim() !== "" && Number.isInteger(minutes) && minutes >= 1;
+                return (
+                  <tr key={s.key}>
+                    <td className="px-4 py-3 text-sm text-foreground">
+                      {s.name ?? s.target}{" "}
+                      <Badge>{s.scan_type}</Badge>
+                    </td>
+                    <td className="px-4 py-3 text-sm">
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type="number"
+                          min={1}
+                          aria-label={`Interval (minutes) for ${s.key}`}
+                          placeholder={
+                            s.effective_interval_seconds != null
+                              ? `${s.effective_interval_seconds / 60} (global)`
+                              : "global"
+                          }
+                          value={draft}
+                          disabled={!canManage}
+                          onChange={(e) =>
+                            setIntervalDraft((d) => ({
+                              ...d,
+                              [s.key]: e.target.value,
+                            }))
+                          }
+                          className="w-36"
+                        />
+                        {canManage ? (
+                          <>
+                            <Button
+                              aria-label={`Save interval for ${s.key}`}
+                              disabled={!valid || mutation.isPending}
+                              onClick={() =>
+                                mutation.mutate({
+                                  key: s.key,
+                                  interval_seconds: Math.round(minutes * 60),
+                                })
+                              }
+                            >
+                              Save
+                            </Button>
+                            <Button
+                              aria-label={`Clear interval for ${s.key}`}
+                              disabled={mutation.isPending}
+                              onClick={() => {
+                                setIntervalDraft((d) => {
+                                  const next = { ...d };
+                                  delete next[s.key];
+                                  return next;
+                                });
+                                mutation.mutate({
+                                  key: s.key,
+                                  interval_seconds: null,
+                                });
+                              }}
+                            >
+                              Clear
+                            </Button>
+                          </>
+                        ) : null}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-muted-foreground">
+                      {fmtTime(s.last_run)}
+                    </td>
+                    <td
+                      className="px-4 py-3 text-sm text-muted-foreground"
+                      title={
+                        s.running
+                          ? "not advanced while a job is running"
+                          : undefined
+                      }
+                    >
+                      {fmtTime(s.next_run)}
+                    </td>
+                    <td className="px-4 py-3 text-sm">
+                      {s.running ? <Badge>running</Badge> : "idle"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
 
 export default function Discovery() {
   const queryClient = useQueryClient();
@@ -149,6 +316,7 @@ export default function Discovery() {
     protocol: searchParams.get("protocol") ?? "",
     riskyOnly: searchParams.get("risky") === "true",
     trustClass: searchParams.get("trust_class") ?? "",
+    inventoryClass: searchParams.get("inventory_class") ?? "",
     scanStatus: searchParams.get("scan_status") ?? "",
   }));
   const [endpointCursor, setEndpointCursor] = useState<number | null>(null);
@@ -162,6 +330,7 @@ export default function Discovery() {
     if (filters.protocol) next.set("protocol", filters.protocol);
     if (filters.riskyOnly) next.set("risky", "true");
     if (filters.trustClass) next.set("trust_class", filters.trustClass);
+    if (filters.inventoryClass) next.set("inventory_class", filters.inventoryClass);
     if (filters.scanStatus) next.set("scan_status", filters.scanStatus);
     setSearchParams(next, { replace: true });
   }, [filters]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -175,6 +344,9 @@ export default function Discovery() {
   // types must not clobber whatever the operator already typed for the
   // other kind of target.
   const [winrmTargetId, setWinrmTargetId] = useState("");
+  const [sshTargetId, setSshTargetId] = useState("");
+  // W34-17: one-off sudo password for this ssh scan; sent once, never kept.
+  const [jitSudoPassword, setJitSudoPassword] = useState("");
   const [selectedJob, setSelectedJob] = useState<DiscoveryScanJobRecord | null>(
     null,
   );
@@ -188,6 +360,8 @@ export default function Discovery() {
     message: string;
   } | null>(null);
   const scanJobSelection = useBulkSelection<string>();
+  const discoveredSelection = useBulkSelection<string>();
+  const [bulkTakeoverOpen, setBulkTakeoverOpen] = useState(false);
   const [bulkProgress, setBulkProgress] = useState<BulkProgress | null>(null);
 
   const endpointQuery = useMemo(
@@ -195,10 +369,17 @@ export default function Discovery() {
       protocol: filters.protocol,
       risky_only: filters.riskyOnly,
       trust_class: filters.trustClass,
+      inventory_class: filters.inventoryClass,
       limit: 50,
       ...(endpointCursor != null ? { cursor: endpointCursor } : {}),
     }),
-    [filters.protocol, filters.riskyOnly, filters.trustClass, endpointCursor],
+    [
+      filters.protocol,
+      filters.riskyOnly,
+      filters.trustClass,
+      filters.inventoryClass,
+      endpointCursor,
+    ],
   );
 
   const summary = useQuery({
@@ -214,6 +395,10 @@ export default function Discovery() {
   const winrmTargets: ManagedTarget[] = (
     managedTargets.data?.data ?? []
   ).filter((t) => t.discovery_mode === "winrm");
+  // Same predicate as the backend's isSSHDiscoveryTarget (W24-08).
+  const sshTargets: ManagedTarget[] = (managedTargets.data?.data ?? []).filter(
+    (t) => t.install_mode === "ssh" && t.discovery_mode !== "none",
+  );
   const summaryData = summary.data?.data as
     DiscoverySummaryWithFindings | undefined;
   const endpoints = useQuery({
@@ -221,6 +406,19 @@ export default function Discovery() {
     queryFn: () => api.discoveryEndpoints(endpointQuery),
   });
   const endpointsMeta = endpoints.data?.meta;
+  const { live: streamLive } = useOperationEvents({
+    kinds: ["scan"],
+    onEvent: (e) => {
+      void queryClient.invalidateQueries({ queryKey: ["discovery-scan-jobs"] });
+      if (e.status === "completed") {
+        void queryClient.invalidateQueries({ queryKey: ["discovery-summary"] });
+      }
+    },
+    onResync: () => {
+      void queryClient.invalidateQueries({ queryKey: ["discovery-scan-jobs"] });
+      void queryClient.invalidateQueries({ queryKey: ["discovery-summary"] });
+    },
+  });
   const scanJobs = useQuery({
     queryKey: ["discovery-scan-jobs", filters.scanStatus],
     queryFn: () =>
@@ -228,7 +426,9 @@ export default function Discovery() {
     // A queued/running scan finishes server-side within seconds; without
     // polling the table freezes at its load-time snapshot and "watch the
     // scan complete" never happens.
+    // While the SSE stream is live, events invalidate this query instead.
     refetchInterval: (query) => {
+      if (streamLive) return false;
       const jobs = extractList<DiscoveryScanJobRecord>(query.state.data?.data, [
         "items",
         "scan_jobs",
@@ -274,6 +474,25 @@ export default function Discovery() {
       (selectedHostname && j.target?.includes(selectedHostname)),
   );
   const canManage = canManageDiscovery(authz.data?.role, authz.data?.scopes);
+  const canAcceptRisk = canManageCertificates(authz.data?.role, authz.data?.scopes);
+  const discoveredCerts = useQuery({
+    queryKey: ["discovered-certs"],
+    queryFn: () =>
+      api.certificates({
+        origin: "discovered",
+        management_state: "unmanaged",
+        limit: 200,
+      }),
+    enabled: canAcceptRisk,
+  });
+  const discoveredItems = extractList<CertificateRecord>(
+    discoveredCerts.data?.data,
+    ["items"],
+  );
+  const selectedDiscovered = discoveredItems.filter((c) =>
+    discoveredSelection.selected.includes(c.fingerprint_sha256),
+  );
+  const [acceptRisk, setAcceptRisk] = useState<{ target: AcceptRiskTarget | null; code: string } | null>(null);
   const allScanJobsSelected =
     scanJobsData.length > 0 &&
     scanJobsData.every((job) => scanJobSelection.selected.includes(job.id));
@@ -297,7 +516,13 @@ export default function Discovery() {
             scan_type: scanTypeWinRM,
             target: winrmTargetId,
           })
-        : api.createDiscoveryScan({
+        : scanType === scanTypeSSH
+          ? api.createDiscoveryScan({
+              scan_type: scanTypeSSH,
+              target: sshTargetId,
+              ...(jitSudoPassword ? { jit_sudo_password: jitSudoPassword } : {}),
+            })
+          : api.createDiscoveryScan({
             scan_type: scanType,
             target: scanTarget,
             // Optional org-standardized custom ports, merged with the scan
@@ -314,6 +539,7 @@ export default function Discovery() {
         message: "Discovery scan accepted.",
       });
       setScanDialogOpen(false);
+      setJitSudoPassword("");
       await refreshAll();
     },
     onError: (e) => {
@@ -462,6 +688,49 @@ export default function Discovery() {
     },
   });
 
+  // W34-06: declare the issuer of an unknown-issuer certificate as a CA group
+  // we accept. The hub re-judges stored certificates at once; the cached pages
+  // are updated here so the row changes class without waiting for the refetch.
+  const authorizeIssuer = useMutation({
+    mutationFn: (issuerDN: string) =>
+      api.createAuthorizedIssuer({
+        name: issuerDN.split(",")[0]?.replace(/^CN=/i, "") || issuerDN,
+        kind: "issuer_dn",
+        value: issuerDN,
+      }),
+    onSuccess: (_res, issuerDN) => {
+      queryClient.setQueriesData<{ data?: unknown }>(
+        { queryKey: ["discovery-endpoints"] },
+        (old) => {
+          const data = old?.data as
+            | { endpoints?: DiscoveryEndpointRecord[]; items?: DiscoveryEndpointRecord[] }
+            | undefined;
+          if (!old || !data) return old;
+          const key = data.endpoints ? "endpoints" : data.items ? "items" : null;
+          if (!key) return old;
+          return {
+            ...old,
+            data: { ...data, [key]: applyAuthorizedIssuer(data[key] ?? [], issuerDN) },
+          };
+        },
+      );
+      void queryClient.invalidateQueries({ queryKey: ["discovery-summary"] });
+      void queryClient.invalidateQueries({ queryKey: ["discovery-endpoints"] });
+      setStatusMessage({
+        tone: "success",
+        title: "Issuer authorized",
+        message: "Certificates from this issuer are now authorized external.",
+      });
+    },
+    onError: (e) => {
+      setStatusMessage({
+        tone: "error",
+        title: "Could not authorize the issuer",
+        message: e instanceof Error ? e.message : "Try again.",
+      });
+    },
+  });
+
   const openJobAction = (
     nextAction: "cancel" | "requeue",
     job: DiscoveryScanJobRecord,
@@ -547,10 +816,40 @@ export default function Discovery() {
         </Panel>
       </div>
 
-      <FindingFunnelPanel findings={summaryData?.findings} />
+      {summaryData?.inventory_classes ? (
+        <Panel title="Certificates by issuer class">
+          <ul className="flex flex-wrap gap-3 text-sm" aria-label="Certificates by issuer class">
+            {INVENTORY_CLASSES.map((cls) => (
+              <li key={cls} className="rounded-lg border border-border bg-background/60 px-3 py-2">
+                <span className="text-muted-foreground">{INVENTORY_CLASS_LABEL[cls]}</span>{" "}
+                <span className="font-semibold text-foreground">
+                  {summaryData.inventory_classes?.[cls] ?? 0}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      ) : null}
+
+      <FindingFunnelPanel
+        title="Findings"
+        subtitle="Certificate flags (expired, self-signed, weak key...) and endpoint TLS issues"
+        findings={summaryData?.findings}
+      />
+      <AcceptRiskDialog
+        open={acceptRisk !== null}
+        target={acceptRisk?.target ?? null}
+        findingCode={acceptRisk?.code}
+        onClose={() => setAcceptRisk(null)}
+        onProposed={() => {
+          void queryClient.invalidateQueries({ queryKey: ["exceptions"] });
+          void queryClient.invalidateQueries({ queryKey: ["discovery-summary"] });
+        }}
+      />
 
       <div className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
         <Panel
+          className="self-start"
           title="Scan filters"
           subtitle="Narrow the endpoint and scan queue"
         >
@@ -596,6 +895,21 @@ export default function Discovery() {
                 {TRUST_CLASSES.map((cls) => (
                   <option key={cls} value={cls}>
                     {TRUST_CLASS_LABEL[cls]}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <label className="space-y-2 text-sm text-foreground">
+              <span>Inventory class</span>
+              <Select
+                aria-label="Filter by inventory class"
+                value={filters.inventoryClass}
+                onChange={(e) => updateFilter({ inventoryClass: e.target.value })}
+              >
+                <option value="">Any class</option>
+                {INVENTORY_CLASSES.map((cls) => (
+                  <option key={cls} value={cls}>
+                    {INVENTORY_CLASS_LABEL[cls]}
                   </option>
                 ))}
               </Select>
@@ -681,7 +995,7 @@ export default function Discovery() {
                 <div>
                   <div className="text-muted-foreground">Last seen</div>
                   <div className="text-foreground">
-                    {selected.last_seen_at || "—"}
+                    {selected.last_seen_at ? formatDateTime(selected.last_seen_at) : "—"}
                   </div>
                 </div>
                 {selected.server_tech ? (
@@ -758,6 +1072,49 @@ export default function Discovery() {
                 </div>
               ) : null}
 
+              {selected.install_posture ? (
+                <div className="rounded-lg border border-border bg-background/60 p-3" data-testid="install-posture">
+                  <div className="flex items-center gap-2">
+                    <div className="text-xs font-medium text-muted-foreground">Install posture</div>
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      {humanizeEnum(selected.install_posture.posture)}
+                    </span>
+                  </div>
+                  <div className="mt-1 font-mono text-xs text-foreground" title={selected.install_posture.host}>
+                    {selected.install_posture.path}
+                    {selected.install_posture.owner ? ` · ${selected.install_posture.owner}` : ""}
+                    {selected.install_posture.mode ? ` · ${selected.install_posture.mode}` : ""}
+                  </div>
+                  <ul className="mt-2 space-y-1">
+                    {(selected.install_posture.findings ?? []).map((finding) => {
+                      const code = finding.split(":")[0].trim();
+                      const accepted = selected.install_posture!.accepted_findings?.includes(code);
+                      const fileId = selected.install_posture!.file_id;
+                      return (
+                        <li
+                          key={finding}
+                          className={`flex items-center justify-between gap-2 rounded px-2 py-1 text-xs ${
+                            accepted ? "bg-muted text-muted-foreground" : "bg-state-over/10 text-state-over"
+                          }`}
+                        >
+                          <span title={finding}>{finding}</span>
+                          {accepted ? (
+                            <span className="shrink-0 text-[10px] font-medium">Risk accepted</span>
+                          ) : canAcceptRisk && fileId ? (
+                            <button
+                              className="shrink-0 text-primary underline"
+                              onClick={() => setAcceptRisk({ target: { type: "target_file", id: fileId }, code })}
+                            >
+                              Accept risk
+                            </button>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : null}
+
               {selected.crypto_posture ? (
                 <div className="rounded-lg border border-border bg-background/60 p-3">
                   <div className="flex items-center gap-2">
@@ -794,7 +1151,7 @@ export default function Discovery() {
                           key={w}
                           className="rounded bg-state-over/10 px-1.5 py-0.5 text-[10px] font-medium text-state-over"
                         >
-                          {w}
+                          {humanizeEnum(w)}
                         </span>
                       ))}
                     </div>
@@ -809,9 +1166,24 @@ export default function Discovery() {
                     {selected.issues!.map((issue) => (
                       <li
                         key={issue}
-                        className="rounded bg-state-over/10 px-2 py-1 text-xs text-state-over"
+                        className="flex items-center justify-between gap-2 rounded bg-state-over/10 px-2 py-1 text-xs text-state-over"
                       >
-                        {issue}
+                        <span title={issue}>{findingLabel(issue)}</span>
+                        {canAcceptRisk ? (
+                          <button
+                            className="shrink-0 text-primary underline disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled={!selected.mapped_certs?.[0]}
+                            title={selected.mapped_certs?.[0] ? undefined : "No certificate mapped"}
+                            onClick={() =>
+                              setAcceptRisk({
+                                target: { type: "certificate", id: selected.mapped_certs![0].fingerprint },
+                                code: issue,
+                              })
+                            }
+                          >
+                            Accept risk
+                          </button>
+                        ) : null}
                       </li>
                     ))}
                   </ul>
@@ -837,20 +1209,35 @@ export default function Discovery() {
                           </div>
                           <div className="text-xs text-muted-foreground">
                             {mc.valid_until
-                              ? `expires ${new Date(mc.valid_until).toLocaleDateString()}`
+                              ? `${new Date(mc.valid_until) < new Date() ? "expired" : "expires"} ${new Date(mc.valid_until).toLocaleDateString()}`
                               : ""}
                             {mc.risk_score >= 40
                               ? ` · risk ${mc.risk_score}`
                               : ""}
                             {mc.chain_ca
                               ? " · CA in served chain"
-                              : mc.trust_class
-                                ? ` · ${trustClassLabel(mc.trust_class)}`
-                                : ""}
+                              : mc.inventory_class
+                                ? ` · ${inventoryClassLabel(mc.inventory_class)}`
+                                : mc.trust_class
+                                  ? ` · ${trustClassLabel(mc.trust_class)}`
+                                  : ""}
                             {mc.chain_complete === false
                               ? " · intermediate not served"
                               : ""}
                           </div>
+                          {canManage &&
+                          !mc.chain_ca &&
+                          mc.inventory_class === "unknown_issuer" &&
+                          mc.issuer_dn ? (
+                            <button
+                              className="mt-1 text-xs text-primary hover:underline"
+                              aria-label={`Authorize this issuer for ${mc.common_name || mc.fingerprint.slice(0, 16)}`}
+                              disabled={authorizeIssuer.isPending}
+                              onClick={() => authorizeIssuer.mutate(mc.issuer_dn!)}
+                            >
+                              Authorize this issuer
+                            </button>
+                          ) : null}
                           {mc.risk_flags && mc.risk_flags.length > 0 ? (
                             <div className="mt-1 flex flex-wrap gap-1">
                               {mc.risk_flags.map((f) => (
@@ -858,7 +1245,21 @@ export default function Discovery() {
                                   key={f}
                                   className="rounded bg-state-attn/10 px-1.5 py-0.5 text-[10px] font-medium text-state-attn"
                                 >
-                                  {f.replace(/_/g, " ").toLowerCase()}
+                                  {humanizeEnum(f)}
+                                  {canAcceptRisk ? (
+                                    <button
+                                      className="ml-1 text-primary underline"
+                                      aria-label={`Accept risk for ${f}`}
+                                      onClick={() =>
+                                        setAcceptRisk({
+                                          target: { type: "certificate", id: mc.fingerprint },
+                                          code: f,
+                                        })
+                                      }
+                                    >
+                                      Accept risk
+                                    </button>
+                                  ) : null}
                                 </span>
                               ))}
                             </div>
@@ -967,7 +1368,7 @@ export default function Discovery() {
                         </div>
                         <div className="mt-0.5 text-xs text-muted-foreground">
                           {job.queued_at
-                            ? new Date(job.queued_at).toLocaleString()
+                            ? formatDateTime(job.queued_at)
                             : "—"}
                         </div>
                         {job.error ? (
@@ -1031,7 +1432,7 @@ export default function Discovery() {
             message="Try again shortly."
           />
         ) : null}
-        <div className="overflow-hidden rounded-xl border border-border">
+        <div className="overflow-x-auto rounded-xl border border-border" {...scrollableProps}>
           <table className="min-w-full divide-y divide-border">
             <thead className="bg-background/80">
               <tr>
@@ -1166,6 +1567,112 @@ export default function Discovery() {
         </div>
       </Panel>
 
+      {canAcceptRisk ? (
+        <Panel
+          title="Discovered certificates"
+          subtitle="Unmanaged certificates found by scans"
+        >
+          {discoveredCerts.isLoading ? (
+            <StateMessage
+              title="Loading certificates"
+              message="Fetching discovered certificates..."
+            />
+          ) : discoveredItems.length === 0 ? (
+            <StateMessage
+              title="No unmanaged discovered certificates"
+              message="Certificates found by scans that are not yet managed appear here."
+            />
+          ) : (
+            <>
+              <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-foreground">
+                <Button
+                  onClick={() =>
+                    discoveredSelection.toggleAll(
+                      discoveredItems.map((c) => c.fingerprint_sha256),
+                    )
+                  }
+                >
+                  Select all visible
+                </Button>
+                <Button
+                  tone="primary"
+                  onClick={() => setBulkTakeoverOpen(true)}
+                  disabled={selectedDiscovered.length === 0}
+                >
+                  Take over selected
+                </Button>
+                <span className="text-muted-foreground">
+                  {selectedDiscovered.length} selected
+                </span>
+              </div>
+              <div className="overflow-x-auto rounded-xl border border-border" {...scrollableProps}>
+                <table className="min-w-full divide-y divide-border">
+                  <thead className="bg-background/80">
+                    <tr>
+                      {["Select", "Common name", "Issuer", "Valid until"].map(
+                        (h) => (
+                          <th
+                            key={h}
+                            scope="col"
+                            className="px-4 py-3 text-left text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground"
+                          >
+                            {h}
+                          </th>
+                        ),
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border bg-background/40">
+                    {discoveredItems.map((c) => {
+                      const name = c.common_name || c.fingerprint_sha256;
+                      return (
+                        <tr key={c.fingerprint_sha256}>
+                          <td className="px-4 py-3 text-sm text-foreground">
+                            <input
+                              type="checkbox"
+                              aria-label={`Select ${name}`}
+                              checked={discoveredSelection.selected.includes(
+                                c.fingerprint_sha256,
+                              )}
+                              onChange={() =>
+                                discoveredSelection.toggle(c.fingerprint_sha256)
+                              }
+                              className="h-4 w-4 rounded border-border bg-background text-primary focus:ring-ring"
+                            />
+                          </td>
+                          <td className="px-4 py-3 text-sm text-foreground">
+                            {name}
+                          </td>
+                          <td className="px-4 py-3 text-sm text-muted-foreground">
+                            {c.issuer_cn || "—"}
+                          </td>
+                          <td
+                            className={`whitespace-nowrap px-4 py-3 text-sm ${c.valid_until && new Date(c.valid_until) < new Date() ? "text-state-over" : "text-muted-foreground"}`}
+                          >
+                            {c.valid_until
+                              ? new Date(c.valid_until).toLocaleDateString()
+                              : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+          <BulkTakeoverDialog
+            open={bulkTakeoverOpen}
+            certs={selectedDiscovered}
+            onClose={() => setBulkTakeoverOpen(false)}
+            onDone={() => {
+              discoveredSelection.clear();
+              void discoveredCerts.refetch();
+            }}
+          />
+        </Panel>
+      ) : null}
+
       <Panel title="Scan jobs" subtitle="Queue health and progress">
         {scanJobs.isLoading ? (
           <StateMessage
@@ -1207,7 +1714,7 @@ export default function Discovery() {
             </span>
           </div>
         ) : null}
-        <div className="overflow-hidden rounded-xl border border-border">
+        <div className="overflow-x-auto rounded-xl border border-border" {...scrollableProps}>
           <table className="min-w-full divide-y divide-border">
             <thead className="bg-background/80">
               <tr>
@@ -1284,7 +1791,7 @@ export default function Discovery() {
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
                     {job.queued_at
-                      ? new Date(job.queued_at).toLocaleString()
+                      ? formatDateTime(job.queued_at)
                       : "—"}
                   </td>
                   <td className="px-4 py-3 text-sm">
@@ -1328,6 +1835,17 @@ export default function Discovery() {
         </div>
       </Panel>
 
+      <SchedulesPanel
+        canManage={canManage}
+        onError={(e) =>
+          setStatusMessage({
+            tone: "error",
+            title: "Schedule update failed",
+            message: e instanceof Error ? e.message : "Try again.",
+          })
+        }
+      />
+
       <Dialog
         open={scanDialogOpen}
         title="Queue discovery scan"
@@ -1356,6 +1874,9 @@ export default function Discovery() {
               <option value={scanTypeWinRM}>
                 WinRM — Windows machine certificate stores (managed target)
               </option>
+              <option value={scanTypeSSH}>
+                SSH — Linux/Unix cert files and host keys (managed target)
+              </option>
             </Select>
           </label>
           {scanType === "deep" ? (
@@ -1366,24 +1887,32 @@ export default function Discovery() {
               (lo, hi).
             </p>
           ) : null}
-          {scanType === scanTypeWinRM ? (
+          {scanType === scanTypeWinRM || scanType === scanTypeSSH ? (
+            <>
             <label className="block space-y-2 text-sm text-foreground">
               <span>Managed target</span>
               <Select
                 aria-label="Managed target"
-                value={winrmTargetId}
-                onChange={(e) => setWinrmTargetId(e.target.value)}
+                value={scanType === scanTypeSSH ? sshTargetId : winrmTargetId}
+                onChange={(e) =>
+                  scanType === scanTypeSSH
+                    ? setSshTargetId(e.target.value)
+                    : setWinrmTargetId(e.target.value)
+                }
               >
                 <option value="">Select a managed target…</option>
-                {winrmTargets.map((t) => (
+                {(scanType === scanTypeSSH ? sshTargets : winrmTargets).map((t) => (
                   <option key={t.id} value={t.id}>
                     {t.name} ({t.host})
                   </option>
                 ))}
               </Select>
-              {winrmTargets.length === 0 ? (
+              {(scanType === scanTypeSSH ? sshTargets : winrmTargets).length ===
+              0 ? (
                 <p className="text-xs text-muted-foreground">
-                  No WinRM managed targets yet.{" "}
+                  {scanType === scanTypeSSH
+                    ? "No SSH managed targets yet."
+                    : "No WinRM managed targets yet."}{" "}
                   <Link to="/targets/setup" className="underline">
                     Set one up
                   </Link>
@@ -1391,6 +1920,25 @@ export default function Discovery() {
                 </p>
               ) : null}
             </label>
+              {scanType === scanTypeSSH ? (
+                <label className="block space-y-1 pt-2 text-sm text-foreground">
+                  <span>Run with sudo password (optional)</span>
+                  <Input
+                    type="password"
+                    autoComplete="off"
+                    value={jitSudoPassword}
+                    onChange={(e) => setJitSudoPassword(e.target.value)}
+                    placeholder="Used for this scan only"
+                  />
+                  <span className="block text-xs text-muted-foreground">
+                    Needed when the target's credential has no sudo and root-owned
+                    certificates are unreadable (a scheduled scan reports "needs a
+                    password"). Held in memory for this scan, then wiped; never
+                    stored or logged.
+                  </span>
+                </label>
+              ) : null}
+            </>
           ) : (
             <>
               <label className="block space-y-2 text-sm text-foreground">
@@ -1422,7 +1970,8 @@ export default function Discovery() {
               type="submit"
               disabled={
                 createScanMutation.isPending ||
-                (scanType === scanTypeWinRM && !winrmTargetId)
+                (scanType === scanTypeWinRM && !winrmTargetId) ||
+                (scanType === scanTypeSSH && !sshTargetId)
               }
             >
               Queue scan

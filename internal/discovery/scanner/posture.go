@@ -49,7 +49,7 @@ func NewPostureProber(timeout time.Duration) *PostureProber {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	return &PostureProber{dialer: &net.Dialer{Timeout: timeout}, timeout: timeout}
+	return &PostureProber{dialer: guardedDialer(timeout), timeout: timeout}
 }
 
 var probeVersions = []uint16{

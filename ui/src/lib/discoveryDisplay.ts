@@ -1,4 +1,5 @@
 import type { DiscoveryEndpointRecord } from "./models";
+import { humanizeEnum } from "./utils";
 
 type Endpoint = Pick<
   DiscoveryEndpointRecord,
@@ -10,6 +11,8 @@ type Endpoint = Pick<
 const HIGH_SEVERITY = new Set([
   "NOT_TLS",
   "POSTGRES_TLS_DISABLED",
+  "MSSQL_TLS_DISABLED",
+  "MYSQL_TLS_DISABLED",
   "TLS_HANDSHAKE_FAILED",
   "DEPRECATED_TLS_VERSION",
   "EXPIRED",
@@ -31,9 +34,30 @@ function findingCode(issue: string): string {
   return CODE.test(head) ? head : issue.trim();
 }
 
+// Raw Go dial/handshake errors ("connection failed: tls: first record ...")
+// leak through as finding text when the scanner has no code for them.
+const GO_NET_ERROR = /^(connection failed|dial |tls:|x509:|read tcp|i\/o timeout)|handshake failure|connection refused|connection reset/i;
+
 function chipLabel(code: string): string {
-  if (CODE.test(code)) return code.replace(/_/g, " ").toLowerCase();
+  if (CODE.test(code)) return humanizeEnum(code);
+  if (GO_NET_ERROR.test(code)) return "TLS handshake failed";
   return code.length > 28 ? `${code.slice(0, 27)}…` : code;
+}
+
+// Full-text variant for detail views: "WEAK_KEY: rsa 1024" -> "Weak key: rsa 1024".
+export function findingLabel(issue: string): string {
+  const [head, ...rest] = issue.split(":");
+  if (head.trim() === "INSUFFICIENT_PRIVILEGE") {
+    // W34-10: "uid=…; user=…; mode=none; unreadable=3; paths=…; fix=…".
+    const mode = /mode=(\w+)/.exec(issue)?.[1];
+    const n = Number(/unreadable=(\d+)/.exec(issue)?.[1] ?? "0");
+    const how = !mode || mode === "none" ? "unprivileged" : `with ${mode} privilege`;
+    return `Scan ran ${how}; ${n} path${n === 1 ? "" : "s"} unreadable`;
+  }
+  if (CODE.test(head.trim())) {
+    return [humanizeEnum(head.trim()), ...rest].join(":");
+  }
+  return GO_NET_ERROR.test(issue.trim()) ? "TLS handshake failed" : issue;
 }
 
 export function endpointFindingCodes(ep: Endpoint): string[] {
@@ -48,6 +72,8 @@ export function observedProtocol(ep: Endpoint): string {
   const codes = endpointFindingCodes(ep);
   if (codes.includes("NOT_TLS")) return "not TLS";
   if (codes.includes("POSTGRES_TLS_DISABLED")) return "postgres (TLS off)";
+  if (codes.includes("MSSQL_TLS_DISABLED")) return "mssql (TLS off)";
+  if (codes.includes("MYSQL_TLS_DISABLED")) return "mysql (TLS off)";
   if (codes.includes("TLS_HANDSHAKE_FAILED")) {
     return `${ep.protocol} (handshake failed)`;
   }

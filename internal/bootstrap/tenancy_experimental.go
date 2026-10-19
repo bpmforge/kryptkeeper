@@ -9,23 +9,32 @@ import (
 	"strings"
 )
 
-// MultiTenancyExperimentalEnv must equal MultiTenancyExperimentalAck for a hub
-// with MULTI_TENANCY on to start.
+// MultiTenancyExperimentalEnv / MultiTenancyExperimentalAck are the v0.9
+// acknowledgement pair. They are only consulted when the gate is re-enforced
+// with MultiTenancyGateEnv, and stay as the documented rollback path.
 const (
 	MultiTenancyExperimentalEnv = "KRYPTKEEPER_MULTI_TENANCY_EXPERIMENTAL"
 	MultiTenancyExperimentalAck = "accept-risk"
 )
 
-// MultiTenancyExperimentalWarning is the text logged when the operator has
-// acknowledged the experimental status.
-const MultiTenancyExperimentalWarning = "WARNING: multi-tenancy is EXPERIMENTAL in this release. Tenant isolation is NOT a security boundary: " +
-	"a tenant admin can act across tenants (see docs/design/TENANCY_POSTURE.md)."
+// MultiTenancyGateEnv set to "enforce" (exact) restores the v0.9 start-up
+// refusal, as a rollback switch for operators who want the old posture.
+const MultiTenancyGateEnv = "KRYPTKEEPER_MULTI_TENANCY_GATE"
 
-// MultiTenancyExperimentalCheck refuses a multi-tenant start unless the
-// operator explicitly accepted the risk. The audit findings behind this gate
-// (A01-001/002/004/005/006, A01S-3) are scheduled for v0.10.
+// MultiTenancyExperimentalWarning is the notice main logs whenever
+// multi-tenancy is on. The name is kept for its caller in cmd/kryptkeeper.
+const MultiTenancyExperimentalWarning = "NOTICE: multi-tenancy is enabled; see docs/design/TENANCY_POSTURE.md for the enforced isolation boundary."
+
+// MultiTenancyExperimentalCheck refuses a multi-tenant start only when the
+// operator re-enforces the v0.9 gate and has not acknowledged it. The gate was
+// lifted in v0.10 (owner decision 2026-10-16) once the tenant-idor suite
+// reported zero cross-tenant leaks on SQLite and PostgreSQL
+// (docs/release/MULTI_TENANCY_GATE_DECISION.md).
 func MultiTenancyExperimentalCheck(getenv func(string) string) error {
 	if !tenancyFlagOn(getenv("MULTI_TENANCY")) {
+		return nil
+	}
+	if getenv(MultiTenancyGateEnv) != "enforce" {
 		return nil
 	}
 	if getenv(MultiTenancyExperimentalEnv) == MultiTenancyExperimentalAck {

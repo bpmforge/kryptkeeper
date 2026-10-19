@@ -1,0 +1,205 @@
+{
+  "task": "U-02",
+  "sourceStory": "STORIES.md#u-02-see-what-needs-attention-on-the-dashboard",
+  "title": "See what needs attention on the dashboard",
+  "persona": "ada.admin (pki-admin)",
+  "env": "GUIDE_ENV",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/"
+      },
+      "caption": "Open the Dashboard",
+      "slug": "dashboard",
+      "expect": {
+        "role": "heading",
+        "name": "What needs a human"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-02/01-dashboard.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "hover",
+      "target": {
+        "role": "button",
+        "name": "Expiring 30d"
+      },
+      "caption": "Hover the **Expiring 30d** tile",
+      "slug": "expiring-tile",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-02/02-expiring-tile.png",
+        "annotated": "docs/guide/screenshots/U-02/02-expiring-tile-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 639,
+          "y": 599,
+          "w": 383,
+          "h": 168
+        }
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "role": "button",
+        "name": "Acme Issuing CA"
+      },
+      "caption": "Find the **Acme Issuing CA** row in the CA list",
+      "slug": "ca-list-card",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-02/03-ca-list-card.png",
+        "annotated": "docs/guide/screenshots/U-02/03-ca-list-card-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 662,
+          "y": 421,
+          "w": 335,
+          "h": 58
+        }
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "role": "button",
+        "name": "Download executive one-pager PDF"
+      },
+      "caption": "Find **Download executive one-pager PDF**",
+      "slug": "one-pager-button",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-02/04-one-pager-button.png",
+        "annotated": "docs/guide/screenshots/U-02/04-one-pager-button-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1084,
+          "y": 24,
+          "w": 167,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Open Inventory"
+      },
+      "caption": "Click **Open Inventory**",
+      "slug": "open-inventory",
+      "expect": {
+        "role": "heading",
+        "name": "Certificates"
+      },
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-02/05-open-inventory.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:38:17.453Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-02",
+    "steps": 5,
+    "shots": 5,
+    "annotated": 3,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/certificates"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-02/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-02/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

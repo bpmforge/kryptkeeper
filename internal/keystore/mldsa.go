@@ -167,21 +167,6 @@ func reconstructMLDSASigner(algo Algorithm, privBytes []byte) (crypto.Signer, er
 	}
 }
 
-// mldsaPublicKeyFromSigner extracts the ML-DSA public key from a crypto.Signer.
-func mldsaPublicKeyFromSigner(s crypto.Signer) (MLDSAPublicKey, error) {
-	pub := s.Public()
-	switch p := pub.(type) {
-	case *mldsa44.PublicKey:
-		return p, nil
-	case *mldsa65.PublicKey:
-		return p, nil
-	case *mldsa87.PublicKey:
-		return p, nil
-	default:
-		return nil, fmt.Errorf("not an ML-DSA public key: %T", pub)
-	}
-}
-
 // marshalMLDSAPrivateKey returns the algorithm and raw MarshalBinary bytes for
 // an already-loaded ML-DSA private key (e.g. one returned by loadAndDecrypt),
 // or ok=false if privKey is not an ML-DSA key. Used by ExportEncryptedKey

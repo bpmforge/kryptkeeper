@@ -1,9 +1,11 @@
-.PHONY: all build build-agent build-agent-all test lint clean release-snapshot
+.PHONY: all build build-agent build-agent-all test lint clean release-snapshot fips-image fips-smoke
 
 BINARY      := kryptkeeper
 AGENT       := kryptkeeper-agent
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-BUILD_FLAGS := -ldflags="-X main.version=$(VERSION)"
+COMMIT      ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+BUILD_DATE  ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILD_FLAGS := -ldflags="-X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(BUILD_DATE)"
 OUT_DIR     := dist
 
 all: build build-agent
@@ -117,7 +119,27 @@ plugins-check:
 	cd plugins/example && GOOS=wasip1 GOARCH=wasm go vet -unsafeptr=false ./...
 	cd plugins/f5 && GOOS=wasip1 GOARCH=wasm go vet -unsafeptr=false ./...
 	cd plugins/citrix && GOOS=wasip1 GOARCH=wasm go vet -unsafeptr=false ./...
+	cd plugins/vault && GOOS=wasip1 GOARCH=wasm go vet -unsafeptr=false ./...
+	cd plugins/azure-keyvault && GOOS=wasip1 GOARCH=wasm go vet -unsafeptr=false ./...
+	cd plugins/gcp-secretmanager && GOOS=wasip1 GOARCH=wasm go vet -unsafeptr=false ./...
+	cd plugins/cloudflare && GOOS=wasip1 GOARCH=wasm go vet -unsafeptr=false ./...
+	cd plugins/aws && GOOS=wasip1 GOARCH=wasm go vet -unsafeptr=false ./...
+	cd plugins/aws-secretsmanager && GOOS=wasip1 GOARCH=wasm go vet -unsafeptr=false ./...
+	cd plugins/azure && GOOS=wasip1 GOARCH=wasm go vet -unsafeptr=false ./...
 	cd tests/plugins/conformance/testdata/hostile && GOOS=wasip1 GOARCH=wasm go vet -unsafeptr=false ./...
+
+## FIPS 140-3 image variant (W23-32). Not part of default CI; release.yml
+## builds and signs it. CONTAINER_ENGINE=podman when docker is absent.
+CONTAINER_ENGINE ?= docker
+FIPS_IMAGE       ?= kryptkeeper-fips:local
+GOFIPS140        ?= v1.0.0
+
+fips-image:
+	$(CONTAINER_ENGINE) build -f Dockerfile.fips --build-arg GOFIPS140=$(GOFIPS140) -t $(FIPS_IMAGE) .
+
+## Positive leg: /api/v1/meta reports fips. Negative leg: software root key refused (NFR-011).
+fips-smoke: fips-image
+	CONTAINER_ENGINE=$(CONTAINER_ENGINE) bash scripts/fips-smoke.sh $(FIPS_IMAGE)
 
 ## Remove build outputs
 clean:

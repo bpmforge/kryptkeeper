@@ -17,8 +17,8 @@
 //
 //	kk_host(op_ptr, op_len, in_ptr, in_len u32) -> u64     // ptr<<32 | len
 //
-// Every payload is JSON. kk_invoke's op is one of OpValidate, OpPush or
-// OpRollback, its input the matching request and its output a Response.
+// Every payload is JSON. kk_invoke's op is one of OpValidate, OpPush,
+// OpVerify or OpRollback, its input the matching request and its output a Response.
 // kk_host's op is one of the Host* operations, its output a HostReply, and
 // the host writes the reply into memory it gets from kk_alloc.
 package abi
@@ -33,6 +33,10 @@ const (
 	OpValidate = "validate"
 	OpPush     = "push"
 	OpRollback = "rollback"
+	// OpVerify fetches what a secret store now holds for a pushed object, so
+	// the hub can fingerprint it itself. Only plugins whose manifest declares
+	// verification "readback" are asked.
+	OpVerify = "verify"
 )
 
 // Operations a plugin may ask of the host. Each is checked against the
@@ -100,6 +104,21 @@ type PushResult struct {
 	// RollbackHandle is opaque to the hub and handed back to rollback, e.g.
 	// the profile's previous certificate name.
 	RollbackHandle string `json:"rollback_handle,omitempty"`
+}
+
+// VerifyRequest asks a read-back plugin for the certificate its store holds
+// for the object push wrote. Handle is the push's RollbackHandle, so the
+// plugin can read the exact version it wrote rather than "latest".
+type VerifyRequest struct {
+	Invocation
+	Name   string `json:"name"`
+	Handle string `json:"handle"`
+}
+
+// VerifyResult carries the stored certificate PEM. The hub parses it and
+// compares the leaf's SHA-256 itself; the plugin never says "verified".
+type VerifyResult struct {
+	CertPEM string `json:"cert_pem"`
 }
 
 // RollbackRequest asks the plugin to restore the state before push.

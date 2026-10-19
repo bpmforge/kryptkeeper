@@ -9,7 +9,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
+
+	"kryptkeeper/internal/metrics"
 )
 
 // lookupCertProvider extends reportCertProvider with a working GetCertificate
@@ -43,6 +47,8 @@ func seedAgentWithResults(t *testing.T, store AgentStore, name string, results [
 }
 
 func TestRenewalSLO_AggregatesOutcomes(t *testing.T) {
+	resetRenewalRetryStateForTest()
+	t.Cleanup(resetRenewalRetryStateForTest)
 	auth := newReportsTestAuth(t)
 	store := NewAgentStore()
 	seedAgentWithResults(t, store, "a1", []AgentRenewalResult{
@@ -87,6 +93,8 @@ func TestRenewalSLO_AggregatesOutcomes(t *testing.T) {
 }
 
 func TestRenewalSLO_ComputesMTTRFromInventory(t *testing.T) {
+	resetRenewalRetryStateForTest()
+	t.Cleanup(resetRenewalRetryStateForTest)
 	auth := newReportsTestAuth(t)
 	store := NewAgentStore()
 	// Renewed cert fp-mttr became valid at 10:00; agent verified at 10:05 → 300s.
@@ -118,6 +126,8 @@ func TestRenewalSLO_ComputesMTTRFromInventory(t *testing.T) {
 }
 
 func TestRenewalSLO_EmptyWhenNoAgents(t *testing.T) {
+	resetRenewalRetryStateForTest()
+	t.Cleanup(resetRenewalRetryStateForTest)
 	auth := newReportsTestAuth(t)
 	store := NewAgentStore()
 	mux := http.NewServeMux()
@@ -152,6 +162,8 @@ func TestRenewalSLO_RequiresAuth(t *testing.T) {
 }
 
 func TestRenewalSLO_FailedQueueReflectsLatestPerCert(t *testing.T) {
+	resetRenewalRetryStateForTest()
+	t.Cleanup(resetRenewalRetryStateForTest)
 	auth := newReportsTestAuth(t)
 	store := NewAgentStore()
 	// fp-flaky failed first, then auto-retried to success → must NOT appear in
@@ -233,5 +245,102 @@ func TestRenewalSLO_IncludesSchedulerDeadLetters(t *testing.T) {
 	}
 	if !sawDeadLetter {
 		t.Error("expected the scheduler's notification dead-letter to be present")
+	}
+}
+
+// publishTestSLOBudget publishes a fixed snapshot built through the real SLOSet
+// math and restores the previous one on cleanup.
+func publishTestSLOBudget(t *testing.T) {
+	t.Helper()
+	prev := latestSLOStatus()
+	t.Cleanup(func() { publishSLOStatus(prev) })
+	good, bad := &metrics.Counter{}, &metrics.Counter{}
+	set := metrics.NewSLOSet(
+		metrics.RatioSLO("renewal-success-rate", "t", 0.99, good, bad),
+		metrics.RatioSLO("issuance-success-rate", "t", 0.995, &metrics.Counter{}, &metrics.Counter{}),
+	)
+	t0 := time.Now().Add(-30 * time.Minute)
+	set.Observe(t0)
+	good.Add(90)
+	bad.Add(10)
+	publishSLOStatus(set.Status(time.Now()))
+}
+
+func TestStatusExposedOnAPI(t *testing.T) {
+	publishTestSLOBudget(t)
+	auth := newReportsTestAuth(t)
+	mux := http.NewServeMux()
+	registerRenewalSLOHandler(mux, auth, NewAgentStore(), &reportCertProvider{}, stubAuditProvider{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/reports/renewal-slo", nil)
+	req.Header.Set("Authorization", "Bearer reports-test-token")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var raw struct {
+		Data struct {
+			SLOs []map[string]any `json:"slos"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(raw.Data.SLOs) != 2 {
+		t.Fatalf("expected both ratio SLOs, got %v", raw.Data.SLOs)
+	}
+	for _, f := range []string{"name", "objective", "window_days", "has_data", "budget_remaining_pct", "burn_rate_1h", "burn_rate_6h", "breached"} {
+		if _, ok := raw.Data.SLOs[0][f]; !ok {
+			t.Errorf("slos[0] missing field %q: %v", f, raw.Data.SLOs[0])
+		}
+	}
+	if raw.Data.SLOs[0]["name"] != "renewal-success-rate" || raw.Data.SLOs[0]["breached"] != true || raw.Data.SLOs[0]["window_days"] != float64(30) {
+		t.Errorf("unexpected renewal SLO view: %v", raw.Data.SLOs[0])
+	}
+	if raw.Data.SLOs[1]["has_data"] != false || raw.Data.SLOs[1]["budget_remaining_pct"] != float64(100) {
+		t.Errorf("idle SLO must report no data and full budget: %v", raw.Data.SLOs[1])
+	}
+}
+
+func TestStatusEmptySliceBeforeFirstTick(t *testing.T) {
+	prev := latestSLOStatus()
+	publishSLOStatus(nil)
+	t.Cleanup(func() { publishSLOStatus(prev) })
+	auth := newReportsTestAuth(t)
+	mux := http.NewServeMux()
+	registerRenewalSLOHandler(mux, auth, NewAgentStore(), &reportCertProvider{}, stubAuditProvider{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/reports/renewal-slo", nil)
+	req.Header.Set("Authorization", "Bearer reports-test-token")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), `"slos":[]`) {
+		t.Fatalf("slos must be [] not null before the first tick: %s", rec.Body.String())
+	}
+}
+
+// TestStatusBudgetFieldsStayAggregateSuperAdminOnly proves the D-102 gate
+// covers the W30-05 fields: a tenant-scoped principal gets 403 and none of the
+// budget data, while the unscoped super-admin sees it.
+func TestStatusBudgetFieldsStayAggregateSuperAdminOnly(t *testing.T) {
+	publishTestSLOBudget(t)
+	mux, acmeToken, _ := setupTenantWritePathTest(t)
+
+	rec := doTenantReq(mux, http.MethodGet, "/api/v1/reports/renewal-slo", acmeToken, "acme")
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("tenant-scoped: expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	for _, leak := range []string{"slos", "budget_remaining_pct", "burn_rate_1h", "renewal-success-rate"} {
+		if strings.Contains(rec.Body.String(), leak) {
+			t.Errorf("403 body leaks %q: %s", leak, rec.Body.String())
+		}
+	}
+
+	rootReq := httptest.NewRequest(http.MethodGet, "/api/v1/reports/renewal-slo", nil)
+	rootReq.Header.Set("Authorization", "Bearer root-token")
+	rootRec := httptest.NewRecorder()
+	mux.ServeHTTP(rootRec, rootReq)
+	if rootRec.Code != http.StatusOK || !strings.Contains(rootRec.Body.String(), "budget_remaining_pct") {
+		t.Fatalf("super-admin: expected 200 with budget fields, got %d: %s", rootRec.Code, rootRec.Body.String())
 	}
 }

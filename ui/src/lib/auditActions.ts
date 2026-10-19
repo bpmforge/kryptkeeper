@@ -28,8 +28,16 @@ const READ_ONLY_ACTIONS = new Set([
   "crypto_agility.roadmap",
   "inventory.keys",
   "inventory.code_signing",
-  "inventory.code_signing_policy",
+  "codesign.policy.check",
   "events.stream",
+  "policy.dry_run", // evaluates a request against policies, issues nothing
+  "access_review.report", // report view; the campaign export stays visible
+  "auth.role_map.preview", // what-if of the IdP group to role map
+  "breakglass.status",
+  "breakglass.reviews",
+  "audit.transparency_checkpoint",
+  "audit.transparency_inclusion",
+  "audit.transparency_consistency",
 ]);
 
 // report.* are report views, except the ones that hand data out: bulk export,
@@ -45,4 +53,51 @@ export function isReadOnlyAction(action: string): boolean {
     READ_ONLY_ACTIONS.has(a) ||
     isReportView(a)
   );
+}
+
+// Human-readable names for the W22 audit actions (access review, approvals,
+// policies, break-glass, tenancy-aware reads). Unlisted actions fall back to
+// the raw name so a new action is never hidden or mislabelled.
+export const AUDIT_ACTION_LABELS: Record<string, string> = {
+  "access_review.open": "Access review opened",
+  "access_review.decide": "Access review decision",
+  "access_review.close": "Access review closed",
+  "access_review.export": "Access review exported",
+  "access_review.get": "Access review viewed",
+  "access_review.list": "Access reviews listed",
+  "access_review.report": "Access review report viewed",
+  "action.expire": "Pending action expired",
+  "approval.expire": "Approval request expired",
+  "approval.expired": "Approval expired",
+  "approval.delegate": "Approval delegated",
+  "approval.inbox.list": "Approval inbox viewed",
+  "approval.override": "Approval overridden (break-glass)",
+  "audit.export": "Audit log exported",
+  "audit.archive_propose": "Audit archive proposed",
+  "audit.transparency_checkpoint": "Transparency checkpoint read",
+  "audit.transparency_inclusion": "Transparency inclusion proof read",
+  "audit.transparency_consistency": "Transparency consistency proof read",
+  "auth.breakglass_login": "Break-glass login",
+  "auth.role_map.preview": "Role mapping previewed",
+  "breakglass.request": "Break-glass requested",
+  "breakglass.activate": "Break-glass activated",
+  "breakglass.review": "Break-glass reviewed",
+  "breakglass.reviews": "Break-glass reviews listed",
+  "breakglass.status": "Break-glass status viewed",
+  "breakglass.used": "Break-glass access used",
+  "codesign.request.deny": "Code-signing request denied",
+  "codesign.key.generate": "Code-signing key generated in HSM/KMS",
+  "codesign.policy.check": "Code-signing policy checked",
+  "ownership.cmdb_import": "Ownership imported from CMDB",
+  "policy.create": "Policy created",
+  "policy.update": "Policy updated",
+  "policy.delete": "Policy deleted",
+  "policy.get": "Policy viewed",
+  "policy.list": "Policies listed",
+  "policy.dry_run": "Policy dry run",
+  "policy.violation": "Policy violation",
+};
+
+export function auditActionLabel(action: string): string {
+  return AUDIT_ACTION_LABELS[action] ?? action;
 }

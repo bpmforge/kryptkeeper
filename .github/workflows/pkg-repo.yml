@@ -1,0 +1,249 @@
+# W25-11: publish signed apt and yum repositories at https://pkg.kryptkeeper.io
+# (Cloudflare Pages project `kryptkeeper-pkg`) after each Release, then prove
+# `apt install` (Debian 12) and `dnf install` (Rocky 9) from the hosted URL.
+#
+# A Pages deploy replaces the whole site, so nothing accumulates between runs:
+# every run rebuilds the repository from the verified .deb/.rpm assets of every
+# non-prerelease GitHub release (plus the triggering tag). Each release's
+# checksums.txt must carry a valid keyless cosign signature from that tag's
+# release.yml, and every package must match it, before it enters the repo.
+#
+# One-time setup (the owner) is in packaging/repo/README.md and packaging/SIGNING.md:
+# secrets CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, PKG_REPO_GPG_PRIVATE_KEY,
+# PKG_REPO_GPG_PASSPHRASE; the Pages project; the pkg.kryptkeeper.io domain.
+#
+# workflow_run, not `release: published`: goreleaser publishes with
+# GITHUB_TOKEN, and events created by GITHUB_TOKEN do not trigger workflows.
+name: Package repo
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to include (prereleases allowed here), e.g. v0.13.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pkg-repo
+  cancel-in-progress: false
+
+env:
+  BASE_URL: https://pkg.kryptkeeper.io
+  PAGES_PROJECT: kryptkeeper-pkg
+
+jobs:
+  publish:
+    name: Build, sign and deploy repo
+    runs-on: ubuntu-latest
+    # Prereleases (tag contains "-") are skipped on workflow_run only.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       !contains(github.event.workflow_run.head_branch, '-'))
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Resolve release tag
+        id: tag
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_dispatch ]; then tag="$INPUT_TAG"; else tag="$RUN_TAG"; fi
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::'$tag' is not a release tag (vX.Y.Z[-pre])"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Require signing and deploy secrets
+        env:
+          KEY: ${{ secrets.PKG_REPO_GPG_PRIVATE_KEY }}
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # Never publish an unsigned repository.
+          [ -n "$KEY" ] || { echo "::error::PKG_REPO_GPG_PRIVATE_KEY is empty; refusing to publish unsigned metadata"; exit 1; }
+          [ -n "$CF_TOKEN" ] || { echo "::error::CLOUDFLARE_API_TOKEN is empty"; exit 1; }
+          [ -n "$CF_ACCOUNT" ] || { echo "::error::CLOUDFLARE_ACCOUNT_ID is empty"; exit 1; }
+
+      - name: Install Cosign (keyless verify)
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Install repo tooling
+        run: sudo apt-get update -qq && sudo apt-get install -y apt-utils createrepo-c gnupg
+
+      - name: Collect and verify packages from every release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TRIGGER_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          pkgs="$RUNNER_TEMP/pkgs"
+          mkdir -p "$pkgs"
+          tags="$( { gh release list --repo "$REPO" --exclude-drafts --limit 200 \
+                       --json tagName,isPrerelease --jq '.[] | select(.isPrerelease | not) | .tagName'
+                     echo "$TRIGGER_TAG"; } | sort -u)"
+          for tag in $tags; do
+            dl="$RUNNER_TEMP/dl/$tag"
+            mkdir -p "$dl"
+            gh release download "$tag" --repo "$REPO" --dir "$dl" \
+              --pattern '*.deb' --pattern '*.rpm' \
+              --pattern checksums.txt --pattern checksums.txt.sig --pattern checksums.txt.pem || true
+            n="$(find "$dl" -maxdepth 1 \( -name '*.deb' -o -name '*.rpm' \) | wc -l)"
+            if [ "$n" -eq 0 ]; then
+              if [ "$tag" = "$TRIGGER_TAG" ]; then
+                echo "::error::$tag has no .deb/.rpm assets"; exit 1
+              fi
+              echo "::notice::$tag has no .deb/.rpm assets; skipped"
+              continue
+            fi
+            # Trust only a checksums.txt signed by this repo's release workflow
+            # for exactly this tag (same identity as release.yml's homebrew job).
+            cosign verify-blob \
+              --certificate "$dl/checksums.txt.pem" \
+              --signature "$dl/checksums.txt.sig" \
+              --certificate-identity "https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${tag}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "$dl/checksums.txt"
+            # Every package must be listed in checksums.txt and match it.
+            for f in "$dl"/*.deb "$dl"/*.rpm; do
+              [ -e "$f" ] || continue
+              b="$(basename "$f")"
+              grep -Eq "^[0-9a-f]{64}  ${b}\$" "$dl/checksums.txt" \
+                || { echo "::error::$b is not listed in $tag checksums.txt"; exit 1; }
+            done
+            (cd "$dl" && sha256sum -c --ignore-missing checksums.txt)
+            cp -f "$dl"/*.deb "$dl"/*.rpm "$pkgs"/ 2>/dev/null || true
+            echo "verified $n package(s) from $tag"
+          done
+          ls -l "$pkgs"
+          # The triggering release must have made it in.
+          ver="${TRIGGER_TAG#v}"
+          compgen -G "$pkgs/*_${ver}_*" >/dev/null \
+            || { echo "::error::no package for $TRIGGER_TAG in the collected set"; exit 1; }
+
+      - name: Import repo signing key
+        env:
+          KEY: ${{ secrets.PKG_REPO_GPG_PRIVATE_KEY }}
+          PASS: ${{ secrets.PKG_REPO_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -p "$GNUPGHOME" && chmod 700 "$GNUPGHOME"
+          printf '%s\n' "$KEY" > "$GNUPGHOME/import.asc"
+          chmod 600 "$GNUPGHOME/import.asc"
+          printf '%s' "$PASS" | gpg --batch --pinentry-mode loopback --passphrase-fd 0 \
+            --import "$GNUPGHOME/import.asc"
+          shred -u "$GNUPGHOME/import.asc"
+          fpr="$(gpg --batch --with-colons --list-secret-keys | awk -F: '/^fpr:/{print $10; exit}')"
+          [ -n "$fpr" ] || { echo "::error::no secret key after import"; exit 1; }
+          echo "GPG_KEY_ID=$fpr" >> "$GITHUB_ENV"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          echo "Signing key fingerprint: $fpr"
+
+      - name: Build signed apt and yum trees
+        env:
+          GPG_PASSPHRASE: ${{ secrets.PKG_REPO_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          bash packaging/repo/build-repo.sh "$RUNNER_TEMP/pkgs" "$RUNNER_TEMP/site"
+          # Cloudflare Pages rejects files over 25 MiB and sites over 20000 files.
+          big="$(find "$RUNNER_TEMP/site" -type f -size +25M)"
+          [ -z "$big" ] || { echo "::error::files exceed the Pages 25 MiB limit:"; echo "$big"; exit 1; }
+          [ "$(find "$RUNNER_TEMP/site" -type f | wc -l)" -le 20000 ] \
+            || { echo "::error::more than 20000 files"; exit 1; }
+
+      - name: Deploy to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx --yes wrangler@4.144.0 pages deploy "$RUNNER_TEMP/site" \
+            --project-name "$PAGES_PROJECT" --branch main --commit-dirty=true
+
+      - name: Remove signing keyring
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/gnupg"
+          rm -rf "$RUNNER_TEMP/pkgs" "$RUNNER_TEMP/dl"
+
+  verify:
+    name: Install from hosted repo (${{ matrix.image }})
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [debian:12, rockylinux:9]
+    steps:
+      - name: Wait for the CDN to serve the metadata
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          case "$IMAGE" in
+            debian:*) probe="$BASE_URL/apt/dists/stable/InRelease" ;;
+            *)        probe="$BASE_URL/rpm/repodata/repomd.xml" ;;
+          esac
+          for i in $(seq 1 60); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' "$probe" || true)"
+            [ "$code" = 200 ] && { echo "$probe -> 200"; exit 0; }
+            echo "attempt $i: $probe -> $code"; sleep 10
+          done
+          echo "::error::$probe never returned 200 within 10 minutes"; exit 1
+
+      - name: apt install (Debian) and negative signature check
+        if: startsWith(matrix.image, 'debian')
+        run: |
+          set -euo pipefail
+          docker run --rm -e BASE_URL "$MATRIX_IMAGE" bash -euc '
+            apt-get update -qq && apt-get install -y -qq curl gnupg ca-certificates >/dev/null
+            # Negative first: no key, so signature verification must reject the repo.
+            echo "deb $BASE_URL/apt stable main" > /etc/apt/sources.list.d/kryptkeeper.list
+            if out="$(apt-get update 2>&1)"; then
+              echo "FAIL: apt-get update accepted metadata without the signing key"; echo "$out"; exit 1
+            fi
+            echo "$out" | grep -Eiq "NO_PUBKEY|not signed|signature|public key" \
+              || { echo "FAIL: update failed for an unexpected reason"; echo "$out"; exit 1; }
+            echo "PASS: unsigned-key repo rejected"
+            # Positive.
+            mkdir -p /etc/apt/keyrings
+            curl -fsSL "$BASE_URL/kryptkeeper.gpg" -o /etc/apt/keyrings/kryptkeeper.gpg
+            echo "deb [signed-by=/etc/apt/keyrings/kryptkeeper.gpg] $BASE_URL/apt stable main" > /etc/apt/sources.list.d/kryptkeeper.list
+            apt-get update -qq
+            apt-get install -y kryptkeeper
+            kryptkeeper --version
+          '
+        env:
+          MATRIX_IMAGE: ${{ matrix.image }}
+
+      - name: dnf install (Rocky)
+        if: startsWith(matrix.image, 'rocky')
+        env:
+          MATRIX_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          docker run --rm -e BASE_URL "$MATRIX_IMAGE" bash -euc '
+            curl -fsSL "$BASE_URL/kryptkeeper.repo" -o /etc/yum.repos.d/kryptkeeper.repo
+            grep -q "^repo_gpgcheck=1" /etc/yum.repos.d/kryptkeeper.repo
+            dnf install -y kryptkeeper
+            kryptkeeper --version
+          '

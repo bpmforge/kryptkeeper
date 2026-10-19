@@ -5,6 +5,7 @@
 package crl
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/x509"
@@ -15,6 +16,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"kryptkeeper/internal/revsign"
 )
 
 // RevokedCert represents a single revoked certificate entry for CRL generation.
@@ -33,6 +36,8 @@ type CALookupFunc func(caID string) (*x509.Certificate, crypto.Signer, error)
 // GeneratedCRL holds a generated CRL in both DER and PEM formats.
 type GeneratedCRL struct {
 	CAAID      string
+	IsDelta    bool     // true for a delta CRL (W23-49)
+	BaseNumber *big.Int // delta only: the base CRL number in the Delta CRL Indicator
 	DER        []byte
 	PEM        []byte
 	Number     *big.Int
@@ -47,7 +52,21 @@ type Generator struct {
 	validity    time.Duration // thisUpdate → nextUpdate
 	mu          sync.RWMutex
 	crls        map[string]*GeneratedCRL // keyed by CA ID
-	crlNumbers  map[string]*big.Int      // monotonic CRL number per CA
+	crlNumbers  map[string]*big.Int      // in-memory fallback counter, used only when allocator == nil
+	allocator   NumberAllocator          // DB-backed numbers (nil: in-memory fallback)
+	lastStamp   string                   // last revocation version stamp seen (W23-26)
+
+	// Shard CRL state (W23-50). shardN == 0 means sharding is off.
+	shardN    int
+	shardBase string
+	shards    map[string][]*GeneratedCRL // keyed by CA ID, index = shard
+
+	// Delta CRL state (W23-49). deltaValidity == 0 means delta mode is off.
+	deltaValidity time.Duration
+	publicBase    string
+	bases         map[string]baseInfo      // latest full CRL per CA
+	deltas        map[string]*GeneratedCRL // latest delta per CA
+	sink          func(Event)
 }
 
 // NewGenerator creates a CRL generator.
@@ -61,67 +80,97 @@ func NewGenerator(revokedFunc RevokedCertsFunc, caFunc CALookupFunc, validity ti
 		validity:    validity,
 		crls:        make(map[string]*GeneratedCRL),
 		crlNumbers:  make(map[string]*big.Int),
+		shards:      make(map[string][]*GeneratedCRL),
+		bases:       make(map[string]baseInfo),
+		deltas:      make(map[string]*GeneratedCRL),
 	}
 }
 
 // Generate creates a new CRL for the given CA ID.
 func (g *Generator) Generate(caID string) (*GeneratedCRL, error) {
+	gen, err := g.generate(caID)
+	if err != nil {
+		g.emit(Event{Action: ActionGenerate, CAID: caID, Detail: err.Error(), Failure: true})
+		return nil, err
+	}
+	g.emit(Event{Action: ActionGenerate, CAID: caID,
+		Detail: fmt.Sprintf("number=%s bytes=%d", gen.Number, len(gen.DER))})
+	return gen, nil
+}
+
+func (g *Generator) generate(caID string) (*GeneratedCRL, error) {
 	caCert, signer, err := g.caFunc(caID)
 	if err != nil {
 		return nil, fmt.Errorf("ca lookup: %w", err)
 	}
 
+	// Captured BEFORE listing: a revocation landing between the listing and
+	// the signing is then newer than this base and shows up in the next delta.
+	now := time.Now().UTC()
 	revokedCerts, err := g.revokedFunc(caID)
 	if err != nil {
 		return nil, fmt.Errorf("revoked certs lookup: %w", err)
 	}
+	revokedCerts = withoutSerial(revokedCerts, caCert.SerialNumber)
 
-	revokedEntries := make([]pkix.RevokedCertificate, 0, len(revokedCerts))
-	for _, rc := range revokedCerts {
-		revokedEntries = append(revokedEntries, pkix.RevokedCertificate{
-			SerialNumber:   rc.SerialNumber,
-			RevocationTime: rc.RevokedAt,
-		})
+	crlNumber, err := g.nextNumber(caID)
+	if err != nil {
+		return nil, err
 	}
-
-	g.mu.Lock()
-	crlNumber, ok := g.crlNumbers[caID]
-	if !ok {
-		crlNumber = big.NewInt(0)
-	}
-	crlNumber = new(big.Int).Add(crlNumber, big.NewInt(1))
-	g.crlNumbers[caID] = crlNumber
-	g.mu.Unlock()
-
-	now := time.Now().UTC()
 	template := &x509.RevocationList{
 		Number:                    crlNumber,
 		ThisUpdate:                now,
 		NextUpdate:                now.Add(g.validity),
 		RevokedCertificateEntries: toRevocationEntries(revokedCerts),
 	}
+	if g.deltaValidity > 0 && g.publicBase != "" {
+		template.ExtraExtensions = []pkix.Extension{freshestCRLExtension(g.deltaURL(caID))}
+	}
 
-	crlDER, err := x509.CreateRevocationList(rand.Reader, template, caCert, signer)
+	crlDER, err := revsign.CreateRevocationList(rand.Reader, template, caCert, signer)
 	if err != nil {
 		return nil, fmt.Errorf("create CRL: %w", err)
 	}
 
-	crlPEM := pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: crlDER})
-
 	generated := &GeneratedCRL{
 		CAAID:      caID,
 		DER:        crlDER,
-		PEM:        crlPEM,
+		PEM:        pem.EncodeToMemory(&pem.Block{Type: "X509 CRL", Bytes: crlDER}),
 		Number:     crlNumber,
 		ThisUpdate: now,
 		NextUpdate: now.Add(g.validity),
 	}
 
 	g.mu.Lock()
-	g.crls[caID] = generated
+	// Never let a slower, older generation overwrite a newer one.
+	if cur := g.crls[caID]; cur == nil || cur.Number.Cmp(crlNumber) < 0 {
+		g.crls[caID] = generated
+		g.bases[caID] = baseInfo{Number: crlNumber, ThisUpdate: now}
+	}
 	g.mu.Unlock()
 
 	return generated, nil
+}
+
+// nextNumber takes the next CRL number for scope; base and delta CRLs of a CA
+// share one monotonic sequence. With an allocator the sequence lives in the DB
+// (monotonic across restarts and replicas, RFC 5280 5.2.3). A DB failure fails
+// the generation: falling back to the in-memory counter would hand out numbers
+// that can go backwards.
+func (g *Generator) nextNumber(scope string) (*big.Int, error) {
+	if g.allocator != nil {
+		return g.allocator.Next(context.Background(), scope)
+	}
+	// In-memory path: only for a Generator with no database configured.
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	n, ok := g.crlNumbers[scope]
+	if !ok {
+		n = big.NewInt(0)
+	}
+	n = new(big.Int).Add(n, big.NewInt(1))
+	g.crlNumbers[scope] = n
+	return n, nil
 }
 
 // GetCRL returns the most recently generated CRL for a CA, or nil.
@@ -129,6 +178,56 @@ func (g *Generator) GetCRL(caID string) *GeneratedCRL {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.crls[caID]
+}
+
+// SyncVersion drops every cached CRL when stamp differs from the last stamp
+// seen and returns true. The first call only records the stamp (false).
+// crlNumbers is kept so CRL numbers stay monotonic across the reset. W23-26:
+// replicas share one DB, so a revoke on another replica shows up as a changed
+// stamp here.
+func (g *Generator) SyncVersion(stamp string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.lastStamp == "" {
+		g.lastStamp = stamp
+		return false
+	}
+	if stamp == g.lastStamp {
+		return false
+	}
+	g.lastStamp = stamp
+	if g.deltaValidity > 0 {
+		// Delta mode: the full CRL ages to its NextUpdate, the delta follows
+		// the revocations (W23-49).
+		g.deltas = make(map[string]*GeneratedCRL)
+		return true
+	}
+	g.crls = make(map[string]*GeneratedCRL)
+	g.shards = make(map[string][]*GeneratedCRL)
+	return true
+}
+
+// InvalidateCA drops every cached CRL (full, base and delta) for caID so the
+// next request is signed by the CA's current key. Called on CA key rotation;
+// the CRL number sequence is kept so numbers stay monotonic across the swap.
+func (g *Generator) InvalidateCA(caID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.crls, caID)
+	delete(g.bases, caID)
+	delete(g.deltas, caID)
+}
+
+// InvalidateAll drops every cached CRL (full, base, delta and shards) so the
+// next request is regenerated. Called when a CA is revoked: the parent's CRL
+// gains an entry and children's cached lists are stale. CRL numbers are kept.
+func (g *Generator) InvalidateAll() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.crls = make(map[string]*GeneratedCRL)
+	g.shards = make(map[string][]*GeneratedCRL)
+	g.bases = make(map[string]baseInfo)
+	g.deltas = make(map[string]*GeneratedCRL)
 }
 
 // InvalidateCache implements ca.RevocationCacheInvalidator, the same seam
@@ -152,9 +251,14 @@ func (g *Generator) InvalidateCache(serial *big.Int) {
 		return
 	}
 	g.mu.RLock()
-	caIDs := make([]string, 0, len(g.crls))
+	caIDs := make([]string, 0, len(g.crls)+len(g.shards))
 	for caID := range g.crls {
 		caIDs = append(caIDs, caID)
+	}
+	for caID := range g.shards {
+		if _, dup := g.crls[caID]; !dup {
+			caIDs = append(caIDs, caID)
+		}
 	}
 	g.mu.RUnlock()
 
@@ -169,7 +273,12 @@ func (g *Generator) InvalidateCache(serial *big.Int) {
 		for _, rc := range revoked {
 			if rc.SerialNumber != nil && rc.SerialNumber.Cmp(serial) == 0 {
 				g.mu.Lock()
-				delete(g.crls, caID)
+				if g.deltaValidity > 0 {
+					delete(g.deltas, caID)
+				} else {
+					delete(g.crls, caID)
+					delete(g.shards, caID)
+				}
 				g.mu.Unlock()
 				break
 			}
@@ -187,15 +296,18 @@ func (g *Generator) Handler() http.Handler {
 			return
 		}
 
-		// Extract CA ID from path: /crl/{ca-id}.crl
-		path := r.URL.Path
-		if len(path) < 6 || path[:5] != "/crl/" || path[len(path)-4:] != ".crl" {
+		req, ok := parseCRLRequest(r.URL.Path)
+		if !ok {
 			http.NotFound(w, r)
 			return
 		}
-		caID := path[5 : len(path)-4]
-		if caID == "" {
-			http.NotFound(w, r)
+		caID := req.CAID
+		if req.Shard >= 0 {
+			g.serveShard(w, r, caID, req.Shard)
+			return
+		}
+		if req.Delta {
+			g.serveDelta(w, r, caID)
 			return
 		}
 
@@ -213,6 +325,9 @@ func (g *Generator) Handler() http.Handler {
 		cached := g.GetCRL(caID)
 		target := cached
 		if target == nil || !now.Before(target.NextUpdate) {
+			if target != nil {
+				g.emitStale(caID, target)
+			}
 			generated, err := g.Generate(caID)
 			if err != nil {
 				http.NotFound(w, r)
@@ -229,6 +344,22 @@ func (g *Generator) Handler() http.Handler {
 	})
 }
 
+// withoutSerial drops the CA's own certificate serial: a revoked root keeps a
+// self-keyed timestamp record (W23-34) that must not appear in its own CRL.
+func withoutSerial(certs []RevokedCert, own *big.Int) []RevokedCert {
+	if own == nil {
+		return certs
+	}
+	out := make([]RevokedCert, 0, len(certs))
+	for _, c := range certs {
+		if c.SerialNumber != nil && c.SerialNumber.Cmp(own) == 0 {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
 func toRevocationEntries(certs []RevokedCert) []x509.RevocationListEntry {
 	entries := make([]x509.RevocationListEntry, 0, len(certs))
 	for _, rc := range certs {
@@ -239,4 +370,24 @@ func toRevocationEntries(certs []RevokedCert) []x509.RevocationListEntry {
 		})
 	}
 	return entries
+}
+
+func (g *Generator) serveShard(w http.ResponseWriter, r *http.Request, caID string, i int) {
+	if g.shardN <= 1 || i >= g.shardN {
+		http.NotFound(w, r)
+		return
+	}
+	target := g.GetShard(caID, i)
+	if target == nil {
+		set, err := g.GenerateAllShards(caID)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		target = set[i]
+	}
+	w.Header().Set("Content-Type", "application/pkix-crl")
+	w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d, public", int(g.validity.Seconds()/2)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(target.DER)
 }

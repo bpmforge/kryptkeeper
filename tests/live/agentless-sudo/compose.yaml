@@ -1,0 +1,30 @@
+# W34-20: three hardened hosts (one per privilege mode) and a hub, on this
+# project's own network. run.sh builds the images, generates the key pair and
+# env file, and is the only intended entry point. The hosts are identical; the
+# mode differs only in the sudoers drop-in run.sh installs from the hub's own
+# privilege bundle, so the bundle is what gets tested.
+name: kk-w34-sudo
+
+x-host: &host
+  image: ${TARGET_IMAGE}
+  # A real host's root can read every process's file descriptors, which is how
+  # `ss -ltnp` names the process behind a socket. A container's root cannot
+  # without this capability, and listener correlation would silently see no
+  # owner for other users' processes.
+  cap_add: ["SYS_PTRACE"]
+  volumes: ["${SUDO_WORK}/authorized_keys:/tmp/authorized_keys:ro"]
+
+services:
+  helper:
+    <<: *host
+  nopasswd:
+    <<: *host
+  password:
+    <<: *host
+    volumes:
+      - ${SUDO_WORK}/authorized_keys:/tmp/authorized_keys:ro
+      - ${SUDO_WORK}/kkscan.pw:/tmp/kkscan.pw:ro
+  hub:
+    image: ${HUB_IMAGE}
+    env_file: ["${SUDO_WORK}/hub.env"]
+    ports: ["127.0.0.1:${HUB_PORT}:${HUB_PORT}"]

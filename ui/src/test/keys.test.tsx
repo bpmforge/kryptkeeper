@@ -11,6 +11,7 @@ vi.mock("../lib/api", () => ({
     exportKey: vi.fn(),
     importKey: vi.fn(),
     deleteKey: vi.fn(),
+    cancelKeyDeletion: vi.fn(),
   },
 }));
 
@@ -111,6 +112,97 @@ describe("Keys page bulk actions (W8-11)", () => {
       expect(toast.success).toHaveBeenCalledWith(
         expect.stringMatching(/2 keys deleted/i),
       ),
+    );
+  });
+});
+
+describe("Keys page pending deletion (W23-23)", () => {
+  const listed = [
+    { id: "live-key", algorithm: "ECDSA-P256", created_at: "2026-01-01T00:00:00Z" },
+    {
+      id: "gone-key",
+      algorithm: "RSA-3072",
+      created_at: "2026-01-01T00:00:00Z",
+      state: "pending_deletion",
+      deletion_scheduled_at: "2026-11-01T12:00:00Z",
+    },
+  ];
+
+  function rowOf(id: string) {
+    return screen.getByText(id).closest("tr") as HTMLElement;
+  }
+
+  it("shows pending_deletion badge and scheduled date for a pending key", async () => {
+    vi.mocked(api.keys).mockResolvedValue({ data: listed } as unknown as never);
+    renderWithQuery();
+    await screen.findByText("gone-key");
+    const pending = rowOf("gone-key");
+    expect(within(pending).getByText("Pending deletion")).toBeInTheDocument();
+    expect(
+      within(pending).getByText(
+        `Deletes ${new Date("2026-11-01T12:00:00Z").toLocaleDateString()}`,
+      ),
+    ).toBeInTheDocument();
+    expect(within(pending).queryByTitle("Delete key")).toBeNull();
+    expect(within(pending).queryByTitle("Rotate key")).toBeNull();
+    expect(within(pending).getByTitle("Cancel deletion")).toBeInTheDocument();
+    const live = rowOf("live-key");
+    expect(within(live).queryByText("Pending deletion")).toBeNull();
+    expect(within(live).getByTitle("Delete key")).toBeInTheDocument();
+    expect(within(live).queryByTitle("Cancel deletion")).toBeNull();
+  });
+
+  it("cancel deletion proposes via dual control and points to Pending Actions", async () => {
+    vi.mocked(api.keys).mockResolvedValue({ data: listed } as unknown as never);
+    vi.mocked(api.cancelKeyDeletion).mockResolvedValue({
+      data: { status: "proposed", action_id: "a1" },
+    } as unknown as never);
+    const user = userEvent.setup();
+    renderWithQuery();
+    await screen.findByText("gone-key");
+    await user.click(within(rowOf("gone-key")).getByTitle("Cancel deletion"));
+    const dialog = screen.getByRole("dialog", { name: /cancel deletion/i });
+    await user.click(
+      within(dialog).getByRole("button", { name: /confirm cancel deletion/i }),
+    );
+    await waitFor(() => expect(api.cancelKeyDeletion).toHaveBeenCalledWith("gone-key"));
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        expect.stringContaining("Pending Actions"),
+      ),
+    );
+    expect(toast.success).not.toHaveBeenCalledWith(
+      expect.stringMatching(/re-enabled/i),
+    );
+  });
+
+  it("cancel deletion reports re-enabled only when dual control is off (direct)", async () => {
+    vi.mocked(api.keys).mockResolvedValue({ data: listed } as unknown as never);
+    vi.mocked(api.cancelKeyDeletion).mockResolvedValue(undefined as unknown as never);
+    const user = userEvent.setup();
+    renderWithQuery();
+    await screen.findByText("gone-key");
+    await user.click(within(rowOf("gone-key")).getByTitle("Cancel deletion"));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: /confirm cancel deletion/i }),
+    );
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith("Deletion cancelled. Key re-enabled."),
+    );
+  });
+
+  it("cancel deletion surfaces a 409 from the server", async () => {
+    vi.mocked(api.keys).mockResolvedValue({ data: listed } as unknown as never);
+    vi.mocked(api.cancelKeyDeletion).mockRejectedValue(new Error("outside provider window"));
+    const user = userEvent.setup();
+    renderWithQuery();
+    await screen.findByText("gone-key");
+    await user.click(within(rowOf("gone-key")).getByTitle("Cancel deletion"));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: /confirm cancel deletion/i }),
+    );
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("outside provider window"),
     );
   });
 });

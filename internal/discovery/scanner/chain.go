@@ -6,9 +6,12 @@ package scanner
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -99,9 +102,165 @@ func IsTrustClass(s string) bool { return slices.Contains(TrustClasses, s) }
 // Hub holds every CA certificate this hub owns, roots and intermediates alike.
 // A nil System means "no public roots": it is never forwarded as a nil
 // x509.VerifyOptions.Roots, which Go would read as "use the system roots".
+//
+// Authorized and IssuerRules are the operator-declared "CA groups" (D-205):
+// CA certificates, and issuer DNs / SPKI hashes for when no chain is served.
+// They feed issuer_class only; trust_class is judged without them.
+// IssuerClassKnown is false when the declared set could not be read, so an
+// unreadable list never silently downgrades an authorized issuer to unknown.
 type TrustAnchors struct {
-	System *x509.CertPool
-	Hub    []*x509.Certificate
+	System           *x509.CertPool
+	Hub              []*x509.Certificate
+	Authorized       []*x509.Certificate
+	IssuerRules      []IssuerRule
+	IssuerClassKnown bool
+}
+
+// Issuer rule kinds besides a full CA certificate.
+const (
+	IssuerRuleDN     = "issuer_dn"
+	IssuerRuleSPKI   = "spki_sha256"
+	IssuerRuleCACert = "ca_cert"
+)
+
+// IssuerRule matches a certificate's immediate issuer without a chain.
+type IssuerRule struct{ Kind, Value string }
+
+// Issuer classes say who is accountable for the CA behind a leaf. They refine
+// the trust classes with the operator's declaration: a public CA the company
+// bought from is "authorized", the same CA used behind procurement's back is
+// "public".
+const (
+	IssuerHub            = "hub"
+	IssuerAuthorized     = "authorized"
+	IssuerPublic         = "public"
+	IssuerPrivateUnknown = "private_unknown"
+	IssuerSelfSigned     = "self_signed"
+	IssuerUnknown        = "unknown"
+)
+
+// IssuerClasses is the closed vocabulary.
+var IssuerClasses = []string{IssuerHub, IssuerAuthorized, IssuerPublic, IssuerPrivateUnknown, IssuerSelfSigned, IssuerUnknown}
+
+// NormalizeDN canonicalises a distinguished name for comparison: case-folded,
+// with the spacing after separators removed.
+func NormalizeDN(dn string) string {
+	parts := strings.Split(dn, ",")
+	for i, p := range parts {
+		parts[i] = strings.TrimSpace(p)
+	}
+	return strings.ToLower(strings.Join(parts, ","))
+}
+
+// SPKIHash is the lower-case hex SHA-256 of a certificate's SubjectPublicKeyInfo.
+func SPKIHash(c *x509.Certificate) string {
+	h := sha256.Sum256(c.RawSubjectPublicKeyInfo)
+	return hex.EncodeToString(h[:])
+}
+
+// issuerMatchesRules reports whether the immediate issuer of leaf is covered by
+// an issuer_dn rule, or any certificate served above the leaf by an spki rule.
+// An SPKI can only be hashed from a certificate we hold, so a lone leaf is
+// matched by DN (or by a ca_cert) and never by SPKI.
+func issuerMatchesRules(served []*x509.Certificate, rules []IssuerRule) bool {
+	leaf := served[0]
+	for _, r := range rules {
+		switch r.Kind {
+		case IssuerRuleDN:
+			if NormalizeDN(leaf.Issuer.String()) == NormalizeDN(r.Value) {
+				return true
+			}
+		case IssuerRuleSPKI:
+			for _, c := range served[1:] {
+				if c != nil && SPKIHash(c) == strings.ToLower(strings.TrimSpace(r.Value)) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// chainsToAuthorized reports whether leaf verifies, with the served
+// intermediates, to any operator-authorized CA certificate.
+func chainsToAuthorized(served []*x509.Certificate, authorized []*x509.Certificate, now time.Time) bool {
+	if len(authorized) == 0 {
+		return false
+	}
+	pool := x509.NewCertPool()
+	for _, c := range authorized {
+		if c != nil {
+			pool.AddCert(c)
+		}
+	}
+	inter := x509.NewCertPool()
+	for _, c := range served[1:] {
+		if c != nil {
+			inter.AddCert(c)
+		}
+	}
+	_, err := verifyAt(served[0], inter, pool, now)
+	return err == nil
+}
+
+// ClassifyIssuer returns the issuer class of a leaf. trustClass is the
+// ClassifyChain verdict for a served chain; pass "" for a certificate that was
+// not served (agentless file or store), whose class is then derived from what
+// can be known without a handshake: self-signed, issued by a hub CA, matched by
+// a declared issuer, otherwise unknown.
+//
+// Order: hub, self-signed, authorized, then the trust verdict. Authorized
+// outranks public on purpose (a declared public CA is a sanctioned one), but
+// nothing is authorized implicitly: with no rule, public stays public.
+func ClassifyIssuer(served []*x509.Certificate, trustClass string, a TrustAnchors, now time.Time) string {
+	if len(served) == 0 || served[0] == nil {
+		return IssuerUnknown
+	}
+	leaf := served[0]
+	if trustClass == "" {
+		switch {
+		case isSelfSigned(leaf):
+			trustClass = TrustSelfSigned
+		case chainsToAuthorized(served, a.Hub, now):
+			trustClass = TrustManaged
+		}
+	}
+	switch trustClass {
+	case TrustManaged:
+		return IssuerHub
+	case TrustSelfSigned:
+		return IssuerSelfSigned
+	}
+	if chainsToAuthorized(served, a.Authorized, now) || issuerMatchesRules(served, a.IssuerRules) {
+		return IssuerAuthorized
+	}
+	switch trustClass {
+	case TrustPublic:
+		return IssuerPublic
+	case TrustPrivateOther:
+		return IssuerPrivateUnknown
+	}
+	return IssuerUnknown
+}
+
+// ApplyIssuerClass classifies the certificates of ep that ApplyTrust does not
+// judge (not served in a TLS chain: SSH file reads, store enumerations). Each
+// is its own one-certificate chain.
+func ApplyIssuerClass(ep *DiscoveredEndpoint, a TrustAnchors, now time.Time) {
+	if !a.IssuerClassKnown {
+		return
+	}
+	for i := range ep.Certs {
+		if ep.Certs[i].Served {
+			continue
+		}
+		c, err := x509.ParseCertificate(ep.Certs[i].Raw)
+		if err != nil {
+			ep.Certs[i].IssuerClass = IssuerUnknown
+			continue
+		}
+		ep.Certs[i].IssuerClass = ClassifyIssuer([]*x509.Certificate{c}, "", a, now)
+	}
 }
 
 // ChainVerdict is the classification of one served leaf.
@@ -350,6 +509,13 @@ func ApplyTrust(ep *DiscoveredEndpoint, anchors TrustAnchors, now time.Time) {
 		v = ClassifyChain(parsed, anchors, now)
 	}
 	leaf.TrustClass, leaf.ChainComplete, leaf.ChainCompleteKnown, leaf.ChainTrusted = v.Class, v.Complete, v.CompleteKnown, v.Trusted
+	if anchors.IssuerClassKnown {
+		if parsed[0] == nil {
+			leaf.IssuerClass = IssuerUnknown
+		} else {
+			leaf.IssuerClass = ClassifyIssuer(parsed, v.Class, anchors, now)
+		}
+	}
 	for _, f := range v.Flags {
 		if !slices.Contains(leaf.RiskFlags, f) {
 			leaf.RiskFlags = append(leaf.RiskFlags, f)

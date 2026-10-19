@@ -13,13 +13,13 @@ import (
 	"testing"
 )
 
-type failingCertSummaryProvider struct{ err error }
+type failingCertSummaryProvider struct{}
 
 func (failingCertSummaryProvider) LoadSummary(context.Context) (CertSummarySnapshot, error) {
 	return CertSummarySnapshot{}, errors.New("summary unavailable")
 }
 
-type failingDiscoveryProvider struct{ err error }
+type failingDiscoveryProvider struct{}
 
 func (failingDiscoveryProvider) GetSummary(context.Context) (DiscoverySummary, error) {
 	return DiscoverySummary{}, errors.New("discovery unavailable")

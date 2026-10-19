@@ -52,3 +52,12 @@ var (
 	SIEMEventsDropped   = Default.Counter("kryptkeeper_siem_events_dropped_total", "Audit-derived events dropped because the SIEM forward queue was full")
 	SIEMSendFailures    = Default.Counter("kryptkeeper_siem_send_failures_total", "SIEM deliveries that failed (per target attempt)")
 )
+
+// HTTP serving (W30-12). Unlabelled: the stdlib registry has no label support.
+var (
+	HTTPRequests        = Default.Counter("kryptkeeper_http_requests_total", "HTTP requests served by the hub")
+	HTTPRequestDuration = Default.Histogram("kryptkeeper_http_request_duration_seconds", "Latency of HTTP requests served by the hub", durationBuckets)
+	HTTPResponses4xx    = Default.Counter("kryptkeeper_http_responses_4xx_total", "HTTP responses with a 4xx status")
+	HTTPResponses5xx    = Default.Counter("kryptkeeper_http_responses_5xx_total", "HTTP responses with a 5xx status")
+	ReadyzFailures      = Default.Counter("kryptkeeper_readyz_failures_total", "Readiness probes that returned 503")
+)

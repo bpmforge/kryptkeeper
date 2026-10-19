@@ -5,10 +5,11 @@
 package bootstrap
 
 import (
-	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // The write gate: one check in front of every handler, so a principal can
@@ -51,19 +52,40 @@ var writeRoutes = []writeRoute{
 	// so outside this gate, behind its own bearer token.)
 	{"/api/v1/auth/**", permSelf},
 	{"/api/v1/agent/**", permSelf},
+	// W32-21: Slack authenticates by request signature; the identity map is admin-only.
+	{"/api/v1/chatops/slack/interactions", permSelf},
+	// W32-23: Teams authenticates by Bot Framework JWT.
+	{"/api/v1/chatops/teams/activities", permSelf},
+	{"/api/v1/chatops/identity-map", permAdmin},
 
 	// Pure computations sent as POST.
 	{"/api/v1/crypto-agility/roadmap", permQuery},
 	{"/api/v1/inventory/code-signing/policy-check", permQuery},
+	// W29-12: the OIDC token authenticates the exchange; trust rules are admin-only
+	// (creation is still dual-control via the approval queue).
+	{"/api/v1/codesign/issue", permSelf},
+	{"/api/v1/codesign/oidc-trust-rules/**", permAdmin},
+	// W29-14: the handler authenticates (Bearer, or anonymous when the operator opts in).
+	{"/api/v1/tsa", permSelf},
 
 	// The approval queue.
 	{"/api/v1/pending-actions", permPropose},
 	{"/api/v1/pending-actions/*/approve", "action.approve"},
 	{"/api/v1/pending-actions/*/reject", "action.approve"},
+	// W22-38: break-glass override. The caller is a non-admin holder; the handler
+	// authenticates itself and requires the live two-holder window.
+	{"/api/v1/pending-actions/*/override", permSelf},
 	{"/api/v1/approvals/**", "action.approve"},
+	// Accepted-risk exceptions: proposing and removing one is an approver-level
+	// risk decision (W22-28); mcp-agent can never hold action.approve.
+	{"/api/v1/exceptions/**", "action.approve"},
+	// W30-08: anomaly remediations are proposals into the approval queue.
+	{"/api/v1/anomalies/**", permPropose},
 
 	// Certificates.
 	{"/api/v1/certificates", "certificate.issue"},
+	{"/api/v1/certificate-requests", "certificate.issue"}, // W33-23
+	{"/api/v1/codesign/requests", "certificate.issue"},
 	{"/api/v1/certificates/import", "certificate.issue"},
 	{"/api/v1/certificates/bulk-import", "certificate.issue"},
 	{"/api/v1/certificates/bulk-reissue", "certificate.renew"},
@@ -71,6 +93,7 @@ var writeRoutes = []writeRoute{
 	{"/api/v1/certificates/*/revoke", "certificate.revoke"},
 	{"/api/v1/certificates/*/renew", "certificate.renew"},
 	{"/api/v1/certificates/*/ownership", "certificate.renew"},
+	{"/api/v1/ownership/**", "certificate.renew"},
 	{"/api/v1/renewal/**", "certificate.renew"},
 	{"/api/v1/estate/**", "certificate.renew"},
 	{"/api/v1/ssh/certificates", "certificate.issue"},
@@ -86,6 +109,13 @@ var writeRoutes = []writeRoute{
 	// (pki-admin, pki-operator); action.approve keeps that set.
 	{"/api/v1/cas/**", "ca.manage"},
 	{"/api/v1/templates/**", "ca.manage"},
+	{"/api/v1/migration/**", "ca.manage"},
+	// W30-09: NL drafting. Neither route activates anything; submit only files
+	// a pending approval, so mcp-agent may call it.
+	{"/api/v1/policies/draft", permQuery},
+	{"/api/v1/policies/draft/submit", permPropose},
+	{"/api/v1/policies/**", permAdmin},
+	{"/api/v1/team-policies/**", permAdmin}, // W33-20
 	{"/api/v1/spiffe/**", "action.approve"},
 	{"/api/v1/adsync/**", "action.approve"},
 
@@ -99,30 +129,47 @@ var writeRoutes = []writeRoute{
 	{"/api/v1/inventory-sources/**", "discovery.manage"},
 	{"/api/v1/inventory/**", "discovery.manage"},
 	{"/api/v1/targets/**", "discovery.manage"},
+	{"/api/v1/target-groups/**", permAdmin}, // W27-04: fleet renewal policy
 	{"/api/v1/connectors/**", "discovery.manage"},
 	{"/api/v1/nhi/**", "action.approve"},
 
 	// Notifications, evidence delivery, integrations.
 	{"/api/v1/notifications/**", "notification.manage"},
 	{"/api/v1/reports/evidence/**", "notification.manage"},
+	{"/api/v1/reports/schedules/**", "notification.manage"},
 	{"/api/v1/integrations/**", "notification.manage"},
+
+	// CT findings triage (W24-19): the handler allows pki-admin, pki-operator
+	// and the ops:write / * scopes, which is exactly who holds dashboard.manage.
+	{"/api/v1/ct/findings/**", "dashboard.manage"},
 
 	// Protocols, dashboard.
 	{"/api/v1/protocols/**", "protocol.manage"},
 	{"/api/v1/scep/**", "protocol.manage"},
+	{"/api/v1/acme/**", permAdmin}, // W26-01: EAB credentials
+	{"/api/v1/est/**", permAdmin},  // W26-06 (rule lands with the first ACME/EST/CMP admin API)
+	{"/api/v1/cmp/**", permAdmin},  // W26-07/09
 	{"/api/v1/dashboard/**", "dashboard.manage"},
 
 	// Identity and tenancy.
+	// W33-03: a caller edits only its own prefs row (keyed on the principal), so
+	// any signed-in principal may write it; must precede /users/**.
+	{"/api/v1/users/me/prefs", permQuery},
 	{"/api/v1/users/**", "user.manage"},
 	{"/api/v1/roles/**", "user.manage"},
 	{"/api/v1/tenants/**", "tenant.manage"},
 
 	// Admin-only, named so the coverage test sees them as decided.
+	{"/api/v1/agents/*", permAdmin}, // DELETE: remove an agent and revoke its token (W24-13)
 	{"/api/v1/api-keys/**", permAdmin},
 	{"/api/v1/credentials/**", permAdmin},
 	{"/api/v1/config/**", permAdmin},
 	{"/api/v1/admin/**", permAdmin},
 	{"/api/v1/delivery-plugins/**", permAdmin},
+	{"/api/v1/reports/compliance-attestations", permAdmin}, // W28-11: attesting a manual control is an administrator act
+	{"/api/v1/est/**", permAdmin},                          // EST Basic users (W26-07)
+	{"/api/v1/audit/archive", permAdmin},                   // W22-07: proposes deleting audit rows; a second admin must approve
+	{"/api/v1/itsm/**", permAdmin},                         // W32-10: ITSM connections hold a credential reference
 }
 
 // matchWriteRoute returns the rule for path, or ok=false (admin-only).
@@ -157,7 +204,15 @@ var legacyRolePermissions = map[string][]string{
 	// The names the UI, SCIM default and API docs use for the read-only roles.
 	"pki-viewer":  {"certificate.read", "report.read"},
 	"pki-auditor": {"certificate.read", "report.read", "audit.read"},
+	// W33-22: no action.approve/action.propose, so it can never approve (SoD)
+	// or park a pending action. writeDecision further confines its writes to
+	// POST /api/v1/certificates, because certificate.issue alone would also
+	// open import, SSH, SPIFFE and code-signing issuance.
+	RoleRequester: {"certificate.read", "certificate.issue"},
 }
+
+// requesterWritePath is the single write a requester may make.
+const requesterWritePath = "/api/v1/certificates"
 
 // operatorExtras are what authz_ops.go's canManage* helpers grant
 // pki-operator beyond fixedRolePermissions.
@@ -230,6 +285,14 @@ func writeDecision(pd AuthPrincipal, roles *CustomRoleStore, path string) (allow
 	switch need {
 	case permSelf, permQuery:
 		return true, need
+	}
+	if strings.TrimSpace(pd.Role) == RoleRequester {
+		if strings.TrimRight(path, "/") == requesterWritePath {
+			return perms[need], need
+		}
+		return false, need
+	}
+	switch need {
 	case permPropose:
 		if strings.TrimSpace(pd.Role) == RoleMCPAgent || admin {
 			return true, need
@@ -271,7 +334,7 @@ func withWriteAuthorization(next http.Handler, auth *Authenticator, roles *Custo
 			next.ServeHTTP(w, r)
 			return
 		}
-		log.Printf("write gate: denied %s %s for principal=%q role=%q (needs %s)", r.Method, path, pd.ID, pd.Role, need)
+		logging.Warnf("write gate: denied %s %s for principal=%q role=%q (needs %s)", r.Method, path, pd.ID, pd.Role, need)
 		emitAuditEventDetail(r, auditProvider, pd.ID, "api.write", "api", path, AuditOutcomeDenied,
 			"method="+r.Method+" role="+truncateForLog(pd.Role)+" needs="+need)
 		msg := "your role does not have the " + need + " permission this change needs"

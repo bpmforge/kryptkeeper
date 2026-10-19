@@ -58,13 +58,6 @@ func (l *MerkleLog) Append(record []byte) int {
 	return len(l.leaves) - 1
 }
 
-// AppendLeafHash adds an already-hashed leaf (for building over
-// exported records whose hashes are transported).
-func (l *MerkleLog) AppendLeafHash(h [32]byte) int {
-	l.leaves = append(l.leaves, h)
-	return len(l.leaves) - 1
-}
-
 // Size returns the number of leaves.
 func (l *MerkleLog) Size() int { return len(l.leaves) }
 

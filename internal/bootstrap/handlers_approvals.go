@@ -9,15 +9,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // isApproverForTemplate returns true if the principal's role is allowed to approve
 // requests for the given template. pki-admin can always approve.
+// approvalsMaxListLimit caps GET /api/v1/approvals page size, matching the
+// 100-row cap of the certificate and discovery list handlers.
+const approvalsMaxListLimit = 100
+
 func isApproverForTemplate(role string, approvalRoles []string) bool {
 	if isAdminRole(role) {
 		return true
@@ -38,6 +44,9 @@ func registerApprovalHandlers(
 	templateProvider TemplateProvider,
 	auditProvider AuditProvider,
 ) {
+	// W22-11: mounted before the nil-store return so the route does not
+	// vanish when approvals are off (it then answers 503).
+	registerApprovalDelegationHandlers(mux, auth, delegationStoreForApprovals(store), auditProvider)
 	if store == nil {
 		return
 	}
@@ -63,7 +72,7 @@ func registerApprovalHandlers(
 		limit := 50
 		if v := r.URL.Query().Get("limit"); v != "" {
 			if n, err2 := strconv.Atoi(v); err2 == nil && n > 0 {
-				limit = n
+				limit = min(n, approvalsMaxListLimit) // L-8: uncapped limit was a table-size read amplifier
 			}
 		}
 		offset := 0
@@ -73,24 +82,30 @@ func registerApprovalHandlers(
 			}
 		}
 
-		items, total, err := store.List(r.Context(), status, limit, offset)
+		// L-20: a tenant-scoped caller gets total/offset over their own rows,
+		// so read the whole set, filter, then window it.
+		apprScoped := !tenantBypass(pd)
+		var items []ApprovalRequest
+		var total int
+		if apprScoped {
+			items, err = drainPages(func(o, l int) ([]ApprovalRequest, int, error) { return store.List(r.Context(), status, l, o) })
+		} else {
+			items, total, err = store.List(r.Context(), status, limit, offset)
+		}
 		if err != nil {
 			emitAuditEvent(r, auditProvider, pd.ID, "approval.list", "approval", "approvals", AuditOutcomeFailure)
 			writeServiceUnavailable(w, "approval store unavailable")
 			return
 		}
-		// Non-admins see only their own requests.
-		if !isAdminRole(pd.Role) {
-			filtered := items[:0]
-			for _, item := range items {
-				if item.Requester == pd.ID {
-					filtered = append(filtered, item)
-				}
-			}
-			items = filtered
-		}
+		// Non-admins see their own requests plus those on templates whose
+		// approval_roles name their role (the ones they can decide).
+		items = newApprovalRoleScope(templateProvider).visibleTo(r.Context(), pd, items)
 		// Tenant isolation: scope approval requests by their CA's tenant.
 		items = filterApprovalsByTenant(r.Context(), activeTenantStore, pd, items)
+		if apprScoped {
+			total = len(items)
+			items = pageSlice(items, offset, limit)
+		}
 		emitAuditEvent(r, auditProvider, pd.ID, "approval.list", "approval", "approvals", AuditOutcomeSuccess)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -112,7 +127,7 @@ func registerApprovalHandlers(
 	})
 
 	mux.HandleFunc("/api/v1/approvals/", func(w http.ResponseWriter, r *http.Request) {
-		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
+		pd, err := authenticateDecider(auth, r, time.Now())
 		if err != nil {
 			emitAuditEvent(r, auditProvider, "", "approval.op", "approval", "-", AuditOutcomeDenied)
 			writeUnauthorized(w)
@@ -137,7 +152,7 @@ func registerApprovalHandlers(
 				writeMethodNotAllowed(w, http.MethodPost)
 				return
 			}
-			handleReject(w, r, pd, id, store, auditProvider)
+			handleReject(w, r, pd, id, store, templateProvider, auditProvider)
 			return
 		}
 
@@ -160,12 +175,12 @@ func registerApprovalHandlers(
 			writeServiceUnavailable(w, "approval store unavailable")
 			return
 		}
-		// Non-admins can only see their own requests.
-		if !isAdminRole(pd.Role) && apr.Requester != pd.ID {
+		// Non-admins can see their own requests and those their role may decide.
+		if apr.Requester != pd.ID && !newApprovalRoleScope(templateProvider).mayDecide(r.Context(), pd.Role, apr.TemplateID) {
 			writeForbidden(w, "forbidden")
 			return
 		}
-		if !caVisibleToTenant(r.Context(), activeTenantStore, pd, apr.CAID) {
+		if !approvalVisibleToTenant(r.Context(), activeTenantStore, pd, apr) {
 			writeForbidden(w, "forbidden")
 			return
 		}
@@ -196,7 +211,7 @@ func handleApprove(
 		writeServiceUnavailable(w, "approval store unavailable")
 		return
 	}
-	if !caVisibleToTenant(r.Context(), activeTenantStore, pd, apr.CAID) {
+	if !approvalVisibleToTenant(r.Context(), activeTenantStore, pd, apr) {
 		emitAuditEvent(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeDenied)
 		writeForbidden(w, "forbidden")
 		return
@@ -210,7 +225,7 @@ func handleApprove(
 		return
 	}
 	if !isApproverForTemplate(pd.Role, tpl.ApprovalRoles) {
-		emitAuditEvent(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeDenied)
+		emitAuditEventDetail(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeDenied, oboDecisionDetail(apr, pd.ID))
 		writeForbidden(w, "your role is not authorized to approve this template")
 		return
 	}
@@ -220,9 +235,21 @@ func handleApprove(
 	// RC1-B-01: decided on the human behind the credential, and never by the
 	// bootstrap token or a key minted with it.
 	if msg := auth.approverRefusal(pd, apr.Requester); msg != "" {
-		emitAuditEvent(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeDenied)
+		emitAuditEventDetail(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeDenied, oboDecisionDetail(apr, pd.ID))
 		writeForbidden(w, msg)
 		return
+	}
+
+	// W22-11: approving on behalf of a delegator. The delegate's own gates
+	// above already ran; the delegation must live in the CA's tenant.
+	onBehalfOf := onBehalfRequest(w, r)
+	detail := delegationAuditDetail(onBehalfOf, pd.ID)
+	if onBehalfOf != "" {
+		if msg := authorizeOnBehalf(r.Context(), auth, delegationStoreForApprovals(store), pd, onBehalfOf, apr.Requester, approvalTenant(r.Context(), activeTenantStore, apr), time.Now()); msg != "" {
+			emitAuditEventDetail(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeDenied, detail)
+			writeForbidden(w, msg)
+			return
+		}
 	}
 
 	if apr.Status != "pending" {
@@ -230,6 +257,19 @@ func handleApprove(
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
 		_, _ = w.Write([]byte(`{"error":"conflict","message":"approval request is not pending"}`))
+		return
+	}
+
+	// W33-21: the team policy may have tightened (or the template changed)
+	// since filing. Refuse before deciding, so the request stays pending.
+	if denial, perr := reevaluateTeamPolicyAtApproval(r.Context(), apr); perr != nil {
+		logging.Warnf("team policy re-evaluation failed for approval %s: %v", id, perr)
+		emitAuditEventDetail(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeFailure, "field=team_policy reason=enforcement_unavailable")
+		writeServiceUnavailable(w, "team policy unavailable")
+		return
+	} else if denial != nil {
+		emitAuditEventDetail(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeDenied, "field=team_policy reason="+denial.Code)
+		writeForbiddenCode(w, denial.Code, denial.Message)
 		return
 	}
 
@@ -245,6 +285,11 @@ func handleApprove(
 		return
 	}
 
+	if apr.Kind == approvalKindSSH {
+		approveSSH(w, r, pd, id, apr, store, auditProvider, onBehalfOf, detail)
+		return
+	}
+
 	// Issue the certificate now.
 	issueReq := CertificateIssueRequest{
 		CSRPEM:     apr.CSRPEM,
@@ -256,15 +301,21 @@ func handleApprove(
 	issued, err := certProvider.IssueCertificate(
 		context.WithValue(r.Context(), approvalBypassKey{}, true), issueReq)
 	if err != nil {
-		log.Printf("cert issuance after approval failed for %s: %v", id, err)
-		emitAuditEvent(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeIssuanceFailed)
+		logging.Warnf("cert issuance after approval failed for %s: %v", id, err)
+		emitAuditEventDetail(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeIssuanceFailed, detail)
 		writeServiceUnavailable(w, fmt.Sprintf("issuance failed after approval: %v", err))
 		return
 	}
 
 	_ = store.SetIssued(r.Context(), id, issued.FingerprintSHA256) // cert already issued; store status update is best-effort bookkeeping
-	emitAuditEventDetail(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeSuccess,
-		fmt.Sprintf(`{"fingerprint":%q,"cn":%q}`, issued.FingerprintSHA256, issued.CommonName))
+	approveDetail := fmt.Sprintf(`{"fingerprint":%q,"cn":%q}`, issued.FingerprintSHA256, issued.CommonName)
+	if onBehalfOf != "" {
+		approveDetail = fmt.Sprintf(`{"fingerprint":%q,"cn":%q,"on_behalf_of":%q,"delegate":%q}`, issued.FingerprintSHA256, issued.CommonName, onBehalfOf, pd.ID)
+	}
+	if apr.OnBehalfOf != "" {
+		approveDetail = approvalDetailJSON(apr, pd.ID, issued.FingerprintSHA256, issued.CommonName, onBehalfOf) // W33-23
+	}
+	emitAuditEventDetail(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeSuccess, approveDetail)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Location", "/api/v1/certificates/"+issued.FingerprintSHA256)
@@ -274,10 +325,70 @@ func handleApprove(
 	}{Data: issued})
 }
 
+// approveSSH completes an approved kind="ssh" row through the hook published
+// by RegisterSSHCertHandlers. Every gate (role, proposer != approver, tenant,
+// pending) already ran in handleApprove, and the row is already Decided.
+func approveSSH(w http.ResponseWriter, r *http.Request, pd AuthPrincipal, id string, apr ApprovalRequest,
+	store ApprovalStore, auditProvider AuditProvider, onBehalfOf, detail string) {
+	issuer := sshApprovalIssuer.Load()
+	if issuer == nil {
+		emitAuditEventDetail(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeIssuanceFailed, detail)
+		writeServiceUnavailable(w, "ssh certificate authority not available")
+		return
+	}
+	rec, err := (*issuer)(r.Context(), apr)
+	if err != nil {
+		logging.Warnf("ssh cert issuance after approval failed for %s: %v", id, err)
+		emitAuditEventDetail(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeIssuanceFailed, detail)
+		writeServiceUnavailable(w, fmt.Sprintf("issuance failed after approval: %v", err))
+		return
+	}
+	_ = store.SetIssued(r.Context(), id, rec.Serial) // cert already issued; store status update is best-effort bookkeeping
+	approveDetail := fmt.Sprintf(`{"serial":%q,"key_id":%q}`, rec.Serial, rec.KeyID)
+	if onBehalfOf != "" {
+		approveDetail = fmt.Sprintf(`{"serial":%q,"key_id":%q,"on_behalf_of":%q,"delegate":%q}`, rec.Serial, rec.KeyID, onBehalfOf, pd.ID)
+	}
+	emitAuditEventDetail(r, auditProvider, pd.ID, "approval.approve", "approval", id, AuditOutcomeSuccess, approveDetail)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Location", "/api/v1/ssh/certificates?subject_fingerprint="+url.QueryEscape(rec.SubjectFingerprint))
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(struct {
+		Data SSHCertRecord `json:"data"`
+	}{Data: rec})
+}
+
+// approvalTenant is the tenant an approval row belongs to: stored on SSH rows,
+// derived from the CA for X.509 rows.
+func approvalTenant(ctx context.Context, store TenantStore, apr ApprovalRequest) string {
+	if apr.Kind == approvalKindSSH {
+		if apr.Tenant == "" {
+			return DefaultTenant
+		}
+		return apr.Tenant
+	}
+	if store != nil {
+		if t, err := store.CATenant(ctx, apr.CAID); err == nil {
+			return t
+		}
+	}
+	return DefaultTenant
+}
+
+// approvalVisibleToTenant is the per-row tenant gate for approve, reject and
+// get. An SSH row has no CA, so its stored tenant decides; the store may be
+// nil there and the row must still never cross tenants.
+func approvalVisibleToTenant(ctx context.Context, store TenantStore, pd AuthPrincipal, apr ApprovalRequest) bool {
+	if apr.Kind == approvalKindSSH {
+		return tenantBypass(pd) || approvalTenant(ctx, store, apr) == pd.Tenant
+	}
+	return caVisibleToTenant(ctx, store, pd, apr.CAID)
+}
+
 func handleReject(
 	w http.ResponseWriter, r *http.Request,
 	pd AuthPrincipal, id string,
 	store ApprovalStore,
+	templateProvider TemplateProvider,
 	auditProvider AuditProvider,
 ) {
 	var body struct {
@@ -298,9 +409,20 @@ func handleReject(
 		writeServiceUnavailable(w, "approval store unavailable")
 		return
 	}
-	if !caVisibleToTenant(r.Context(), activeTenantStore, pd, apr.CAID) {
+	if !approvalVisibleToTenant(r.Context(), activeTenantStore, pd, apr) {
 		emitAuditEvent(r, auditProvider, pd.ID, "approval.reject", "approval", id, AuditOutcomeDenied)
 		writeForbidden(w, "forbidden")
+		return
+	}
+	// F8: reject needs the same role approve needs. The write gate is the
+	// only other guard and the ChatOps bridge dispatches below it, so without
+	// this any identity-mapped user could reject any pending approval.
+	// A missing or unreadable template leaves only the admin roles able to
+	// reject, so a deleted template cannot strand its pending requests.
+	tpl, tplFound, tplErr := templateProvider.GetTemplate(r.Context(), apr.TemplateID)
+	if !isApproverForTemplate(pd.Role, tpl.ApprovalRoles) {
+		emitAuditEventDetail(r, auditProvider, pd.ID, "approval.reject", "approval", id, AuditOutcomeDenied, oboDecisionDetail(apr, pd.ID))
+		writeForbidden(w, "your role is not authorized to reject this template")
 		return
 	}
 	if apr.Status != "pending" {
@@ -321,8 +443,14 @@ func handleReject(
 		return
 	}
 
-	emitAuditEventDetail(r, auditProvider, pd.ID, "approval.reject", "approval", id, AuditOutcomeSuccess,
-		fmt.Sprintf(`{"reason":%q}`, body.Reason))
+	rejectDetail := fmt.Sprintf(`{"reason":%q}`, body.Reason)
+	if apr.OnBehalfOf != "" {
+		rejectDetail = oboRejectDetail(apr, pd.ID, body.Reason) // W33-23
+	}
+	emitAuditEventDetail(r, auditProvider, pd.ID, "approval.reject", "approval", id, AuditOutcomeSuccess, rejectDetail)
+	if tplErr == nil && tplFound {
+		auditCodesignRejection(r, auditProvider, tpl, pd.ID, id)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"rejected"}`))

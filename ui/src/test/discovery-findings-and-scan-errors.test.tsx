@@ -134,7 +134,8 @@ describe("discovery — findings, risky rule and scan errors", () => {
   it("shows the hub's findings count in the Findings widget", async () => {
     renderPage();
     expect(await screen.findByText("Total findings")).toBeInTheDocument();
-    expect(await screen.findByText("7")).toBeInTheDocument();
+    // effective is also 7 in this fixture, so read the Raw cell by test id.
+    expect(await screen.findByTestId("funnel-raw")).toHaveTextContent("7");
   });
 
   it("lists an open-but-failed endpoint's finding in its detail panel", async () => {
@@ -143,7 +144,7 @@ describe("discovery — findings, risky rule and scan errors", () => {
       await screen.findByRole("button", { name: "plainhttp.lab" }),
     );
     const list = await screen.findByTestId("endpoint-findings");
-    expect(within(list).getByText(/NOT_TLS/)).toBeInTheDocument();
+    expect(within(list).getByText(/Not TLS/)).toBeInTheDocument();
   });
 
   it("shows a partially failed scan job's status and reason", async () => {
@@ -176,7 +177,12 @@ describe("discovery — endpoint list indicators", () => {
                 fingerprint: "fp1",
                 risk_score: 55,
                 trust_class: "private_other",
-                risk_flags: ["PQC_VULNERABLE", "EXPIRED", "SELF_SIGNED", "WEAK_KEY"],
+                risk_flags: [
+                  "PQC_VULNERABLE",
+                  "EXPIRED",
+                  "SELF_SIGNED",
+                  "WEAK_KEY",
+                ],
               },
             ],
           },
@@ -187,7 +193,9 @@ describe("discovery — endpoint list indicators", () => {
             protocol: "tls",
             risk_score: 20,
             risky: true,
-            issues: ["NOT_TLS: first record does not look like a TLS handshake"],
+            issues: [
+              "NOT_TLS: first record does not look like a TLS handshake",
+            ],
           },
         ],
       },
@@ -201,9 +209,9 @@ describe("discovery — endpoint list indicators", () => {
       await screen.findByRole("button", { name: "expired.lab" })
     ).closest("tr") as HTMLElement;
     expect(within(row).getByText("other private CA")).toBeInTheDocument();
-    expect(within(row).getByText("expired")).toBeInTheDocument();
-    expect(within(row).getByText("self signed")).toBeInTheDocument();
-    expect(within(row).queryByText("weak key")).toBeNull();
+    expect(within(row).getByText("Expired")).toBeInTheDocument();
+    expect(within(row).getByText("Self signed")).toBeInTheDocument();
+    expect(within(row).queryByText("Weak key")).toBeNull();
     expect(within(row).getByText("+1")).toBeInTheDocument();
     expect(within(row).getByText("risky")).toBeInTheDocument();
   });

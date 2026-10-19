@@ -7,9 +7,11 @@ package bootstrap
 import (
 	"context"
 	"crypto/rand"
+	"crypto/x509"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -56,8 +58,22 @@ type NHIStore interface {
 	Create(ctx context.Context, n NHIIdentity) (NHIIdentity, error)
 	List(ctx context.Context) ([]NHIIdentity, error)
 	Get(ctx context.Context, id string) (NHIIdentity, bool, error)
+	// Decide records a decision. A revoked identity is terminal: Decide on
+	// it returns ErrNHIRevoked and changes nothing.
 	Decide(ctx context.Context, id, status, decidedBy string) error
+	GetBySPIFFEID(ctx context.Context, spiffeID string) (NHIIdentity, bool, error)
+	// UpdateScopes replaces the scopes of a pending or approved identity.
+	// Revoked and rejected identities are refused (ErrNHIRevoked / ErrNHINotActive).
+	UpdateScopes(ctx context.Context, id string, scopes []string) error
 }
+
+// Authorization outcomes from NHIAuthorizer and the store.
+var (
+	ErrNHIRevoked   = errors.New("nhi identity revoked")
+	ErrNHINotActive = errors.New("nhi identity not approved")
+	ErrNHIUnknown   = errors.New("nhi identity unknown")
+	ErrNHIScope     = errors.New("nhi scope not granted")
+)
 
 // Mirrors migration 000035; idempotent so pre-migration deployments
 // (per-store EnsureSchema convention) get the same shape.
@@ -153,18 +169,133 @@ func (s *dbNHIStore) Get(ctx context.Context, id string) (NHIIdentity, bool, err
 	return items[0], true, nil
 }
 
+func (s *dbNHIStore) GetBySPIFFEID(ctx context.Context, spiffeID string) (NHIIdentity, bool, error) {
+	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(nhiSelect+" WHERE spiffe_id = %s", s.ph(1)), spiffeID)
+	if err != nil {
+		return NHIIdentity{}, false, err
+	}
+	defer rows.Close()
+	items, err := s.scanRows(rows)
+	if err != nil || len(items) == 0 {
+		return NHIIdentity{}, false, err
+	}
+	return items[0], true, nil
+}
+
+// Decide never touches a revoked row: revocation is terminal, so a racing
+// or future caller cannot un-revoke an identity.
 func (s *dbNHIStore) Decide(ctx context.Context, id, status, decidedBy string) error {
 	q := fmt.Sprintf(`UPDATE nhi_identities SET status = %s, decided_by = %s, decided_at = %s
-		WHERE id = %s`, s.ph(1), s.ph(2), s.ph(3), s.ph(4))
+		WHERE id = %s AND status <> 'revoked'`, s.ph(1), s.ph(2), s.ph(3), s.ph(4))
 	res, err := s.db.ExecContext(ctx, q, status, decidedBy,
 		time.Now().UTC().Format(time.RFC3339), id)
 	if err != nil {
 		return err
 	}
 	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return fmt.Errorf("nhi identity %s not found", id)
+		return s.missOrRevoked(ctx, id)
 	}
 	return nil
+}
+
+// missOrRevoked explains a zero-row update: unknown id or revoked row.
+func (s *dbNHIStore) missOrRevoked(ctx context.Context, id string) error {
+	_, found, err := s.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("nhi identity %s not found", id)
+	}
+	return ErrNHIRevoked
+}
+
+func (s *dbNHIStore) UpdateScopes(ctx context.Context, id string, scopes []string) error {
+	if err := validateNHIScopes(scopes); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(scopes)
+	if err != nil {
+		return err
+	}
+	q := fmt.Sprintf(`UPDATE nhi_identities SET scopes = %s
+		WHERE id = %s AND status IN ('pending', 'approved')`, s.ph(1), s.ph(2))
+	res, err := s.db.ExecContext(ctx, q, string(raw), id)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		cur, found, gerr := s.Get(ctx, id)
+		if gerr != nil {
+			return gerr
+		}
+		switch {
+		case !found:
+			return fmt.Errorf("nhi identity %s not found", id)
+		case cur.Status == "revoked":
+			return ErrNHIRevoked
+		default:
+			return ErrNHINotActive
+		}
+	}
+	return nil
+}
+
+// NHIAuthorizer resolves a presented SVID to its live identity record and
+// decides a scope request. Scopes live on the record, not the certificate,
+// so edits and revocation apply on the very next call. There is
+// deliberately no cache: staleness is zero, well inside the 60 s bound.
+// It is not yet wired to a request path (D-150): no handler presents an
+// SVID until mTLS/SVID principal resolution lands.
+type NHIAuthorizer struct {
+	store NHIStore
+	now   func() time.Time
+}
+
+func NewNHIAuthorizer(store NHIStore, now func() time.Time) *NHIAuthorizer {
+	if now == nil {
+		now = time.Now
+	}
+	return &NHIAuthorizer{store: store, now: now}
+}
+
+// Authorize checks that leaf belongs to an approved NHI that holds scope.
+// Order: certificate validity window, exactly one spiffe URI SAN, live
+// record lookup, status, scope. The wildcard "*" is never honoured.
+func (a *NHIAuthorizer) Authorize(ctx context.Context, leaf *x509.Certificate, scope string) error {
+	if leaf == nil {
+		return errors.New("svid missing")
+	}
+	now := a.now()
+	if now.After(leaf.NotAfter) || now.Before(leaf.NotBefore) {
+		return errors.New("svid expired")
+	}
+	if len(leaf.URIs) != 1 || leaf.URIs[0].Scheme != "spiffe" {
+		return errors.New("svid must carry exactly one spiffe URI SAN")
+	}
+	identity, found, err := a.store.GetBySPIFFEID(ctx, leaf.URIs[0].String())
+	if err != nil {
+		return fmt.Errorf("nhi lookup failed: %w", err)
+	}
+	if !found {
+		return ErrNHIUnknown
+	}
+	switch identity.Status {
+	case "approved":
+	case "revoked":
+		return ErrNHIRevoked
+	default:
+		return ErrNHINotActive
+	}
+	if scope == "" || scope == "*" {
+		return ErrNHIScope
+	}
+	for _, sc := range identity.Scopes {
+		if sc == scope {
+			return nil
+		}
+	}
+	return ErrNHIScope
 }
 
 // NewNHIStoreFromEnv opens the shared DB and ensures the schema.
@@ -203,6 +334,10 @@ func validateNHIRequest(name, kind string, scopes []string) error {
 	if !nhiKinds[kind] {
 		return fmt.Errorf("nhi kind %q is not in the vocabulary (ai_agent, service_account, workflow)", kind)
 	}
+	return validateNHIScopes(scopes)
+}
+
+func validateNHIScopes(scopes []string) error {
 	if len(scopes) == 0 {
 		return fmt.Errorf("at least one scope is required")
 	}
@@ -232,6 +367,10 @@ func registerNHIHandlers(mux *http.ServeMux, auth *Authenticator, store NHIStore
 		}
 		switch r.Method {
 		case http.MethodGet:
+			// D-203: identities carry no tenant, so the list is global-admin-only.
+			if denyNonSuperAdminGlobal(w, r, auditProvider, pd, "nhi.list", "nhi_identity", "-") {
+				return
+			}
 			items, err := store.List(r.Context())
 			if err != nil {
 				writeServiceUnavailable(w, "nhi list failed")
@@ -310,6 +449,10 @@ func registerNHIHandlers(mux *http.ServeMux, auth *Authenticator, store NHIStore
 			writeForbidden(w, "your role is not authorized to decide NHI identities")
 			return
 		}
+		// D-203: approving mints a join token for a global SPIFFE ID.
+		if denyNonSuperAdminGlobal(w, r, auditProvider, pd, "nhi.decide", "nhi_identity", id) {
+			return
+		}
 		identity, found, err := store.Get(r.Context(), id)
 		if err != nil || !found {
 			writeNotFound(w, "nhi identity not found")
@@ -334,6 +477,11 @@ func registerNHIHandlers(mux *http.ServeMux, auth *Authenticator, store NHIStore
 				return
 			}
 			if err := store.Decide(r.Context(), id, "approved", pd.ID); err != nil {
+				if errors.Is(err, ErrNHIRevoked) { // revoked while approving: kill the token just minted
+					registry.RevokeBySPIFFEID(identity.SPIFFEID)
+					writeBadRequest(w, "identity is not pending (status: revoked)")
+					return
+				}
 				writeServiceUnavailable(w, "nhi decide failed")
 				return
 			}
@@ -363,7 +511,23 @@ func registerNHIHandlers(mux *http.ServeMux, auth *Authenticator, store NHIStore
 				writeBadRequest(w, "identity is not pending (status: "+identity.Status+")")
 				return
 			}
+			if verb == "revoke" {
+				if identity.Status == "revoked" { // idempotent: no second audit row
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				// Burn unredeemed join tokens first so a revoked NHI cannot mint.
+				registry.RevokeBySPIFFEID(identity.SPIFFEID)
+			}
 			if err := store.Decide(r.Context(), id, target, pd.ID); err != nil {
+				if verb == "revoke" && errors.Is(err, ErrNHIRevoked) { // lost a race to another revoke
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				if errors.Is(err, ErrNHIRevoked) {
+					writeBadRequest(w, "identity is not pending (status: revoked)")
+					return
+				}
 				writeServiceUnavailable(w, "nhi decide failed")
 				return
 			}

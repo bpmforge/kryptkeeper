@@ -448,3 +448,93 @@ func TestClient_Register_SendsEnrollmentSecret(t *testing.T) {
 		})
 	}
 }
+
+func TestClient_Register_SendsEnrollmentToken(t *testing.T) {
+	var got map[string]any
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/v1/agent/register", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"agent_id":"a","token":"t"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := agentclient.New(srv.URL, "", "", nil)
+	c.EnrollmentToken = "kke_abc"
+	c.EnrollmentSecret = "ignored"
+	if _, err := c.Register(context.Background(), "agent", agentclient.AgentTypeLinux); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if got["enrollment_token"] != "kke_abc" {
+		t.Fatalf("enrollment_token = %v", got["enrollment_token"])
+	}
+	if _, ok := got["enrollment_secret"]; ok {
+		t.Fatal("secret must not be sent when a token is present")
+	}
+}
+
+func TestAgentClient_SendsVersionHeader(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("X-Agent-Version"))
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+	defer srv.Close()
+
+	c := agentclient.New(srv.URL, "id", "tok", nil)
+	c.Version = "1.2.3"
+	if err := c.Heartbeat(context.Background()); err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+	c.Version = ""
+	if err := c.Heartbeat(context.Background()); err != nil {
+		t.Fatalf("Heartbeat: %v", err)
+	}
+	if len(got) != 2 || got[0] != "1.2.3" || got[1] != "" {
+		t.Fatalf("X-Agent-Version per request = %q, want [1.2.3 \"\"]", got)
+	}
+}
+
+// W34-09: the host pass rides in the same push; a nil host is the pre-W34 shape.
+func TestClient_PostInventoryHostShape(t *testing.T) {
+	var got map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = map[string]json.RawMessage{}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{"accepted":0}`))
+	}))
+	defer srv.Close()
+	c := agentclient.New(srv.URL, "a", "t", nil)
+
+	if _, err := c.PostInventory(context.Background(), nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"files", "listeners", "unreadable_paths", "host_scanned"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("a pre-W34 push must not carry %q", k)
+		}
+	}
+
+	host := &agentclient.HostInventory{Scanned: true, PrivilegeMode: "helper", User: "kryptkeeper-agent",
+		UnreadablePaths: []agentclient.UnreadablePath{{Path: "/opt/tomcat/conf/keystore.jks", Error: "permission denied"}}, UnreadableTotal: 1,
+		Files:     []agentclient.HostFile{{Path: "/opt/tomcat/conf/keystore.jks", Kind: "jks", Owner: "root", Group: "root", Mode: "600", UID: 0, GID: 0}},
+		Listeners: []agentclient.HostListener{{Port: 8443, PID: 9, UID: 1001, GID: 1001, Comm: "java", Tech: "tomcat"}},
+	}
+	if _, err := c.PostInventoryHost(context.Background(), nil, nil, host); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"files", "listeners", "unreadable_paths", "unreadable_total", "host_scanned", "privilege_mode", "scan_user"} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("host push lacks %q", k)
+		}
+	}
+	var files []map[string]any
+	_ = json.Unmarshal(got["files"], &files)
+	if len(files) != 1 || files[0]["owner"] != "root" || files[0]["mode"] != "600" || files[0]["kind"] != "jks" {
+		t.Fatalf("files = %v", files)
+	}
+	if strings.Contains(string(got["files"]), "PRIVATE KEY") {
+		t.Fatal("no key bytes ever ride in the push")
+	}
+}

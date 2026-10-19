@@ -8,13 +8,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"kryptkeeper/internal/connectors"
+	"kryptkeeper/internal/notifications/delivery"
 )
 
 // haLockRenewalScheduler names this scheduler's lease row in
@@ -38,6 +41,10 @@ type RenewalSchedulerStatus struct {
 	// certificate. GaveUpInstalls counts those that exhausted their attempts.
 	PendingInstalls int `json:"pending_installs"`
 	GaveUpInstalls  int `json:"gave_up_installs"`
+	// MaxThresholdDays is the widest renewal window in force this tick: the
+	// default, or the largest target or group threshold (W27-04).
+	// ThresholdDays stays the global default.
+	MaxThresholdDays int `json:"max_threshold_days"`
 }
 
 // ruleSendCapEnv overrides defaultRuleSendCap.
@@ -59,6 +66,9 @@ type RenewalScheduler struct {
 	certProvider  CertificateProvider
 	notifProvider NotificationProvider
 	auditProvider AuditProvider
+	// credStore lets the sweep read a target credential's sudo_mode when
+	// deciding whether a privilege block applies (W34-10).
+	credStore OutboundCredentialStore
 
 	// thresholdDays is the number of days before expiry to trigger renewal.
 	// This is the BOOTSTRAP DEFAULT (W8-13): runScan re-resolves the
@@ -70,6 +80,14 @@ type RenewalScheduler struct {
 	// Bootstrap default -- see thresholdDays' comment; runScan re-resolves
 	// the effective interval every tick and Start's ticker tracks it.
 	pollInterval time.Duration
+	// retryBase/retryCap shape the failed-install backoff (W27-19); zero means
+	// the package defaults. Bootstrap defaults like pollInterval: runScan
+	// re-resolves them from the config store every tick.
+	retryBase, retryCap time.Duration
+	// jitterSeed/jitterPercent spread retries and tick starts (W27-33);
+	// zero percent disables jitter. See jitterFor.
+	jitterSeed    int64
+	jitterPercent int
 	// cooldown is the minimum time between two renewal-reminder
 	// notifications for the same certificate (W1-06/D-033). cooldownStore
 	// may be nil (store unavailable) — cooldown is then simply not enforced.
@@ -79,6 +97,15 @@ type RenewalScheduler struct {
 	// silenceStore may be nil (store unavailable) — silencing is then
 	// simply not enforced.
 	silenceStore NotificationSilenceStore
+	// ruleOptions (W30-01) holds per-rule percent/template settings. May be nil
+	// (store unavailable) — every rule is then a plain days rule.
+	ruleOptions NotificationRuleOptionsStore
+	// teamRoutes (W30-02) holds the owner_team routing table for "@owner_team"
+	// rules. May be nil (store unavailable) — routed rules then queue to the
+	// dashboard.
+	teamRoutes NotificationTeamRouteStore
+	// noOwner emits the ITSM expiry_no_owner event once per certificate (W32-28).
+	noOwner noOwnerAnnouncer
 	// targetStore resolves per-target renewal-threshold overrides (W8-15,
 	// FR-P33). May be nil (store unavailable) — every candidate then simply
 	// uses thresholdDays, the pre-W8-15 behavior.
@@ -92,12 +119,23 @@ type RenewalScheduler struct {
 	// managed targets that opted in (S-17, on the W5-13 engine): auto_renew
 	// set, install_mode ssh, complete install profile, credential_ref. Nil
 	// preserves the notify-only behavior (W4-02/G-43).
-	renewalExecutor *RenewalExecutor
+	renewalExecutor renewalRunner
+	// bindingStore holds the operator's cert-to-target bindings (W27-02):
+	// the sweep executes only against bound targets. unboundNotes dedupes the
+	// "host matches but unbound" log.
+	bindingStore CertTargetBindingStore
+	unboundNotes unboundNoteSeen
+	// groupStore supplies group thresholds (W27-04). Nil means no groups.
+	groupStore TargetGroupStore
 
 	// stampVerifier re-checks, at sweep time, that the principal stamped on an
 	// auto_renew target still exists and still holds certificate.renew
 	// (RC1-A-01). Nil skips the re-check (tests).
 	stampVerifier func(ctx context.Context, stamp string) error
+
+	// ariDue (W26-27) asks the upstream CA's ACME Renewal Information when a
+	// connector-pinned certificate should renew. nil disables ARI timing.
+	ariDue func(ctx context.Context, cert CertificateItem, now time.Time) ARIDecision
 
 	// ruleSendCap bounds how many rule alerts (sent, or skipped when the
 	// provider does not deliver) one tick processes; the remaining matches
@@ -121,12 +159,64 @@ type RenewalScheduler struct {
 
 	stop chan struct{}
 	once sync.Once
+	// scansRunning counts ticks in progress so Stop can drain them (below).
+	scansRunning atomic.Int32
+
+	// scanNow (W26-29) lets RequestScan trigger an out-of-cycle scan.
+	scanNow chan struct{}
+
+	// gateMu guards gateWakeAt/gateTimer: the soonest moment a connector
+	// gate (W26-28) that deferred work this tick lapses, and the timer that
+	// re-scans then instead of waiting out the full poll interval.
+	gateMu     sync.Mutex
+	gateWakeAt time.Time
+	gateTimer  *time.Timer
+}
+
+// noteGateWake records that work was deferred until a connector gate lapses.
+func (s *RenewalScheduler) noteGateWake(until time.Time) {
+	s.gateMu.Lock()
+	defer s.gateMu.Unlock()
+	if s.gateWakeAt.IsZero() || until.Before(s.gateWakeAt) {
+		s.gateWakeAt = until
+	}
+}
+
+// armGateWake schedules an out-of-cycle scan for the soonest gate lapse noted
+// this tick, when that is sooner than the next poll. Deferred renewals thus
+// resume when the CA's Retry-After ends rather than up to a poll interval later.
+func (s *RenewalScheduler) armGateWake(poll time.Duration) {
+	s.gateMu.Lock()
+	defer s.gateMu.Unlock()
+	at := s.gateWakeAt
+	s.gateWakeAt = time.Time{}
+	if at.IsZero() {
+		return
+	}
+	d := max(time.Until(at), 0) + 250*time.Millisecond
+	if d >= poll {
+		return
+	}
+	if s.gateTimer != nil {
+		s.gateTimer.Stop()
+	}
+	s.gateTimer = time.AfterFunc(d, s.RequestScan)
 }
 
 // WithRenewalExecutor arms the sweep's execute path (S-17). Call before
 // Start; the scheduler never mutates it afterwards.
 func (s *RenewalScheduler) WithRenewalExecutor(e *RenewalExecutor) *RenewalScheduler {
+	if e == nil {
+		s.renewalExecutor = nil // a typed-nil pointer would read as armed
+		return s
+	}
 	s.renewalExecutor = e
+	return s
+}
+
+// WithARIDue arms ARI-driven renewal timing for connector-pinned certs.
+func (s *RenewalScheduler) WithARIDue(fn func(ctx context.Context, cert CertificateItem, now time.Time) ARIDecision) *RenewalScheduler {
+	s.ariDue = fn
 	return s
 }
 
@@ -231,26 +321,51 @@ func NewRenewalSchedulerFromEnv(certProvider CertificateProvider, notifProvider 
 			cooldownHours = n
 		}
 	}
+	var retryBase, retryCap time.Duration
+	if raw := strings.TrimSpace(os.Getenv("RENEWAL_RETRY_BASE_MINUTES")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			retryBase = time.Duration(n) * time.Minute
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("RENEWAL_RETRY_CAP_HOURS")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			retryCap = time.Duration(n) * time.Hour
+		}
+	}
 	initial := RenewalSchedulerStatus{
 		ThresholdDays:     thresholdDays,
+		MaxThresholdDays:  thresholdDays,
 		PollIntervalHours: pollHours,
 	}
 	publishRenewalStatus(initial)
+	if fq := newRenewalFailureStoreFromEnvLogged(); fq != nil {
+		SetRenewalFailureStore(fq)
+	}
 	return &RenewalScheduler{
 		certProvider:  certProvider,
 		notifProvider: notifProvider,
 		auditProvider: auditProvider,
 		thresholdDays: thresholdDays,
 		pollInterval:  pollInterval,
+		retryBase:     retryBase,
+		retryCap:      retryCap,
+		jitterSeed:    time.Now().UnixNano(),
+		jitterPercent: tickJitterPercent(),
 		cooldown:      time.Duration(cooldownHours) * time.Hour,
 		ruleSendCap:   ruleSendCap,
 		cooldownStore: newRenewalAlertCooldownStoreFromEnvLogged(),
 		silenceStore:  newNotificationSilenceStoreFromEnvLogged(),
+		ruleOptions:   newNotificationRuleOptionsStoreFromEnvLogged(),
+		teamRoutes:    newNotificationTeamRouteStoreFromEnvLogged(),
 		targetStore:   newManagedTargetStoreFromEnv(),
+		credStore:     newOutboundCredentialStoreFromEnv(),
+		bindingStore:  newCertTargetBindingStoreFromEnv(),
+		groupStore:    newTargetGroupStoreFromEnv(),
 		configStore:   newConfigStoreFromEnv(),
 		haCoordinator: newHACoordinatorFromEnvLogged(),
 		status:        initial,
 		stop:          make(chan struct{}),
+		scanNow:       make(chan struct{}, 1),
 	}
 }
 
@@ -264,6 +379,14 @@ func (s *RenewalScheduler) Start() {
 		s.warnIfRulesCannotDeliver(wctx)
 		cancel()
 
+		s.installThrottleObserver()
+		if j := s.jitterFor("tick-start", s.pollInterval); j > 0 {
+			select {
+			case <-time.After(j):
+			case <-s.stop:
+				return
+			}
+		}
 		// Run once immediately at startup. runScan returns the poll interval
 		// it resolved for this tick (W8-13: DB override, else the
 		// env-configured bootstrap default) so the ticker below tracks a
@@ -272,16 +395,23 @@ func (s *RenewalScheduler) Start() {
 		if interval <= 0 {
 			interval = s.pollInterval
 		}
-		ticker := time.NewTicker(interval)
+		ticker := time.NewTicker(interval + s.jitterFor("tick", interval))
 		defer ticker.Stop()
+		scan := func() {
+			next := s.runScan()
+			if next <= 0 {
+				next = s.pollInterval
+			}
+			ticker.Reset(next + s.jitterFor("tick", next))
+		}
 		for {
 			select {
 			case <-ticker.C:
-				next := s.runScan()
-				if next <= 0 {
-					next = s.pollInterval
-				}
-				ticker.Reset(next)
+				scan()
+			case <-renewalScanKick:
+				scan()
+			case <-s.scanNow:
+				scan()
 			case <-s.stop:
 				return
 			}
@@ -305,11 +435,17 @@ func (s *RenewalScheduler) Start() {
 func (s *RenewalScheduler) Stop() {
 	s.once.Do(func() {
 		close(s.stop)
+		s.gateMu.Lock()
+		if s.gateTimer != nil {
+			s.gateTimer.Stop()
+		}
+		s.gateMu.Unlock()
+		s.drainScans(shutdownDrainTimeout())
 		if s.haCoordinator != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := s.haCoordinator.Release(ctx, haLockRenewalScheduler); err != nil {
-				log.Printf("renewal scheduler: releasing ha lock failed, lease will expire naturally: %v", err)
+				logging.Warnf("renewal scheduler: releasing ha lock failed, lease will expire naturally: %v", err)
 			}
 		}
 	})
@@ -320,8 +456,13 @@ func (s *RenewalScheduler) Stop() {
 // on early return (HA non-leader, list-certs failure), so Start's ticker
 // stays correctly paced regardless of how the tick ended.
 func (s *RenewalScheduler) runScan() time.Duration {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	s.scansRunning.Add(1)
+	defer s.scansRunning.Add(-1)
+	// A tick may wait out a plugin's declared verify propagation window
+	// (W27-37); a shorter bound would roll back a correct CDN push.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute+maxPluginVerifyWindow)
 	defer cancel()
+	ctx = connectors.WithDrain(ctx, s.stop) // a stop never sleeps through an upstream rate-limit hold
 
 	// W8-13: threshold/poll/cooldown are re-resolved from the config store at
 	// the top of every tick (DB override, else the env-configured bootstrap
@@ -333,6 +474,8 @@ func (s *RenewalScheduler) runScan() time.Duration {
 	pollInterval := s.resolveConfigDuration(ctx, "renewal_policy.poll_hours", s.pollInterval)
 	thresholdDaysDefault := s.resolveConfigInt(ctx, "renewal_policy.threshold_days", s.thresholdDays)
 	cooldown := s.resolveConfigDuration(ctx, "renewal_policy.alert_cooldown_hours", s.cooldown)
+	retryBase, retryCap := s.resolveRetryBackoff(ctx)
+	pol := retryPolicy{base: retryBase, retryCap: retryCap, poll: pollInterval}
 
 	// HA gate (W6-01/PE-9/D-048): on >=2 replicas, only the lease holder
 	// proceeds — see posture_scheduler.go's capture() for why a lock error
@@ -343,7 +486,7 @@ func (s *RenewalScheduler) runScan() time.Duration {
 	if s.haCoordinator != nil {
 		ok, err := s.haCoordinator.TryAcquire(ctx, haLockRenewalScheduler, 2*pollInterval)
 		if err != nil {
-			log.Printf("renewal scheduler: ha lock check failed, skipping this tick: %v", err)
+			logging.Warnf("renewal scheduler: ha lock check failed, skipping this tick: %v", err)
 			return pollInterval
 		}
 		if !ok {
@@ -353,7 +496,7 @@ func (s *RenewalScheduler) runScan() time.Duration {
 
 	result, err := listAllCertificates(ctx, s.certProvider, CertificateListQuery{})
 	if err != nil {
-		log.Printf("renewal scheduler: list certs failed: %v", err)
+		logging.Warnf("renewal scheduler: list certs failed: %v", err)
 		return pollInterval
 	}
 	ctx = withSilenceMemo(ctx)
@@ -364,23 +507,26 @@ func (s *RenewalScheduler) runScan() time.Duration {
 	// path), so one bounded read of managed_targets per tick is the "poll"
 	// half of acceptance #5, not an unbounded per-request read.
 	var hostThresholds map[string]int
-	var autoTargets map[string]ManagedTarget
+	var sweepIdx *bindingSweepIndex
 	if s.targetStore != nil {
 		targets, terr := s.targetStore.List(ctx)
 		if terr != nil {
-			log.Printf("renewal scheduler: managed target list failed, using env default threshold for all candidates: %v", terr)
+			logging.Warnf("renewal scheduler: managed target list failed, using env default threshold for all candidates: %v", terr)
 		} else {
-			hostThresholds = hostRenewalThresholds(targets)
-			autoTargets = autoRenewTargetsByHost(targets)
+			hostThresholds = hostRenewalThresholds(targets, s.tickGroupDays(ctx))
+			sweepIdx = s.prepareBindingSweep(ctx, s.withoutBlockedTargets(ctx, eligibleAutoRenewTargets(targets)), result.Items, time.Now().UTC())
 		}
 	}
 
 	now := time.Now().UTC()
 
 	rules := s.enabledNotificationRules(ctx)
+	ruleOpts := s.loadRuleOptions(ctx)
+	routes := s.loadTeamRoutes(ctx)
 	budget := &ruleSendBudget{remaining: s.effectiveRuleSendCap()}
 
 	var renewalCandidates, expiredSkipped, notifications, autoRenewTriggers, pendingInstalls, gaveUpInstalls int
+	var jobs []renewalJob
 	for _, cert := range result.Items {
 		if cert.RevokedAt != nil {
 			continue
@@ -392,86 +538,73 @@ func (s *RenewalScheduler) runScan() time.Duration {
 		if err != nil {
 			continue
 		}
+		// Operator-defined alert rules (POST /notifications/rules) fire on
+		// their own thresholds, which may be wider or narrower than the
+		// renewal window below, so they are evaluated before that gate. They
+		// also run for expired certificates: only an EXPIRED (0%) rule can
+		// match one, ruleCrossed filters the rest.
+		notifications += s.dispatchRuleNotifications(ctx, cert, expiry, now, rules, ruleOpts, routes, budget)
 		if expiry.Before(now) {
 			expiredSkipped++
 			continue
 		}
-		// Operator-defined alert rules (POST /notifications/rules) fire on
-		// their own thresholds, which may be wider or narrower than the
-		// renewal window below, so they are evaluated before that gate.
-		notifications += s.dispatchRuleNotifications(ctx, cert, expiry, now, cooldown, rules, budget)
 		threshold := now.Add(time.Duration(effectiveThresholdDays(cert, resolveThresholdDays(hostThresholds, cert, thresholdDaysDefault))) * 24 * time.Hour)
-		if expiry.After(threshold) {
+		ariForced := false
+		if s.ariDue != nil && cert.RenewalConnectorID != "" {
+			if d := s.ariDue(ctx, cert, now); d.Known {
+				if !d.Due {
+					continue
+				}
+				ariForced = true
+				// W26-28: while the connector is rate-limited, don't re-announce every tick.
+				if _, backedOff := acmeConnectorBackedOff(cert.RenewalConnectorID); !backedOff {
+					s.emitRenewalAudit(ctx, cert, "acme.upstream.renew", AuditOutcomeSuccess, d.Detail)
+				}
+			}
+		}
+		if !ariForced && expiry.After(threshold) {
 			continue
 		}
 
 		renewalCandidates++
-		if s.renewalExecutor != nil {
-			if target, ok := matchAutoRenewTarget(autoTargets, cert); ok {
-				st, serr := s.installState(ctx, cert)
-				switch {
-				case !targetMayReceiveCert(ctx, target, cert):
-					// The target's tenant cannot see the certificate's CA:
-					// never move its key across that boundary.
-					log.Printf("renewal scheduler: refusing to bind cert %s (CN %q, CA %s) to target %s (%q, tenant %q): tenant mismatch",
-						cert.FingerprintSHA256, cert.CommonName, cert.CAID, target.ID, target.Name, target.Tenant)
-					s.emitRenewalAudit(ctx, cert, "certificate.renew_execute_denied", AuditOutcomeDenied,
-						fmt.Sprintf("target_id=%s tenant mismatch between target and certificate CA", target.ID))
-				case !s.stampStillValid(ctx, cert, target):
-					// Notify-only for this tick; the reminder below still goes out.
-				case serr != nil:
-					// Fail closed: with no readable history a retry could mint
-					// a fresh certificate every tick.
-					log.Printf("renewal scheduler: audit history for %s unreadable, not attempting auto-renew: %v", cert.FingerprintSHA256, serr)
-				case cert.SuccessorFP != nil && st.failures == 0:
-					// Renewed by someone else, or installed by an earlier tick.
-				default:
-					out := s.tryAutoRenew(ctx, cert, target, now, st, pollInterval)
-					if out.pending {
-						pendingInstalls++
-					}
-					if out.gaveUp {
-						gaveUpInstalls++
-					}
-					if out.renewed {
-						autoRenewTriggers++
-						continue // renewed+installed; no reminder needed this tick
-					}
-					// Execution failed or is backing off: fall through so the
-					// owner still gets the expiry reminder -- an armed sweep
-					// must never LOSE alerts. A final failure forces the
-					// reminder past the cooldown: nothing else will follow.
-					c := cooldown
-					if out.finalFailure {
-						c = 0
-					}
-					if s.handleRenewalCandidate(ctx, cert, expiry, now, c) {
-						notifications++
-					}
-					continue
-				}
-			}
+		if !s.isSilenced(ctx, cert) {
+			s.noOwner.announce(ctx, s.notifProvider, cert, now) // W32-28
+		}
+		if s.renewalExecutor != nil && sweepIdx != nil {
+			jobs = append(jobs, renewalJob{cert: cert, expiry: expiry}) // executed below, most urgent first
+			continue
 		}
 		if s.handleRenewalCandidate(ctx, cert, expiry, now, cooldown) {
 			notifications++
 		}
 	}
 
+	if len(jobs) > 0 {
+		t := s.runRenewalJobs(ctx, jobs, sweepIdx, now, pol, cooldown)
+		pendingInstalls += t.pending
+		gaveUpInstalls += t.gaveUp
+		autoRenewTriggers += t.renewed
+		notifications += t.notifications
+	}
+
+	s.armGateWake(pollInterval)
+
 	if n := s.takeSkipCount(); n > 0 {
-		log.Printf("renewal scheduler: %d alert(s) skipped this tick: %s", n, notDeliveringReason(s.notifProvider))
+		logging.Infof("renewal scheduler: %d alert(s) skipped this tick: %s", n, notDeliveringReason(s.notifProvider))
 	}
 	if budget.deferred > 0 {
-		log.Printf("renewal scheduler: rule alert cap %d reached; %d alert(s) deferred to the next tick (%s)",
+		logging.Infof("renewal scheduler: rule alert cap %d reached; %d alert(s) deferred to the next tick (%s)",
 			s.effectiveRuleSendCap(), budget.deferred, ruleSendCapEnv)
 	}
 
 	if renewalCandidates > 0 {
-		log.Printf("renewal scheduler: found %d renewal candidates (expired/skipped: %d)", renewalCandidates, expiredSkipped)
+		logging.Infof("renewal scheduler: found %d renewal candidates (expired/skipped: %d)", renewalCandidates, expiredSkipped)
 	}
 
 	s.setStatus(RenewalSchedulerStatus{
 		Running:            true,
 		ThresholdDays:      thresholdDaysDefault,
+		MaxThresholdDays:   maxThresholdInForce(thresholdDaysDefault, hostThresholds),
 		PollIntervalHours:  int(pollInterval.Hours()),
 		LastRunAt:          now.Format(time.RFC3339),
 		NextRunAt:          now.Add(pollInterval).Format(time.RFC3339),
@@ -499,7 +632,7 @@ func (s *RenewalScheduler) resolveConfigInt(ctx context.Context, key string, fal
 	}
 	entry, ok, err := s.configStore.Get(ctx, key)
 	if err != nil {
-		log.Printf("renewal scheduler: config lookup for %s failed, using bootstrap default: %v", key, err)
+		logging.Warnf("renewal scheduler: config lookup for %s failed, using bootstrap default: %v", key, err)
 		return fallbackDefault
 	}
 	if !ok || !entry.HasValue {
@@ -507,7 +640,7 @@ func (s *RenewalScheduler) resolveConfigInt(ctx context.Context, key string, fal
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(entry.Value))
 	if err != nil || n <= 0 {
-		log.Printf("renewal scheduler: invalid config override %s=%q, using bootstrap default", key, entry.Value)
+		logging.Infof("renewal scheduler: invalid config override %s=%q, using bootstrap default", key, entry.Value)
 		return fallbackDefault
 	}
 	return n
@@ -566,7 +699,7 @@ func (s *RenewalScheduler) handleRenewalCandidate(ctx context.Context, cert Cert
 	// is this tick's resolved value (W8-13: DB override, else s.cooldown).
 	if s.cooldownStore != nil {
 		if last, ok, err := s.cooldownStore.LastAlertedAt(ctx, cert.FingerprintSHA256); err != nil {
-			log.Printf("renewal scheduler: cooldown lookup failed for %s (proceeding without cooldown): %v", cert.FingerprintSHA256, err)
+			logging.Warnf("renewal scheduler: cooldown lookup failed for %s (proceeding without cooldown): %v", cert.FingerprintSHA256, err)
 		} else if ok && isWithinCooldown(last, cooldown, now) {
 			return false
 		}
@@ -578,16 +711,16 @@ func (s *RenewalScheduler) handleRenewalCandidate(ctx context.Context, cert Cert
 	if _, err := s.notifProvider.TestDelivery(ctx, channel, target, msg); err != nil {
 		attempts, deadLettered := recordRenewalTriggerFailure(cert.FingerprintSHA256, err.Error())
 		if deadLettered {
-			log.Printf("renewal scheduler: notification for %s failed %d consecutive times, dead-lettered: %v", cert.FingerprintSHA256, attempts, err)
+			logging.Warnf("renewal scheduler: notification for %s failed %d consecutive times, dead-lettered: %v", cert.FingerprintSHA256, attempts, err)
 		} else {
-			log.Printf("renewal scheduler: notification failed for %s (attempt %d/%d): %v", cert.FingerprintSHA256, attempts, renewalTriggerMaxAttempts, err)
+			logging.Warnf("renewal scheduler: notification failed for %s (attempt %d/%d): %v", cert.FingerprintSHA256, attempts, renewalTriggerMaxAttempts, err)
 		}
 		return false
 	}
 	recordRenewalTriggerSuccess(cert.FingerprintSHA256)
 	if s.cooldownStore != nil {
 		if err := s.cooldownStore.RecordAlerted(ctx, cert.FingerprintSHA256, now); err != nil {
-			log.Printf("renewal scheduler: recording cooldown failed for %s: %v", cert.FingerprintSHA256, err)
+			logging.Warnf("renewal scheduler: recording cooldown failed for %s: %v", cert.FingerprintSHA256, err)
 		}
 	}
 	s.emitRenewalAudit(ctx, cert, "renewal_notification_sent", AuditOutcomeSuccess, "")
@@ -603,7 +736,7 @@ func (s *RenewalScheduler) enabledNotificationRules(ctx context.Context) []Notif
 	}
 	all, err := s.notifProvider.ListRules(ctx)
 	if err != nil {
-		log.Printf("renewal scheduler: notification rules unavailable, skipping rule alerts this tick: %v", err)
+		logging.Warnf("renewal scheduler: notification rules unavailable, skipping rule alerts this tick: %v", err)
 		return nil
 	}
 	out := make([]NotificationRule, 0, len(all))
@@ -615,16 +748,96 @@ func (s *RenewalScheduler) enabledNotificationRules(ctx context.Context) []Notif
 	return out
 }
 
+// loadRuleOptions reads the per-rule options once per tick. A failure is
+// logged and treated as "no options": every rule evaluates as a days rule.
+func (s *RenewalScheduler) loadRuleOptions(ctx context.Context) map[string]NotificationRuleOption {
+	if s.ruleOptions == nil {
+		return nil
+	}
+	opts, err := s.ruleOptions.List(ctx)
+	if err != nil {
+		logging.Warnf("renewal scheduler: rule options unavailable, treating every rule as a days rule: %v", err)
+		return nil
+	}
+	return opts
+}
+
+// defaultThresholdPcts are the use_defaults rules: percent of lifetime
+// remaining, 0 meaning EXPIRED.
+var defaultThresholdPcts = []int{50, 25, 10, 0}
+
+// expiredAlertWindow bounds how long after expiry an EXPIRED rule still fires,
+// so enabling a rule does not page for every long-dead certificate.
+const expiredAlertWindow = 7 * 24 * time.Hour
+
+// ruleCrossed reports whether a rule's threshold has been crossed for cert.
+// opt is nil for a plain days rule, in which case days is the threshold; a pct
+// rule ignores days (its stored value is a placeholder). Template scope is
+// applied here; the override of global rules by template rules is the
+// caller's concern because it needs the whole rule set.
+func ruleCrossed(opt *NotificationRuleOption, days int, cert CertificateItem, now time.Time) bool {
+	if opt != nil && opt.TemplateID != "" && opt.TemplateID != cert.TemplateID {
+		return false
+	}
+	until, err := time.Parse(time.RFC3339, cert.ValidUntil)
+	if err != nil {
+		return false
+	}
+	remaining := until.Sub(now)
+	from, fromErr := time.Parse(time.RFC3339, cert.ValidFrom)
+	lifetime := until.Sub(from)
+
+	if opt != nil && opt.ThresholdPct != nil {
+		pct := *opt.ThresholdPct
+		if fromErr != nil || lifetime <= 0 {
+			return false
+		}
+		if pct == 0 {
+			return remaining <= 0 && -remaining <= expiredAlertWindow
+		}
+		return remaining > 0 && float64(remaining)/float64(lifetime)*100 <= float64(pct)
+	}
+	if remaining <= 0 {
+		return false
+	}
+	window := time.Duration(days) * 24 * time.Hour
+	// A fixed window as long as the whole lifetime would fire on issue day;
+	// short-lived certs are covered by percent rules instead.
+	if fromErr == nil && lifetime > 0 && window >= lifetime {
+		return false
+	}
+	return remaining <= window
+}
+
 // dispatchRuleNotifications sends cert's expiry alert through every enabled
-// rule whose threshold covers it, honouring silences and a per-(cert, rule)
-// cooldown. It returns how many alerts were sent.
-func (s *RenewalScheduler) dispatchRuleNotifications(ctx context.Context, cert CertificateItem, expiry, now time.Time, cooldown time.Duration, rules []NotificationRule, budget *ruleSendBudget) int {
+// rule whose threshold has been crossed, honouring silences. Each (cert, rule)
+// pair fires once per cycle: the crossing is persisted so a restart cannot
+// repeat it, and a renewal (new fingerprint) starts a new cycle. It returns how
+// many alerts were sent.
+func (s *RenewalScheduler) dispatchRuleNotifications(ctx context.Context, cert CertificateItem, expiry, now time.Time, rules []NotificationRule, opts map[string]NotificationRuleOption, routes teamRouteIndex, budget *ruleSendBudget) int {
 	if len(rules) == 0 || s.notifProvider == nil {
 		return 0
 	}
+	// A rule scoped to this cert's template overrides every global rule.
+	templateScoped := false
+	if cert.TemplateID != "" {
+		for _, r := range rules {
+			if o, ok := opts[r.ID]; ok && o.TemplateID == cert.TemplateID {
+				templateScoped = true
+				break
+			}
+		}
+	}
 	var matched []NotificationRule
 	for _, r := range rules {
-		if !expiry.After(now.Add(time.Duration(r.ThresholdDays) * 24 * time.Hour)) {
+		var opt *NotificationRuleOption
+		if o, ok := opts[r.ID]; ok {
+			opt = &o
+		}
+		if templateScoped && (opt == nil || opt.TemplateID == "") {
+			continue
+		}
+		if ruleCrossed(opt, r.ThresholdDays, cert, now) {
 			matched = append(matched, r)
 		}
 	}
@@ -633,8 +846,8 @@ func (s *RenewalScheduler) dispatchRuleNotifications(ctx context.Context, cert C
 	}
 	if !s.notifProvider.Delivers() {
 		// Rule alerts through a record-only provider reach no one: skip them
-		// without writing the cooldown (which would suppress the alert for
-		// the whole window once a real provider is configured) and say so.
+		// without recording the crossing (which would suppress the alert
+		// forever once a real provider is configured) and say so.
 		for _, r := range matched {
 			// Skips neither consume the send budget nor audit every tick.
 			if s.noteSkip(cert.FingerprintSHA256 + "#rule:" + r.ID) {
@@ -644,32 +857,177 @@ func (s *RenewalScheduler) dispatchRuleNotifications(ctx context.Context, cert C
 		return 0
 	}
 	msg := buildRenewalNotificationMessage(cert, int(expiry.Sub(now).Hours()/24))
+	if expiry.Before(now) {
+		msg = buildExpiredNotificationMessage(cert, expiry)
+	}
 	sent := 0
 	for _, r := range matched {
-		// Rule-scoped key so a rule alert neither consumes nor is blocked by
-		// the owner reminder's cooldown on the same certificate.
-		key := cert.FingerprintSHA256 + "#rule:" + r.ID
-		if s.cooldownStore != nil {
-			if last, ok, err := s.cooldownStore.LastAlertedAt(ctx, key); err == nil && ok && isWithinCooldown(last, cooldown, now) {
-				continue
-			}
+		key := crossingKey(cert.FingerprintSHA256, r.ID)
+		if hasCrossed(ctx, s.cooldownStore, key) {
+			continue
 		}
 		if !budget.take() {
 			continue
 		}
-		if _, err := s.notifProvider.TestDelivery(ctx, r.Channel, r.Target, msg); err != nil {
-			log.Printf("renewal scheduler: rule %s alert for %s failed: %v", r.ID, cert.FingerprintSHA256, err)
+		detail := "rule_id=" + r.ID
+		if r.Target == routedRuleTarget {
+			var ok bool
+			if detail, ok = s.sendRoutedRule(ctx, cert, r, expiry, now, routes); !ok {
+				continue
+			}
+		} else if _, err := s.notifProvider.TestDelivery(ctx, r.Channel, r.Target, msg); err != nil {
+			logging.Warnf("renewal scheduler: rule %s alert for %s failed: %v", r.ID, cert.FingerprintSHA256, err)
 			continue
 		}
 		if s.cooldownStore != nil {
 			if err := s.cooldownStore.RecordAlerted(ctx, key, now); err != nil {
-				log.Printf("renewal scheduler: recording rule cooldown failed for %s: %v", key, err)
+				logging.Warnf("renewal scheduler: recording rule crossing failed for %s: %v", key, err)
 			}
 		}
-		s.emitRenewalAudit(ctx, cert, "renewal_notification_sent", AuditOutcomeSuccess, "rule_id="+r.ID)
+		s.emitRenewalAudit(ctx, cert, "renewal_notification_sent", AuditOutcomeSuccess, detail)
 		sent++
 	}
 	return sent
+}
+
+// routedRuleTarget is the rule target that expands, per certificate, to the
+// owner team's routes (W30-02).
+const routedRuleTarget = "@owner_team"
+
+// teamRouteIndex groups routes by owner_team+"|"+channel.
+type teamRouteIndex map[string][]NotificationTeamRoute
+
+func teamRouteKey(team, channel string) string { return team + "|" + channel }
+
+// loadTeamRoutes reads the routing table once per tick. A failure is logged and
+// treated as "no routes": routed rules then queue to the dashboard instead of
+// sending to a stale or wrong destination.
+func (s *RenewalScheduler) loadTeamRoutes(ctx context.Context) teamRouteIndex {
+	if s.teamRoutes == nil {
+		return nil
+	}
+	all, err := s.teamRoutes.List(ctx)
+	if err != nil {
+		logging.Warnf("renewal scheduler: team routes unavailable, routed rules will queue to the dashboard: %v", err)
+		return nil
+	}
+	idx := teamRouteIndex{}
+	for _, r := range all {
+		k := teamRouteKey(r.OwnerTeam, r.Channel)
+		idx[k] = append(idx[k], r)
+	}
+	return idx
+}
+
+// resolveTeamRoutes picks the routes for a routed rule: the cert owner team's
+// routes on the rule's channel, else the global inbox's. Levels never combine,
+// so a team match suppresses the global inbox. A route created by one tenant
+// serves only that tenant's certificates, and an invisible team route does not
+// shadow the global inbox.
+func resolveTeamRoutes(ctx context.Context, idx teamRouteIndex, cert CertificateItem, channel string) []NotificationTeamRoute {
+	visible := func(team string) []NotificationTeamRoute {
+		var out []NotificationTeamRoute
+		for _, r := range idx[teamRouteKey(team, channel)] {
+			tenant := r.Tenant
+			if tenant == "" {
+				tenant = DefaultTenant
+			}
+			if caVisibleToTenant(ctx, activeTenantStore, AuthPrincipal{Tenant: tenant}, cert.CAID) {
+				out = append(out, r)
+			}
+		}
+		return out
+	}
+	if cert.OwnerTeam != "" {
+		if routes := visible(cert.OwnerTeam); len(routes) > 0 {
+			return routes
+		}
+	}
+	return visible(globalInboxTeam)
+}
+
+// eventSender and dashboardQueuer are the optional provider capabilities a
+// routed rule needs; a provider without them falls back to TestDelivery / no
+// queue.
+type eventSender interface {
+	SendEvent(context.Context, delivery.Event) (NotificationTestDeliveryResult, error)
+}
+
+type dashboardQueuer interface {
+	QueueDashboard(context.Context, string, string) NotificationDelivery
+}
+
+// buildExpiryEvent is the structured alert a routed rule sends; the dispatcher
+// fills Channel and Target. It carries no key material or tokens: only
+// certificate metadata.
+func buildExpiryEvent(cert CertificateItem, expiry, now time.Time, expired bool, baseURL string) delivery.Event {
+	subject := "Certificate expiring: " + cert.CommonName
+	priority := "medium"
+	switch {
+	case expired:
+		subject = "Certificate EXPIRED: " + cert.CommonName
+		priority = "critical"
+	case expiry.Sub(now) <= 7*24*time.Hour:
+		priority = "high"
+	}
+	lines := []string{
+		"CN: " + cert.CommonName,
+		"Expires: " + expiry.UTC().Format(time.RFC3339),
+		"Risk score: " + strconv.Itoa(cert.RiskScore),
+		"Grade: " + cert.Grade,
+	}
+	if baseURL = strings.TrimRight(baseURL, "/"); baseURL != "" {
+		lines = append(lines, "Link: "+baseURL+"/certificates/"+cert.FingerprintSHA256)
+	}
+	lines = append(lines, "Fingerprint: "+cert.FingerprintSHA256)
+	fp := cert.FingerprintSHA256
+	if len(fp) > 12 {
+		fp = fp[:12]
+	}
+	return delivery.Event{
+		ID:        "exp-" + fp + "-" + strconv.FormatInt(now.Unix(), 10),
+		Subject:   subject,
+		Message:   strings.Join(lines, "\n"),
+		Priority:  priority,
+		CreatedAt: now,
+	}
+}
+
+// sendRoutedRule delivers a routed rule's alert to the cert's resolved routes,
+// or queues it on the dashboard when there are none. It returns the audit
+// detail and whether the crossing should be recorded: true when at least one
+// route accepted the event (re-sending to the ones that did on the next tick
+// would duplicate them), or the dashboard row was queued.
+func (s *RenewalScheduler) sendRoutedRule(ctx context.Context, cert CertificateItem, r NotificationRule, expiry, now time.Time, idx teamRouteIndex) (string, bool) {
+	ev := buildExpiryEvent(cert, expiry, now, expiry.Before(now), os.Getenv("KRYPTKEEPER_BASE_URL"))
+	routes := resolveTeamRoutes(ctx, idx, cert, r.Channel)
+	if len(routes) == 0 {
+		q, ok := s.notifProvider.(dashboardQueuer)
+		if !ok {
+			logging.Infof("renewal scheduler: rule %s has no route for %s and the provider has no dashboard queue", r.ID, cert.FingerprintSHA256)
+			return "", false
+		}
+		q.QueueDashboard(ctx, ev.Subject, ev.Message)
+		return "rule_id=" + r.ID + " queued=dashboard", true
+	}
+	delivered := 0
+	for i, route := range routes {
+		e := ev
+		e.ID = ev.ID + "-" + r.ID + "-" + strconv.Itoa(i)
+		e.Channel, e.Target = route.Channel, route.Target
+		var err error
+		if sender, ok := s.notifProvider.(eventSender); ok {
+			_, err = sender.SendEvent(ctx, e)
+		} else {
+			_, err = s.notifProvider.TestDelivery(ctx, e.Channel, e.Target, e.Message)
+		}
+		if err != nil {
+			logging.Warnf("renewal scheduler: rule %s alert for %s to route %s failed: %v", r.ID, cert.FingerprintSHA256, route.ID, err)
+			continue
+		}
+		delivered++
+	}
+	return "rule_id=" + r.ID, delivered > 0
 }
 
 func (s *RenewalScheduler) effectiveRuleSendCap() int {
@@ -743,7 +1101,7 @@ func (s *RenewalScheduler) warnIfRulesCannotDeliver(ctx context.Context) {
 	if err != nil || len(rules) == 0 {
 		return
 	}
-	log.Printf("WARNING: %d notification rule(s) exist but notification provider %q does not deliver; "+
+	logging.Warnf("%d notification rule(s) exist but notification provider %q does not deliver; "+
 		"rule alerts and owner reminders are skipped (audited as skipped). Set APP_NOTIFICATION_PROVIDER=delivery to send them.",
 		len(rules), s.notifProvider.Name())
 }
@@ -769,7 +1127,7 @@ func (s *RenewalScheduler) isSilenced(ctx context.Context, cert CertificateItem)
 		}
 		silenced, err := memoizedIsSilenced(ctx, s.silenceStore, check.targetType, check.targetID)
 		if err != nil {
-			log.Printf("renewal scheduler: silence lookup failed for %s %s (proceeding without silencing): %v", check.targetType, check.targetID, err)
+			logging.Warnf("renewal scheduler: silence lookup failed for %s %s (proceeding without silencing): %v", check.targetType, check.targetID, err)
 			continue
 		}
 		if silenced {
@@ -794,7 +1152,7 @@ func (s *RenewalScheduler) emitRenewalAudit(ctx context.Context, cert Certificat
 		ChangeSummary: detail,
 	}
 	if err := s.auditProvider.AppendEntry(ctx, entry); err != nil {
-		log.Printf("renewal scheduler: audit append failed: %v", err)
+		logging.Warnf("renewal scheduler: audit append failed: %v", err)
 	}
 }
 
@@ -806,14 +1164,24 @@ func (s *RenewalScheduler) emitRenewalAudit(ctx context.Context, cert Certificat
 // against the certificate's CommonName or a SAN is the only correlation
 // available. Targets with no override (RenewalThresholdDays == 0) are
 // omitted so a missing map entry means "use the env default", not "use 0".
-func hostRenewalThresholds(targets []ManagedTarget) map[string]int {
+// A target without its own override inherits its group's (W27-04).
+func hostRenewalThresholds(targets []ManagedTarget, groupDays map[string]int) map[string]int {
 	out := make(map[string]int, len(targets))
 	for _, t := range targets {
-		if t.RenewalThresholdDays > 0 {
-			out[t.Host] = t.RenewalThresholdDays
+		if days, src := effectiveTargetThreshold(t, groupDays[t.ID], 0); src != thresholdSourceDefault {
+			out[t.Host] = days
 		}
 	}
 	return out
+}
+
+// maxThresholdInForce is the widest renewal window any candidate may use.
+func maxThresholdInForce(defaultDays int, hostThresholds map[string]int) int {
+	m := defaultDays
+	for _, d := range hostThresholds {
+		m = max(m, d)
+	}
+	return m
 }
 
 // effectiveThresholdDays holds a renewal successor to half its own lifetime.
@@ -851,7 +1219,7 @@ func resolveThresholdDays(hostThresholds map[string]int, cert CertificateItem, d
 	return defaultDays
 }
 
-// autoRenewTargetsByHost keeps only targets the sweep may execute against:
+// eligibleAutoRenewTargets keeps only targets the sweep may execute against:
 // explicit opt-in and a credential, plus for ssh a complete install profile.
 // A keychain target (W18-05) installs into the macOS keychain and has no
 // server type or paths to need. A plugin target (W20-21) needs its plugin;
@@ -862,16 +1230,27 @@ func resolveThresholdDays(hostThresholds map[string]int, cert CertificateItem, d
 //
 // An opted-in target that is left out is logged with the reason: auto_renew
 // that silently does nothing is the failure this sweep exists to prevent.
-func autoRenewTargetsByHost(targets []ManagedTarget) map[string]ManagedTarget {
-	out := make(map[string]ManagedTarget)
+func eligibleAutoRenewTargets(targets []ManagedTarget) []ManagedTarget {
+	var out []ManagedTarget
 	for _, t := range targets {
 		if !t.AutoRenew {
 			continue
 		}
 		if reason := autoRenewSkipReason(t); reason != "" {
-			log.Printf("renewal scheduler: target %q (%s) has auto_renew set but is skipped: %s", t.Name, t.InstallMode, reason)
+			logging.Infof("renewal scheduler: target %q (%s) has auto_renew set but is skipped: %s", t.Name, t.InstallMode, reason)
 			continue
 		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// autoRenewTargetsByHost indexes the eligible targets by host. The sweep keys
+// on target ID (two targets may share a host); this view is for diagnostics
+// and the eligibility tests.
+func autoRenewTargetsByHost(targets []ManagedTarget) map[string]ManagedTarget {
+	out := make(map[string]ManagedTarget)
+	for _, t := range eligibleAutoRenewTargets(targets) {
 		out[t.Host] = t
 	}
 	return out
@@ -917,7 +1296,7 @@ func (s *RenewalScheduler) stampStillValid(ctx context.Context, cert Certificate
 	if err == nil {
 		return true
 	}
-	log.Printf("renewal scheduler: NOT pushing cert %s to target %s (%q): armed by %q, but %v; notify-only until an authorized principal saves auto_renew=true again",
+	logging.Infof("renewal scheduler: NOT pushing cert %s to target %s (%q): armed by %q, but %v; notify-only until an authorized principal saves auto_renew=true again",
 		cert.FingerprintSHA256, target.ID, target.Name, target.AutoRenewSetBy, err)
 	s.emitRenewalAudit(ctx, cert, "certificate.renew_execute_denied", AuditOutcomeDenied,
 		fmt.Sprintf("target_id=%s armed_by=%s %v", target.ID, target.AutoRenewSetBy, err))
@@ -928,20 +1307,6 @@ func (s *RenewalScheduler) stampStillValid(ctx context.Context, cert Certificate
 // the same boundary authorizeCertificateResourceAccess applies to a human.
 func targetMayReceiveCert(ctx context.Context, target ManagedTarget, cert CertificateItem) bool {
 	return caVisibleToTenant(ctx, activeTenantStore, AuthPrincipal{Tenant: target.Tenant}, cert.CAID)
-}
-
-// matchAutoRenewTarget mirrors resolveThresholdDays' host heuristic:
-// CommonName first, then SANs.
-func matchAutoRenewTarget(autoTargets map[string]ManagedTarget, cert CertificateItem) (ManagedTarget, bool) {
-	if t, ok := autoTargets[cert.CommonName]; ok {
-		return t, true
-	}
-	for _, san := range cert.SubjectAltNames {
-		if t, ok := autoTargets[san]; ok {
-			return t, true
-		}
-	}
-	return ManagedTarget{}, false
 }
 
 // renewalInstallMaxAttempts bounds scheduled renew+install attempts per
@@ -958,7 +1323,10 @@ type installAttemptState struct {
 	lastFailure time.Time
 }
 
-func (s *RenewalScheduler) installState(ctx context.Context, cert CertificateItem) (installAttemptState, error) {
+// installState reads the attempt history for cert on one target: rows that
+// name another target_id belong to that target's own backoff. An empty
+// targetID reads the whole certificate's history.
+func (s *RenewalScheduler) installState(ctx context.Context, cert CertificateItem, targetID string) (installAttemptState, error) {
 	var st installAttemptState
 	if s.auditProvider == nil {
 		return st, nil
@@ -970,7 +1338,16 @@ func (s *RenewalScheduler) installState(ctx context.Context, cert CertificateIte
 	if err != nil {
 		return st, err
 	}
+	marker := "target_id=" + targetID + " "
 	for _, e := range res.Entries { // newest first
+		// An operator's retry-now (W27-19) resets the whole certificate, so the
+		// marker row carries no target_id and must bypass the per-target filter.
+		if e.Action == renewalRetryRequestedAction {
+			return st, nil
+		}
+		if targetID != "" && !strings.Contains(e.ChangeSummary, marker) {
+			continue
+		}
 		switch e.Action {
 		case "certificate.renew_execute":
 			return st, nil
@@ -981,7 +1358,7 @@ func (s *RenewalScheduler) installState(ctx context.Context, cert CertificateIte
 				if perr != nil {
 					// An unreadable timestamp must not disable backoff: treat
 					// the failure as having just happened.
-					log.Printf("renewal scheduler: audit row %d for %s has unparseable timestamp %q, backing off from now: %v", e.ID, cert.FingerprintSHA256, e.Timestamp, perr)
+					logging.Infof("renewal scheduler: audit row %d for %s has unparseable timestamp %q, backing off from now: %v", e.ID, cert.FingerprintSHA256, e.Timestamp, perr)
 					ts = time.Now().UTC()
 				}
 				st.lastFailure = ts
@@ -989,19 +1366,6 @@ func (s *RenewalScheduler) installState(ctx context.Context, cert CertificateIte
 		}
 	}
 	return st, nil
-}
-
-// installBackoff doubles from one poll interval (capped at an hour, so a
-// daily scan retries on its next tick and a one-minute scan retries quickly).
-func installBackoff(pollInterval time.Duration, failures int) time.Duration {
-	base := pollInterval
-	if base > time.Hour {
-		base = time.Hour
-	}
-	if failures < 1 {
-		failures = 1
-	}
-	return base << (failures - 1)
 }
 
 // renewalTail follows successor links to the newest certificate in cert's
@@ -1033,6 +1397,8 @@ type autoRenewOutcome struct {
 	pending      bool // a failed install is waiting for a retry
 	gaveUp       bool // attempts exhausted
 	finalFailure bool // this tick's failure was the last allowed
+	// newFingerprint is the successor installed on the target (renewed only).
+	newFingerprint string
 }
 
 // tryAutoRenew executes one candidate through the W5-13 engine. It honors
@@ -1040,51 +1406,81 @@ type autoRenewOutcome struct {
 // installBackoff) up to renewalInstallMaxAttempts, each attempt audited with
 // its number; the previous certificate keeps serving throughout because the
 // installer rolls back a failed install.
-func (s *RenewalScheduler) tryAutoRenew(ctx context.Context, cert CertificateItem, target ManagedTarget, now time.Time, st installAttemptState, pollInterval time.Duration) autoRenewOutcome {
+func (s *RenewalScheduler) tryAutoRenew(ctx context.Context, cert CertificateItem, target ManagedTarget, now time.Time, st installAttemptState, pol retryPolicy) autoRenewOutcome {
 	if s.isSilenced(ctx, cert) {
 		return autoRenewOutcome{}
 	}
 	if st.failures >= renewalInstallMaxAttempts {
 		return autoRenewOutcome{gaveUp: true}
 	}
-	if st.failures > 0 && now.Before(st.lastFailure.Add(installBackoff(pollInterval, st.failures))) {
+	// W26-28: upstream CA rate-limited this connector; wait it out, not a failure.
+	if until, backedOff := acmeConnectorBackedOff(cert.RenewalConnectorID); backedOff {
+		s.noteGateWake(until)
+		return autoRenewOutcome{pending: true}
+	}
+	if st.failures > 0 && now.Before(st.lastFailure.Add(installBackoff(pol.base, pol.retryCap, st.failures)+s.jitterFor(cert.FingerprintSHA256, pol.poll))) {
 		return autoRenewOutcome{pending: true}
 	}
 	attempt := st.failures + 1
-	log.Printf("renewal scheduler: binding cert %s (CN %q) to target %s (%q, host %q, armed by %q), attempt %d",
+	logging.Infof("renewal scheduler: binding cert %s (CN %q) to target %s (%q, host %q, armed by %q), attempt %d",
 		cert.FingerprintSHA256, cert.CommonName, target.ID, target.Name, target.Host, target.AutoRenewSetBy, attempt)
+	// A rollback that itself failed is never retried silently (W34-18).
+	stopRetrying := false
 	fail := func(action, detail string) autoRenewOutcome {
-		final := attempt >= renewalInstallMaxAttempts
+		final := attempt >= renewalInstallMaxAttempts || stopRetrying
 		s.emitRenewalAudit(ctx, cert, action, AuditOutcomeFailure, fmt.Sprintf("target_id=%s attempt=%d/%d %s", target.ID, attempt, renewalInstallMaxAttempts, detail))
 		if final {
 			s.emitRenewalAudit(ctx, cert, "certificate.renew_execute_gave_up", AuditOutcomeFailure,
 				fmt.Sprintf("target_id=%s attempts exhausted (%d); the host is still serving the previous certificate", target.ID, renewalInstallMaxAttempts))
+			announceRenewalFailed(ctx, s.notifProvider, cert, st.lastFailure, now) // W32-28
 		}
+		recordRenewalExecuteFailure(ctx, cert.FingerprintSHA256, target.ID, attempt, renewalInstallMaxAttempts,
+			strings.TrimPrefix(action, "certificate."), detail, now.Add(installBackoff(pol.base, pol.retryCap, attempt)), final)
 		return autoRenewOutcome{attempted: true, pending: !final, gaveUp: final, finalFailure: final}
 	}
 
 	renewFP, err := s.renewalTail(ctx, cert)
 	if err != nil {
-		log.Printf("renewal scheduler: resolving renewal chain for %s failed: %v", cert.FingerprintSHA256, err)
+		logging.Warnf("renewal scheduler: resolving renewal chain for %s failed: %v", cert.FingerprintSHA256, err)
 		return fail("certificate.renew_execute_failed", err.Error())
 	}
 	result, err := s.renewalExecutor.ExecuteRenewal(ctx, renewFP, target, profileFromTarget(target))
 	if err != nil {
-		log.Printf("renewal scheduler: auto-renew failed for %s on %s (attempt %d/%d): %v", cert.FingerprintSHA256, target.Name, attempt, renewalInstallMaxAttempts, err)
+		var rl *acmeRateLimitError
+		if errors.As(err, &rl) { // W26-28: deferred, not failed
+			s.emitRenewalAudit(ctx, cert, "acme.upstream.ratelimited", AuditOutcomeSkipped,
+				fmt.Sprintf("connector=%s retry_at=%s", rl.ConnectorID, rl.RetryAt.UTC().Format(time.RFC3339)))
+			acmeAlert("acme.upstream.ratelimited", cert.FingerprintSHA256, rl.Error())
+			s.noteGateWake(rl.RetryAt)
+			return autoRenewOutcome{pending: true}
+		}
+		if out, ok := s.deferredOutcome(ctx, cert, target, err); ok {
+			return out
+		}
+		logging.Warnf("renewal scheduler: auto-renew failed for %s on %s (attempt %d/%d): %v", cert.FingerprintSHA256, target.Name, attempt, renewalInstallMaxAttempts, err)
 		return fail("certificate.renew_execute_failed", err.Error())
 	}
 	installed := result.InstallOutcome == "installed_verified" || result.InstallOutcome == "installed"
 	if !result.Renewed || !installed {
-		log.Printf("renewal scheduler: auto-renew partial for %s on %s (attempt %d/%d): renewed=%v install=%s %s",
+		logging.Infof("renewal scheduler: auto-renew partial for %s on %s (attempt %d/%d): renewed=%v install=%s %s",
 			cert.FingerprintSHA256, target.Name, attempt, renewalInstallMaxAttempts, result.Renewed, result.InstallOutcome, result.InstallDetail)
+		stopRetrying = result.InstallOutcome == "rollback_failed"
 		return fail("certificate.renew_execute_partial",
 			fmt.Sprintf("renewed=%v new_fingerprint=%s install=%s %s", result.Renewed, result.NewFingerprint, result.InstallOutcome, result.InstallDetail))
 	}
-	log.Printf("renewal scheduler: auto-renewed %s -> %s on %s (%s, attempt %d)",
+	logging.Infof("renewal scheduler: auto-renewed %s -> %s on %s (%s, attempt %d)",
 		cert.FingerprintSHA256, result.NewFingerprint, target.Name, result.InstallOutcome, attempt)
 	s.emitRenewalAudit(ctx, cert, "certificate.renew_execute", AuditOutcomeSuccess,
 		fmt.Sprintf("new_fingerprint=%s install=%s target_id=%s target=%s attempt=%d", result.NewFingerprint, result.InstallOutcome, target.ID, target.Name, attempt))
-	return autoRenewOutcome{renewed: true, attempted: true}
+	clearRenewalExecuteFailure(ctx, cert.FingerprintSHA256, target.ID)
+	if renewFP != cert.FingerprintSHA256 {
+		// Earlier failed attempts moved the chain tail; the executor reported
+		// the tail, so also close tickets keyed on the original (W32-28).
+		orig := result
+		orig.PredecessorFingerprint = cert.FingerprintSHA256
+		notifyRenewalVerified(ctx, orig)
+	}
+	return autoRenewOutcome{renewed: true, attempted: true, newFingerprint: result.NewFingerprint}
 }
 
 func buildRenewalNotificationMessage(cert CertificateItem, daysLeft int) string {
@@ -1092,6 +1488,13 @@ func buildRenewalNotificationMessage(cert CertificateItem, daysLeft int) string 
 		" expires in " + strconv.Itoa(daysLeft) + " day(s). " +
 		"Fingerprint: " + cert.FingerprintSHA256 + ". " +
 		"Please renew before expiry to avoid service disruption."
+}
+
+func buildExpiredNotificationMessage(cert CertificateItem, expiry time.Time) string {
+	return "Certificate EXPIRED: " + cert.CommonName +
+		" expired " + expiry.UTC().Format("2006-01-02") + ". " +
+		"Fingerprint: " + cert.FingerprintSHA256 + ". " +
+		"Renew or replace it now to restore service."
 }
 
 type silenceMemoKey struct{}

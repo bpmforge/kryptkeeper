@@ -1,0 +1,12 @@
+{
+  "date": "2026-10-16T16:48:00Z",
+  "hub_version": "8ffc5d86",
+  "elapsed_s": 252,
+  "machine": "Darwin arm64, Apple M4 Max, podman 6.1.3",
+  "cases": {
+    "A_happy_path": "PASS",
+    "B_node3_flip_failure": "PASS",
+    "C_canary_flip_failure": "PASS"
+  },
+  "result": "PASS"
+}

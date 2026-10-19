@@ -1,0 +1,8 @@
+{"version":1,"tolerance_pct":20,"bar_certs":100000,"metrics":{
+ "search_p99_ms":{"direction":"lower","bar":500,"baseline":null},
+ "list_p95_ms":{"direction":"lower","bar":300,"baseline":null},
+ "issue_rps_c16":{"direction":"higher","bar":500,"baseline":null},
+ "rss_mib_peak":{"direction":"lower","bar":2048,"baseline":null},
+ "issue_failures":{"direction":"lower","bar":0,"baseline":0},
+ "storm_drain_minutes":{"suite":"storm","direction":"lower","bar":60,"baseline":null},
+ "storm_drain_minutes_5k":{"suite":"storm","direction":"lower","bar":6,"baseline":null}}}

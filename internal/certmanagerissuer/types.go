@@ -13,11 +13,23 @@
 // is done via raw HTTP calls to the API server, keeping the binary small.
 package certmanagerissuer
 
-import "time"
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"time"
+)
 
 const (
 	// IssuerGroup is the cert-manager issuerRef group for Kryptkeeper.
 	IssuerGroup = "certmanager.kryptkeeper.io"
+
+	// Condition reasons set on CertificateRequests.
+	ReasonApproved        = "Approved"
+	ReasonDenied          = "Denied"
+	ReasonPending         = "Pending"
+	ReasonPendingApproval = "PendingApproval"
 
 	// CertManagerGroup is the cert-manager API group.
 	CertManagerGroup = "cert-manager.io"
@@ -43,7 +55,7 @@ type Metadata struct {
 
 // CRSpec is the CertificateRequest spec.
 type CRSpec struct {
-	// Request is the base64-encoded DER CSR.
+	// Request is the base64-encoded CSR (cert-manager stores PEM bytes).
 	Request   string    `json:"request"`
 	IssuerRef IssuerRef `json:"issuerRef"`
 	Duration  string    `json:"duration,omitempty"`
@@ -96,7 +108,44 @@ type IssuerConfig struct {
 	APIToken   string
 	CAID       string
 	TemplateID string
+	// HTTPClient is used for hub calls; nil means http.DefaultClient.
+	HTTPClient *http.Client
 }
+
+// WatchEvent is one line of a Kubernetes watch stream.
+type WatchEvent struct {
+	Type   string          `json:"type"` // ADDED MODIFIED DELETED BOOKMARK ERROR
+	Object json.RawMessage `json:"object"`
+}
+
+// ErrWatchExpired reports that the watch resourceVersion is too old (HTTP 410
+// or an ERROR event with status.code 410); the caller must re-list.
+var ErrWatchExpired = errors.New("watch resourceVersion expired")
+
+// HubError is a failed Kryptkeeper hub issuance call.
+//
+// Unreachable errors (network failure, 5xx, 429, other unexpected statuses)
+// are retriable. Status 202 means the template requires approval. Anything
+// else (400/403/409/422) is a terminal denial carrying the hub's code/message.
+type HubError struct {
+	Status      int
+	Code        string
+	Message     string
+	Unreachable bool
+}
+
+func (e *HubError) Error() string {
+	if e.Status == 0 {
+		return fmt.Sprintf("hub unreachable: %s", e.Message)
+	}
+	if e.Code == "" {
+		return fmt.Sprintf("hub returned %d: %s", e.Status, e.Message)
+	}
+	return fmt.Sprintf("hub returned %d: %s: %s", e.Status, e.Code, e.Message)
+}
+
+// PendingApproval reports whether the hub parked the issuance for approval.
+func (e *HubError) PendingApproval() bool { return e.Status == http.StatusAccepted }
 
 // StatusPatch is the PATCH body for updating CertificateRequest status.
 type StatusPatch struct {
@@ -113,10 +162,36 @@ func (cr *CertificateRequest) isReady() bool {
 	return false
 }
 
-// isDenied returns true if the CertificateRequest has been denied.
+// isApproved returns true if the CertificateRequest carries Approved=True.
+func (cr *CertificateRequest) isApproved() bool {
+	for _, c := range cr.Status.Conditions {
+		if c.Type == "Approved" && c.Status == "True" {
+			return true
+		}
+	}
+	return false
+}
+
+// isDenied returns true if the CertificateRequest has been denied, either by
+// a Denied=True condition or (for requests approved by someone else, where
+// cert-manager forbids adding Denied) by Ready=False reason Denied.
 func (cr *CertificateRequest) isDenied() bool {
 	for _, c := range cr.Status.Conditions {
 		if c.Type == "Denied" && c.Status == "True" {
+			return true
+		}
+		if c.Type == "Ready" && c.Status == "False" && c.Reason == ReasonDenied {
+			return true
+		}
+	}
+	return false
+}
+
+// isPendingApproval returns true if issuance was parked awaiting hub approval.
+// It is terminal-for-now: re-POSTing would create a second approval request.
+func (cr *CertificateRequest) isPendingApproval() bool {
+	for _, c := range cr.Status.Conditions {
+		if c.Type == "Ready" && c.Status == "False" && c.Reason == ReasonPendingApproval {
 			return true
 		}
 	}
@@ -129,5 +204,6 @@ func (cr *CertificateRequest) needsIssuance() bool {
 	return cr.Spec.IssuerRef.Group == IssuerGroup &&
 		!cr.isReady() &&
 		!cr.isDenied() &&
+		!cr.isPendingApproval() &&
 		len(cr.Status.Certificate) == 0
 }

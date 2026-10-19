@@ -7,7 +7,6 @@ package bootstrap
 import (
 	"crypto/x509"
 	"encoding/pem"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +14,8 @@ import (
 
 	saml2 "github.com/russellhaering/gosaml2"
 	dsig "github.com/russellhaering/goxmldsig"
+
+	"kryptkeeper/internal/logging"
 )
 
 // Per-source rate ceilings for the two unauthenticated SAML SSO endpoints,
@@ -50,7 +51,7 @@ func parseSAMLIDPCertificatesPEM(raw string) []*x509.Certificate {
 		}
 		cert, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
-			log.Printf("warning: invalid SAML IdP certificate PEM block; skipping: %v", err)
+			logging.Warnf("invalid SAML IdP certificate PEM block; skipping: %v", err)
 			continue
 		}
 		certs = append(certs, cert)
@@ -156,7 +157,7 @@ func registerSAMLLoginHandlers(mux *http.ServeMux, auth *Authenticator, userProv
 			return
 		}
 
-		sp := samlServiceProviderFromConfig(auth.config)
+		sp := samlServiceProviderFromConfig(auth.samlEffectiveConfig(r.Context()))
 		if sp == nil {
 			emitAuditEvent(r, auditProvider, "", "auth.saml.login", "auth", "saml-login", AuditOutcomeFailure)
 			writeServiceUnavailable(w, "saml login unavailable")
@@ -207,13 +208,17 @@ func registerSAMLLoginHandlers(mux *http.ServeMux, auth *Authenticator, userProv
 			return
 		}
 
-		sp := samlServiceProviderFromConfig(auth.config)
+		sp := samlServiceProviderFromConfig(auth.samlEffectiveConfig(r.Context()))
 		if sp == nil {
 			emitAuditEvent(r, auditProvider, "", "auth.saml.acs", "auth", "saml-acs", AuditOutcomeFailure)
 			writeServiceUnavailable(w, "saml login unavailable")
 			return
 		}
 
+		// The ACS is unauthenticated; without this cap ParseForm reads up to
+		// Go's implicit 10 MB before signature checks run. A signed SAML
+		// response with an embedded certificate is a few tens of KB.
+		r.Body = http.MaxBytesReader(w, r.Body, samlACSMaxBodyBytes)
 		if err := r.ParseForm(); err != nil {
 			emitAuditEvent(r, auditProvider, "", "auth.saml.acs", "auth", "saml-acs", AuditOutcomeDenied)
 			writeUnauthorized(w)
@@ -308,7 +313,18 @@ func registerSAMLLoginHandlers(mux *http.ServeMux, auth *Authenticator, userProv
 		// type "local", never "bootstrap") -- a SAML principal never
 		// reaches authenticateBootstrap's raw-bootstrap-token branch, which
 		// only ever matches the literal bootstrap token value.
-		accessToken, accessTTL, _, _, err := auth.mintSessionForUser(user.ID, user.Role, now)
+		sessionRole, roleOK, err := auth.ssoSessionRole(r.Context(), user, assertionInfo.Values.GetAll(auth.config.roleClaim))
+		if err != nil {
+			emitAuditEvent(r, auditProvider, user.ID, "auth.saml.acs", "auth", "saml-acs", AuditOutcomeFailure)
+			writeServiceUnavailable(w, "saml login unavailable")
+			return
+		}
+		if !roleOK {
+			emitAuditEvent(r, auditProvider, user.ID, "auth.saml.acs", "auth", "saml-acs", AuditOutcomeDenied)
+			writeForbidden(w, msgSSONoRoleMapped)
+			return
+		}
+		accessToken, accessTTL, _, _, err := auth.mintSessionForUser(user.ID, sessionRole, now)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, user.ID, "auth.saml.acs", "auth", "saml-acs", AuditOutcomeFailure)
 			writeServiceUnavailable(w, "saml login unavailable")
@@ -322,3 +338,5 @@ func registerSAMLLoginHandlers(mux *http.ServeMux, auth *Authenticator, userProv
 		http.Redirect(w, r, redirect, http.StatusFound)
 	})
 }
+
+const samlACSMaxBodyBytes = 512 << 10

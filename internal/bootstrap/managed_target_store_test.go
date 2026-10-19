@@ -394,3 +394,41 @@ func TestManagedTargetModeVocabulariesAgree(t *testing.T) {
 		t.Fatal("an unknown install mode must still be refused by the schema")
 	}
 }
+
+// TestManagedTargetStore_MatchEndpointsScopedToTenant: two tenants scanning
+// the same host each keep their own endpoint row (L-11); a target's match
+// under a tenant scope must only return its own tenant's row.
+func TestManagedTargetStore_MatchEndpointsScopedToTenant(t *testing.T) {
+	s := newFreshManagedTargetStore(t)
+	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS endpoints (
+		id TEXT PRIMARY KEY, ip_address TEXT NOT NULL, hostname TEXT, port INTEGER NOT NULL, tenant TEXT NOT NULL DEFAULT '')`); err != nil {
+		t.Fatalf("create endpoints table: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS agent_endpoints (
+		agent_id TEXT NOT NULL, server_type TEXT, server_name TEXT)`); err != nil {
+		t.Fatalf("create agent_endpoints table: %v", err)
+	}
+	for _, row := range []struct{ id, tenant string }{{"ep-acme", "acme"}, {"ep-globex", "globex"}, {"ep-default", ""}} {
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO endpoints (id, ip_address, hostname, port, tenant) VALUES (?, ?, ?, ?, ?)`,
+			row.id, "10.0.0.5", "shared.example.com", 443, row.tenant); err != nil {
+			t.Fatalf("insert endpoint: %v", err)
+		}
+	}
+	scoped := context.WithValue(ctx, discoveryScopeKey{}, discoveryScope{tenant: "acme", filter: true})
+	matches, err := s.MatchEndpoints(scoped, "shared.example.com")
+	if err != nil {
+		t.Fatalf("MatchEndpoints: %v", err)
+	}
+	if len(matches) != 1 || matches[0].EndpointID != "ep-acme" {
+		t.Fatalf("scoped match = %+v, want only ep-acme", matches)
+	}
+	all, err := s.MatchEndpoints(ctx, "shared.example.com")
+	if err != nil {
+		t.Fatalf("MatchEndpoints unscoped: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("unscoped match = %d rows, want 3", len(all))
+	}
+}

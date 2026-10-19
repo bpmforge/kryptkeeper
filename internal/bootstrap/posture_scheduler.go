@@ -6,17 +6,53 @@ package bootstrap
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // haLockPostureScheduler names this scheduler's lease row in
 // ha_scheduler_locks (ha_coordinator.go, W6-01/PE-9/D-048).
 const haLockPostureScheduler = "posture-scheduler"
+
+// postureRetentionFloorDays is the hard minimum for POSTURE_RETENTION_DAYS:
+// compliance reporting needs 13 months of trend history, so the window can
+// be widened but never narrowed below this.
+const postureRetentionFloorDays = 400
+
+// AlertEventPostureSnapshotMissed is raised when no snapshot has landed for
+// more than two capture intervals.
+const AlertEventPostureSnapshotMissed = "posture.snapshot_missed"
+
+// AlertEventSink delivers an alert event (UC-I01 channels consume it later;
+// W28-06 reuses this type).
+type AlertEventSink func(ctx context.Context, event, detail string)
+
+func postureRetentionDaysFromEnv() (int, error) {
+	raw := strings.TrimSpace(os.Getenv("POSTURE_RETENTION_DAYS"))
+	if raw == "" {
+		return postureRetentionFloorDays, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("POSTURE_RETENTION_DAYS=%q is not an integer", raw)
+	}
+	if n < postureRetentionFloorDays {
+		return 0, fmt.Errorf("POSTURE_RETENTION_DAYS=%d is below the %d-day minimum", n, postureRetentionFloorDays)
+	}
+	return n, nil
+}
+
+// ValidatePostureRetentionFromEnv lets main.go fail startup on a bad window.
+func ValidatePostureRetentionFromEnv() error {
+	_, err := postureRetentionDaysFromEnv()
+	return err
+}
 
 // PostureScheduler periodically captures a crypto-posture snapshot so the
 // dashboard can chart posture trends over time. It de-dupes within a UTC day so
@@ -38,8 +74,49 @@ type PostureScheduler struct {
 	// single-replica behavior of always capturing.
 	haCoordinator *HACoordinator
 
+	audit         AuditProvider
+	alerts        AlertEventSink
+	retentionDays int
+	// configErr disables the loop (Start logs and returns) so a bad
+	// retention value can never shorten history even if main.go skips
+	// ValidatePostureRetentionFromEnv.
+	configErr error
+	// missedFor is the snapshot ID a missed-snapshot alert was last raised
+	// for. In-memory only: a restart may re-announce one gap once.
+	missedFor string
+	clock     func() time.Time
+
 	stop chan struct{}
 	once sync.Once
+}
+
+func (s *PostureScheduler) now() time.Time {
+	if s.clock != nil {
+		return s.clock().UTC()
+	}
+	return time.Now().UTC()
+}
+
+// WithAudit sets the audit sink for prune records and installs the default
+// alert sink. No alert-event bus exists yet, so an alert is a log line plus
+// an audit row; UC-I01 channel delivery subscribes later.
+func (s *PostureScheduler) WithAudit(a AuditProvider) *PostureScheduler {
+	s.audit = a
+	s.alerts = func(ctx context.Context, event, detail string) {
+		logging.Infof("alert event %s: %s", event, detail)
+		if a == nil {
+			return
+		}
+		if err := a.AppendEntry(ctx, AuditEntry{
+			Timestamp: time.Now().UTC().Format(time.RFC3339), Action: event,
+			ActorType: "system", ActorID: "posture-scheduler",
+			ResourceType: "alert_event", ResourceID: "-",
+			Outcome: AuditOutcomeFailure, ChangeSummary: detail,
+		}); err != nil {
+			logging.Infof("posture scheduler: audit append failed for %s: %v", event, err)
+		}
+	}
+	return s
 }
 
 // NewPostureSchedulerFromEnv creates a PostureScheduler using environment config.
@@ -62,8 +139,11 @@ func NewPostureSchedulerFromEnv(certProvider CertificateProvider, store PostureS
 			pollHours = n
 		}
 	}
+	retentionDays, retentionErr := postureRetentionDaysFromEnv()
 	exceptionStore, _ := newFindingExceptionStoreFromEnv()
 	return &PostureScheduler{
+		retentionDays:  retentionDays,
+		configErr:      retentionErr,
 		certProvider:   certProvider,
 		store:          store,
 		exceptionStore: exceptionStore,
@@ -75,6 +155,10 @@ func NewPostureSchedulerFromEnv(certProvider CertificateProvider, store PostureS
 
 // Start launches the snapshot loop in a goroutine. Call Stop to shut it down.
 func (s *PostureScheduler) Start() {
+	if s.configErr != nil {
+		logging.Infof("posture scheduler: disabled: %v", s.configErr)
+		return
+	}
 	go func() {
 		s.capture()
 
@@ -113,7 +197,7 @@ func (s *PostureScheduler) capture() {
 	if s.haCoordinator != nil {
 		ok, err := s.haCoordinator.TryAcquire(ctx, haLockPostureScheduler, 2*s.pollInterval)
 		if err != nil {
-			log.Printf("posture scheduler: ha lock check failed, skipping this tick: %v", err)
+			logging.Warnf("posture scheduler: ha lock check failed, skipping this tick: %v", err)
 			return
 		}
 		if !ok {
@@ -121,34 +205,73 @@ func (s *PostureScheduler) capture() {
 		}
 	}
 
-	now := time.Now().UTC()
+	now := s.now()
 
-	// One snapshot per UTC day.
-	if latest, ok, err := s.store.Latest(ctx); err == nil && ok {
+	latest, hasLatest, err := s.store.Latest(ctx)
+	if err != nil {
+		logging.Infof("posture scheduler: latest lookup failed: %v", err)
+	}
+	if hasLatest {
+		s.checkMissed(ctx, latest, now)
+		// One snapshot per UTC day.
 		if dayKey(latest.CapturedAt) == dayKey(now.Format(time.RFC3339)) {
 			return
 		}
-	} else if err != nil {
-		log.Printf("posture scheduler: latest lookup failed: %v", err)
 	}
 
 	result, err := listAllCertificates(ctx, s.certProvider, CertificateListQuery{})
 	if err != nil {
-		log.Printf("posture scheduler: list certs failed: %v", err)
+		logging.Warnf("posture scheduler: list certs failed: %v", err)
 		return
 	}
 
 	report := computeCryptoPostureReport(result.Items, activeFindingExceptions(ctx, s.exceptionStore))
 	id, err := newPostureSnapshotID()
 	if err != nil {
-		log.Printf("posture scheduler: id generation failed: %v", err)
+		logging.Warnf("posture scheduler: id generation failed: %v", err)
 		return
 	}
 	snap := snapshotFromReport(id, now.Format(time.RFC3339), report)
 	if err := s.store.Save(ctx, snap); err != nil {
-		log.Printf("posture scheduler: save failed: %v", err)
+		logging.Warnf("posture scheduler: save failed: %v", err)
 		return
 	}
-	log.Printf("posture scheduler: captured snapshot %s (%d certs, PQC %d%%, automation %d%%)",
+	logging.Infof("posture scheduler: captured snapshot %s (%d certs, PQC %d%%, automation %d%%)",
 		id, snap.TotalCerts, snap.PQCScorePercent, snap.AutomationPercent)
+	// Leader-only by construction: capture returned above for non-holders.
+	s.prune(ctx, now)
+}
+
+func (s *PostureScheduler) checkMissed(ctx context.Context, latest PostureSnapshot, now time.Time) {
+	if s.alerts == nil {
+		return
+	}
+	t, err := time.Parse(time.RFC3339, latest.CapturedAt)
+	if err != nil || now.Sub(t) <= 2*s.pollInterval || s.missedFor == latest.ID {
+		return
+	}
+	s.missedFor = latest.ID
+	s.alerts(ctx, AlertEventPostureSnapshotMissed, fmt.Sprintf("no posture snapshot since %s (%.0fh, interval %s)",
+		latest.CapturedAt, now.Sub(t).Hours(), s.pollInterval))
+}
+
+func (s *PostureScheduler) prune(ctx context.Context, now time.Time) {
+	days := max(s.retentionDays, postureRetentionFloorDays)
+	cutoff := now.AddDate(0, 0, -days).UTC().Format(time.RFC3339)
+	res, err := s.store.Prune(ctx, cutoff)
+	if err != nil {
+		logging.Infof("posture scheduler: prune failed: %v", err)
+		return
+	}
+	if res.Deleted == 0 || s.audit == nil {
+		return
+	}
+	if err := s.audit.AppendEntry(ctx, AuditEntry{
+		Timestamp: now.Format(time.RFC3339), Action: "posture.snapshot_prune",
+		ActorType: "system", ActorID: "posture-scheduler",
+		ResourceType: "posture_snapshot", ResourceID: "-", Outcome: AuditOutcomeSuccess,
+		ChangeSummary: fmt.Sprintf("deleted=%d oldest=%s newest=%s cutoff=%s", res.Deleted, res.Oldest, res.Newest, cutoff),
+	}); err != nil {
+		logging.Infof("posture scheduler: audit append failed for prune: %v", err)
+	}
 }

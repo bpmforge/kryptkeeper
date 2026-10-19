@@ -9,10 +9,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
+
+const configKeyEscalationChannel = "notifications.escalation_channel"
 
 var errConfigUnknownKey = errors.New("unknown config key")
 var errConfigOverrideNotFound = errors.New("config override not found")
@@ -31,6 +35,10 @@ type configKeyDef struct {
 	EnvVar   string
 	Category string
 	Secret   bool
+	// RestartRequired marks settings whose consumer is built once at process
+	// start (W33-04): the value is stored and reported but only takes effect
+	// after a restart.
+	RestartRequired bool
 }
 
 const (
@@ -38,6 +46,11 @@ const (
 	configCategoryRenewalPolicy = "renewal_policy"
 	configCategoryDiscovery     = "discovery"
 	configCategorySSO           = "sso"
+	configCategorySAML          = "saml"
+	configCategorySCIM          = "scim"
+	configCategoryKeyBackend    = "key_backend"
+	configCategorySLO           = "slo"
+	configCategoryObservability = "observability"
 )
 
 // configRegistry is the documented set of runtime settings this store
@@ -60,20 +73,56 @@ var configRegistry = []configKeyDef{
 	// non-secret would return that credential in plaintext to any principal
 	// who can read config.
 	{Key: "notifications.webhook_url", EnvVar: "WEBHOOK_URL", Category: configCategoryNotifications, Secret: true},
+	{Key: "notifications.webhook_secret", EnvVar: "WEBHOOK_SECRET", Category: configCategoryNotifications, Secret: true},
+	{Key: "notifications.webhook_secret_previous", EnvVar: "WEBHOOK_SECRET_PREVIOUS", Category: configCategoryNotifications, Secret: true},
 	{Key: "notifications.smtp_host", EnvVar: "SMTP_HOST", Category: configCategoryNotifications, Secret: false},
 	{Key: "notifications.smtp_port", EnvVar: "SMTP_PORT", Category: configCategoryNotifications, Secret: false},
 	{Key: "notifications.smtp_username", EnvVar: "SMTP_USERNAME", Category: configCategoryNotifications, Secret: false},
 	{Key: "notifications.smtp_password", EnvVar: "SMTP_PASSWORD", Category: configCategoryNotifications, Secret: true},
 	{Key: "notifications.smtp_from", EnvVar: "SMTP_FROM", Category: configCategoryNotifications, Secret: false},
 	{Key: "notifications.pagerduty_routing_key", EnvVar: "PAGERDUTY_ROUTING_KEY", Category: configCategoryNotifications, Secret: true},
+	// Escalation target is Secret because for slack/webhook/pagerduty it is a
+	// URL or routing key that can embed a token (the spec said Secret:false;
+	// the W30 brief forbids returning any channel secret unmasked).
+	{Key: "notifications.escalation_channel", EnvVar: "KRYPTKEEPER_NOTIFY_ESCALATION_CHANNEL", Category: configCategoryNotifications, Secret: false},
+	{Key: "notifications.escalation_target", EnvVar: "KRYPTKEEPER_NOTIFY_ESCALATION_TARGET", Category: configCategoryNotifications, Secret: true},
+	// W32-27: ChatOps approval posting. Bot token / app password are Secret
+	// (write-only over the API); the team maps are JSON objects.
+	{Key: "notifications.slack_bot_token", EnvVar: "SLACK_BOT_TOKEN", Category: configCategoryNotifications, Secret: true},
+	{Key: "notifications.slack_team_channels", EnvVar: "SLACK_TEAM_CHANNELS", Category: configCategoryNotifications, Secret: false},
+	{Key: "notifications.teams_app_id", EnvVar: "TEAMS_APP_ID", Category: configCategoryNotifications, Secret: false},
+	{Key: "notifications.teams_app_password", EnvVar: "TEAMS_APP_PASSWORD", Category: configCategoryNotifications, Secret: true},
+	{Key: "notifications.teams_team_channels", EnvVar: "TEAMS_TEAM_CHANNELS", Category: configCategoryNotifications, Secret: false},
 	{Key: "renewal_policy.threshold_days", EnvVar: "RENEWAL_THRESHOLD_DAYS", Category: configCategoryRenewalPolicy, Secret: false},
 	{Key: "renewal_policy.poll_hours", EnvVar: "RENEWAL_POLL_HOURS", Category: configCategoryRenewalPolicy, Secret: false},
 	{Key: "renewal_policy.alert_cooldown_hours", EnvVar: "RENEWAL_ALERT_COOLDOWN_HOURS", Category: configCategoryRenewalPolicy, Secret: false},
+	{Key: "renewal_policy.retry_base_minutes", EnvVar: "RENEWAL_RETRY_BASE_MINUTES", Category: configCategoryRenewalPolicy, Secret: false},
+	{Key: "renewal_policy.retry_cap_hours", EnvVar: "RENEWAL_RETRY_CAP_HOURS", Category: configCategoryRenewalPolicy, Secret: false},
 	{Key: "discovery.provider", EnvVar: "APP_DISCOVERY_PROVIDER", Category: configCategoryDiscovery, Secret: false},
+	{Key: "ct.domains", EnvVar: "KRYPTKEEPER_CT_DOMAINS", Category: configCategoryDiscovery, Secret: false},
+	{Key: "discovery.kube_clusters", EnvVar: "KRYPTKEEPER_K8S_CLUSTERS", Category: configCategoryDiscovery, Secret: false},
+	{Key: "discovery.mesh_leaf_retention_days", EnvVar: "KRYPTKEEPER_MESH_LEAF_RETENTION_DAYS", Category: configCategoryDiscovery, Secret: false},
+	{Key: "discovery.saas_endpoints", EnvVar: "KRYPTKEEPER_SAAS_ENDPOINTS", Category: configCategoryDiscovery, Secret: false},
+	{Key: "discovery.cloud_scopes", EnvVar: "KRYPTKEEPER_CLOUD_SCOPES", Category: configCategoryDiscovery, Secret: false},
 	{Key: "sso.oidc_issuer", EnvVar: "APP_OIDC_ISSUER", Category: configCategorySSO, Secret: false},
 	{Key: "sso.oidc_audience", EnvVar: "APP_OIDC_AUDIENCE", Category: configCategorySSO, Secret: false},
 	{Key: "sso.oidc_discovery_url", EnvVar: "APP_OIDC_DISCOVERY_URL", Category: configCategorySSO, Secret: false},
 	{Key: "sso.oidc_jwks_json", EnvVar: "APP_OIDC_JWKS_JSON", Category: configCategorySSO, Secret: true},
+	// W33-04. saml.sp_entity_id is the SP issuer; there is deliberately no
+	// metadata-url key (no consumer exists). The certificate is a public PEM.
+	{Key: "saml.sp_entity_id", EnvVar: "APP_SAML_SP_ISSUER", Category: configCategorySAML},
+	{Key: "saml.idp_sso_url", EnvVar: "APP_SAML_IDP_SSO_URL", Category: configCategorySAML},
+	{Key: "saml.idp_issuer", EnvVar: "APP_SAML_IDP_ISSUER", Category: configCategorySAML},
+	{Key: "saml.idp_certificate", EnvVar: "APP_SAML_IDP_CERTIFICATE", Category: configCategorySAML},
+	{Key: "scim.enabled", EnvVar: "APP_SCIM_ENABLED", Category: configCategorySCIM},
+	{Key: "scim.token", EnvVar: "APP_SCIM_TOKEN", Category: configCategorySCIM, Secret: true},
+	{Key: "key_backend.kind", EnvVar: "KRYPTKEEPER_KEY_BACKEND", Category: configCategoryKeyBackend, RestartRequired: true},
+	{Key: "key_backend.pkcs11_module", EnvVar: "KRYPTKEEPER_PKCS11_LIB", Category: configCategoryKeyBackend, RestartRequired: true},
+	{Key: "slo.renewal_success_objective", EnvVar: "KRYPTKEEPER_SLO_RENEWAL_OBJECTIVE", Category: configCategorySLO, Secret: false},
+	{Key: "slo.issuance_success_objective", EnvVar: "KRYPTKEEPER_SLO_ISSUANCE_OBJECTIVE", Category: configCategorySLO, Secret: false},
+	{Key: "metrics.bearer_token", EnvVar: "KRYPTKEEPER_METRICS_BEARER_TOKEN", Category: configCategoryObservability, Secret: true},
+	{Key: "slo.issuance_latency_p95_seconds", EnvVar: "KRYPTKEEPER_SLO_LATENCY_P95_SECONDS", Category: configCategorySLO, Secret: false},
+	agentlessPrivilegeModeDef,
 }
 
 var configRegistryByKey = func() map[string]configKeyDef {
@@ -114,8 +163,12 @@ type EffectiveSetting struct {
 	Source     string `json:"source"` // "database" | "env_default" | "unset"
 	Value      string `json:"value,omitempty"`
 	Configured bool   `json:"configured"`
-	UpdatedAt  string `json:"updated_at,omitempty"`
-	UpdatedBy  string `json:"updated_by,omitempty"`
+	// EffectiveSource is "override" when a DB override supplies the value,
+	// else "env" (W33-04). Source is kept unchanged for existing consumers.
+	EffectiveSource string `json:"effective_source"`
+	RestartRequired bool   `json:"restart_required,omitempty"`
+	UpdatedAt       string `json:"updated_at,omitempty"`
+	UpdatedBy       string `json:"updated_by,omitempty"`
 }
 
 const (
@@ -169,6 +222,9 @@ func EffectiveSettings(ctx context.Context, store ConfigStore) ([]EffectiveSetti
 			Category: def.Category,
 			EnvVar:   def.EnvVar,
 			Secret:   def.Secret,
+
+			EffectiveSource: "env",
+			RestartRequired: def.RestartRequired,
 		}
 
 		var override ConfigEntry
@@ -185,6 +241,7 @@ func EffectiveSettings(ctx context.Context, store ConfigStore) ([]EffectiveSetti
 		switch {
 		case hasOverride:
 			setting.Source = configSourceDatabase
+			setting.EffectiveSource = "override"
 			setting.Configured = true
 			setting.UpdatedAt = override.UpdatedAt
 			setting.UpdatedBy = override.UpdatedBy
@@ -307,6 +364,37 @@ func (s *postgresConfigStore) Resolve(ctx context.Context, key string) ([]byte, 
 
 // --- shared helpers ---
 
+// sloObjectiveBounds are the allowed ranges. The ratio upper bound (<1) and
+// lower bound (>0.5) stop an operator from muting paging with an objective
+// that can never be breached (or is always breached).
+var sloObjectiveBounds = map[string]struct {
+	lo, hi       float64
+	loInc, hiInc bool
+}{
+	"slo.renewal_success_objective":    {0.5, 1, false, false},
+	"slo.issuance_success_objective":   {0.5, 1, false, false},
+	"slo.issuance_latency_p95_seconds": {0.01, 3600, true, true},
+}
+
+// validateConfigValue checks per-key value constraints; only slo.* keys are
+// constrained today.
+func validateConfigValue(key, value string) error {
+	if key == configKeyAgentlessPrivilegeMode {
+		return validateAgentlessPrivilegeMode(value)
+	}
+	b, ok := sloObjectiveBounds[key]
+	if !ok {
+		return nil
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	inRange := err == nil && !math.IsNaN(v) && !math.IsInf(v, 0) &&
+		(v > b.lo || (b.loInc && v == b.lo)) && (v < b.hi || (b.hiInc && v == b.hi))
+	if !inRange {
+		return fmt.Errorf("must be a number between %g and %g", b.lo, b.hi)
+	}
+	return nil
+}
+
 func setConfigEntry(ctx context.Context, db *sql.DB, passphrase []byte, query, key, value, updatedBy string) error {
 	def, ok := lookupConfigKey(key)
 	if !ok {
@@ -314,6 +402,18 @@ func setConfigEntry(ctx context.Context, db *sql.DB, passphrase []byte, query, k
 	}
 	if len(value) > configValueMaxLen {
 		return fmt.Errorf("value exceeds %d bytes", configValueMaxLen)
+	}
+
+	if err := validateConfigValue(key, value); err != nil {
+		return err
+	}
+
+	if key == configKeyEscalationChannel {
+		switch value {
+		case "", "email", "slack", "pagerduty", "webhook":
+		default:
+			return errors.New("escalation channel must be one of email, slack, pagerduty, webhook or empty")
+		}
 	}
 
 	var plainValue sql.NullString
@@ -441,4 +541,55 @@ func newConfigStoreFromEnv() ConfigStore {
 		return nil
 	}
 	return state.store
+}
+
+// ssoLockoutGuardedKeys are the OIDC keys whose override can lock out every
+// IdP login; a PUT of one is refused unless a break-glass local admin exists
+// (W33-06, auth_config.go ssoOverrideGuard).
+var ssoLockoutGuardedKeys = map[string]bool{
+	"sso.oidc_issuer":        true,
+	"sso.oidc_audience":      true,
+	"sso.oidc_discovery_url": true,
+	"sso.oidc_jwks_json":     true,
+}
+
+// WebhookSigning is the resolved webhook HMAC configuration.
+type WebhookSigning struct {
+	Secret, Previous string
+	PreviousUntil    time.Time
+}
+
+// webhookPreviousWindow is how long the previous secret keeps co-signing.
+const webhookPreviousWindow = 24 * time.Hour
+
+// ResolveWebhookSigning reads the signing secret and the rotation secret from
+// the store (falling back to env). The previous secret's window starts when it
+// was stored; an env-only previous secret has no timestamp, so the window
+// starts at envSince (process start).
+func ResolveWebhookSigning(ctx context.Context, store ConfigStore, envSince time.Time) WebhookSigning {
+	resolve := func(key, envVar string) (string, bool) {
+		if store != nil {
+			if v, err := store.Resolve(ctx, key); err == nil {
+				return string(v), true
+			}
+		}
+		return strings.TrimSpace(os.Getenv(envVar)), false
+	}
+	var out WebhookSigning
+	out.Secret, _ = resolve("notifications.webhook_secret", "WEBHOOK_SECRET")
+	var fromStore bool
+	out.Previous, fromStore = resolve("notifications.webhook_secret_previous", "WEBHOOK_SECRET_PREVIOUS")
+	if out.Previous == "" {
+		return out
+	}
+	since := envSince
+	if fromStore {
+		if entry, ok, err := store.Get(ctx, "notifications.webhook_secret_previous"); err == nil && ok {
+			if t, perr := time.Parse(time.RFC3339, entry.UpdatedAt); perr == nil {
+				since = t
+			}
+		}
+	}
+	out.PreviousUntil = since.Add(webhookPreviousWindow)
+	return out
 }

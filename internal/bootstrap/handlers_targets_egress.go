@@ -69,6 +69,8 @@ func targetEgressChanges(old, next ManagedTarget) (fields []string, newCredentia
 		{"install_reload_method", next.InstallReloadMethod != old.InstallReloadMethod},
 		{"verify_host_port", next.VerifyHostPort != old.VerifyHostPort},
 		{"plugin_settings", !maps.Equal(next.PluginSettings, old.PluginSettings)},
+		// Replacing the pin on an armed target redirects where the key is pushed.
+		{"ssh_host_key", next.SSHHostKey != old.SSHHostKey},
 	} {
 		if c.changed {
 			fields = append(fields, c.name)
@@ -108,9 +110,9 @@ func (d targetEgressDeps) validateTargetReferences(ctx context.Context, pd AuthP
 		if err != nil {
 			return errTargetCredentialUnknown
 		}
-		// Credentials are tenant "" today (FG-6a); only a credential that is
-		// explicitly bound to another tenant is refused.
-		if meta.Tenant != "" && !tenantBypass(pd) && meta.Tenant != pd.Tenant {
+		// Credentials carry the creator's tenant; legacy rows ("") belong to
+		// the default tenant.
+		if !stampedTenantVisible(pd, meta.Tenant) {
 			return errTargetCredentialUnknown
 		}
 	}

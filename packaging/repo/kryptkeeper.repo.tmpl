@@ -1,0 +1,9 @@
+[kryptkeeper]
+name=Kryptkeeper
+baseurl=__BASE_URL__/rpm
+enabled=1
+# Packages are not individually signed yet (tracked as a follow-up); the
+# repository metadata is, and repo_gpgcheck=1 makes dnf verify it.
+gpgcheck=0
+repo_gpgcheck=1
+gpgkey=__BASE_URL__/kryptkeeper.asc

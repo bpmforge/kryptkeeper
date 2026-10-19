@@ -7,9 +7,10 @@ package adsync
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // LDAPClient abstracts LDAP operations for testability.
@@ -107,14 +108,14 @@ func (s *Service) SyncTemplates(ctx context.Context, templates []TemplateSync) (
 				continue
 			}
 			result.Updated++
-			log.Printf("adsync: updated template %s", tmpl.Name)
+			logging.Infof("adsync: updated template %s", tmpl.Name)
 		} else {
 			if err := s.client.Add(dn, attrs); err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("add %s: %v", tmpl.Name, err))
 				continue
 			}
 			result.Created++
-			log.Printf("adsync: created template %s", tmpl.Name)
+			logging.Infof("adsync: created template %s", tmpl.Name)
 		}
 		delete(existingMap, tmpl.Name)
 	}

@@ -20,6 +20,10 @@ SMOKE_ASSERTIONS_SKIPPED=0
 # (run_tls_smoke, below) can point it at a --cacert without touching every
 # call site; empty for the existing plain-HTTP scenarios.
 EXTRA_CURL_OPTS=()
+# W22-42: per-request curl budget. 3s flaked (curl 28, HTTP 000) on a shared,
+# heavily loaded dev host; a longer budget only waits longer for a response,
+# every status/body assertion is unchanged.
+CURL_MAX_TIME="${KRYPTKEEPER_SMOKE_CURL_MAX_TIME:-10}"
 
 # W19-21: every background process/port/tmp-dir a scenario starts is
 # tracked here in top-level arrays, not the per-function `local pid=""`
@@ -147,29 +151,29 @@ curl_expect_200() {
   if [[ -n "$auth_header" ]]; then
     if [[ -n "$request_body" ]]; then
       if [[ -n "$extra_header" ]]; then
-        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "$auth_header" -H "$extra_header" -H "Content-Type: application/json" -d "$request_body" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time 3 "$url" || true)"
+        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "$auth_header" -H "$extra_header" -H "Content-Type: application/json" -d "$request_body" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time "$CURL_MAX_TIME" "$url" || true)"
       else
-        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "$auth_header" -H "Content-Type: application/json" -d "$request_body" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time 3 "$url" || true)"
+        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "$auth_header" -H "Content-Type: application/json" -d "$request_body" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time "$CURL_MAX_TIME" "$url" || true)"
       fi
     else
       if [[ -n "$extra_header" ]]; then
-        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "$auth_header" -H "$extra_header" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time 3 "$url" || true)"
+        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "$auth_header" -H "$extra_header" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time "$CURL_MAX_TIME" "$url" || true)"
       else
-        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "$auth_header" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time 3 "$url" || true)"
+        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "$auth_header" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time "$CURL_MAX_TIME" "$url" || true)"
       fi
     fi
   else
     if [[ -n "$request_body" ]]; then
       if [[ -n "$extra_header" ]]; then
-        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "$extra_header" -H "Content-Type: application/json" -d "$request_body" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time 3 "$url" || true)"
+        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "$extra_header" -H "Content-Type: application/json" -d "$request_body" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time "$CURL_MAX_TIME" "$url" || true)"
       else
-        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "Content-Type: application/json" -d "$request_body" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time 3 "$url" || true)"
+        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "Content-Type: application/json" -d "$request_body" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time "$CURL_MAX_TIME" "$url" || true)"
       fi
     else
       if [[ -n "$extra_header" ]]; then
-        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "$extra_header" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time 3 "$url" || true)"
+        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -H "$extra_header" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time "$CURL_MAX_TIME" "$url" || true)"
       else
-        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time 3 "$url" || true)"
+        code="$(curl -sS ${EXTRA_CURL_OPTS[@]+"${EXTRA_CURL_OPTS[@]}"} -X "$method" -D "$tmp_headers" -o "$tmp_body" -w "%{http_code}" --max-time "$CURL_MAX_TIME" "$url" || true)"
       fi
     fi
   fi
@@ -359,14 +363,16 @@ EOF
     # renewal_status back the active-certificate rule (certificate_active.go);
     # NULL in both means active, so the counts are again unchanged. is_ca
     # (migration 000077) keeps served-chain intermediates out of the leaf
-    # counts; 0 = a leaf, so the counts are unchanged again.
+    # counts; 0 = a leaf, so the counts are unchanged again. W22-42: owner_team
+    # backs the unowned counter (unownedCertSQL); NULL = unowned, counts unchanged.
     sqlite3 "$sqlite_db_file" <<'SQL'
 CREATE TABLE certificates (
   valid_until TEXT NOT NULL,
   management_state TEXT,
   revoked_at TEXT,
   renewal_status TEXT,
-  is_ca INTEGER NOT NULL DEFAULT 0
+  is_ca INTEGER NOT NULL DEFAULT 0,
+  owner_team TEXT
 );
 INSERT INTO certificates(valid_until) VALUES
   (datetime('now', '-1 day')),
@@ -590,7 +596,7 @@ PY
   # assert 0 across the board) -- GetSummary derives its defaults from the
   # same seed slices (fileDiscoveryProvider.GetSummary), so turning seeds on
   # without these would change those already-passing assertions too.
-  PORT="$port" AUTH_MODE="bootstrap" APP_BOOTSTRAP_TOKEN="$bootstrap_token" APP_DISCOVERY_PROVIDER="file" APP_DISCOVERY_DEMO_SEEDS="true" APP_DISCOVERY_DISCOVERED_ENDPOINTS="0" APP_DISCOVERY_MAPPED_CERTIFICATES="0" APP_DISCOVERY_RISKY_ENDPOINTS="0" APP_DISCOVERY_ACTIVE_SCAN_JOBS="0" APP_CERTS_SUMMARY_FILE="$summary_file" APP_AUDIT_FILE="$audit_file" APP_CA_FILE="$ca_file" APP_TEMPLATE_FILE="$template_file" APP_CERTIFICATE_FILE="$certificate_file" APP_AUTH_LOGIN_ENABLED="true" APP_AUTH_LOGIN_EMAIL="admin@example.com" APP_AUTH_LOGIN_PASSWORD_HASH="13eb3cd84e895d9aec00db8145ebbe377915bfa0dfb2be8295b82443aecb332d" APP_AUTH_LOGIN_PASSWORD_PEPPER="smoke-login-pepper" APP_AUTH_LOGIN_SUBJECT="team-1" APP_AUTH_LOGIN_SIGNING_SECRET="smoke-login-signing-secret-0123456789abcdef" APP_API_KEY_AUTH_ENABLED="true" APP_API_KEY_PEPPER="dev-api-key-pepper" APP_API_KEYS_JSON='[{"kid":"smoke","secret_verifier":"e27bf9a5fbc3ffad1c1a9ee77707f9b2d2998f98e89ac3270572aa34565363af","principal_id":"team-1","role":"service-account","scopes":["*"],"active":true}]' KRYPTKEEPER_TLS_DISABLE="true" "$bin_path" >"$app_log" 2>&1 &
+  PORT="$port" AUTH_MODE="bootstrap" APP_BOOTSTRAP_TOKEN="$bootstrap_token" APP_DISCOVERY_PROVIDER="file" APP_DISCOVERY_DEMO_SEEDS="true" APP_DASHBOARD_ACTION_DEMO="true" APP_DISCOVERY_DISCOVERED_ENDPOINTS="0" APP_DISCOVERY_MAPPED_CERTIFICATES="0" APP_DISCOVERY_RISKY_ENDPOINTS="0" APP_DISCOVERY_ACTIVE_SCAN_JOBS="0" APP_CERTS_SUMMARY_FILE="$summary_file" APP_AUDIT_FILE="$audit_file" APP_CA_FILE="$ca_file" APP_TEMPLATE_FILE="$template_file" APP_CERTIFICATE_FILE="$certificate_file" APP_AUTH_LOGIN_ENABLED="true" APP_AUTH_LOGIN_EMAIL="admin@example.com" APP_AUTH_LOGIN_PASSWORD_HASH="13eb3cd84e895d9aec00db8145ebbe377915bfa0dfb2be8295b82443aecb332d" APP_AUTH_LOGIN_PASSWORD_PEPPER="smoke-login-pepper" APP_AUTH_LOGIN_SUBJECT="team-1" APP_AUTH_LOGIN_SIGNING_SECRET="smoke-login-signing-secret-0123456789abcdef" APP_API_KEY_AUTH_ENABLED="true" APP_API_KEY_PEPPER="dev-api-key-pepper" APP_API_KEYS_JSON='[{"kid":"smoke","secret_verifier":"e27bf9a5fbc3ffad1c1a9ee77707f9b2d2998f98e89ac3270572aa34565363af","principal_id":"team-1","role":"service-account","scopes":["*"],"active":true}]' KRYPTKEEPER_TLS_DISABLE="true" "$bin_path" >"$app_log" 2>&1 &
   pid="$!"
   track_pid "$pid"
   track_port "$port"
@@ -673,9 +679,9 @@ PY
   # unmanaged fields between expired and source in the certificates block
   # (handlers_dashboard.go's response struct field order); this assertion
   # was written before that field order changed and never updated.
-  curl_expect_200 "GET" "$base_url/api/v1/dashboard/summary" "dashboard summary bootstrap mode returns certificate counts" "200" '"certificates":{"total":42,"revoked":0,"expiring_30_days":7,"expired":2,"managed":0,"external":0,"unmanaged":0,"source":"file-store"' "application/json" "Authorization: Bearer $bootstrap_token"
+  curl_expect_200 "GET" "$base_url/api/v1/dashboard/summary" "dashboard summary bootstrap mode returns certificate counts" "200" '"certificates":{"total":42,"revoked":0,"expiring_30_days":7,"expired":2,"managed":0,"external":0,"unmanaged":0,"unowned":0,"source":"file-store"' "application/json" "Authorization: Bearer $bootstrap_token"
   curl_expect_200 "GET" "$base_url/api/v1/dashboard/summary" "dashboard summary bootstrap mode returns discovery counts" "200" '"discovery":{"discovered_endpoints":0,"risky_endpoints":0,"active_scan_jobs":0' "application/json" "Authorization: Bearer $bootstrap_token"
-  curl_expect_200 "GET" "$base_url/api/v1/dashboard/summary" "dashboard summary bootstrap mode returns discovery finding funnel" "200" '"findings":{"raw":0,"effective":0,"suppressed":0' "application/json" "Authorization: Bearer $bootstrap_token"
+  curl_expect_200 "GET" "$base_url/api/v1/dashboard/summary" "dashboard summary bootstrap mode returns discovery finding funnel" "200" '"findings":{"raw":0,"deduped":0,"in_scope":0,"effective":0,"suppressed":0' "application/json" "Authorization: Bearer $bootstrap_token"
   curl_expect_200 "GET" "$base_url/api/v1/dashboard/summary" "dashboard summary bootstrap mode returns notification counts" "200" '"notifications":{"pending_notifications":0,"escalations":0' "application/json" "Authorization: Bearer $bootstrap_token"
   curl_expect_200 "GET" "$base_url/api/v1/dashboard/actions" "dashboard actions bootstrap mode rejects missing bearer token" "401" '{"error":"unauthorized","message":"invalid or missing bearer token"}' "application/json"
   curl_expect_200 "GET" "$base_url/api/v1/dashboard/actions" "dashboard actions bootstrap mode returns prioritized actions" "200" '"resource":"dashboard-actions","principal":"bootstrap","actions":[{"category":"certificate","count":7,"id":"act-expiring-certs"' "application/json" "Authorization: Bearer $bootstrap_token"
@@ -938,7 +944,7 @@ PY
   fi
 
   echo "[smoke] Starting local binary in jwt auth mode on port $port"
-  PORT="$port" AUTH_MODE="jwt" APP_AUTH_ROLE_CLAIM="kk_role" APP_AUTH_ROLE_MAP_JSON="[{\"claim_value\":\"${jwt_role_value}\",\"role\":\"service-account\"}]" APP_JWT_HS256_SECRET="$jwt_secret" APP_JWT_ISSUER="$jwt_issuer" APP_JWT_AUDIENCE="$jwt_audience" APP_CERTS_SUMMARY_FILE="$summary_file" APP_AUDIT_FILE="$audit_file" APP_CA_FILE="$ca_file" APP_TEMPLATE_FILE="$template_file" APP_CERTIFICATE_FILE="$certificate_file" KRYPTKEEPER_TLS_DISABLE="true" "$bin_path" >"$app_log" 2>&1 &
+  PORT="$port" AUTH_MODE="jwt" APP_AUTH_UNMAPPED_ROLE="read-only" APP_AUTH_ROLE_CLAIM="kk_role" APP_AUTH_ROLE_MAP_JSON="[{\"claim_value\":\"${jwt_role_value}\",\"role\":\"service-account\"}]" APP_JWT_HS256_SECRET="$jwt_secret" APP_JWT_ISSUER="$jwt_issuer" APP_JWT_AUDIENCE="$jwt_audience" APP_CERTS_SUMMARY_FILE="$summary_file" APP_AUDIT_FILE="$audit_file" APP_CA_FILE="$ca_file" APP_TEMPLATE_FILE="$template_file" APP_CERTIFICATE_FILE="$certificate_file" KRYPTKEEPER_TLS_DISABLE="true" "$bin_path" >"$app_log" 2>&1 &
   pid="$!"
   track_pid "$pid"
   track_port "$port"
@@ -1039,9 +1045,9 @@ PY
   # tenant-visibility one (handlers_certificates.go's
   # certificateTeamScopeDeniedMessage); these two assertions predate that
   # change.
-  curl_expect_200 "GET" "$base_url/api/v1/certificates?team_id=team-1" "certificate list jwt mode denies non-matching team scope" "403" '{"error":"forbidden","message":"forbidden: certificate does not belong to your team"}' "application/json" "Authorization: Bearer $jwt_other_token"
+  curl_expect_200 "GET" "$base_url/api/v1/certificates?team_id=team-1" "certificate list jwt mode denies non-matching team scope" "403" '{"error":"forbidden","error_code":"team_scope_mismatch","message":"forbidden: certificate does not belong to your team"}' "application/json" "Authorization: Bearer $jwt_other_token"
   curl_expect_200 "GET" "$base_url/api/v1/certificates/fp-cur-jwt" "certificate get jwt mode returns certificate by fingerprint" "200" '"common_name":"api-jwt.example.com"' "application/json" "Authorization: Bearer $jwt_token"
-  curl_expect_200 "GET" "$base_url/api/v1/certificates/fp-cur-jwt" "certificate get jwt mode denies non-owner team" "403" '{"error":"forbidden","message":"forbidden: certificate does not belong to your team"}' "application/json" "Authorization: Bearer $jwt_other_token"
+  curl_expect_200 "GET" "$base_url/api/v1/certificates/fp-cur-jwt" "certificate get jwt mode denies non-owner team" "403" '{"error":"forbidden","error_code":"team_scope_mismatch","message":"forbidden: certificate does not belong to your team"}' "application/json" "Authorization: Bearer $jwt_other_token"
   curl_expect_200 "GET" "$base_url/api/v1/certificates/fp-cur-jwt/chain" "certificate chain jwt mode returns current fingerprint" "200" '"current_fingerprint":"fp-cur-jwt"' "application/json" "Authorization: Bearer $jwt_token"
   curl_expect_200 "GET" "$base_url/api/v1/certificates/fp-cur-jwt/download?format=der" "certificate download jwt mode returns der" "200" "DER:fp-cur-jwt" "application/pkix-cert" "Authorization: Bearer $jwt_token"
   curl_expect_200 "POST" "$base_url/api/v1/certificates" "certificate issue jwt mode creates certificate" "201" '"source":"api"' "application/json" "Authorization: Bearer $jwt_token" '{"ca_id":"ca-root-1","template_id":"tpl-tls-90d","csr_pem":"-----BEGIN CERTIFICATE REQUEST-----\njwt\n-----END CERTIFICATE REQUEST-----"}'
@@ -1086,6 +1092,9 @@ PY
   # (python3/openssl RSA JWK generation) is unavailable, which would skip a
   # TLS pass placed after them even though it has no OIDC dependency itself.
   run_tls_smoke "$bin_path" "$tmp_dir"
+  run_estate_import_smoke "$bin_path" "$tmp_dir"
+  run_governance_smoke "$bin_path" "$tmp_dir"
+  run_reports_smoke "$bin_path" "$tmp_dir"
 
   local oidc_sub="team-1"
   local oidc_issuer="https://local-smoke.example/issuer"
@@ -1122,7 +1131,7 @@ PY
   fi
 
   echo "[smoke] Starting local binary in oidc auth mode on port $port"
-  PORT="$port" AUTH_MODE="oidc" APP_OIDC_ISSUER="$oidc_issuer" APP_OIDC_AUDIENCE="$oidc_audience" APP_OIDC_JWKS_JSON="$oidc_jwks_json" APP_CERTS_SUMMARY_FILE="$summary_file" APP_AUDIT_FILE="$audit_file" APP_CA_FILE="$ca_file" APP_TEMPLATE_FILE="$template_file" APP_CERTIFICATE_FILE="$certificate_file" KRYPTKEEPER_TLS_DISABLE="true" "$bin_path" >"$app_log" 2>&1 &
+  PORT="$port" AUTH_MODE="oidc" APP_AUTH_UNMAPPED_ROLE="read-only" APP_OIDC_ISSUER="$oidc_issuer" APP_OIDC_AUDIENCE="$oidc_audience" APP_OIDC_JWKS_JSON="$oidc_jwks_json" APP_CERTS_SUMMARY_FILE="$summary_file" APP_AUDIT_FILE="$audit_file" APP_CA_FILE="$ca_file" APP_TEMPLATE_FILE="$template_file" APP_CERTIFICATE_FILE="$certificate_file" KRYPTKEEPER_TLS_DISABLE="true" "$bin_path" >"$app_log" 2>&1 &
   pid="$!"
   track_pid "$pid"
   track_port "$port"
@@ -1241,7 +1250,7 @@ EOF
                   echo "[smoke] WARN unable to allocate local port for OIDC discovery-mode app; skipping discovery/JWKS rotation smoke"
                 else
                   echo "[smoke] Starting local binary in oidc discovery mode on port $port"
-                  PORT="$port" AUTH_MODE="oidc" APP_OIDC_ISSUER="$oidc_discovery_issuer" APP_OIDC_AUDIENCE="$oidc_discovery_audience" APP_OIDC_DISCOVERY_URL="$oidc_discovery_url" APP_OIDC_JWKS_TTL_SEC="$oidc_refresh_seconds" KRYPTKEEPER_TLS_DISABLE="true" "$bin_path" >"$app_log" 2>&1 &
+                  PORT="$port" AUTH_MODE="oidc" APP_AUTH_UNMAPPED_ROLE="read-only" APP_OIDC_ISSUER="$oidc_discovery_issuer" APP_OIDC_AUDIENCE="$oidc_discovery_audience" APP_OIDC_DISCOVERY_URL="$oidc_discovery_url" APP_OIDC_JWKS_TTL_SEC="$oidc_refresh_seconds" KRYPTKEEPER_TLS_DISABLE="true" "$bin_path" >"$app_log" 2>&1 &
                   pid="$!"
                   track_pid "$pid"
                   track_port "$port"
@@ -1375,6 +1384,602 @@ run_tls_smoke() {
 
   kill "$tls_pid" >/dev/null 2>&1 || true
   wait "$tls_pid" >/dev/null 2>&1 || true
+  return 0
+}
+
+# W22-42: governance helpers. curl_expect_200 does not hand back bodies or
+# headers, which the ownership/dual-control chains below need, so these keep
+# the last response in GOV_CODE / GOV_BODY / GOV_HEADERS.
+GOV_CODE=""
+GOV_BODY=""
+GOV_HEADERS=""
+
+gov_curl() {
+  local method="$1" url="$2" auth="${3:-}" body="${4:-}" xff="${5:-}"
+  local args=(-sS -X "$method" -D - -o - --max-time 5 -w $'\n__GOVCODE__%{http_code}')
+  [[ -n "$auth" ]] && args+=(-H "Authorization: $auth")
+  [[ -n "$xff" ]] && args+=(-H "X-Forwarded-For: $xff")
+  [[ -n "$body" ]] && args+=(-H "Content-Type: application/json" -d "$body")
+  local raw
+  raw="$(curl "${args[@]}" "$url" 2>/dev/null || true)"
+  GOV_CODE="${raw##*__GOVCODE__}"
+  raw="${raw%$'\n'__GOVCODE__*}"
+  # -D - puts headers before the body, separated by a blank line; with a 100
+  # Continue or redirects there could be several blocks, the last is ours.
+  GOV_HEADERS="${raw%%$'\r\n\r\n'*}"
+  GOV_BODY="${raw#*$'\r\n\r\n'}"
+  [[ "$GOV_BODY" == "$raw" ]] && GOV_BODY=""
+  return 0
+}
+
+gov_assert() {
+  local name="$1" expected="$2" substr="${3:-}"
+  SMOKE_ASSERTIONS=$((SMOKE_ASSERTIONS + 1))
+  if [[ "$GOV_CODE" != "$expected" ]]; then
+    echo "[smoke] ERROR ${name}: expected HTTP ${expected}, got ${GOV_CODE:-request_error}" >&2
+    echo "[smoke] INFO response body: ${GOV_BODY:0:400}" >&2
+    SMOKE_ASSERTIONS_FAILED=$((SMOKE_ASSERTIONS_FAILED + 1))
+    return 0
+  fi
+  if [[ -n "$substr" && "$GOV_BODY" != *"$substr"* && "$GOV_HEADERS" != *"$substr"* ]]; then
+    echo "[smoke] ERROR ${name}: response missing expected text: ${substr}" >&2
+    echo "[smoke] INFO response body: ${GOV_BODY:0:400}" >&2
+    SMOKE_ASSERTIONS_FAILED=$((SMOKE_ASSERTIONS_FAILED + 1))
+    return 0
+  fi
+  echo "[smoke] PASS ${name}"
+}
+
+gov_assert_not() {
+  local name="$1" forbidden="$2"
+  SMOKE_ASSERTIONS=$((SMOKE_ASSERTIONS + 1))
+  if [[ -z "$GOV_CODE" || "$GOV_CODE" == "000" || "$GOV_CODE" == "$forbidden" ]]; then
+    echo "[smoke] ERROR ${name}: got HTTP ${GOV_CODE:-request_error}, which must not be ${forbidden}" >&2
+    SMOKE_ASSERTIONS_FAILED=$((SMOKE_ASSERTIONS_FAILED + 1))
+    return 0
+  fi
+  echo "[smoke] PASS ${name}"
+}
+
+# gov_json KEY: top-level field, falling back to data.KEY.
+gov_json() {
+  printf '%s' "$GOV_BODY" | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+k=sys.argv[1]
+v=d.get(k) if isinstance(d,dict) else None
+if v is None and isinstance(d,dict) and isinstance(d.get("data"),dict):
+    v=d["data"].get(k)
+if v is not None:
+    print(v)
+' "$1"
+}
+
+run_governance_smoke() {
+  # W22-42: one fresh plain-HTTP hub with three API-key principals (two
+  # admins, one viewer) exercising roles, the write gate, ownership, the
+  # transparency log, key-export dual control and the protocol rate limit.
+  local bin_path="$1"
+  local base_tmp_dir="$2"
+
+  echo "[smoke] --- Governance pass (roles, write gate, ownership, transparency, dual control, 429) ---"
+
+  if ! command -v python3 >/dev/null 2>&1 || ! command -v openssl >/dev/null 2>&1; then
+    skip_assertion "governance smoke" "needs python3 and openssl"
+    return 0
+  fi
+
+  local dir="$base_tmp_dir/gov-pass"
+  mkdir -p "$dir/data"
+  local log="$dir/app.log"
+  local port
+  if ! port="$(allocate_free_port)"; then
+    skip_assertion "governance smoke" "unable to allocate a free local port"
+    return 0
+  fi
+
+  local pepper="gov-smoke-pepper"
+  local v1 v2 vv
+  v1="$(python3 -c 'import hmac,hashlib,sys;print(hmac.new(sys.argv[1].encode(),sys.argv[2].encode(),hashlib.sha256).hexdigest())' "$pepper" gov-admin1-secret)"
+  v2="$(python3 -c 'import hmac,hashlib,sys;print(hmac.new(sys.argv[1].encode(),sys.argv[2].encode(),hashlib.sha256).hexdigest())' "$pepper" gov-admin2-secret)"
+  vv="$(python3 -c 'import hmac,hashlib,sys;print(hmac.new(sys.argv[1].encode(),sys.argv[2].encode(),hashlib.sha256).hexdigest())' "$pepper" gov-viewer-secret)"
+  local keys_json
+  keys_json="[{\"kid\":\"gadm1\",\"principal_id\":\"admin-1\",\"role\":\"pki-admin\",\"scopes\":[\"*\"],\"active\":true,\"secret_verifier\":\"$v1\"},{\"kid\":\"gadm2\",\"principal_id\":\"admin-2\",\"role\":\"pki-admin\",\"scopes\":[\"*\"],\"active\":true,\"secret_verifier\":\"$v2\"},{\"kid\":\"gview\",\"principal_id\":\"viewer-1\",\"role\":\"viewer\",\"scopes\":[],\"active\":true,\"secret_verifier\":\"$vv\"}]"
+
+  # APP_TRUSTED_PROXY_CIDRS and KRYPTKEEPER_KEY_DUAL_CONTROL stay unset on
+  # purpose: the XFF assertion needs an untrusted peer, and dual control must
+  # be the (default-on) behaviour under test.
+  APP_BOOTSTRAP_TOKEN="gov-smoke-token" AUTH_MODE="bootstrap" APP_CERTIFICATE_PROVIDER="ca" \
+    APP_DISCOVERY_PROVIDER="db" APP_NOTIFICATION_PROVIDER="file" \
+    APP_CREDENTIAL_STORE_PASSPHRASE="gov-smoke-cred-passphrase-32-bytes!!" \
+    KRYPTKEEPER_KEYSTORE_PASSPHRASE="gov-smoke-keystore-passphrase-32b!!" \
+    KRYPTKEEPER_DATA_DIR="$dir/data" KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT="true" \
+    KRYPTKEEPER_CA_NAME="Gov Smoke Root" KRYPTKEEPER_TLS_DISABLE="true" \
+    APP_API_KEY_AUTH_ENABLED="true" APP_API_KEY_PEPPER="$pepper" APP_API_KEYS_JSON="$keys_json" \
+    PORT="$port" "$bin_path" >"$log" 2>&1 &
+  local pid="$!"
+  track_pid "$pid"
+  track_port "$port"
+
+  local base="http://127.0.0.1:${port}"
+  local attempt up=""
+  for attempt in {1..120}; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      echo "[smoke] ERROR governance pass: local binary exited before health checks completed" >&2
+      [[ -f "$log" ]] && cat "$log" >&2
+      return 1
+    fi
+    if curl -sS -o /dev/null --max-time 1 "$base/healthz" >/dev/null 2>&1; then
+      up=1
+      break
+    fi
+    sleep 0.25
+  done
+  if [[ -z "$up" ]]; then
+    echo "[smoke] ERROR governance pass: hub never came up on $base" >&2
+    [[ -f "$log" ]] && cat "$log" >&2
+    kill_pid "$pid"
+    return 1
+  fi
+
+  local A1="Bearer kk_gadm1_gov-admin1-secret"
+  local A2="Bearer kk_gadm2_gov-admin2-secret"
+  local V="Bearer kk_gview_gov-viewer-secret"
+
+  # 1. Roles (UC-E03)
+  gov_curl GET "$base/api/v1/roles" "$A1"
+  gov_assert "governance: roles list includes pki-admin" 200 '"name":"pki-admin"'
+  gov_curl POST "$base/api/v1/roles" "$A1" '{"name":"smoke-reader","description":"smoke","permissions":["certificate.read"]}'
+  gov_assert "governance: custom role create" 201 'smoke-reader'
+  gov_curl GET "$base/api/v1/roles" "$A1"
+  gov_assert "governance: roles list includes the new custom role" 200 'smoke-reader'
+
+  # 2. Write gate (UC-E03): the gate answers before the handler, so {} suffices.
+  gov_curl POST "$base/api/v1/certificates" "$V" '{}'
+  gov_assert "governance: viewer cannot issue certificates" 403 '"error":"forbidden"'
+  gov_curl POST "$base/api/v1/cas" "$V" '{}'
+  gov_assert "governance: viewer cannot create CAs" 403 '"error":"forbidden"'
+  gov_curl POST "$base/api/v1/templates" "$V" '{}'
+  gov_assert "governance: viewer cannot create templates" 403 '"error":"forbidden"'
+  gov_curl POST "$base/api/v1/users/invite" "$V" '{}'
+  gov_assert "governance: viewer cannot invite users" 403 '"error":"forbidden"'
+  gov_curl DELETE "$base/api/v1/tenants/x" "$V"
+  gov_assert "governance: viewer cannot delete tenants" 403 '"error":"forbidden"'
+  gov_curl POST "$base/api/v1/users/invite" "$A1" '{}'
+  gov_assert_not "governance: admin control passes the write gate on user invite" 403
+
+  # 3. Ownership (UC-E06)
+  local cert_pem fp import_body
+  cert_pem="$(openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout /dev/null -subj "/CN=gov-smoke.example.test" -days 30 2>/dev/null || true)"
+  if [[ -z "$cert_pem" ]]; then
+    skip_assertion "governance: ownership" "openssl could not generate a certificate"
+  else
+    fp="$(printf '%s\n' "$cert_pem" | openssl x509 -noout -fingerprint -sha256 2>/dev/null | sed 's/.*=//' | tr -d ':' | tr 'A-F' 'a-f')"
+    import_body="$(printf '%s' "$cert_pem" | python3 -c 'import json,sys;print(json.dumps({"certificate_pem":sys.stdin.read()}))')"
+    gov_curl POST "$base/api/v1/certificates/import" "$A1" "$import_body"
+    gov_assert "governance: certificate import" 201
+    local loc
+    loc="$(printf '%s\n' "$GOV_HEADERS" | tr -d '\r' | awk 'tolower($1)=="location:"{print $2}' | tail -1)"
+    [[ -n "$loc" ]] && fp="${loc##*/}"
+    local own='{"owner_email":"owner@example.test","owner_team":"platform","service_name":"gov-smoke"}'
+    gov_curl PATCH "$base/api/v1/certificates/${fp}/ownership" "$A1" "$own"
+    gov_assert "governance: ownership PATCH by admin" 200 '"owner_team":"platform"'
+    gov_curl PATCH "$base/api/v1/certificates/${fp}/ownership" "$V" "$own"
+    gov_assert "governance: ownership PATCH by viewer is refused" 403
+  fi
+
+  # 4. Transparency (UC-E07): a 503 here means the seed was not auto-provisioned.
+  gov_curl GET "$base/api/v1/audit/transparency/checkpoint" "$A1"
+  gov_assert "governance: transparency checkpoint is signed" 200 '"signature"'
+  gov_assert "governance: transparency checkpoint carries the public key" 200 '"public_key"'
+  gov_curl GET "$base/api/v1/audit/transparency/inclusion?index=0" "$A1"
+  gov_assert "governance: transparency inclusion proof" 200 '"tree_size"'
+  gov_curl GET "$base/api/v1/audit/transparency/consistency?from=1" "$A1"
+  gov_assert "governance: transparency consistency proof" 200 '"from_size":1'
+
+  # 5. Key export dual control (UC-E02, FR-P50). Grants bind to the PROPOSER
+  # and need a different APPROVER (key_dual_control.go), so the proposer
+  # redeems; the second admin approving is what's asserted.
+  local pass="gov-export-passphrase-0123456789" aid
+  gov_curl POST "$base/api/v1/keys" "$A1" '{"id":"gov-key","algorithm":"ECDSA-P256"}'
+  gov_assert "governance: key create" 201
+  gov_curl POST "$base/api/v1/keys/gov-key/export" "$A1" "{\"passphrase\":\"$pass\"}"
+  gov_assert "governance: key export is held for approval" 202
+  aid="$(gov_json action_id)"
+  if [[ -z "$aid" ]]; then
+    echo "[smoke] ERROR governance: no action_id in export response" >&2
+    SMOKE_ASSERTIONS=$((SMOKE_ASSERTIONS + 1))
+    SMOKE_ASSERTIONS_FAILED=$((SMOKE_ASSERTIONS_FAILED + 1))
+  else
+    local redeem="{\"passphrase\":\"$pass\",\"approved_action_id\":\"$aid\"}"
+    gov_curl POST "$base/api/v1/keys/gov-key/export" "$A1" "$redeem"
+    gov_assert "governance: redeem before approval is refused" 403
+    gov_curl POST "$base/api/v1/pending-actions/${aid}/approve" "$A1"
+    gov_assert "governance: self-approval is refused" 403
+    gov_curl POST "$base/api/v1/pending-actions/${aid}/approve" "$A2"
+    gov_assert "governance: second admin approves" 200
+    gov_curl POST "$base/api/v1/keys/gov-key/export" "$A2" "$redeem"
+    gov_assert "governance: grant is bound to the proposing credential" 403
+    gov_curl POST "$base/api/v1/keys/gov-key/export" "$A1" "$redeem"
+    gov_assert "governance: proposer redeems the approved grant" 200 'BEGIN'
+    gov_assert "governance: export is served as PEM" 200 'application/x-pem-file'
+    gov_curl POST "$base/api/v1/keys/gov-key/export" "$A1" "$redeem"
+    gov_assert "governance: grant is single use" 403
+  fi
+
+  # 6. Protocol burst + XFF spoofing (UC-M22) -- LAST: it exhausts the
+  # loopback IP's unauthenticated bucket. The peer is untrusted, so rotating
+  # X-Forwarded-For must not mint fresh buckets.
+  local n
+  for n in $(seq 1 30); do
+    gov_curl GET "$base/acme/directory" "" "" "203.0.113.$n"
+    gov_assert "governance: acme burst request $n" 200 >/dev/null
+  done
+  gov_curl GET "$base/acme/directory" "" "" "203.0.113.200"
+  gov_assert "governance: 31st protocol request is rate limited despite a spoofed XFF" 429 'Retry-After'
+  gov_curl GET "$base/healthz"
+  gov_assert "governance: healthz is outside the protocol limiter" 200
+
+  kill_pid "$pid"
+  return 0
+}
+
+# W24-26: own CA-provider hub (clean data dir); asserts 500-cert bulk-import
+# scale, idempotent rerun, per-row CSV failure, private-key rejection and the
+# estate (origin,management_state) bucket sums.
+smoke_assert() {
+  local name="$1"
+  local ok="$2"
+  SMOKE_ASSERTIONS=$((SMOKE_ASSERTIONS + 1))
+  if [[ "$ok" != "true" ]]; then
+    SMOKE_ASSERTIONS_FAILED=$((SMOKE_ASSERTIONS_FAILED + 1))
+    echo "[smoke] ERROR ${name}" >&2
+  fi
+}
+
+# smoke_json_post <base_url> <token> <path> <json-file>: prints "<http_code> <body-file>".
+smoke_json_post() {
+  local base="$1" token="$2" path="$3" file="$4"
+  local out="${file}.resp"
+  local code
+  code="$(curl -sS --max-time 120 -o "$out" -w "%{http_code}" -H "Authorization: Bearer $token" \
+    -H "Content-Type: application/json" -d @"$file" "$base$path" 2>/dev/null || true)"
+  echo "${code:-000} $out"
+}
+
+# smoke_jq <file> <python-expr over d>: evaluates against parsed JSON, prints result.
+smoke_jq() {
+  python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+print(eval(sys.argv[2]))' "$1" "$2" 2>/dev/null || echo "ERR"
+}
+
+# estate_gen_certs <start> <count> <outdir> <bundle-file>: one EC key, distinct CN+serial per cert.
+estate_gen_certs() {
+  local start="$1" count="$2" outdir="$3" bundle="$4"
+  local key="$outdir/ec.key" i
+  mkdir -p "$outdir"
+  openssl ecparam -name prime256v1 -genkey -noout -out "$key" 2>/dev/null
+  : >"$bundle"
+  for ((i = start; i < start + count; i++)); do
+    openssl req -x509 -new -key "$key" -subj "/CN=smoke-$i.example.test" -set_serial "$i" -days 30 \
+      -out "$outdir/c$i.pem" 2>/dev/null
+    cat "$outdir/c$i.pem" >>"$bundle"
+  done
+}
+
+estate_total() {
+  local base="$1" token="$2" origin="$3" state="$4"
+  curl -sS --max-time 10 -H "Authorization: Bearer $token" \
+    "$base/api/v1/certificates?origin=${origin}&management_state=${state}&limit=1" 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["meta"]["total"])' 2>/dev/null || echo "ERR"
+}
+
+estate_dash_sum() {
+  local base="$1" token="$2"
+  # the db cert-summary provider caches for 2s (certSummaryCacheTTL); wait it
+  # out so a read after an import never returns the pre-import snapshot.
+  sleep 2.5
+  curl -sS --max-time 10 -H "Authorization: Bearer $token" "$base/api/v1/dashboard/summary" 2>/dev/null \
+    | python3 -c 'import json,sys; c=json.load(sys.stdin)["data"]["certificates"]; print(c["managed"]+c["external"]+c["unmanaged"])' 2>/dev/null || echo "ERR"
+}
+
+run_estate_import_smoke() {
+  local bin_path="$1"
+  local base_tmp_dir="$2"
+  local P="estate smoke:"
+
+  echo "[smoke] --- estate import pass (500-cert bulk import, bucket sums) ---"
+
+  local tool
+  for tool in openssl python3 curl; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      skip_assertion "estate import smoke" "$tool not installed"
+      return 0
+    fi
+  done
+
+  local dir="$base_tmp_dir/estate-pass"
+  mkdir -p "$dir/data"
+  local port
+  if ! port="$(allocate_free_port)"; then
+    echo "[smoke] ERROR estate pass: unable to allocate a free port" >&2
+    SMOKE_ASSERTIONS=$((SMOKE_ASSERTIONS + 1))
+    SMOKE_ASSERTIONS_FAILED=$((SMOKE_ASSERTIONS_FAILED + 1))
+    return 0
+  fi
+  local token="smoke-estate-token"
+  local base="http://127.0.0.1:${port}"
+
+  # APP_CERTS_SUMMARY_PROVIDER=db: the file-backed summary reports zero
+  # managed/external/unmanaged buckets, so the dashboard sums need the db one.
+  APP_BOOTSTRAP_TOKEN="$token" AUTH_MODE="bootstrap" APP_CERTIFICATE_PROVIDER="ca" \
+    APP_DISCOVERY_PROVIDER="db" APP_NOTIFICATION_PROVIDER="file" APP_CERTS_SUMMARY_PROVIDER="db" \
+    APP_CREDENTIAL_STORE_PASSPHRASE="estate-smoke-cred-passphrase-32-bytes!" \
+    KRYPTKEEPER_KEYSTORE_PASSPHRASE="estate-smoke-keystore-passphrase-32b!" \
+    KRYPTKEEPER_DATA_DIR="$dir/data" KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT="true" \
+    KRYPTKEEPER_CA_NAME="Estate Smoke Root CA" KRYPTKEEPER_TLS_DISABLE="true" \
+    PORT="$port" "$bin_path" >"$dir/app.log" 2>&1 &
+  local pid="$!"
+  track_pid "$pid"
+  track_port "$port"
+
+  local attempt up=""
+  for attempt in {1..120}; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      echo "[smoke] ERROR estate pass: hub exited early" >&2
+      cat "$dir/app.log" >&2
+      smoke_assert "$P hub started" false
+      return 0
+    fi
+    if curl -sS -o /dev/null --max-time 1 "$base/healthz" >/dev/null 2>&1; then up=1; break; fi
+    sleep 0.25
+  done
+  if [[ -z "$up" ]]; then
+    smoke_assert "$P hub reachable" false
+    kill_pid "$pid"
+    return 0
+  fi
+
+  # Fixtures: A=1..500 (bulk), B=501..550, C=551..600 (ADCS export dir), D=601..602 (CSV).
+  estate_gen_certs 1 500 "$dir/a" "$dir/a.pem"
+  estate_gen_certs 501 50 "$dir/b" "$dir/b.pem"
+  estate_gen_certs 551 50 "$dir/c" "$dir/c.pem"
+  estate_gen_certs 601 2 "$dir/d" "$dir/d.pem"
+
+  local jpy='import json,sys; print(json.dumps({"format":"pem","bundle":open(sys.argv[1]).read()}))'
+  python3 -c "$jpy" "$dir/a.pem" >"$dir/a.json"
+  python3 -c "$jpy" "$dir/b.pem" >"$dir/b.json"
+
+  local code resp
+  # a. 500 in one call
+  read -r code resp < <(smoke_json_post "$base" "$token" /api/v1/certificates/bulk-import "$dir/a.json")
+  smoke_assert "$P 500-cert bulk import (http=$code imported=$(smoke_jq "$resp" 'd["data"]["imported"]'))" \
+    "$([[ "$code" == "200" && "$(smoke_jq "$resp" 'd["data"]["imported"]==500 and d["data"]["failed"]==[]')" == "True" ]] && echo true || echo false)"
+  # b. rerun
+  read -r code resp < <(smoke_json_post "$base" "$token" /api/v1/certificates/bulk-import "$dir/a.json")
+  smoke_assert "$P rerun reports 0 imported and 500 duplicates (http=$code)" \
+    "$([[ "$code" == "200" && "$(smoke_jq "$resp" 'd["data"]["imported"]==0 and d["data"]["skipped_duplicates"]==500')" == "True" ]] && echo true || echo false)"
+  # c. CSV with a bad middle row
+  python3 - "$dir/d/c601.pem" "$dir/d/c602.pem" "$dir" <<'PY'
+import base64, json, re, sys
+def der_b64(path):
+    pem = open(path).read()
+    return "".join(re.search(r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", pem, re.S).group(1).split())
+rows = ["cert_b64,owner_email,owner_team,service_name",
+        der_b64(sys.argv[1]) + ",a@example.test,team,svc",
+        # valid base64 that is not a certificate: the importer fails this row
+        # only (a non-base64 cell is a whole-request 400 by design).
+        base64.b64encode(b"this is not a certificate").decode() + ",b@example.test,team,svc",
+        der_b64(sys.argv[2]) + ",c@example.test,team,svc"]
+json.dump({"format": "csv", "bundle": "\n".join(rows) + "\n"}, open(sys.argv[3] + "/csv.json", "w"))
+PY
+  read -r code resp < <(smoke_json_post "$base" "$token" /api/v1/certificates/bulk-import "$dir/csv.json")
+  smoke_assert "$P CSV bad row fails only that row (http=$code)" \
+    "$([[ "$code" == "200" && "$(smoke_jq "$resp" 'd["data"]["imported"]==2 and len(d["data"]["failed"])==1')" == "True" ]] && echo true || echo false)"
+  # d. private key rejected, nothing imported
+  local before_total after_total
+  before_total="$(estate_dash_sum "$base" "$token")"
+  openssl ecparam -name prime256v1 -genkey 2>/dev/null >"$dir/pk.pem"
+  openssl req -x509 -new -key "$dir/a/ec.key" -subj "/CN=smoke-pk.example.test" -set_serial 900 -days 30 \
+    >"$dir/pk-cert.pem" 2>/dev/null || true
+  cat "$dir/pk-cert.pem" "$dir/pk.pem" >"$dir/pk-bundle.pem"
+  python3 -c "$jpy" "$dir/pk-bundle.pem" >"$dir/pk.json"
+  read -r code resp < <(smoke_json_post "$base" "$token" /api/v1/certificates/bulk-import "$dir/pk.json")
+  after_total="$(estate_dash_sum "$base" "$token")"
+  echo "[smoke] estate pass: private-key import returned HTTP $code"
+  smoke_assert "$P private key input rejected with 400/422 and nothing imported (http=$code)" \
+    "$([[ ( "$code" == "400" || "$code" == "422" ) && "$before_total" == "$after_total" && "$before_total" != "ERR" ]] && echo true || echo false)"
+
+  # e. baselines
+  local summary0 iu0 im0 se0
+  summary0="$(estate_dash_sum "$base" "$token")"
+  iu0="$(estate_total "$base" "$token" imported unmanaged)"
+  im0="$(estate_total "$base" "$token" imported managed)"
+  se0="$(estate_total "$base" "$token" synced external)"
+  smoke_assert "$P baseline snapshots readable (dashboard=$summary0)" \
+    "$([[ "$summary0" != "ERR" && "$iu0" != "ERR" && "$im0" != "ERR" && "$se0" != "ERR" ]] && echo true || echo false)"
+
+  # f. B imported + 20 taken over; ADCS export dir C synced
+  read -r code resp < <(smoke_json_post "$base" "$token" /api/v1/certificates/bulk-import "$dir/b.json")
+  smoke_assert "$P import 50 mixed-origin certs (B) (http=$code)" \
+    "$([[ "$code" == "200" && "$(smoke_jq "$resp" 'd["data"]["imported"]==50')" == "True" ]] && echo true || echo false)"
+  local takeover_ok=true fp n=0
+  for fp in $(smoke_jq "$resp" '" ".join(d["data"]["fingerprints"][:20])'); do
+    printf '{"fingerprint":"%s","renewal_path":{"mode":"internal"}}' "$fp" >"$dir/take.json"
+    local tcode tresp
+    read -r tcode tresp < <(smoke_json_post "$base" "$token" /api/v1/estate/takeover "$dir/take.json")
+    [[ "$tcode" == "200" ]] || takeover_ok=false
+    n=$((n + 1))
+  done
+  [[ "$n" == "20" ]] || takeover_ok=false
+  smoke_assert "$P 20 takeovers each return 200 (n=$n)" "$takeover_ok"
+
+  mkdir -p "$dir/adcs"
+  cp "$dir"/c/c*.pem "$dir/adcs/"
+  python3 -c 'import json,sys; print(json.dumps({"name":"smoke-adcs","type":"adcs_export","config_json":json.dumps({"export_path":sys.argv[1]})}))' "$dir/adcs" >"$dir/src.json"
+  local scode sresp
+  read -r scode sresp < <(smoke_json_post "$base" "$token" /api/v1/inventory-sources "$dir/src.json")
+  local sid
+  sid="$(smoke_jq "$sresp" 'd["data"]["id"]')"
+  echo '{}' >"$dir/empty.json"
+  read -r code resp < <(smoke_json_post "$base" "$token" "/api/v1/inventory-sources/${sid}/sync" "$dir/empty.json")
+  smoke_assert "$P ADCS export source over 50 files synced=50 (create=$scode sync=$code)" \
+    "$([[ "$scode" =~ ^20 && "$code" == "200" && "$(smoke_jq "$resp" 'd["data"]["synced"]==50')" == "True" ]] && echo true || echo false)"
+
+  # g. bucket deltas
+  local iu1 im1 se1
+  iu1="$(estate_total "$base" "$token" imported unmanaged)"
+  im1="$(estate_total "$base" "$token" imported managed)"
+  se1="$(estate_total "$base" "$token" synced external)"
+  smoke_assert "$P bucket deltas imported/unmanaged +30, imported/managed +20, synced/external +50 (got $((iu1 - iu0)),$((im1 - im0)),$((se1 - se0)))" \
+    "$([[ "$iu1" != "ERR" && "$im1" != "ERR" && "$se1" != "ERR" && $((iu1 - iu0)) -eq 30 && $((im1 - im0)) -eq 20 && $((se1 - se0)) -eq 50 ]] && echo true || echo false)"
+  # h. dashboard
+  local summary1
+  summary1="$(estate_dash_sum "$base" "$token")"
+  smoke_assert "$P dashboard managed+external+unmanaged grew by exactly 100 (got $((summary1 - summary0)))" \
+    "$([[ "$summary1" != "ERR" && "$summary0" != "ERR" && $((summary1 - summary0)) -eq 100 ]] && echo true || echo false)"
+
+  kill_pid "$pid"
+  return 0
+}
+
+run_reports_smoke() {
+  local bin_path="$1"
+  local base_tmp_dir="$2"
+  local P="reports smoke:"
+
+  echo "[smoke] --- reports pass (/reports/* contract operations, /cbom, per-framework evidence PDFs) ---"
+
+  local tool
+  for tool in openssl python3 curl; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      skip_assertion "reports smoke" "$tool not installed"
+      return 0
+    fi
+  done
+
+  local dir="$base_tmp_dir/reports-pass"
+  mkdir -p "$dir/data"
+  local port
+  if ! port="$(allocate_free_port)"; then
+    echo "[smoke] ERROR reports pass: unable to allocate a free port" >&2
+    SMOKE_ASSERTIONS=$((SMOKE_ASSERTIONS + 1))
+    SMOKE_ASSERTIONS_FAILED=$((SMOKE_ASSERTIONS_FAILED + 1))
+    return 0
+  fi
+  local token="smoke-reports-token"
+  local base="http://127.0.0.1:${port}"
+
+  APP_BOOTSTRAP_TOKEN="$token" AUTH_MODE="bootstrap" APP_CERTIFICATE_PROVIDER="ca" \
+    APP_DISCOVERY_PROVIDER="db" APP_NOTIFICATION_PROVIDER="file" APP_CERTS_SUMMARY_PROVIDER="db" \
+    APP_CREDENTIAL_STORE_PASSPHRASE="reports-smoke-cred-passphrase-32-bytes!" \
+    KRYPTKEEPER_KEYSTORE_PASSPHRASE="reports-smoke-keystore-passphrase-32b!" \
+    KRYPTKEEPER_DATA_DIR="$dir/data" KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT="true" \
+    KRYPTKEEPER_CA_NAME="Reports Smoke Root CA" KRYPTKEEPER_TLS_DISABLE="true" \
+    PORT="$port" "$bin_path" >"$dir/app.log" 2>&1 &
+  local pid="$!"
+  track_pid "$pid"
+  track_port "$port"
+
+  local attempt up=""
+  for attempt in {1..120}; do
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      echo "[smoke] ERROR reports pass: hub exited early" >&2
+      cat "$dir/app.log" >&2
+      smoke_assert "$P hub started" false
+      return 0
+    fi
+    if curl -sS -o /dev/null --max-time 1 "$base/healthz" >/dev/null 2>&1; then up=1; break; fi
+    sleep 0.25
+  done
+  if [[ -z "$up" ]]; then
+    smoke_assert "$P hub reachable" false
+    kill_pid "$pid"
+    return 0
+  fi
+
+  # Seed a non-empty estate so every report body is non-trivial.
+  estate_gen_certs 1 30 "$dir/a" "$dir/a.pem"
+  local jpy='import json,sys; print(json.dumps({"format":"pem","bundle":open(sys.argv[1]).read()}))'
+  python3 -c "$jpy" "$dir/a.pem" >"$dir/a.json"
+  local code resp
+  read -r code resp < <(smoke_json_post "$base" "$token" /api/v1/certificates/bulk-import "$dir/a.json")
+  smoke_assert "$P seed 30-cert bulk import (http=$code)" \
+    "$([[ "$code" == "200" && "$(smoke_jq "$resp" 'd["data"]["imported"]==30')" == "True" ]] && echo true || echo false)"
+
+  # Operation list comes from the contract so the count never goes stale.
+  python3 - "$ROOT_DIR/docs/openapi.yaml" >"$dir/report-ops.tsv" <<'PY'
+import re,sys
+cur=None
+for l in open(sys.argv[1]):
+    m=re.match(r'^  (/\S+):\s*$',l)
+    if m: cur=m.group(1); continue
+    m=re.match(r'^    (get|post|put|patch|delete):\s*$',l)
+    if m and cur and cur.startswith('/reports/'): print(m.group(1).upper()+"\t"+cur)
+PY
+  local nops
+  nops="$(wc -l <"$dir/report-ops.tsv" | tr -d ' ')"
+  smoke_assert "$P openapi lists >=31 /reports operations (got $nops)" \
+    "$([[ "$nops" -ge 31 ]] && echo true || echo false)"
+  smoke_assert "$P openapi lists /reports/crypto-posture" \
+    "$(if grep -q $'\t/reports/crypto-posture$' "$dir/report-ops.tsv"; then echo true; else echo false; fi)"
+
+  local method path rcode concrete
+  while IFS=$'\t' read -r method path; do
+    if [[ "$method" == "GET" ]]; then
+      if [[ "$path" == *"{"* ]]; then
+        skip_assertion "$P GET $path" "path parameter"
+        continue
+      fi
+      rcode="$(curl -sS --max-time "${CURL_MAX_TIME:-10}" -o "$dir/body" -w '%{http_code}' \
+        -H "Authorization: Bearer $token" "$base/api/v1$path" 2>/dev/null || true)"
+      smoke_assert "$P GET $path 200 non-empty (http=$rcode)" \
+        "$([[ "$rcode" == "200" && -s "$dir/body" ]] && echo true || echo false)"
+    else
+      concrete="$(printf '%s' "$path" | sed -E 's/\{[^}]*\}/smoke-none/g')"
+      rcode="$(curl -sS --max-time "${CURL_MAX_TIME:-10}" -o /dev/null -w '%{http_code}' -X "$method" \
+        "$base/api/v1$concrete" 2>/dev/null || true)"
+      smoke_assert "$P $method $path unauthenticated 401 (http=$rcode)" \
+        "$([[ "$rcode" == "401" ]] && echo true || echo false)"
+    fi
+  done <"$dir/report-ops.tsv"
+
+  # CycloneDX CBOM.
+  rcode="$(curl -sS --max-time "${CURL_MAX_TIME:-10}" -o "$dir/cbom.json" -w '%{http_code}' \
+    -H "Authorization: Bearer $token" "$base/api/v1/cbom" 2>/dev/null || true)"
+  smoke_assert "$P GET /cbom 200 CycloneDX 1.6 (http=$rcode)" \
+    "$(if [[ "$rcode" == "200" && -s "$dir/cbom.json" ]] && grep -q '"bomFormat"' "$dir/cbom.json" \
+        && grep -Eq '"specVersion": ?"1\.6"' "$dir/cbom.json"; then echo true; else echo false; fi)"
+
+  # Per-framework evidence PDFs.
+  local fw today today2 isodate ok
+  for fw in soc2 pci nist dora nis2 fedramp; do
+    today="$(date -u +%Y%m%d)"
+    isodate="$(date -u +%Y-%m-%d)"
+    rcode="$(curl -sS --max-time 60 -D "$dir/h-$fw" -o "$dir/$fw.pdf" -w '%{http_code}' \
+      -H "Authorization: Bearer $token" \
+      "$base/api/v1/reports/compliance-evidence?framework=$fw&format=pdf" 2>/dev/null || true)"
+    today2="$(date -u +%Y%m%d)"
+    ok=true
+    [[ "$rcode" == "200" ]] || ok=false
+    [[ -f "$dir/$fw.pdf" && "$(head -c 4 "$dir/$fw.pdf" 2>/dev/null)" == "%PDF" ]] || ok=false
+    [[ -f "$dir/$fw.pdf" && "$(wc -c <"$dir/$fw.pdf" | tr -d ' ')" -gt 1000 ]] || ok=false
+    if ! { grep -a -q "/CreationDate (D:${today}" "$dir/$fw.pdf" 2>/dev/null \
+        || grep -a -q "/CreationDate (D:${today2}" "$dir/$fw.pdf" 2>/dev/null; }; then ok=false; fi
+    if ! grep -i -q "content-disposition:.*compliance-$fw-$isodate" "$dir/h-$fw" 2>/dev/null; then ok=false; fi
+    smoke_assert "$P $fw evidence PDF (%PDF, generated date) (http=$rcode)" "$ok"
+  done
+
+  rcode="$(curl -sS --max-time 60 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" \
+    "$base/api/v1/reports/compliance-evidence?framework=bogus&format=pdf" 2>/dev/null || true)"
+  smoke_assert "$P framework=bogus format=pdf returns 400 (http=$rcode)" \
+    "$([[ "$rcode" == "400" ]] && echo true || echo false)"
+
+  kill_pid "$pid"
   return 0
 }
 

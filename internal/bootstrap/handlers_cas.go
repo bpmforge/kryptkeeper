@@ -5,15 +5,20 @@
 package bootstrap
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/ca"
 )
 
 // caEffectiveStatus derives the status a CA should present from its
@@ -50,6 +55,15 @@ func withCAEffectiveStatus(item CAListItem, now time.Time) CAListItem {
 }
 
 func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAProvider, tenantStore TenantStore, auditProvider AuditProvider) {
+	dualControl := NewKeyDualControlFromEnv(NewPendingActionStoreFromEnv())
+
+	// W23-03: import an external self-signed root as a keyless trust anchor,
+	// behind D-122 dual control. Registered with an exact pattern so it wins
+	// over the /api/v1/cas/ subtree below.
+	mux.HandleFunc("/api/v1/cas/import", func(w http.ResponseWriter, r *http.Request) {
+		handleCAImport(w, r, auth, caProvider, tenantStore, auditProvider, dualControl)
+	})
+
 	mux.HandleFunc("/api/v1/cas", func(w http.ResponseWriter, r *http.Request) {
 		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
 		if err != nil {
@@ -74,6 +88,13 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 				_, _ = w.Write([]byte(`{"error":"bad_request","message":"subject_cn is required"}`))
 				return
 			}
+			// L-07: signing under another tenant's (or the default) CA would
+			// mint a sub-CA from a key the caller does not own.
+			if req.ParentCAID != "" && !caVisibleToTenant(r.Context(), tenantStore, pd, req.ParentCAID) {
+				emitAuditEvent(r, auditProvider, pd.ID, "ca.create", "ca", "cas", AuditOutcomeDenied)
+				writeForbidden(w, "parent certificate authority is not visible in your tenant")
+				return
+			}
 			if !tenantBypass(pd) && tenantStore != nil {
 				exists, terr := tenantStore.TenantExists(r.Context(), pd.Tenant)
 				if terr != nil {
@@ -90,8 +111,14 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 			created, err := caProvider.CreateCA(r.Context(), req)
 			if err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "ca.create", "ca", "cas", AuditOutcomeFailure)
-				log.Printf("ca create failed: %v", err)
+				logging.Warnf("ca create failed: %v", err)
 				w.Header().Set("Content-Type", "application/json")
+				if errors.Is(err, errUnsupportedCAAlgorithm) {
+					w.WriteHeader(http.StatusBadRequest)
+					body, _ := json.Marshal(map[string]any{"error": "bad_request", "message": err.Error(), "supported_algorithms": caSupportedAlgorithms})
+					_, _ = w.Write(body)
+					return
+				}
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				body, _ := json.Marshal(map[string]string{"error": "unprocessable_entity", "message": err.Error()})
 				_, _ = w.Write(body)
@@ -100,19 +127,23 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 			created = withCAEffectiveStatus(created, time.Now().UTC())
 			if !tenantBypass(pd) && pd.Tenant != DefaultTenant && tenantStore != nil {
 				if merr := tenantStore.SetCATenant(r.Context(), created.ID, pd.Tenant); merr != nil {
-					log.Printf("auto-map ca %s to tenant %s failed: %v", created.ID, pd.Tenant, merr)
+					logging.Warnf("auto-map ca %s to tenant %s failed: %v", created.ID, pd.Tenant, merr)
 				}
 			}
 			caSummary := fmt.Sprintf(`{"name":%q,"type":%q,"algorithm":%q,"subject_cn":%q}`,
 				req.Name, req.Type, req.Algorithm, req.SubjectCN)
-			emitAuditEventDetail(r, auditProvider, pd.ID, "ca.create", "ca", created.ID, AuditOutcomeSuccess, caSummary)
+			createAction := "ca.create"
+			if created.Status == ca.CAStatusPendingCertificate {
+				createAction = "ca.csr_generate" // key generated, CSR issued, awaiting the offline-signed certificate
+			}
+			emitAuditEventDetail(r, auditProvider, pd.ID, createAction, "ca", created.ID, AuditOutcomeSuccess, caSummary)
 			resp := struct {
 				Data CAListItem `json:"data"`
 			}{Data: created}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/cas POST response: %v", err)
+				logging.Warnf("failed to encode /api/v1/cas POST response: %v", err)
 			}
 			return
 		}
@@ -129,17 +160,27 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 			Status: strings.TrimSpace(r.URL.Query().Get("status")),
 		}
 
-		result, err := caProvider.ListCAs(r.Context(), query)
+		// L-20: for a tenant-scoped caller, filter the whole set first so
+		// total and next_cursor describe only their rows.
+		caScoped := tenantStore != nil && !tenantBypass(pd)
+		var result CAListResult
+		if caScoped {
+			result, err = listCAsTenantFiltered(r.Context(), caProvider, tenantStore, pd, query)
+		} else {
+			result, err = caProvider.ListCAs(r.Context(), query)
+		}
 		if err != nil {
 			emitAuditEvent(r, auditProvider, pd.ID, "ca.list", "ca", "cas", AuditOutcomeFailure)
-			log.Printf("ca list unavailable: %v", err)
+			logging.Warnf("ca list unavailable: %v", err)
 			writeServiceUnavailable(w, "ca list unavailable")
 			return
 		}
 		emitAuditEvent(r, auditProvider, pd.ID, "ca.list", "ca", "cas", AuditOutcomeSuccess)
 
 		// v2.2: scope CAs to the caller's tenant (no-op unless MULTI_TENANCY on).
-		result.Items = filterCAsByTenant(r.Context(), tenantStore, pd, result.Items)
+		if !caScoped {
+			result.Items = filterCAsByTenant(r.Context(), tenantStore, pd, result.Items)
+		}
 
 		// S-43: recompute each item's presented status from certificate
 		// validity before it ever reaches a caller. fetchedCount is captured
@@ -200,7 +241,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/cas response: %v", err)
+			logging.Warnf("failed to encode /api/v1/cas response: %v", err)
 		}
 	})
 
@@ -216,6 +257,11 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 		if tail == "" {
 			emitAuditEvent(r, auditProvider, pd.ID, "ca.get", "ca", "", AuditOutcomeFailure)
 			writeNotFound(w, "ca not found")
+			return
+		}
+
+		if strings.HasSuffix(tail, "/certificate") {
+			handleCAComplete(w, r, caProvider, tenantStore, auditProvider, pd, strings.TrimSuffix(tail, "/certificate"))
 			return
 		}
 
@@ -251,7 +297,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "ca.suspend", "ca", id, AuditOutcomeFailure)
-				log.Printf("ca suspend unavailable: %v", err)
+				logging.Warnf("ca suspend unavailable: %v", err)
 				writeServiceUnavailable(w, "ca unavailable")
 				return
 			}
@@ -263,7 +309,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/cas/{id}/suspend response: %v", err)
+				logging.Warnf("failed to encode /api/v1/cas/{id}/suspend response: %v", err)
 			}
 			return
 		}
@@ -300,7 +346,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "ca.activate", "ca", id, AuditOutcomeFailure)
-				log.Printf("ca activate unavailable: %v", err)
+				logging.Warnf("ca activate unavailable: %v", err)
 				writeServiceUnavailable(w, "ca unavailable")
 				return
 			}
@@ -312,8 +358,13 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/cas/{id}/activate response: %v", err)
+				logging.Warnf("failed to encode /api/v1/cas/{id}/activate response: %v", err)
 			}
+			return
+		}
+
+		if strings.HasSuffix(tail, "/revoke") {
+			handleCARevoke(w, r, caProvider, tenantStore, auditProvider, dualControl, pd, strings.TrimSuffix(tail, "/revoke"))
 			return
 		}
 
@@ -347,15 +398,27 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 				return
 			}
 
-			rotator, ok := caProvider.(CARotator)
-			if !ok {
+			mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
+			if mode != "" && mode != "rekey" && mode != "cross-sign" {
 				emitAuditEvent(r, auditProvider, pd.ID, "ca.rotate_key", "ca", id, AuditOutcomeFailure)
-				writeServiceUnavailable(w, "ca key rotation not supported by this provider")
+				writeBadRequest(w, "mode must be rekey or cross-sign")
+				return
+			}
+			rotator, rotatorOK := caProvider.(CARotator)
+			rollover, rolloverOK := caProvider.(CARolloverRotator)
+			if (mode == "cross-sign" && !rolloverOK) || (mode != "cross-sign" && !rotatorOK) {
+				emitAuditEvent(r, auditProvider, pd.ID, "ca.rotate_key", "ca", id, AuditOutcomeFailure)
+				if mode == "cross-sign" {
+					writeServiceUnavailable(w, "ca key rollover not supported by this provider")
+				} else {
+					writeServiceUnavailable(w, "ca key rotation not supported by this provider")
+				}
 				return
 			}
 
 			var req struct {
-				Algorithm string `json:"algorithm"`
+				Algorithm        string `json:"algorithm"`
+				ApprovedActionID string `json:"approved_action_id"`
 			}
 			body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4*1024))
 			if err != nil {
@@ -371,8 +434,53 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 				}
 			}
 
+			// W23-15: re-keying a CA is dual-controlled. The grant is bound to
+			// mode+algorithm so the proposer cannot swap a cross-sign for a
+			// plain re-key, or change the algorithm, after the approver signed off.
+			sum := sha256.Sum256([]byte("mode=" + mode + ";algorithm=" + strings.ToLower(strings.TrimSpace(req.Algorithm))))
+			if !dualControl.gate(w, r, auth, auditProvider, pd, egressGate{
+				actionType: keyActionCARotate, keyID: id, bundleSHA256: hex.EncodeToString(sum[:]),
+				approvedID: req.ApprovedActionID, auditAction: "ca.rotate_key",
+				message: "dual control is on - after approval, retry with approved_action_id",
+			}) {
+				return
+			}
+
+			if mode == "cross-sign" {
+				out, err := rollover.RolloverCAKey(r.Context(), id, req.Algorithm)
+				if err != nil {
+					if errors.Is(err, errCARotationRolledBack) {
+						writeRotationRolledBack(w, r, auditProvider, pd.ID, id, err)
+						return
+					}
+					emitAuditEvent(r, auditProvider, pd.ID, "ca.rotate_key", "ca", id, AuditOutcomeFailure)
+					if err == errCANotFound {
+						writeNotFound(w, "ca not found")
+						return
+					}
+					logging.Warnf("ca cross-sign rotate-key failed for %s: %v", id, err)
+					writeServiceUnavailable(w, "ca key rollover failed")
+					return
+				}
+				emitAuditEventDetail(r, auditProvider, pd.ID, "ca.rotate_key", "ca", id, AuditOutcomeSuccess,
+					fmt.Sprintf(`{"mode":"cross-sign","ledger_id":%q}`, out.LedgerID))
+				resp := struct {
+					Data CAKeyRollover `json:"data"`
+				}{Data: out}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				if err := json.NewEncoder(w).Encode(resp); err != nil {
+					logging.Warnf("failed to encode /api/v1/cas/{id}/rotate-key response: %v", err)
+				}
+				return
+			}
+
 			result, err := rotator.RotateCAKey(r.Context(), id, req.Algorithm)
 			if err != nil {
+				if errors.Is(err, errCARotationRolledBack) {
+					writeRotationRolledBack(w, r, auditProvider, pd.ID, id, err)
+					return
+				}
 				if err == errCANotFound {
 					emitAuditEvent(r, auditProvider, pd.ID, "ca.rotate_key", "ca", id, AuditOutcomeFailure)
 					writeNotFound(w, "ca not found")
@@ -394,7 +502,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 				// left inconsistent (ca.ErrCARotationInconsistent) --
 				// logged loudly and reported as a genuine 503 failure.
 				if result.ID != "" {
-					log.Printf("ca rotate-key for %s succeeded but the ledger write failed: %v", id, err)
+					logging.Warnf("ca rotate-key for %s succeeded but the ledger write failed: %v", id, err)
 					emitAuditEventDetail(r, auditProvider, pd.ID, "ca.rotate_key", "ca", id, AuditOutcomeSuccess,
 						fmt.Sprintf(`{"ledger_id":%q,"ledger_persisted":false,"ledger_error":%q}`, result.LedgerID, err.Error()))
 					resp := struct {
@@ -403,12 +511,12 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusOK)
 					if err := json.NewEncoder(w).Encode(resp); err != nil {
-						log.Printf("failed to encode /api/v1/cas/{id}/rotate-key response: %v", err)
+						logging.Warnf("failed to encode /api/v1/cas/{id}/rotate-key response: %v", err)
 					}
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "ca.rotate_key", "ca", id, AuditOutcomeFailure)
-				log.Printf("ca rotate-key failed for %s (CA may now be inconsistent -- see docs/ops/DR_RUNBOOK.md): %v", id, err)
+				logging.Warnf("ca rotate-key failed for %s (CA may now be inconsistent -- see docs/ops/DR_RUNBOOK.md): %v", id, err)
 				writeServiceUnavailable(w, "ca key rotation failed")
 				return
 			}
@@ -421,7 +529,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/cas/{id}/rotate-key response: %v", err)
+				logging.Warnf("failed to encode /api/v1/cas/{id}/rotate-key response: %v", err)
 			}
 			return
 		}
@@ -477,7 +585,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 						return
 					}
 					emitAuditEvent(r, auditProvider, pd.ID, "ca.update", "ca", id, AuditOutcomeFailure)
-					log.Printf("ca update unavailable: %v", err)
+					logging.Warnf("ca update unavailable: %v", err)
 					writeServiceUnavailable(w, "ca unavailable")
 					return
 				}
@@ -490,7 +598,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				if err := json.NewEncoder(w).Encode(resp); err != nil {
-					log.Printf("failed to encode /api/v1/cas/{id} patch response: %v", err)
+					logging.Warnf("failed to encode /api/v1/cas/{id} patch response: %v", err)
 				}
 				return
 			}
@@ -507,6 +615,19 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 					return
 				}
 
+				// A keyless imported root is soft-removed under dual control;
+				// every other CA goes through the revoked/expired-only delete.
+				if importer, ok := caProvider.(CAImporter); ok &&
+					!errors.Is(importer.CheckTrustAnchorRemovable(r.Context(), id), ca.ErrNotTrustAnchor) {
+					handleTrustAnchorRemoval(w, r, auth, importer, auditProvider, dualControl, pd, id)
+					return
+				}
+
+				if !isAdminRole(pd.Role) {
+					emitAuditEvent(r, auditProvider, pd.ID, "ca.delete", "ca", id, AuditOutcomeDenied)
+					writeForbidden(w, "admin role required to delete a CA")
+					return
+				}
 				err := caProvider.DeleteCA(r.Context(), id)
 				if err != nil {
 					if err == errCANotFound {
@@ -529,7 +650,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 						return
 					}
 					emitAuditEvent(r, auditProvider, pd.ID, "ca.delete", "ca", id, AuditOutcomeFailure)
-					log.Printf("ca delete unavailable: %v", err)
+					logging.Warnf("ca delete unavailable: %v", err)
 					writeServiceUnavailable(w, "ca unavailable")
 					return
 				}
@@ -539,6 +660,11 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 				return
 			}
 			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+
+		if strings.HasSuffix(tail, "/csr") {
+			handleCAGetCSR(w, r, caProvider, tenantStore, auditProvider, pd, strings.TrimSuffix(tail, "/csr"))
 			return
 		}
 
@@ -558,7 +684,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 			chain, found, err := caProvider.GetCAChain(r.Context(), id)
 			if err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "ca.chain.get", "ca", id, AuditOutcomeFailure)
-				log.Printf("ca chain unavailable: %v", err)
+				logging.Warnf("ca chain unavailable: %v", err)
 				writeServiceUnavailable(w, "ca chain unavailable")
 				return
 			}
@@ -639,7 +765,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/cas/{id}/chain response: %v", err)
+				logging.Warnf("failed to encode /api/v1/cas/{id}/chain response: %v", err)
 			}
 			return
 		}
@@ -659,7 +785,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 		item, found, err := caProvider.GetCA(r.Context(), id)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, pd.ID, "ca.get", "ca", id, AuditOutcomeFailure)
-			log.Printf("ca get unavailable: %v", err)
+			logging.Warnf("ca get unavailable: %v", err)
 			writeServiceUnavailable(w, "ca unavailable")
 			return
 		}
@@ -679,7 +805,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/cas/{id} response: %v", err)
+			logging.Warnf("failed to encode /api/v1/cas/{id} response: %v", err)
 		}
 	})
 }
@@ -733,4 +859,290 @@ func parseCAUpdateRequest(body io.Reader) (CAUpdateRequest, error) {
 	}
 
 	return req, nil
+}
+
+// handleCAImport serves POST /api/v1/cas/import (W23-03).
+func handleCAImport(w http.ResponseWriter, r *http.Request, auth *Authenticator, caProvider CAProvider, tenantStore TenantStore, auditProvider AuditProvider, dc *KeyDualControl) {
+	pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
+	if err != nil {
+		emitAuditEvent(r, auditProvider, "", "ca.import", "ca", "import", AuditOutcomeDenied)
+		writeUnauthorized(w)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if !isAdminRole(pd.Role) {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.import", "ca", "import", AuditOutcomeDenied)
+		writeForbidden(w, "admin role required to import a trust anchor")
+		return
+	}
+	importer, ok := caProvider.(CAImporter)
+	if !ok {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.import", "ca", "import", AuditOutcomeFailure)
+		writeServiceUnavailable(w, "ca import not supported by this provider")
+		return
+	}
+	var req struct {
+		Name             string `json:"name"`
+		Type             string `json:"type"`
+		KeyStorageType   string `json:"key_storage_type"`
+		CertificatePEM   string `json:"certificate_pem"`
+		ApprovedActionID string `json:"approved_action_id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32*1024)).Decode(&req); err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.import", "ca", "import", AuditOutcomeFailure)
+		writeBadRequest(w, "invalid request body")
+		return
+	}
+	if req.Type != "root" || req.KeyStorageType != "external" || strings.TrimSpace(req.CertificatePEM) == "" {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.import", "ca", "import", AuditOutcomeFailure)
+		writeBadRequest(w, `type must be "root", key_storage_type must be "external" and certificate_pem is required`)
+		return
+	}
+	cert, err := ca.ValidateRootImport([]byte(req.CertificatePEM))
+	if err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.import", "ca", "import", AuditOutcomeFailure)
+		writeBadRequest(w, err.Error())
+		return
+	}
+	fp := certFingerprint(cert)
+	if !dc.gate(w, r, auth, auditProvider, pd, egressGate{
+		actionType:  keyActionCAImport,
+		keyID:       fp,
+		approvedID:  req.ApprovedActionID,
+		auditAction: "ca.import",
+		message:     "dual control is on - a second approver must approve this trust-anchor import; after approval retry with approved_action_id",
+	}) {
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = cert.Subject.CommonName
+	}
+	created, err := importer.ImportRootCA(r.Context(), name, []byte(req.CertificatePEM))
+	if err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.import", "ca", fp, AuditOutcomeFailure)
+		switch {
+		case errors.Is(err, ca.ErrCAAlreadyImported):
+			writeConflict(w, err.Error())
+		case errors.Is(err, ca.ErrNotSelfSigned):
+			writeBadRequest(w, err.Error())
+		default:
+			logging.Warnf("ca import failed: %v", err)
+			writeServiceUnavailable(w, "ca import failed")
+		}
+		return
+	}
+	created = withCAEffectiveStatus(created, time.Now().UTC())
+	created.CertificatePEM = ""
+	if !tenantBypass(pd) && pd.Tenant != DefaultTenant && tenantStore != nil {
+		if merr := tenantStore.SetCATenant(r.Context(), created.ID, pd.Tenant); merr != nil {
+			logging.Warnf("auto-map ca %s to tenant %s failed: %v", created.ID, pd.Tenant, merr)
+		}
+	}
+	emitAuditEventDetail(r, auditProvider, pd.ID, "ca.import", "ca", created.ID, AuditOutcomeSuccess,
+		fmt.Sprintf(`{"fingerprint":%q}`, fp))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	if err := json.NewEncoder(w).Encode(struct {
+		Data CAListItem `json:"data"`
+	}{Data: created}); err != nil {
+		logging.Warnf("failed to encode /api/v1/cas/import response: %v", err)
+	}
+}
+
+// handleTrustAnchorRemoval serves DELETE /api/v1/cas/{id} for providers that
+// can hold imported roots (W23-03). Removal is a dual-control grant: refused
+// while a live child CA exists, soft (status revoked) so it can be rolled
+// back by re-importing the same certificate.
+func handleTrustAnchorRemoval(w http.ResponseWriter, r *http.Request, auth *Authenticator, importer CAImporter, auditProvider AuditProvider, dc *KeyDualControl, pd AuthPrincipal, id string) {
+	if !isAdminRole(pd.Role) {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.trust_anchor_remove", "ca", id, AuditOutcomeDenied)
+		writeForbidden(w, "admin role required to remove a trust anchor")
+		return
+	}
+	if err := importer.CheckTrustAnchorRemovable(r.Context(), id); err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.trust_anchor_remove", "ca", id, AuditOutcomeFailure)
+		switch {
+		case errors.Is(err, errCANotFound):
+			writeNotFound(w, "ca not found")
+		case errors.Is(err, ca.ErrNotTrustAnchor):
+			writeErrorEnvelope(w, http.StatusUnprocessableEntity, "unprocessable_entity", "only an imported keyless root CA can be removed")
+		case errors.Is(err, ca.ErrTrustAnchorHasChildren):
+			writeConflict(w, "trust anchor has active child CAs")
+		default:
+			logging.Warnf("trust anchor check failed: %v", err)
+			writeServiceUnavailable(w, "ca unavailable")
+		}
+		return
+	}
+	if !dc.gate(w, r, auth, auditProvider, pd, egressGate{
+		actionType:  keyActionCATrustAnchorRemove,
+		keyID:       id,
+		approvedID:  r.URL.Query().Get("approved_action_id"),
+		auditAction: "ca.trust_anchor_remove",
+		message:     "dual control is on - a second approver must approve this trust-anchor removal; after approval retry with approved_action_id",
+	}) {
+		return
+	}
+	if err := importer.RemoveTrustAnchor(r.Context(), id); err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.trust_anchor_remove", "ca", id, AuditOutcomeFailure)
+		switch {
+		case errors.Is(err, ca.ErrTrustAnchorHasChildren):
+			writeConflict(w, "trust anchor has active child CAs")
+		case errors.Is(err, errCANotFound):
+			writeNotFound(w, "ca not found")
+		default:
+			logging.Warnf("trust anchor removal failed: %v", err)
+			writeServiceUnavailable(w, "ca unavailable")
+		}
+		return
+	}
+	emitAuditEvent(r, auditProvider, pd.ID, "ca.trust_anchor_remove", "ca", id, AuditOutcomeSuccess)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleCAGetCSR serves GET /api/v1/cas/{id}/csr (W23-04): the PKCS#10 request
+// of a CA awaiting its offline-signed certificate.
+func handleCAGetCSR(w http.ResponseWriter, r *http.Request, caProvider CAProvider, tenantStore TenantStore, auditProvider AuditProvider, pd AuthPrincipal, id string) {
+	if id == "" || strings.Contains(id, "/") {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.csr_get", "ca", id, AuditOutcomeFailure)
+		writeNotFound(w, "ca not found")
+		return
+	}
+	if !isAdminRole(pd.Role) {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.csr_get", "ca", id, AuditOutcomeDenied)
+		writeForbidden(w, "admin role required")
+		return
+	}
+	if !caVisibleToTenant(r.Context(), tenantStore, pd, id) {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.csr_get", "ca", id, AuditOutcomeDenied)
+		writeForbidden(w, "forbidden")
+		return
+	}
+	csrProvider, ok := caProvider.(CACSRProvider)
+	if !ok {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.csr_get", "ca", id, AuditOutcomeFailure)
+		writeServiceUnavailable(w, "ca csr flow not supported by this provider")
+		return
+	}
+	csr, err := csrProvider.GetCSR(r.Context(), id)
+	if err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.csr_get", "ca", id, AuditOutcomeFailure)
+		switch {
+		case errors.Is(err, errCANotFound):
+			writeNotFound(w, "ca not found")
+		case errors.Is(err, ca.ErrCANotPendingCertificate):
+			writeConflict(w, err.Error())
+		default:
+			logging.Warnf("ca csr unavailable: %v", err)
+			writeServiceUnavailable(w, "ca unavailable")
+		}
+		return
+	}
+	emitAuditEvent(r, auditProvider, pd.ID, "ca.csr_get", "ca", id, AuditOutcomeSuccess)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]string{"ca_id": id, "csr_pem": csr}})
+}
+
+// handleCAComplete serves POST /api/v1/cas/{id}/certificate (W23-04): the
+// offline-signed certificate for a pending issuing CA. The engine verifies
+// key match, issuer signature, validity and path length; a mismatch is 400.
+func handleCAComplete(w http.ResponseWriter, r *http.Request, caProvider CAProvider, tenantStore TenantStore, auditProvider AuditProvider, pd AuthPrincipal, id string) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, http.MethodPost)
+		return
+	}
+	if id == "" || strings.Contains(id, "/") {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.certificate_complete", "ca", id, AuditOutcomeFailure)
+		writeNotFound(w, "ca not found")
+		return
+	}
+	if !isAdminRole(pd.Role) {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.certificate_complete", "ca", id, AuditOutcomeDenied)
+		writeForbidden(w, "admin role required")
+		return
+	}
+	if !caVisibleToTenant(r.Context(), tenantStore, pd, id) {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.certificate_complete", "ca", id, AuditOutcomeDenied)
+		writeForbidden(w, "forbidden")
+		return
+	}
+	csrProvider, ok := caProvider.(CACSRProvider)
+	if !ok {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.certificate_complete", "ca", id, AuditOutcomeFailure)
+		writeServiceUnavailable(w, "ca csr flow not supported by this provider")
+		return
+	}
+	var req struct {
+		CertificatePEM string `json:"certificate_pem"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&req); err != nil || strings.TrimSpace(req.CertificatePEM) == "" {
+		emitAuditEvent(r, auditProvider, pd.ID, "ca.certificate_complete", "ca", id, AuditOutcomeFailure)
+		writeBadRequest(w, "certificate_pem is required")
+		return
+	}
+	completed, err := csrProvider.CompleteCA(r.Context(), id, []byte(req.CertificatePEM))
+	if err != nil {
+		switch {
+		case errors.Is(err, ca.ErrInvalidIssuedCertificate):
+			emitAuditEventDetail(r, auditProvider, pd.ID, "ca.certificate_complete", "ca", id, AuditOutcomeDenied,
+				fmt.Sprintf(`{"reason":%q}`, err.Error()))
+			writeBadRequest(w, err.Error())
+		case errors.Is(err, errCANotFound):
+			emitAuditEvent(r, auditProvider, pd.ID, "ca.certificate_complete", "ca", id, AuditOutcomeFailure)
+			writeNotFound(w, "ca not found")
+		case errors.Is(err, ca.ErrCANotPendingCertificate):
+			emitAuditEvent(r, auditProvider, pd.ID, "ca.certificate_complete", "ca", id, AuditOutcomeFailure)
+			writeConflict(w, err.Error())
+		default:
+			emitAuditEvent(r, auditProvider, pd.ID, "ca.certificate_complete", "ca", id, AuditOutcomeFailure)
+			logging.Warnf("ca certificate completion failed: %v", err)
+			writeServiceUnavailable(w, "ca unavailable")
+		}
+		return
+	}
+	completed = withCAEffectiveStatus(completed, time.Now().UTC())
+	completed.CertificatePEM = ""
+	emitAuditEventDetail(r, auditProvider, pd.ID, "ca.certificate_complete", "ca", id, AuditOutcomeSuccess,
+		fmt.Sprintf(`{"fingerprint":%q}`, completed.CertificateFingerprintSHA256))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(struct {
+		Data CAListItem `json:"data"`
+	}{Data: completed})
+}
+
+// writeRotationRolledBack audits ca.rotate_key_rollback with the failing step
+// and answers 503. The audit event is emitted here because internal/ca has no
+// audit dependency.
+func writeRotationRolledBack(w http.ResponseWriter, r *http.Request, audit AuditProvider, principal, caID string, err error) {
+	step := ""
+	var rb *ca.RotationRolledBackError
+	if errors.As(err, &rb) {
+		step = string(rb.Step)
+	}
+	emitAuditEventDetail(r, audit, principal, "ca.rotate_key_rollback", "ca", caID, AuditOutcomeFailure,
+		fmt.Sprintf(`{"step":%q}`, step))
+	logging.Infof("ca rotate-key for %s rolled back at %s: %v", caID, step, err)
+	writeServiceUnavailable(w, "ca key rotation failed and was rolled back")
+}
+
+// listCAsTenantFiltered pages the provider to exhaustion, keeps the caller's
+// tenant rows, then applies the requested window so meta.total is honest.
+func listCAsTenantFiltered(ctx context.Context, p CAProvider, store TenantStore, pd AuthPrincipal, q CAListQuery) (CAListResult, error) {
+	all, err := drainPages(func(offset, limit int) ([]CAListItem, int, error) {
+		wq := q
+		wq.Offset, wq.Limit = offset, limit
+		res, err := p.ListCAs(ctx, wq)
+		return res.Items, res.Total, err
+	})
+	if err != nil {
+		return CAListResult{}, err
+	}
+	all = filterCAsByTenant(ctx, store, pd, all)
+	return CAListResult{Items: pageSlice(all, q.Offset, q.Limit), Total: len(all), Limit: q.Limit}, nil
 }

@@ -55,13 +55,19 @@ func (m *EvidenceMailer) Enabled() bool {
 
 // Send emails the PDF attachment to recipients with the given subject/body.
 func (m *EvidenceMailer) Send(recipients []string, subject, body string, attachment []byte, filename string) error {
+	return m.SendWithType(recipients, subject, body, attachment, filename, "application/pdf")
+}
+
+// SendWithType is Send with an explicit attachment media type (W28-06 mails
+// CSV and XLSX as well as PDF).
+func (m *EvidenceMailer) SendWithType(recipients []string, subject, body string, attachment []byte, filename, contentType string) error {
 	if !m.Enabled() {
 		return fmt.Errorf("smtp not configured (set SMTP_HOST and SMTP_FROM)")
 	}
 	if len(recipients) == 0 {
 		return fmt.Errorf("no recipients")
 	}
-	msg := buildEvidenceMIME(m.from, recipients, subject, body, attachment, filename)
+	msg := buildAttachmentMIME(m.from, recipients, subject, body, attachment, filename, contentType)
 	addr := fmt.Sprintf("%s:%d", m.host, m.port)
 	var auth smtp.Auth
 	if m.user != "" {
@@ -73,6 +79,12 @@ func (m *EvidenceMailer) Send(recipients []string, subject, body string, attachm
 // buildEvidenceMIME assembles a multipart/mixed message with a text body and a
 // base64-encoded PDF attachment.
 func buildEvidenceMIME(from string, to []string, subject, body string, attachment []byte, filename string) []byte {
+	return buildAttachmentMIME(from, to, subject, body, attachment, filename, "application/pdf")
+}
+
+// buildAttachmentMIME is buildEvidenceMIME with a caller-chosen attachment
+// Content-Type.
+func buildAttachmentMIME(from string, to []string, subject, body string, attachment []byte, filename, contentType string) []byte {
 	boundary := "kk-evidence-boundary-0xKRYPT"
 	var b bytes.Buffer
 
@@ -88,9 +100,9 @@ func buildEvidenceMIME(from string, to []string, subject, body string, attachmen
 	b.WriteString(body)
 	b.WriteString("\r\n\r\n")
 
-	// PDF attachment part.
+	// Attachment part.
 	fmt.Fprintf(&b, "--%s\r\n", boundary)
-	b.WriteString("Content-Type: application/pdf\r\n")
+	fmt.Fprintf(&b, "Content-Type: %s\r\n", contentType)
 	b.WriteString("Content-Transfer-Encoding: base64\r\n")
 	fmt.Fprintf(&b, "Content-Disposition: attachment; filename=%q\r\n\r\n", filename)
 	encoded := base64.StdEncoding.EncodeToString(attachment)

@@ -11,12 +11,14 @@ set -euo pipefail
 #      executed with TARGET_ENV/IMAGE_DIGEST/CHANGE_TICKET/INCIDENT_ID exported.
 #   2. Otherwise DEPLOY_METHOD (helm|kubectl, default helm) drives a real deploy:
 #        helm:    helm upgrade --install $RELEASE $CHART_DIR -n $NAMESPACE
+#                   --reset-then-reuse-values [-f $HELM_VALUES_FILE]
 #                   --set image.repository=<repo> --set image.digest=<digest> --wait
 #                 (image.digest is reconciled into the chart's values schema by W10-05)
 #        kubectl: kubectl -n $NAMESPACE set image deployment/$RELEASE
 #                   kryptkeeper=$IMAGE_DIGEST && kubectl rollout status ...
 #      Runtime configuration for this path: RELEASE, NAMESPACE (required),
-#      CHART_DIR (default charts/kryptkeeper, helm only).
+#      CHART_DIR (default charts/kryptkeeper, helm only), HELM_VALUES_FILE
+#      (optional values file for the first install, helm only).
 #
 # --wait / rollout status gate success on the pods becoming genuinely ready,
 # which is a real readiness check as of W10-02 (previously /readyz was a
@@ -31,7 +33,7 @@ if [[ -z "$TARGET_ENV" || -z "$IMAGE_DIGEST" ]]; then
   exit 2
 fi
 
-if [[ ! "$IMAGE_DIGEST" =~ ^[a-zA-Z0-9._/-]+@sha256:[a-f0-9]{40,64}$ ]]; then
+if [[ ! "$IMAGE_DIGEST" =~ ^[a-zA-Z0-9._:/-]+@sha256:[a-f0-9]{40,64}$ ]]; then
   echo "ERROR: invalid image digest format: $IMAGE_DIGEST" >&2
   exit 2
 fi
@@ -66,7 +68,15 @@ if [[ -z "$DEPLOY_CMD" ]]; then
 
   case "$DEPLOY_METHOD" in
     helm)
+      # Without --reset-then-reuse-values an upgrade drops every value the
+      # release was installed with (secrets, dbMode, replicaCount) and the chart
+      # then refuses to render; HELM_VALUES_FILE supplies them on a first install.
+      VALUES_ARG=""
+      if [[ -n "${HELM_VALUES_FILE:-}" ]]; then
+        VALUES_ARG="-f \"$HELM_VALUES_FILE\""
+      fi
       DEPLOY_CMD="helm upgrade --install \"$RELEASE\" \"$CHART_DIR\" -n \"$NAMESPACE\" \
+        --reset-then-reuse-values $VALUES_ARG \
         --set image.repository=\"$IMAGE_REPO\" --set image.digest=\"$DIGEST\" --wait"
       ;;
     kubectl)

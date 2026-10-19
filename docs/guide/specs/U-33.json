@@ -1,0 +1,134 @@
+{
+  "task": "U-33",
+  "title": "Watch automation and the failed-renewal queue",
+  "sourceStory": "STORIES.md#u-33",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/automation"
+      },
+      "caption": "Open /automation",
+      "slug": "automation-overview",
+      "expect": {
+        "role": "heading",
+        "name": "Automation"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-33/01-automation-overview.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "scroll",
+      "value": 700,
+      "caption": "Scheduler tiles: renewal threshold, scan interval, candidates, triggers",
+      "slug": "scheduler-tiles",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-33/02-scheduler-tiles.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "link",
+        "name": "Open SLO dashboard"
+      },
+      "caption": "Click **Open SLO dashboard**",
+      "slug": "slo-dashboard",
+      "expect": {
+        "role": "heading",
+        "name": "SLOs"
+      },
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-33/03-slo-dashboard.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "flags": "LAB (values are mostly zero without an agent and a renewal run)",
+  "lastRun": {
+    "at": "2026-10-18T12:44:32.182Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-33",
+    "steps": 3,
+    "shots": 3,
+    "annotated": 0,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/reports/slo"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-33/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-33/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

@@ -21,7 +21,16 @@ func newFileDiscoveryProvider() DiscoveryProvider {
 	return &fileDiscoveryProvider{}
 }
 
-func (p *fileDiscoveryProvider) GetSummary(_ context.Context) (DiscoverySummary, error) {
+// Demo seeds are the default tenant's; a tenant-filtered caller outside it sees none.
+func fileDiscoveryHiddenFrom(ctx context.Context) bool {
+	tenant, filter := discoveryFilterTenant(ctx)
+	return filter && tenant != ""
+}
+
+func (p *fileDiscoveryProvider) GetSummary(ctx context.Context) (DiscoverySummary, error) {
+	if fileDiscoveryHiddenFrom(ctx) {
+		return DiscoverySummary{}, nil
+	}
 	// Defaults derive from the same seed slices the list endpoints serve, so
 	// the counters and the lists cannot disagree; the env knobs stay as
 	// explicit demo overrides.
@@ -46,8 +55,11 @@ func (p *fileDiscoveryProvider) GetSummary(_ context.Context) (DiscoverySummary,
 	}, nil
 }
 
-func (p *fileDiscoveryProvider) ListEndpoints(_ context.Context, query DiscoveryEndpointQuery) (DiscoveryEndpointResult, error) {
+func (p *fileDiscoveryProvider) ListEndpoints(ctx context.Context, query DiscoveryEndpointQuery) (DiscoveryEndpointResult, error) {
 	endpoints := seedDiscoveryEndpoints()
+	if fileDiscoveryHiddenFrom(ctx) {
+		endpoints = nil
+	}
 	filtered := make([]DiscoveryEndpoint, 0, len(endpoints))
 	for _, ep := range endpoints {
 		if query.Protocol != "" && !strings.EqualFold(ep.Protocol, query.Protocol) {
@@ -74,8 +86,11 @@ func (p *fileDiscoveryProvider) ListEndpoints(_ context.Context, query Discovery
 	}, nil
 }
 
-func (p *fileDiscoveryProvider) ListScanJobs(_ context.Context, query DiscoveryScanJobQuery) (DiscoveryScanJobResult, error) {
+func (p *fileDiscoveryProvider) ListScanJobs(ctx context.Context, query DiscoveryScanJobQuery) (DiscoveryScanJobResult, error) {
 	scanJobs := seedDiscoveryScanJobs()
+	if fileDiscoveryHiddenFrom(ctx) {
+		scanJobs = nil
+	}
 	filtered := make([]DiscoveryScanJob, 0, len(scanJobs))
 	for _, job := range scanJobs {
 		if query.Status != "" && !strings.EqualFold(job.Status, query.Status) {

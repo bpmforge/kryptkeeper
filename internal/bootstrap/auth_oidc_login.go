@@ -144,7 +144,8 @@ func newOIDCLoginStateStore() *oidcLoginStateStore {
 	return &oidcLoginStateStore{entries: map[string]oidcLoginState{}}
 }
 
-// put sweeps entries that have already expired, then refuses to store past
+// putFlow stores a pending login flow (verifier, nonce and cookie binding). It
+// sweeps entries that have already expired, then refuses to store past
 // maxPendingOIDCLogins, returning false when full. Sweeping on write rather
 // than from a goroutine keeps this store's lifetime tied to the handlers that
 // close over it (no background state to stop); it is O(n) with n bounded by
@@ -154,11 +155,6 @@ func newOIDCLoginStateStore() *oidcLoginStateStore {
 // would let any caller cancel another operator's in-flight SSO login, turning
 // a memory bound into a cross-user denial primitive. A rejected login is
 // retryable and the store drains as entries reach oidcLoginStateTTL.
-func (s *oidcLoginStateStore) put(state string, codeVerifier string, now time.Time, expiresAt time.Time) bool {
-	return s.putFlow(state, oidcLoginState{codeVerifier: codeVerifier, expiresAt: expiresAt}, now)
-}
-
-// putFlow is put for a flow that also carries a nonce and cookie binding.
 func (s *oidcLoginStateStore) putFlow(state string, flow oidcLoginState, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -174,18 +170,12 @@ func (s *oidcLoginStateStore) putFlow(state string, flow oidcLoginState, now tim
 	return true
 }
 
-// take returns the stored code verifier for state and unconditionally
-// deletes the entry -- single-use, so a replayed state (the same value
-// presented a second time) always misses. ok is false for an unknown,
-// already-consumed, or expired state; callers deliberately cannot tell
-// those apart, so there is no oracle for probing which states were ever
-// valid (acceptance #3: fail closed uniformly).
-func (s *oidcLoginStateStore) take(state string, now time.Time) (string, bool) {
-	flow, ok := s.takeFlow(state, now)
-	return flow.codeVerifier, ok
-}
-
-// takeFlow is take returning the whole stored flow.
+// takeFlow returns the stored flow for state and unconditionally deletes the
+// entry -- single-use, so a replayed state (the same value presented a second
+// time) always misses. ok is false for an unknown, already-consumed, or
+// expired state; callers deliberately cannot tell those apart, so there is no
+// oracle for probing which states were ever valid (acceptance #3: fail closed
+// uniformly).
 func (s *oidcLoginStateStore) takeFlow(state string, now time.Time) (oidcLoginState, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -289,6 +279,19 @@ func discoverOIDCEndpoints(cache *managedOIDCJWKSCache) (string, string, error) 
 	if discovery.AuthorizationEndpoint == "" || discovery.TokenEndpoint == "" {
 		return "", "", fmt.Errorf("discovery document missing authorization_endpoint/token_endpoint")
 	}
+	// The token endpoint receives the auth code and client_secret, so it must
+	// be https. It is deliberately not pinned to the discovery host: major
+	// IdPs serve it elsewhere (Google: accounts.google.com discovery,
+	// oauth2.googleapis.com token), and the egress-guarded runtime client
+	// already refuses metadata and link-local destinations at dial time.
+	if err := requireHTTPSURL(discovery.TokenEndpoint); err != nil {
+		return "", "", fmt.Errorf("invalid token_endpoint: %w", err)
+	}
+	// The exchange client admits loopback when the token endpoint is loopback,
+	// so a remote IdP's document must not be able to name one.
+	if isLoopbackURL(discovery.TokenEndpoint) && !isLoopbackURL(cache.discoveryURL) {
+		return "", "", fmt.Errorf("invalid token_endpoint: loopback endpoint from a non-loopback discovery document")
+	}
 	return discovery.AuthorizationEndpoint, discovery.TokenEndpoint, nil
 }
 
@@ -322,7 +325,7 @@ func exchangeOIDCAuthorizationCode(ctx context.Context, tokenEndpoint, clientID,
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	client := &http.Client{Timeout: timeout, CheckRedirect: httpsOnlyRedirects}
+	client := oidcRuntimeClient(timeout, tokenEndpoint)
 	resp, err := client.Do(req)
 	if err != nil {
 		return oidcTokenResponse{}, err
@@ -610,7 +613,19 @@ func registerOIDCLoginHandlers(mux *http.ServeMux, auth *Authenticator, userProv
 			_ = linker.LinkOIDCIdentity(r.Context(), user.ID, cfg.oidcIssuer, sub) // best-effort (see comment above)
 		}
 
-		accessToken, accessTTL, _, _, err := auth.mintSessionForUser(user.ID, user.Role, now)
+		sessionRole, roleOK, err := auth.ssoSessionRole(r.Context(), user, roleClaimValues(claims[cfg.roleClaim]))
+		if err != nil {
+			emitAuditEvent(r, auditProvider, user.ID, "auth.oidc.callback", "auth", "oidc-callback", AuditOutcomeFailure)
+			writeServiceUnavailable(w, "oidc login unavailable")
+			return
+		}
+		if !roleOK {
+			emitAuditEvent(r, auditProvider, user.ID, "auth.oidc.callback", "auth", "oidc-callback", AuditOutcomeDenied)
+			writeForbidden(w, msgSSONoRoleMapped)
+			return
+		}
+
+		accessToken, accessTTL, _, _, err := auth.mintSessionForUser(user.ID, sessionRole, now)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, user.ID, "auth.oidc.callback", "auth", "oidc-callback", AuditOutcomeFailure)
 			writeServiceUnavailable(w, "oidc login unavailable")
@@ -672,7 +687,7 @@ func isDeprovisionedStatus(status string) bool {
 // (acceptance #5): an ordinary operator session (cookie or API key) is never
 // even inspected here, so it cannot satisfy this check by construction.
 func scimAuthorized(auth *Authenticator, r *http.Request) bool {
-	expected := strings.TrimSpace(auth.config.scimBearerToken)
+	expected := strings.TrimSpace(auth.scimEffectiveToken(r.Context()))
 	if expected == "" {
 		return false
 	}

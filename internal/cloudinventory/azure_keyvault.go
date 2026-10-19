@@ -34,9 +34,18 @@ type AzureKVConnector struct {
 
 // NewAzureKVConnector creates an Azure Key Vault connector using client credentials flow.
 func NewAzureKVConnector(ctx context.Context) (*AzureKVConnector, error) {
-	vaultURL := strings.TrimRight(os.Getenv("AZURE_KEYVAULT_URL"), "/")
-	if vaultURL == "" {
+	if os.Getenv("AZURE_KEYVAULT_URL") == "" {
 		return nil, fmt.Errorf("AZURE_KEYVAULT_URL is required")
+	}
+	return NewAzureKVConnectorForScope(ctx, Scope{Provider: ProviderAzureKeyVault, VaultURL: os.Getenv("AZURE_KEYVAULT_URL")})
+}
+
+// NewAzureKVConnectorForScope targets one vault; the service-principal
+// credentials still come from the environment.
+func NewAzureKVConnectorForScope(ctx context.Context, sc Scope) (*AzureKVConnector, error) {
+	vaultURL := strings.TrimRight(sc.VaultURL, "/")
+	if vaultURL == "" {
+		return nil, fmt.Errorf("vault_url is required")
 	}
 	clientID := os.Getenv("AZURE_CLIENT_ID")
 	clientSecret := os.Getenv("AZURE_CLIENT_SECRET")

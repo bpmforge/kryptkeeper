@@ -20,7 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net"
 	"net/http"
 	"net/url"
@@ -191,7 +191,7 @@ func (s *SIEMRouter) Test(actorID string) SIEMTestResult {
 	if s.webhookURL != "" {
 		result.WebhookTested = true
 		if err := s.sendWebhook(event); err != nil {
-			result.WebhookError = err.Error()
+			result.WebhookError = operatorErrText(err)
 		} else {
 			result.WebhookOK = true
 		}
@@ -199,7 +199,7 @@ func (s *SIEMRouter) Test(actorID string) SIEMTestResult {
 	if s.syslogAddr != "" {
 		result.SyslogTested = true
 		if err := s.sendSyslog(event); err != nil {
-			result.SyslogError = err.Error()
+			result.SyslogError = operatorErrText(err)
 		} else {
 			result.SyslogOK = true
 		}
@@ -239,7 +239,7 @@ func (s *SIEMRouter) deliver(event SIEMEvent) {
 	if s.webhookURL != "" {
 		if err := s.sendWebhook(event); err != nil {
 			metrics.SIEMSendFailures.Inc()
-			log.Printf("siem webhook: %v", err)
+			logging.Infof("siem webhook: %v", err)
 		} else {
 			metrics.SIEMEventsForwarded.Inc()
 		}
@@ -247,7 +247,7 @@ func (s *SIEMRouter) deliver(event SIEMEvent) {
 	if s.syslogAddr != "" {
 		if err := s.sendSyslog(event); err != nil {
 			metrics.SIEMSendFailures.Inc()
-			log.Printf("siem syslog: %v", err)
+			logging.Infof("siem syslog: %v", err)
 		} else {
 			metrics.SIEMEventsForwarded.Inc()
 		}
@@ -635,4 +635,13 @@ func (s *SIEMRouter) actionAllowed(action string) bool {
 		}
 	}
 	return false
+}
+
+// operatorErrText is err's text, except that a refusal by the egress guard is
+// replaced by an explanation of the guard (the raw text is only an address).
+func operatorErrText(err error) string {
+	if msg, ok := egress.ExplainBlocked(err.Error()); ok {
+		return msg
+	}
+	return err.Error()
 }

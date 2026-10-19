@@ -1,0 +1,19 @@
+# W24-03: one host running real postfix, dovecot, PostgreSQL, OpenLDAP, sshd
+# and xrdp, each with its own throwaway certificate (generated at start by
+# entrypoint.sh, never baked into the image).
+FROM docker.io/library/ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN echo "slapd slapd/password1 password kkfixture-admin" | debconf-set-selections \
+ && echo "slapd slapd/password2 password kkfixture-admin" | debconf-set-selections \
+ && echo "slapd slapd/domain string kk.test" | debconf-set-selections \
+ && echo "slapd shared/organization string kk" | debconf-set-selections \
+ && echo "postfix postfix/main_mailer_type select Internet Site" | debconf-set-selections \
+ && echo "postfix postfix/mailname string kk.test" | debconf-set-selections \
+ && apt-get update && apt-get install -y --no-install-recommends \
+      postfix dovecot-imapd dovecot-pop3d postgresql slapd ldap-utils \
+      openssh-server xrdp openssl ca-certificates iproute2 procps \
+ && rm -rf /var/lib/apt/lists/* && mkdir -p /run/sshd /etc/kk-certs
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+EXPOSE 22 25 110 143 389 587 3389 5432
+ENTRYPOINT ["/entrypoint.sh"]

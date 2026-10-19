@@ -21,11 +21,25 @@ HUB_PORT=8093
 HUB_BASE="http://127.0.0.1:${HUB_PORT}"
 TOKEN=uat-token
 CLUSTER=kk-uat
+CLUSTER_B=kk-uat-b   # W24-24 second cluster
+CTX_A="kind-${CLUSTER}"
+CTX_B="kind-${CLUSTER_B}"
 NAMESPACE=uat
 TARGET_SECRET=kk-uat-target-tls
 NODEPORT=30443
 PROXY_PORT=8099
 IMAGE=localhost/kk-uat-tlsecho:latest
+# RC1-A-04 (7c8df355): the hub's post-install verify dial refuses loopback and
+# link-local addresses (security control, not relaxed here). The kind NodePort is
+# published on all host interfaces, so verify through the host's primary
+# non-loopback (RFC1918) address -- the one the default route uses.
+VERIFY_HOST="$(python3 -c "
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.connect(('192.0.2.1', 9))  # UDP connect: selects a route, sends nothing
+print(s.getsockname()[0])")"
+case "$VERIFY_HOST" in ""|127.*|169.254.*) echo "FAIL: no non-loopback host address for verify"; exit 1;; esac
+VERIFY_HOSTPORT="${VERIFY_HOST}:${NODEPORT}"
 
 FAILED=0
 STEP() { echo; echo "== $* =="; }
@@ -40,7 +54,13 @@ cleanup() {
   [ -n "$HUB_PID" ] && kill "$HUB_PID" 2>/dev/null || true
   [ -n "$PROXY_PID" ] && kill "$PROXY_PID" 2>/dev/null || true
   kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
-  rm -rf "$WORK" "$HUB_DIR"
+  # retried and verified: a leaked kind cluster survived one run's cleanup
+  for _ in 1 2 3; do
+    kind delete cluster --name "$CLUSTER_B" >/dev/null 2>&1
+    kind get clusters 2>/dev/null | grep -qx "$CLUSTER_B" || break
+    sleep 2
+  done
+  rm -rf "$WORK" "$HUB_DIR" /tmp/kk-uat-k8s-multi-hub
 }
 trap cleanup EXIT
 
@@ -51,9 +71,19 @@ curlj() { curl -sS -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: applica
 # ---------------------------------------------------------------------------
 STEP "kind cluster"
 kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
+# The hub's Secret push (since 723a3d42, "guard hub-side F5/Citrix/K8s push with
+# the egress policy") refuses loopback, and kind's default apiServerAddress is
+# 127.0.0.1, so the push failed with "egress: destination blocked: 127.0.0.1".
+# The guard stays on: publish cluster A's API server on a private (RFC1918) host
+# address, which the policy allows. kind adds the address to the serving cert
+# SANs, so TLS verification still runs against the cluster CA. Override with
+# KK_K8S_API_ADDR when VERIFY_HOST (default-route address) is the wrong one.
+API_ADDR="${KK_K8S_API_ADDR:-$VERIFY_HOST}"
 cat > "$WORK/kind-config.yaml" <<EOF
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  apiServerAddress: "${API_ADDR}"
 nodes:
 - role: control-plane
   extraPortMappings:
@@ -94,8 +124,14 @@ spec:
     name: uat-selfsigned
     kind: ClusterIssuer
 EOF
-kubectl apply -f "$WORK/issuer-cert.yaml" >/dev/null \
-  && PASS "ClusterIssuer + Certificate applied" || DIE "issuer/cert apply failed"
+# Deployments Available does not mean the CRDs are discoverable or the webhook
+# is serving yet (found live 2026-10-15: "no matches for kind Certificate").
+tries=30
+until kubectl apply -f "$WORK/issuer-cert.yaml" >"$WORK/issuer-apply.log" 2>&1; do
+  tries=$((tries - 1)); [ $tries -le 0 ] && { cat "$WORK/issuer-apply.log"; DIE "issuer/cert apply failed"; }
+  sleep 3
+done
+PASS "ClusterIssuer + Certificate applied"
 kubectl -n "$NAMESPACE" wait --for=condition=Ready certificate/uat-leaf --timeout=60s \
   && PASS "cert-manager issued uat-leaf-tls" || DIE "cert-manager never made uat-leaf Ready"
 
@@ -367,7 +403,7 @@ STEP "renewal/execute -> k8s push"
 EXEC_RESP="$(curlj -X POST "${HUB_BASE}/api/v1/renewal/execute" -d "$(python3 -c "import json; print(json.dumps({
   'fingerprint': '${FP}',
   'target_id': '${TARGET_ID}',
-  'install': {'verify_host_port': '127.0.0.1:${NODEPORT}'},
+  'install': {'verify_host_port': '${VERIFY_HOSTPORT}'},
 }))")")"
 OUTCOME="$(echo "$EXEC_RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("install_outcome",""))' 2>/dev/null)"
 NEW_FP="$(echo "$EXEC_RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("new_fingerprint",""))' 2>/dev/null)"
@@ -412,7 +448,7 @@ openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
 NEG_CSR_JSON="$(python3 -c "import json; print(json.dumps(open('$WORK/k8s-neg.csr').read()))")"
 NEG_ISSUE_RESP="$(curlj -X POST "${HUB_BASE}/api/v1/certificates" -d "{\"ca_id\":\"${CA_ID}\",\"template_id\":\"${TEMPLATE_ID}\",\"csr_pem\":${NEG_CSR_JSON}}")"
 NEG_FP="$(echo "$NEG_ISSUE_RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["fingerprint_sha256"])' 2>/dev/null)"
-NEG_EXEC_RESP="$(curlj -X POST "${HUB_BASE}/api/v1/renewal/execute" -d "$(python3 -c "import json; print(json.dumps({'fingerprint':'${NEG_FP}','target_id':'${NEG_TARGET_ID}','install':{'verify_host_port':'127.0.0.1:${NODEPORT}'}}))")")"
+NEG_EXEC_RESP="$(curlj -X POST "${HUB_BASE}/api/v1/renewal/execute" -d "$(python3 -c "import json; print(json.dumps({'fingerprint':'${NEG_FP}','target_id':'${NEG_TARGET_ID}','install':{'verify_host_port':'${VERIFY_HOSTPORT}'}}))")")"
 NEG_OUTCOME="$(echo "$NEG_EXEC_RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("data",{}).get("install_outcome",""))' 2>/dev/null)"
 echo "  negative outcome=$NEG_OUTCOME raw=$NEG_EXEC_RESP"
 NS_SECRET_CHECK="$(kubectl get secret "$TARGET_SECRET" -n kk-uat-nonexistent-namespace 2>&1)"
@@ -557,6 +593,169 @@ sys.exit(0 if job and job.get('status') == 'completed' else 1)
 else
   FAIL "db-mode k8s-certmanager scan REJECTED by the product API: $DBMODE_SCAN_RESP"
 fi
+kill "$HUB_PID" 2>/dev/null; wait "$HUB_PID" 2>/dev/null; HUB_PID=""
+
+# ---------------------------------------------------------------------------
+# W24-24: second kind cluster, both registered through the config store
+# (discovery.kube_clusters -> api_token credentials); per-cluster tagging is
+# proven by fingerprint against kubectl. Additive: runs after every original
+# check. Every kubectl call passes --context (the last-created cluster is
+# otherwise the silent default).
+# ---------------------------------------------------------------------------
+STEP "W24-24: second kind cluster + cert-manager"
+kind delete cluster --name "$CLUSTER_B" >/dev/null 2>&1 || true
+kind create cluster --name "$CLUSTER_B" \
+  && PASS "kind cluster $CLUSTER_B up (podman provider)" || DIE "kind create cluster $CLUSTER_B failed"
+kubectl --context "$CTX_B" apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml >"$WORK/certmanager-apply-b.log" 2>&1 \
+  && PASS "cert-manager manifests applied on $CLUSTER_B" || DIE "cert-manager apply on B failed, see $WORK/certmanager-apply-b.log"
+kubectl --context "$CTX_B" wait --for=condition=Available deployment --all -n cert-manager --timeout=240s \
+  && PASS "cert-manager available on $CLUSTER_B" || DIE "cert-manager on B never became available"
+kubectl --context "$CTX_B" create namespace "$NAMESPACE" >/dev/null 2>&1 || true
+# cert-manager's webhook can lag Available by a few seconds: retry the apply.
+sed -e 's/uat-leaf\.example\.com/uat-leaf-b.example.com/' -e 's/name: uat-leaf$/name: uat-leaf-b/' -e 's/secretName: uat-leaf-tls/secretName: uat-leaf-b-tls/' "$WORK/issuer-cert.yaml" > "$WORK/issuer-cert-b.yaml"
+tries=20
+until kubectl --context "$CTX_B" apply -f "$WORK/issuer-cert-b.yaml" >/dev/null 2>&1; do
+  tries=$((tries - 1)); [ $tries -le 0 ] && DIE "issuer/cert apply on B failed"; sleep 3
+done
+kubectl --context "$CTX_B" -n "$NAMESPACE" wait --for=condition=Ready certificate/uat-leaf-b --timeout=90s \
+  && PASS "cert-manager issued uat-leaf-b-tls on $CLUSTER_B" || DIE "uat-leaf-b never Ready"
+
+STEP "W24-24: RBAC + token for cluster B"
+kubectl --context "$CTX_B" apply -f "$WORK/rbac.yaml" >/dev/null && PASS "RBAC applied on $CLUSTER_B" || DIE "RBAC apply on B failed"
+SA_TOKEN_B="$(kubectl --context "$CTX_B" create token kk-uat-pusher -n "$NAMESPACE" --duration=2h)" \
+  && PASS "minted SA token for B" || DIE "create token on B failed"
+kubectl config view --raw -o yaml --context "$CTX_B" --minify > "$WORK/kubeconfig-view-b.yaml"
+APISERVER_URL_B="$(python3 - "$WORK/kubeconfig-view-b.yaml" "$WORK/cluster-ca-b.pem" <<'PYEOF'
+import base64, re, sys
+text = open(sys.argv[1]).read()
+open(sys.argv[2], 'wb').write(base64.b64decode(re.search(r'certificate-authority-data:\s*(\S+)', text).group(1)))
+print(re.search(r'server:\s*(\S+)', text).group(1))
+PYEOF
+)"
+[ -n "$APISERVER_URL_B" ] && [ "$APISERVER_URL_B" != "$APISERVER_URL" ] && PASS "API server B: $APISERVER_URL_B (differs from A)" || DIE "bad API server URL for B"
+
+STEP "W24-24: register both clusters via config store"
+MULTI_DIR=/tmp/kk-uat-k8s-multi-hub
+MULTI_PORT=8096
+MULTI_BASE="http://127.0.0.1:${MULTI_PORT}"
+rm -rf "$MULTI_DIR"; mkdir -p "$MULTI_DIR/data"
+cp "$HUB_DIR/kryptkeeper" "$MULTI_DIR/kryptkeeper"
+env -u KRYPTKEEPER_K8S_API_URL -u KRYPTKEEPER_K8S_TOKEN -u KRYPTKEEPER_K8S_CA_CERT_FILE -u KRYPTKEEPER_K8S_NAMESPACE -u KRYPTKEEPER_K8S_CLUSTERS \
+  APP_BOOTSTRAP_TOKEN="$TOKEN" AUTH_MODE=bootstrap APP_CERTIFICATE_PROVIDER=ca \
+  APP_DISCOVERY_PROVIDER=db APP_NOTIFICATION_PROVIDER=file KRYPTKEEPER_TLS_DISABLE=true \
+  APP_CREDENTIAL_STORE_PASSPHRASE='uat-k8s-cred-passphrase-32-bytes!' \
+  KRYPTKEEPER_KEYSTORE_PASSPHRASE='uat-k8s-keystore-passphrase-32byt' \
+  KRYPTKEEPER_DATA_DIR="$MULTI_DIR/data" KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT=true KRYPTKEEPER_CA_NAME="UAT Root CA" \
+  APP_BIND_ADDR=127.0.0.1 PORT="$MULTI_PORT" \
+  "$MULTI_DIR/kryptkeeper" >"$WORK/multi-hub.log" 2>&1 &
+HUB_PID=$!
+tries=30
+until curl -sS -f -o /dev/null "${MULTI_BASE}/api/v1/cas" -H "Authorization: Bearer ${TOKEN}"; do
+  tries=$((tries - 1)); [ $tries -le 0 ] && DIE "multi-cluster hub never answered, see $WORK/multi-hub.log"
+  sleep 1
+done
+PASS "multi-cluster hub answering on $MULTI_BASE (no KRYPTKEEPER_K8S_API_URL set)"
+
+mkcred() { # name apiserver token cafile
+  python3 - "$@" <<'CREDPY'
+import json, sys
+name, apiserver, token, capath = sys.argv[1:5]
+print(json.dumps({'name': name, 'credential_type': 'api_token', 'payload': {
+  'base_url': apiserver, 'bearer_token': token.strip(), 'namespace': 'uat', 'ca_cert': open(capath).read()}}))
+CREDPY
+}
+cred_id() { python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])' 2>/dev/null; }
+CRED_A="$(curlj -X POST "${MULTI_BASE}/api/v1/credentials" -d "$(mkcred uat-cluster-a "$APISERVER_URL" "$SA_TOKEN" "$WORK/cluster-ca.pem")" | cred_id)"
+CRED_B="$(curlj -X POST "${MULTI_BASE}/api/v1/credentials" -d "$(mkcred uat-cluster-b "$APISERVER_URL_B" "$SA_TOKEN_B" "$WORK/cluster-ca-b.pem")" | cred_id)"
+[ -n "$CRED_A" ] && [ -n "$CRED_B" ] && PASS "credentials created: A=$CRED_A B=$CRED_B" || DIE "credential create failed (A='$CRED_A' B='$CRED_B')"
+
+put_clusters() { # credA credB
+  python3 -c '
+import json, sys
+print(json.dumps({"value": json.dumps([{"name": "a", "credential_ref": sys.argv[1]}, {"name": "b", "credential_ref": sys.argv[2]}])}))' "$1" "$2" > "$WORK/clusters-put.json"
+  curl -sS -o "$WORK/clusters-put.out" -w '%{http_code}' -X PUT -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
+    -d @"$WORK/clusters-put.json" "${MULTI_BASE}/api/v1/config/discovery.kube_clusters"
+}
+PUT_CODE="$(put_clusters "$CRED_A" "$CRED_B")"
+case "$PUT_CODE" in 2??) PASS "PUT discovery.kube_clusters -> HTTP $PUT_CODE" ;; *) FAIL "PUT discovery.kube_clusters -> HTTP $PUT_CODE: $(cat "$WORK/clusters-put.out")" ;; esac
+CFG_JSON="$(curlj "${MULTI_BASE}/api/v1/config")"
+if echo "$CFG_JSON" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+rows = d["data"] if isinstance(d["data"], list) else d["data"].get("settings", [])
+row = next((r for r in rows if r.get("key") == "discovery.kube_clusters"), None)
+sys.exit(0 if row and row.get("configured") else 1)'; then
+  PASS "GET /api/v1/config shows discovery.kube_clusters configured:true"
+else
+  FAIL "discovery.kube_clusters not shown configured:true: $CFG_JSON"
+fi
+echo "$CFG_JSON" | grep -q "$SA_TOKEN_B" && FAIL "config response leaks a bearer token" || PASS "config response carries no token text"
+
+scan_k8s() { # sets MJOB, MSTATUS
+  local resp; resp="$(curlj -X POST "${MULTI_BASE}/api/v1/discovery/scans" -d '{"scan_type":"k8s-certmanager"}')"
+  MJOB="$(echo "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["scan_job"]["id"])' 2>/dev/null)"
+  [ -n "$MJOB" ] || { echo "scan create: $resp"; MSTATUS=rejected; return; }
+  local i; MSTATUS=""
+  for i in $(seq 1 60); do
+    MSTATUS="$(sqlite3 "$MULTI_DIR/data/kryptkeeper.db" "SELECT status FROM scan_jobs WHERE id='$MJOB'")"
+    case "$MSTATUS" in completed|completed_with_errors|failed|cancelled) return ;; esac
+    sleep 1
+  done
+}
+mjob_summary() { sqlite3 "$MULTI_DIR/data/kryptkeeper.db" "SELECT results_summary FROM scan_jobs WHERE id='$MJOB'"; }
+
+STEP "W24-24: k8s-certmanager scan across both clusters"
+scan_k8s
+[ "$MSTATUS" = "completed" ] && PASS "multi-cluster scan $MJOB completed" || FAIL "multi-cluster scan status=$MSTATUS"
+mjob_summary > "$WORK/multi-summary.json"
+if python3 - "$WORK/multi-summary.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+by = {i["common_name"]: i for i in s["items"]}
+errs = []
+if by.get("uat-leaf.example.com", {}).get("cluster") != "a": errs.append("uat-leaf not tagged a")
+if by.get("uat-leaf-b.example.com", {}).get("cluster") != "b": errs.append("uat-leaf-b not tagged b")
+cl = s.get("clusters") or []
+if len(cl) != 2 or any(c.get("error") for c in cl): errs.append("clusters=%r" % cl)
+print("; ".join(errs) or "OK"); sys.exit(1 if errs else 0)
+PY
+then PASS "items tagged with the right cluster (a: uat-leaf, b: uat-leaf-b); 2 clusters, no error"
+else FAIL "per-cluster tagging wrong: $(cat "$WORK/multi-summary.json" | head -c 600)"; fi
+
+STEP "W24-24: fingerprint check against kubectl"
+fp_of() { # context secret
+  kubectl --context "$1" -n "$NAMESPACE" get secret "$2" -o jsonpath='{.data.tls\.crt}' | base64 -d | openssl x509 -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2
+}
+SECRET_A="$(python3 -c 'import json; print(next(i["secret_name"] for i in json.load(open("'"$WORK"'/multi-summary.json"))["items"] if i["cluster"]=="a" and i["common_name"]=="uat-leaf.example.com"))' 2>/dev/null)"
+SECRET_B="$(python3 -c 'import json; print(next(i["secret_name"] for i in json.load(open("'"$WORK"'/multi-summary.json"))["items"] if i["cluster"]=="b" and i["common_name"]=="uat-leaf-b.example.com"))' 2>/dev/null)"
+FP_A="$(fp_of "$CTX_A" "$SECRET_A")"; FP_B="$(fp_of "$CTX_B" "$SECRET_B")"
+[ "$SECRET_A" = "uat-leaf-tls" ] && [ "$SECRET_B" = "uat-leaf-b-tls" ] && PASS "item secret_name matches the cluster's Secret (a=$SECRET_A, b=$SECRET_B)" || FAIL "secret_name mismatch a='$SECRET_A' b='$SECRET_B'"
+[ -n "$FP_A" ] && [ -n "$FP_B" ] && [ "$FP_A" != "$FP_B" ] && PASS "kubectl fingerprints exist and differ (A=$FP_A B=$FP_B)" || FAIL "fingerprints missing or equal: A='$FP_A' B='$FP_B'"
+# Cross-check: the Secret named by cluster b's item must NOT exist on cluster a (right cluster, not just right name).
+kubectl --context "$CTX_A" -n "$NAMESPACE" get secret "$SECRET_B" >/dev/null 2>&1 \
+  && FAIL "cluster a unexpectedly holds Secret $SECRET_B" || PASS "Secret $SECRET_B exists only on cluster b"
+
+STEP "W24-24: failure isolation (cluster b credential with a bogus token)"
+BAD_B="$(curlj -X POST "${MULTI_BASE}/api/v1/credentials" -d "$(mkcred uat-cluster-b-bad "$APISERVER_URL_B" "not-a-real-token" "$WORK/cluster-ca-b.pem")" | cred_id)"
+[ -n "$BAD_B" ] || DIE "bogus credential create failed"
+PUT_CODE="$(put_clusters "$CRED_A" "$BAD_B")"
+case "$PUT_CODE" in 2??) PASS "re-registered with bogus cluster b -> HTTP $PUT_CODE" ;; *) FAIL "re-register PUT -> HTTP $PUT_CODE" ;; esac
+scan_k8s
+mjob_summary > "$WORK/multi-summary2.json"
+case "$MSTATUS" in
+  completed|completed_with_errors) PASS "scan with one bad cluster did not fail the job (status=$MSTATUS)" ;;
+  *) FAIL "scan status=$MSTATUS (want completed or completed_with_errors)" ;;
+esac
+if python3 - "$WORK/multi-summary2.json" <<'PY'
+import json, sys
+cl = {c["name"]: c for c in json.load(open(sys.argv[1]))["clusters"]}
+errs = []
+if cl.get("a", {}).get("error") or cl.get("a", {}).get("certificates", 0) < 1: errs.append("cluster a not ok: %r" % cl.get("a"))
+if not cl.get("b", {}).get("error"): errs.append("cluster b has no error: %r" % cl.get("b"))
+print("; ".join(errs) or "OK"); sys.exit(1 if errs else 0)
+PY
+then PASS "cluster a ok, cluster b reports a non-empty error"
+else FAIL "failure isolation wrong: $(head -c 600 "$WORK/multi-summary2.json")"; fi
 kill "$HUB_PID" 2>/dev/null; wait "$HUB_PID" 2>/dev/null; HUB_PID=""
 
 STEP "result"

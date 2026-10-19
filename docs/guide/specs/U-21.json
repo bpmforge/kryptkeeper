@@ -1,0 +1,207 @@
+{
+  "task": "U-21",
+  "title": "Bulk import existing certificates",
+  "sourceStory": "STORIES.md#u-21",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/certificates"
+      },
+      "caption": "Open /certificates",
+      "slug": "certificates-list",
+      "expect": {
+        "role": "button",
+        "name": "Bulk import"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-21/01-certificates-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Bulk import"
+      },
+      "caption": "Click **Bulk import**",
+      "slug": "import-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "Bulk import certificates"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-21/02-import-dialog.png",
+        "annotated": "docs/guide/screenshots/U-21/02-import-dialog-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 431,
+          "w": 630,
+          "h": 20
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Bulk import bundle",
+        "within": "[role=dialog]"
+      },
+      "value": "-----BEGIN CERTIFICATE-----\nMIIB6DCCAY2gAwIBAgIUMgIrsJhjZ4HS1cVq89HRFxDJOoIwCgYIKoZIzj0EAwIw\nNzEgMB4GA1UEAwwXaW1wb3J0ZWQtMS5wYXJ0bmVyLnRlc3QxEzARBgNVBAoMClBh\ncnRuZXIgQ28wHhcNMjYxMDE4MDc1OTUzWhcNMjcxMDE4MDc1OTUzWjA3MSAwHgYD\nVQQDDBdpbXBvcnRlZC0xLnBhcnRuZXIudGVzdDETMBEGA1UECgwKUGFydG5lciBD\nbzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABPm7zDPmrsIdcmGnMgWzcHP5boQi\n6w/8K9kCxZuByDeynRRdvTTL8AxgvDd3EkGE9qMI63leP/vTp3gcTYVK/PujdzB1\nMB0GA1UdDgQWBBRbneGyJq5CUegjram+KF9STvm+HDAfBgNVHSMEGDAWgBRbneGy\nJq5CUegjram+KF9STvm+HDAPBgNVHRMBAf8EBTADAQH/MCIGA1UdEQQbMBmCF2lt\ncG9ydGVkLTEucGFydG5lci50ZXN0MAoGCCqGSM49BAMCA0kAMEYCIQCEAfZ3WZSR\nUmaxCo2tgZXZ41sL4LV0VUwDIegqYys9IQIhAP7iWTaUSUpaLFJn7ig/Htw/kGXG\n9pcfbtwafbSXYojk\n-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----\nMIIB6DCCAY2gAwIBAgIUDZjOLXCnPbEkmmGZsp0Nt/N0+dMwCgYIKoZIzj0EAwIw\nNzEgMB4GA1UEAwwXaW1wb3J0ZWQtMi5wYXJ0bmVyLnRlc3QxEzARBgNVBAoMClBh\ncnRuZXIgQ28wHhcNMjYxMDE4MDc1OTUzWhcNMjcxMDE4MDc1OTUzWjA3MSAwHgYD\nVQQDDBdpbXBvcnRlZC0yLnBhcnRuZXIudGVzdDETMBEGA1UECgwKUGFydG5lciBD\nbzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABMMM6i40JdKkYGf+yq2E5pDN3ph9\nwUx0QNtrheNieQPs7UuhFPuWlCOIYwur4nWhOoMQYsNV30SYNhhvPqGp/LmjdzB1\nMB0GA1UdDgQWBBQaISvR+c9V4DqoGMWQ526Jp80+sDAfBgNVHSMEGDAWgBQaISvR\n+c9V4DqoGMWQ526Jp80+sDAPBgNVHRMBAf8EBTADAQH/MCIGA1UdEQQbMBmCF2lt\ncG9ydGVkLTIucGFydG5lci50ZXN0MAoGCCqGSM49BAMCA0kAMEYCIQC6aSXw5eN6\n2w55Mr467lUes6Q1JrWHKhc6ccOJ0PeoCgIhAPq9lSB17ERRQkcb1RwD+rexy50G\nCFpV0jXUGppxyAND\n-----END CERTIFICATE-----",
+      "caption": "Fill **Bulk import bundle** with \"-----BEGIN CERTIFICATE-----\nMIIB6DCCAY2gAwIBAgIUMgIrsJhjZ4HS1cVq89HRFxDJOoIwCgYIKoZIzj0EAwIw\nNzEgMB4GA1UEAwwXaW1wb3J0ZWQtMS5wYXJ0bmVyLnRlc3QxEzARBgNVBAoMClBh\ncnRuZXIgQ28wHhcNMjYxMDE4MDc1OTUzWhcNMjcxMDE4MDc1OTUzWjA3MSAwHgYD\nVQQDDBdpbXBvcnRlZC0xLnBhcnRuZXIudGVzdDETMBEGA1UECgwKUGFydG5lciBD\nbzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABPm7zDPmrsIdcmGnMgWzcHP5boQi\n6w/8K9kCxZuByDeynRRdvTTL8AxgvDd3EkGE9qMI63leP/vTp3gcTYVK/PujdzB1\nMB0GA1UdDgQWBBRbneGyJq5CUegjram+KF9STvm+HDAfBgNVHSMEGDAWgBRbneGy\nJq5CUegjram+KF9STvm+HDAPBgNVHRMBAf8EBTADAQH/MCIGA1UdEQQbMBmCF2lt\ncG9ydGVkLTEucGFydG5lci50ZXN0MAoGCCqGSM49BAMCA0kAMEYCIQCEAfZ3WZSR\nUmaxCo2tgZXZ41sL4LV0VUwDIegqYys9IQIhAP7iWTaUSUpaLFJn7ig/Htw/kGXG\n9pcfbtwafbSXYojk\n-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----\nMIIB6DCCAY2gAwIBAgIUDZjOLXCnPbEkmmGZsp0Nt/N0+dMwCgYIKoZIzj0EAwIw\nNzEgMB4GA1UEAwwXaW1wb3J0ZWQtMi5wYXJ0bmVyLnRlc3QxEzARBgNVBAoMClBh\ncnRuZXIgQ28wHhcNMjYxMDE4MDc1OTUzWhcNMjcxMDE4MDc1OTUzWjA3MSAwHgYD\nVQQDDBdpbXBvcnRlZC0yLnBhcnRuZXIudGVzdDETMBEGA1UECgwKUGFydG5lciBD\nbzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABMMM6i40JdKkYGf+yq2E5pDN3ph9\nwUx0QNtrheNieQPs7UuhFPuWlCOIYwur4nWhOoMQYsNV30SYNhhvPqGp/LmjdzB1\nMB0GA1UdDgQWBBQaISvR+c9V4DqoGMWQ526Jp80+sDAfBgNVHSMEGDAWgBQaISvR\n+c9V4DqoGMWQ526Jp80+sDAPBgNVHRMBAf8EBTADAQH/MCIGA1UdEQQbMBmCF2lt\ncG9ydGVkLTIucGFydG5lci50ZXN0MAoGCCqGSM49BAMCA0kAMEYCIQC6aSXw5eN6\n2w55Mr467lUes6Q1JrWHKhc6ccOJ0PeoCgIhAPq9lSB17ERRQkcb1RwD+rexy50G\nCFpV0jXUGppxyAND\n-----END CERTIFICATE-----\"",
+      "slug": "bundle-pasted",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-21/03-bundle-pasted.png",
+        "annotated": "docs/guide/screenshots/U-21/03-bundle-pasted-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 483,
+          "w": 630,
+          "h": 128
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Import",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Import**",
+      "slug": "imported",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-21/04-imported.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Search certificates"
+      },
+      "value": "partner.test",
+      "caption": "Fill **Search certificates** with \"partner.test\"",
+      "slug": "imported-rows",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-21/05-imported-rows.png",
+        "annotated": "docs/guide/screenshots/U-21/05-imported-rows-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 265,
+          "w": 178,
+          "h": 38
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:42:07.002Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-21",
+    "steps": 5,
+    "shots": 5,
+    "annotated": 3,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/certificates"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-21/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-21/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

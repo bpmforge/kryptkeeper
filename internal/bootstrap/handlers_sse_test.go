@@ -6,12 +6,15 @@ package bootstrap
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -193,6 +196,10 @@ func TestSSE_NullProgressWhenUnreportable(t *testing.T) {
 	bus.Publish(DefaultTenant, Event{OpID: "scan-9", Kind: EventKindScan, Status: "queued", Ts: "2026-07-29T12:00:00Z"})
 
 	line, ok := c.nextRawLine(t, 2*time.Second)
+	if !ok || !strings.HasPrefix(line, "id: ") {
+		t.Fatalf("expected an id line first, got %q ok=%v", line, ok)
+	}
+	line, ok = c.nextRawLine(t, 2*time.Second)
 	if !ok {
 		t.Fatal("expected an event line, got none")
 	}
@@ -389,5 +396,428 @@ func TestSSE_MethodNotAllowedForNonGET(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("expected 405, got %d", rec.Code)
+	}
+}
+
+// sseAuditRecorder records audit actions so tests can assert on the
+// events.stream.* names.
+type sseAuditRecorder struct {
+	mu      sync.Mutex
+	entries []AuditEntry
+}
+
+func (a *sseAuditRecorder) ListEntries(context.Context, AuditListQuery) (AuditListResult, error) {
+	return AuditListResult{Entries: []AuditEntry{}, Limit: 25}, nil
+}
+
+func (a *sseAuditRecorder) AppendEntry(_ context.Context, e AuditEntry) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.entries = append(a.entries, e)
+	return nil
+}
+
+func (a *sseAuditRecorder) count(action string, outcome AuditOutcome) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	n := 0
+	for _, e := range a.entries {
+		if e.Action == action && e.Outcome == outcome {
+			n++
+		}
+	}
+	return n
+}
+
+// countEventually polls count for up to 2 s: a stream's open audit is written
+// by the handler goroutine, which can lag the client seeing headers on a
+// loaded host.
+func (a *sseAuditRecorder) countEventually(action string, outcome AuditOutcome, want int) int {
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		n := a.count(action, outcome)
+		if n >= want || time.Now().After(deadline) {
+			return n
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// expectStatuses reads len(want) events for opID and asserts their statuses
+// in order, skipping other ops.
+func (c *sseClient) expectStatuses(t *testing.T, kind, opID string, want ...string) {
+	t.Helper()
+	for i, w := range want {
+		evt, ok := c.nextEvent(t, 3*time.Second)
+		if !ok {
+			t.Fatalf("event %d (%s): none delivered", i, w)
+		}
+		if evt.Kind != kind || evt.OpID != opID || evt.Status != w {
+			t.Fatalf("event %d: got kind=%s op=%s status=%s, want kind=%s op=%s status=%s", i, evt.Kind, evt.OpID, evt.Status, kind, opID, w)
+		}
+	}
+}
+
+type stubRenewalRunner struct {
+	result RenewalExecuteResult
+	err    error
+}
+
+func (s stubRenewalRunner) ExecuteRenewal(context.Context, string, ManagedTarget, RenewalInstallProfile) (RenewalExecuteResult, error) {
+	return s.result, s.err
+}
+
+// renewSSEHarness mounts the SSE stream and the renewal handler on one mux
+// sharing one Authenticator and bus.
+type renewSSEHarness struct {
+	srv         *httptest.Server
+	auth        *Authenticator
+	bus         *EventBus
+	audit       *sseAuditRecorder
+	fingerprint string
+	targetID    string
+	caID        string
+}
+
+func newRenewSSEHarness(t *testing.T, runner renewalRunner, maxStreams int) *renewSSEHarness {
+	t.Helper()
+	t.Cleanup(func() { setActiveEventBus(nil) })
+	_, auth, provider, targetStore, credStore, caID := newRenewalExecuteTestMuxAuth(t)
+	ctx := context.Background()
+	issued, err := provider.IssueCertificate(ctx, CertificateIssueRequest{
+		CAID: caID, CSRPEM: generateTestCSRPEM(t, "sse.example.com", "sse.example.com"),
+		TemplateID: "file-backed-default", TeamID: "team-sse",
+	})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	target, err := targetStore.Create(ctx, ManagedTarget{
+		ID: "tgt-sse", Name: "sse-target", Tenant: "acme", Host: "127.0.0.1",
+		DiscoveryMode: "none", InstallMode: "ssh", RenewalMethod: "manual", CredentialRef: "cred-sse",
+	})
+	if err != nil {
+		t.Fatalf("target: %v", err)
+	}
+	audit := &sseAuditRecorder{}
+	bus := NewEventBus(maxStreams)
+	mux := http.NewServeMux()
+	registerSSEHandlers(mux, auth, bus, audit, testSSEConfig())
+	registerRenewalExecuteHandlerWithRunner(mux, auth, provider, targetStore, credStore, audit, runner, time.Minute)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return &renewSSEHarness{srv: srv, auth: auth, bus: bus, audit: audit, fingerprint: issued.CertificateItem.FingerprintSHA256, targetID: target.ID, caID: caID}
+}
+
+func (h *renewSSEHarness) renew(t *testing.T, token, tenant string) int {
+	t.Helper()
+	body, _ := json.Marshal(map[string]string{"fingerprint": h.fingerprint, "target_id": h.targetID})
+	req, _ := http.NewRequest(http.MethodPost, h.srv.URL+"/api/v1/renewal/execute", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	if tenant != "" {
+		req.Header.Set("X-Tenant", tenant)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("renew: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+func TestSSE_RenewProducerLifecycle(t *testing.T) {
+	h := newRenewSSEHarness(t, stubRenewalRunner{result: RenewalExecuteResult{InstallOutcome: "installed_verified"}}, 5)
+	token := newSSETestAPIKey(t, h.auth, "renewer", "pki-admin", "")
+	c := connectSSE(t, h.srv.URL, token, "")
+	defer c.close()
+
+	if code := h.renew(t, token, ""); code != http.StatusOK {
+		t.Fatalf("renew: %d", code)
+	}
+	c.expectStatuses(t, EventKindRenew, h.fingerprint, "queued", "running", "completed")
+
+	failing := newRenewSSEHarness(t, stubRenewalRunner{err: errors.New("acme account key=SECRET rejected")}, 5)
+	ftoken := newSSETestAPIKey(t, failing.auth, "renewer", "pki-admin", "")
+	fc := connectSSE(t, failing.srv.URL, ftoken, "")
+	defer fc.close()
+	if code := failing.renew(t, ftoken, ""); code != http.StatusServiceUnavailable {
+		t.Fatalf("failing renew: %d", code)
+	}
+	fc.expectStatuses(t, EventKindRenew, failing.fingerprint, "queued", "running")
+	evt, ok := fc.nextEvent(t, 3*time.Second)
+	if !ok || evt.Status != "failed" {
+		t.Fatalf("expected failed, got ok=%v %+v", ok, evt)
+	}
+	if strings.Contains(evt.Message, "SECRET") {
+		t.Fatalf("failure message leaked the executor error: %q", evt.Message)
+	}
+}
+
+func TestSSE_OperationSucceedsWithZeroSubscribers(t *testing.T) {
+	h := newRenewSSEHarness(t, stubRenewalRunner{result: RenewalExecuteResult{InstallOutcome: "installed_verified"}}, 5)
+	token := newSSETestAPIKey(t, h.auth, "renewer", "pki-admin", "")
+	if code := h.renew(t, token, ""); code != http.StatusOK {
+		t.Fatalf("renew with no subscribers: %d", code)
+	}
+}
+
+// TestSSE_CrossTenantNotDelivered: an acme-initiated renewal must reach acme
+// subscribers only.
+func TestSSE_CrossTenantNotDelivered(t *testing.T) {
+	t.Setenv("MULTI_TENANCY", "on")
+	// Tenant gates fail closed without a store (D-202), so give the test its
+	// own store with the harness CA mapped to acme.
+	prevStore := activeTenantStore
+	t.Cleanup(func() { setActiveTenantStore(prevStore) })
+	h := newRenewSSEHarness(t, stubRenewalRunner{result: RenewalExecuteResult{InstallOutcome: "installed_verified"}}, 5)
+	t.Setenv("KRYPTKEEPER_DATA_DIR", t.TempDir())
+	ts := NewTenantStoreFromEnv()
+	if ts == nil {
+		t.Fatal("tenant store unavailable")
+	}
+	for _, id := range []string{"acme", "globex"} {
+		if _, err := ts.CreateTenant(context.Background(), id, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ts.SetCATenant(context.Background(), h.caID, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	setActiveTenantStore(ts)
+	acmeToken := newSSETestAPIKey(t, h.auth, "acme-op", "pki-admin", "acme")
+	globexToken := newSSETestAPIKey(t, h.auth, "globex-op", "pki-operator", "globex")
+	acme := connectSSE(t, h.srv.URL, acmeToken, "acme")
+	defer acme.close()
+	globex := connectSSE(t, h.srv.URL, globexToken, "globex")
+	defer globex.close()
+
+	if code := h.renew(t, acmeToken, "acme"); code != http.StatusOK {
+		t.Fatalf("acme renew: %d", code)
+	}
+	acme.expectStatuses(t, EventKindRenew, h.fingerprint, "queued", "running", "completed")
+	globex.expectNoEvent(t, 400*time.Millisecond)
+
+	// A globex principal cannot start a renewal on acme's target, so no
+	// acme-visible event is produced either.
+	globexAdmin := newSSETestAPIKey(t, h.auth, "globex-admin", "pki-admin", "globex")
+	if code := h.renew(t, globexAdmin, "globex"); code != http.StatusForbidden {
+		t.Fatalf("cross-tenant renew should be 403, got %d", code)
+	}
+	acme.expectNoEvent(t, 300*time.Millisecond)
+
+	// Replay is tenant-filtered too: globex reconnecting with Last-Event-ID 0
+	// must not be handed acme's buffered events.
+	replayed := connectSSEWithLastID(t, h.srv.URL, globexToken, "globex", "0")
+	defer replayed.close()
+	replayed.expectNoEvent(t, 400*time.Millisecond)
+}
+
+func connectSSEWithLastID(t *testing.T, baseURL, token, tenant, lastID string) *sseClient {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/api/v1/events", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Last-Event-ID", lastID)
+	if tenant != "" {
+		req.Header.Set("X-Tenant", tenant)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		cancel()
+		t.Fatalf("connect with Last-Event-ID: err=%v", err)
+	}
+	c := &sseClient{cancel: cancel, body: resp.Body, lines: make(chan string, 64)}
+	go func() {
+		r := bufio.NewReader(resp.Body)
+		for {
+			line, err := r.ReadString('\n')
+			if trimmed := strings.TrimRight(line, "\n"); trimmed != "" {
+				c.lines <- trimmed
+			}
+			if err != nil {
+				close(c.lines)
+				return
+			}
+		}
+	}()
+	return c
+}
+
+func TestSSE_SixthStreamReturns429(t *testing.T) {
+	t.Cleanup(func() { setActiveEventBus(nil) })
+	t.Setenv("APP_SSE_MAX_STREAMS_PER_PRINCIPAL", "")
+	auth := newRateLimitTestAuth(t)
+	token := newSSETestAPIKey(t, auth, "watcher", "pki-operator", "")
+	audit := &sseAuditRecorder{}
+	mux := http.NewServeMux()
+	registerSSEHandlers(mux, auth, NewEventBus(sseMaxStreamsPerPrincipalFromEnv()), audit, testSSEConfig())
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	for i := 0; i < 5; i++ {
+		c := connectSSE(t, srv.URL, token, "")
+		defer c.close()
+	}
+	resp, cancel := trySSE(t, srv.URL, token, "")
+	defer cancel()
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 on the 6th stream, got %d", resp.StatusCode)
+	}
+	if n := audit.countEventually("events.stream.reject", AuditOutcomeDenied, 1); n != 1 {
+		t.Fatalf("expected 1 events.stream.reject audit row, got %d", n)
+	}
+	if n := audit.countEventually("events.stream.open", AuditOutcomeSuccess, 5); n != 5 {
+		t.Fatalf("expected 5 events.stream.open audit rows, got %d", n)
+	}
+}
+
+func TestSSE_StreamOpenAudited(t *testing.T) {
+	t.Cleanup(func() { setActiveEventBus(nil) })
+	auth := newRateLimitTestAuth(t)
+	token := newSSETestAPIKey(t, auth, "watcher", "pki-operator", "")
+	audit := &sseAuditRecorder{}
+	bus := NewEventBus(5)
+	mux := http.NewServeMux()
+	registerSSEHandlers(mux, auth, bus, audit, testSSEConfig())
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	c := connectSSE(t, srv.URL, token, "")
+	defer c.close()
+	bus.Publish(DefaultTenant, Event{OpID: "x", Kind: EventKindScan, Status: "running", Ts: "2026-07-29T12:00:00Z"})
+	if _, ok := c.nextEvent(t, 2*time.Second); !ok {
+		t.Fatal("expected event")
+	}
+	if n := audit.count("events.stream.open", AuditOutcomeSuccess); n != 1 {
+		t.Fatalf("expected exactly 1 events.stream.open row (never per message), got %d", n)
+	}
+}
+
+func TestSSE_LastEventIDReplay(t *testing.T) {
+	t.Cleanup(func() { setActiveEventBus(nil) })
+	auth := newRateLimitTestAuth(t)
+	token := newSSETestAPIKey(t, auth, "watcher", "pki-operator", "")
+	bus := NewEventBus(5)
+	mux := http.NewServeMux()
+	registerSSEHandlers(mux, auth, bus, stubAuditProvider{}, testSSEConfig())
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	for _, id := range []string{"op-1", "op-2", "op-3"} {
+		bus.Publish(DefaultTenant, Event{OpID: id, Kind: EventKindScan, Status: "running", Ts: "2026-07-29T12:00:00Z"})
+	}
+	c := connectSSEWithLastID(t, srv.URL, token, "", "1")
+	defer c.close()
+	for _, want := range []struct{ id, op string }{{"id: 2", "op-2"}, {"id: 3", "op-3"}} {
+		line, ok := c.nextRawLine(t, 2*time.Second)
+		if !ok || line != want.id {
+			t.Fatalf("expected %q, got %q ok=%v", want.id, line, ok)
+		}
+		evt, ok := c.nextEvent(t, 2*time.Second)
+		if !ok || evt.OpID != want.op {
+			t.Fatalf("expected %s, got ok=%v %+v", want.op, ok, evt)
+		}
+	}
+	c.expectNoEvent(t, 200*time.Millisecond)
+}
+
+func TestSSE_InstallProducerLifecycle(t *testing.T) {
+	t.Cleanup(func() { setActiveEventBus(nil) })
+	t.Setenv("APP_API_KEY_PEPPER", "test-pepper-32chars-minimum!!!!!")
+	t.Setenv("APP_API_KEY_AUTH_ENABLED", "true")
+	mux, _ := newAgentMux(t)
+	auth := newAgentTestAuth(t)
+	registerSSEHandlers(mux, auth, NewEventBus(5), stubAuditProvider{}, testSSEConfig())
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	token := newSSETestAPIKey(t, auth, "watcher", "pki-operator", "")
+	c := connectSSE(t, srv.URL, token, "")
+	defer c.close()
+
+	post := func(path, id, agentToken string, body any) {
+		t.Helper()
+		b, _ := json.Marshal(body)
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+path, bytes.NewReader(b))
+		req.Header.Set("X-Agent-ID", id)
+		req.Header.Set("X-Agent-Token", agentToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST %s: err=%v", path, err)
+		}
+		resp.Body.Close()
+	}
+	get := func(path, id, agentToken string) {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+		req.Header.Set("X-Agent-ID", id)
+		req.Header.Set("X-Agent-Token", agentToken)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: err=%v", path, err)
+		}
+		resp.Body.Close()
+	}
+
+	runCycle := func(name, fp, outcome string, rolledBack bool, wantFinal string) {
+		t.Helper()
+		agentID, agentToken := registerTestAgent(t, mux, name, AgentTypeLinux)
+		post("/api/v1/agent/inventory", agentID, agentToken, map[string]any{
+			"certs":     []AgentDiscoveredCert{{Fingerprint: fp, Subject: "CN=shop.example.com", Source: "/etc/ssl/" + fp + ".crt", NotAfter: time.Now().Add(24 * time.Hour), AutoRenewable: true}},
+			"endpoints": []AgentEndpoint{{ServerType: "nginx", CertPath: "/etc/ssl/" + fp + ".crt", KeyPath: "/etc/ssl/" + fp + ".key"}},
+		})
+		queued, ok := c.nextEvent(t, 3*time.Second)
+		if !ok || queued.Kind != EventKindInstall || queued.Status != "queued" || queued.OpID == "" {
+			t.Fatalf("expected install queued, got ok=%v %+v", ok, queued)
+		}
+		// Polling twice announces running once.
+		get("/api/v1/agent/tasks", agentID, agentToken)
+		get("/api/v1/agent/tasks", agentID, agentToken)
+		c.expectStatuses(t, EventKindInstall, queued.OpID, "running")
+		post("/api/v1/agent/renewal-result", agentID, agentToken, AgentRenewalResult{TaskID: queued.OpID, Fingerprint: fp, Outcome: outcome, RolledBack: rolledBack})
+		c.expectStatuses(t, EventKindInstall, queued.OpID, wantFinal)
+		c.expectNoEvent(t, 100*time.Millisecond)
+	}
+	runCycle("agent-ok", "fp-ok", "installed_verified", false, "completed")
+	runCycle("agent-rb", "fp-rb", "rolled_back", true, "failed")
+}
+
+func TestSSE_MigrateProducerLifecycle(t *testing.T) {
+	t.Cleanup(func() { setActiveEventBus(nil) })
+	fx := newWaveExecuteTestFixture(t)
+	registerSSEHandlers(fx.mux, fx.auth, NewEventBus(5), stubAuditProvider{}, testSSEConfig())
+	srv := httptest.NewServer(fx.mux)
+	defer srv.Close()
+	watcher := waveExecuteToken(t, fx.auth, "watcher", "pki-operator")
+	c := connectSSE(t, srv.URL, watcher, "")
+	defer c.close()
+
+	ctx := context.Background()
+	caID := getFirstCAID(t, fx.engine)
+	issued, err := fx.certs.IssueCertificate(ctx, CertificateIssueRequest{CAID: caID, TemplateID: "tpl-classical", CSRPEM: generateTestCSRPEM(t, "sse-migrate.example.com"), TeamID: "team-1"})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	wave, err := fx.waveStore.CreateWave(ctx, MigrationWave{Name: "wave-sse"})
+	if err != nil {
+		t.Fatalf("create wave: %v", err)
+	}
+	for _, fp := range []string{issued.FingerprintSHA256, "does-not-exist"} {
+		if err := fx.waveStore.AddMember(ctx, wave.ID, MigrationWaveMember{Fingerprint: fp}); err != nil {
+			t.Fatalf("add member: %v", err)
+		}
+	}
+	proposer := waveExecuteToken(t, fx.auth, "proposer", "pki-admin")
+	action := proposeWaveExecute(t, fx, wave.ID, proposer)
+	approver := waveExecuteToken(t, fx.auth, "approver", "pki-operator")
+	rec := httptest.NewRecorder()
+	fx.mux.ServeHTTP(rec, waveExecuteReq(http.MethodPost, "/api/v1/reports/pqc-waves/"+wave.ID+"/execute/"+action.ID+"/approve", approver, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())
+	}
+	c.expectStatuses(t, EventKindMigrate, wave.ID, "running")
+	evt, ok := c.nextEvent(t, 3*time.Second)
+	if !ok || evt.OpID != wave.ID || evt.Status != "failed" || evt.Message != "1 of 2 members failed" {
+		t.Fatalf("expected partial-failure event, got ok=%v %+v", ok, evt)
 	}
 }

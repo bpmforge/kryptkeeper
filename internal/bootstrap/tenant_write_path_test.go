@@ -28,6 +28,9 @@ import (
 // widely-used helper signature stays put).
 var lastTenantWritePathViewerToken string
 
+// lastTenantWritePathAuth lets tests mount extra handlers behind the same keys.
+var lastTenantWritePathAuth *Authenticator
+
 func setupTenantWritePathTest(t *testing.T) (mux *http.ServeMux, acmeToken, globexToken string) {
 	t.Helper()
 	t.Setenv("AUTH_MODE", "bootstrap")
@@ -111,6 +114,7 @@ func setupTenantWritePathTest(t *testing.T) (mux *http.ServeMux, acmeToken, glob
 		t.Fatalf("create acme viewer key: %v", err)
 	}
 	lastTenantWritePathViewerToken = acmeViewerToken
+	lastTenantWritePathAuth = auth
 
 	mux = http.NewServeMux()
 	RegisterHandlers(mux, auth, stubCertSummaryForCA{}, stubAuditProviderForCA{}, NewFileCAProviderFromEnv(), NewFileTemplateProviderFromEnv(), NewFileCertificateProviderFromEnv(), NewProtocolProviderFromEnv(), NewDiscoveryProviderFromEnv(), NewNotificationProviderFromEnv(), NewDashboardActionProviderFromEnv(), nil)

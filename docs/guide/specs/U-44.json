@@ -1,0 +1,83 @@
+{
+  "task": "U-44",
+  "title": "Issue SPIFFE SVIDs for workloads",
+  "sourceStory": "STORIES.md#u-44",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/spiffe"
+      },
+      "caption": "Open /spiffe",
+      "slug": "spiffe-not-configured",
+      "allow": [
+        "404",
+        "503"
+      ],
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-44/01-spiffe-not-configured.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "flags": "CONFIG + LAB WORKLOAD (off state captured here; configured state in U-44b)",
+  "lastRun": {
+    "at": "2026-10-18T12:37:31.598Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-44",
+    "steps": 1,
+    "shots": 1,
+    "annotated": 0,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/spiffe"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-44/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-44/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

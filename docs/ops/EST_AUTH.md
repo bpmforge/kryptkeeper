@@ -4,8 +4,8 @@ Status (2026-10-07): implemented. Proven live on the lab hub and with the real
 `globalsign/est` client (`tests/live/protocols`).
 
 EST enrollment is **off unless a credential type is configured**. `cacerts`
-and `csrattrs` are always served: they issue nothing, and RFC 7030 §4.1/§4.5
-makes them anonymous. EST is served only on the hub's own TLS listener. Do
+is always served anonymously (it issues nothing, RFC 7030 §4.1.1). Every other
+route, `csrattrs` included, answers 401 without credentials (W26-06). EST is served only on the hub's own TLS listener. Do
 not put it behind a TLS-terminating proxy: the hub refuses EST credentials
 on any request that did not arrive over TLS (RFC 7030 §3.2.3), and a proxy
 would also drop client certificates.
@@ -57,6 +57,16 @@ The hub logs, once at startup, which methods are live and why any is not.
 - **Unknown users:** they cost the same bcrypt work as known ones, so
   response times do not reveal which usernames exist.
 
+## API-managed users (W26-07)
+
+pki-admins can create, rotate, disable and delete Basic users without file
+edits: `POST/GET /api/v1/est/users`, `GET/PATCH/DELETE /api/v1/est/users/{username}`,
+`POST /api/v1/est/users/{username}/rotate`. The server generates the password
+and shows it once; only a bcrypt hash is stored. **A user defined in
+`KRYPTKEEPER_EST_USERS_FILE` wins on a name clash**: creating a stored user with
+a file user's name is refused (409) and a stored user later shadowed by the
+file is flagged `shadowed_by_file`. Audit actions: `est.user.create|rotate|update|delete`.
+
 ## Audit
 
 Every outcome except the bare first 401 challenge is written to the hub
@@ -64,8 +74,10 @@ audit log:
 
 - `est.enroll` success: actor is the username or the certificate subject,
   and the detail carries the method, serial and subject.
-- `est.enroll` denied: invalid credentials, or a name outside the user's
-  suffixes.
+- `est.enroll.failure` (outcome `denied`): invalid credentials, a disabled
+  user, or a name outside the user's suffixes. More than 10 failed Basic
+  attempts per minute for one username raise one `alert.est.basic.failures`
+  audit entry (and an `ALERT` log line) per minute.
 - `est.reenroll` success and denied, with the reason (for example
   "certificate is revoked").
 
@@ -84,8 +96,19 @@ audit log:
 
 | Request | Result |
 |---|---|
-| No certificate | 403 |
+| No certificate | 403 at the time; 401 since W26-06 |
 | The Basic-issued certificate, with a CSR asking for `CN=Administrator` | 200, same subject and SANs, new serial |
 | After revoking it | 403 "certificate is revoked", audited |
 
 The lab hub was then returned to EST disabled.
+
+## Label routes (W26-06)
+
+`/.well-known/est/<label>/{cacerts,simpleenroll,simplereenroll,csrattrs}` serves
+a named endpoint bound to one template. Manage labels with `/api/v1/est/labels`
+(pki-admin). The bare routes are the default label and keep using
+`KRYPTKEEPER_EST_TEMPLATE`. Enrollment on a label is gated by the label's
+template: list the role `protocol:est` in that template's
+`enrollment_permissions.enroll`. An unknown, reserved or malformed label is a
+404 with the same body. Issued certificates are recorded in the inventory with
+the template id. Needs the hub database.

@@ -1,6 +1,6 @@
 # W19-02: minimal Ubuntu target for the SSH agentless-install UAT.
-# Ships sshd + nginx + apache2 in one image; run.sh starts two containers
-# from it (one nginx-role, one apache-role) since both servers default to
+# Ships sshd + nginx + apache2 (+ haproxy and Tomcat, W27-08) in one image;
+# run.sh starts one container per ROLE from it since every server defaults to
 # binding :443 and can't share a single container's TLS port.
 FROM docker.io/library/ubuntu:24.04
 
@@ -8,6 +8,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         openssh-server nginx apache2 openssl ca-certificates \
+        haproxy openjdk-21-jre-headless curl \
     && rm -rf /var/lib/apt/lists/* \
     && mkdir -p /var/run/sshd /etc/ssl/kk \
     && a2enmod ssl \
@@ -23,10 +24,39 @@ RUN openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
     && chmod 644 /etc/ssl/kk/server.crt \
     && chmod 600 /etc/ssl/kk/server.key
 
+# W27-08: HAProxy's `crt` is ONE file, chain then key (combineHAProxyPEM order).
+RUN cat /etc/ssl/kk/server.crt /etc/ssl/kk/server.key > /etc/ssl/kk/haproxy.pem \
+    && chmod 600 /etc/ssl/kk/haproxy.pem
+COPY haproxy-kk.cfg /etc/haproxy/haproxy.cfg
+
+# W27-08: Tomcat 10.1 from the Apache archive, pinned version and sha512 (the
+# value published next to the tarball at implementation time). The build FAILS
+# on a checksum mismatch; nothing unverified is ever unpacked. FIXTURE-ONLY
+# keystore password (also in tomcat-server.xml and run.sh): not a secret.
+ARG TOMCAT_VERSION=10.1.61
+ARG TOMCAT_SHA512=35120a2b1182bac3d55438fbec0dc581d03b0f1c16ce692a930f3bb6a1097cf896b94b389152257071a87cb2928ac8c15f1bad08387c14acc7c17dbc1bb598fb
+RUN curl -fsSL -o /tmp/tomcat.tgz \
+        "https://archive.apache.org/dist/tomcat/tomcat-10/v${TOMCAT_VERSION}/bin/apache-tomcat-${TOMCAT_VERSION}.tar.gz" \
+    && echo "${TOMCAT_SHA512}  /tmp/tomcat.tgz" | sha512sum -c - \
+    && mkdir -p /opt/tomcat && tar -xzf /tmp/tomcat.tgz -C /opt/tomcat --strip-components=1 \
+    && rm -f /tmp/tomcat.tgz \
+    && openssl pkcs12 -export -inkey /etc/ssl/kk/server.key -in /etc/ssl/kk/server.crt \
+        -name tomcat -passout pass:kk-uat-fixture-pw -out /opt/tomcat/conf/kk.p12 \
+    && chmod 600 /opt/tomcat/conf/kk.p12 \
+    && keytool -importkeystore -noprompt -srckeystore /opt/tomcat/conf/kk.p12 -srcstoretype PKCS12 \
+        -srcstorepass kk-uat-fixture-pw -destkeystore /opt/tomcat/conf/kk.jks -deststoretype JKS \
+        -deststorepass kk-uat-fixture-pw -destkeypass kk-uat-fixture-pw >/dev/null 2>&1 \
+    && chmod 600 /opt/tomcat/conf/kk.jks \
+    && echo 'export CATALINA_PID=/run/tomcat.pid' > /opt/tomcat/bin/setenv.sh
+COPY tomcat-server.xml /opt/tomcat/conf/server.xml
+# JKS-variant connector config; ROLE=tomcat-jks swaps it in at start.
+COPY tomcat-server-jks.xml /opt/tomcat/conf/server-jks.xml
+COPY systemctl-shim.sh /usr/local/bin/systemctl
+
 COPY nginx-kk.conf /etc/nginx/sites-enabled/kk.conf
 COPY apache-kk.conf /etc/apache2/sites-enabled/000-default.conf
 COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/systemctl
 # Host keys are generated at container START (entrypoint.sh), not here:
 # baking them into the image would give every container spun up from it
 # (nginx-role and apache-role alike) the SAME host key, defeating the

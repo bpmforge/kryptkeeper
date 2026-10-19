@@ -5,8 +5,14 @@
 package main
 
 import (
+	"errors"
+	"fmt"
+	"kryptkeeper/internal/logging"
 	"math/rand/v2"
+	"net"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"kryptkeeper/internal/agentclient"
@@ -29,6 +35,10 @@ type renewGuard struct {
 	jitter  func(time.Duration) time.Duration
 	running bool
 	retries map[string]*renewRetry
+	// preflight, when set, runs after a renewal slot is reserved and before the
+	// renewal starts; an error skips this attempt and backs it off like any
+	// failed renewal. nil (the default) means no probe.
+	preflight func() error
 }
 
 type renewRetry struct {
@@ -108,6 +118,61 @@ func (g *renewGuard) dispatchRenewals(tasks []agentclient.RenewalTask, run func(
 		if !g.start(key) {
 			continue
 		}
+		if g.preflight != nil {
+			if err := g.preflight(); err != nil {
+				g.finish(key, err)
+				logging.Infof("renew %s skipped: %v", key, err)
+				continue
+			}
+		}
 		go func() { g.finish(key, run(task)) }()
 	}
+}
+
+// probeHTTP01Port tries to bind addr's port on each IP family and closes
+// immediately. With an empty host it probes tcp4 0.0.0.0 and tcp6 [::]
+// separately: on Windows a single dual-stack bind does not see an IPv4-only
+// holder (UC-C05 F1). A family the host lacks is skipped; the error text
+// matches the ACME renewer's so operators see one message.
+func probeHTTP01Port(addr string) error {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("probe HTTP-01 port: %w", err)
+	}
+	type family struct{ network, label, host string }
+	families := []family{{"tcp4", "IPv4", host}, {"tcp6", "IPv6", host}}
+	if host == "" {
+		families[0].host, families[1].host = "0.0.0.0", "::"
+	}
+	bound := 0
+	for _, f := range families {
+		ln, err := net.Listen(f.network, net.JoinHostPort(f.host, port))
+		if err != nil {
+			if familyUnsupported(err) {
+				continue
+			}
+			return fmt.Errorf("cannot listen on %s for the ACME HTTP-01 challenge: port 80 in use or not permitted; see docs/ops/WINDOWS_AGENT.md: %s listener holds :%s: %w",
+				addr, f.label, port, err)
+		}
+		_ = ln.Close()
+		bound++
+	}
+	if bound == 0 {
+		return fmt.Errorf("cannot listen on %s for the ACME HTTP-01 challenge: port 80 in use or not permitted; see docs/ops/WINDOWS_AGENT.md: no usable IP family", addr)
+	}
+	return nil
+}
+
+// familyUnsupported reports an IP family the host lacks (e.g. IPv6 disabled).
+// 10047 is Windows WSAEAFNOSUPPORT, which syscall.EAFNOSUPPORT does not match
+// there.
+func familyUnsupported(err error) bool {
+	if errors.Is(err, syscall.EAFNOSUPPORT) || errors.Is(err, syscall.EADDRNOTAVAIL) {
+		return true
+	}
+	var en syscall.Errno
+	if errors.As(err, &en) && uintptr(en) == 10047 {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "address family not supported")
 }

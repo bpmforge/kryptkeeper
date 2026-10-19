@@ -231,7 +231,7 @@ func TestWriteCSRorCAStateError_NoSigningKeyAndPassThrough(t *testing.T) {
 	}
 	rec = httptest.NewRecorder()
 	wrapped := fmt.Errorf("ca issuance failed: %w", ca.ErrCANoSigningKey)
-	if !writeCSRorCAStateError(rec, wrapped) || rec.Code != http.StatusConflict {
-		t.Fatalf("no-signing-key: code=%d, want 409", rec.Code)
+	if !writeCSRorCAStateError(rec, wrapped) || rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("no-signing-key: code=%d, want 422", rec.Code)
 	}
 }

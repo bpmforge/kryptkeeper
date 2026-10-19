@@ -6,9 +6,13 @@ package bootstrap
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // W6-08: admin-defined roles beyond the fixed set, with enforceable
@@ -19,6 +23,7 @@ CREATE TABLE IF NOT EXISTS custom_roles (
     name        TEXT PRIMARY KEY,
     description TEXT NOT NULL DEFAULT '',
     permissions TEXT NOT NULL DEFAULT '[]',
+    tenant_id   TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -146,5 +151,68 @@ func TestSeparationOfDutiesEnforced(t *testing.T) {
 	// Updates re-run SoD too.
 	if _, err := s.UpdateRole(CustomRole{Name: "issuer", Permissions: []string{"certificate.issue", "action.approve"}}); err == nil {
 		t.Fatal("an update violating SoD must be refused")
+	}
+}
+
+func TestCustomRoleStoreTenantList(t *testing.T) {
+	s, _ := newCustomRoleStore(t)
+	for _, r := range []CustomRole{
+		{Name: "role-a", Permissions: []string{"certificate.read"}, TenantID: "a"},
+		{Name: "role-b", Permissions: []string{"certificate.read"}, TenantID: "b"},
+		{Name: "role-global", Permissions: []string{"certificate.read"}},
+	} {
+		if _, err := s.CreateRole(r); err != nil {
+			t.Fatalf("create %s: %v", r.Name, err)
+		}
+	}
+	got, err := s.ListRolesForTenant("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := map[string]bool{}
+	for _, r := range got {
+		names[r.Name] = true
+	}
+	if len(got) != 2 || !names["role-a"] || !names["role-global"] || names["role-b"] {
+		t.Fatalf("ListRolesForTenant(a) = %v", names)
+	}
+}
+
+// H-F17: duplicate detection keys off driver error codes, so message text
+// that merely mentions a constraint must not match.
+func TestIsUniqueViolationUsesDriverCodes(t *testing.T) {
+	if !isUniqueViolation(fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: "23505"})) {
+		t.Error("pg 23505 must match, wrapped or not")
+	}
+	if isUniqueViolation(&pgconn.PgError{Code: "23503", Message: "duplicate key value"}) {
+		t.Error("a different pg code must not match on message text")
+	}
+	if isUniqueViolation(errors.New("UNIQUE constraint failed: custom_roles.name")) {
+		t.Error("plain text without a driver error must not match")
+	}
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, ddl := range []string{
+		`CREATE TABLE pk (name TEXT PRIMARY KEY)`,
+		`CREATE TABLE uq (name TEXT NOT NULL UNIQUE)`,
+	} {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tbl := range []string{"pk", "uq"} {
+		if _, err := db.Exec(`INSERT INTO ` + tbl + ` VALUES ('a')`); err != nil {
+			t.Fatal(err)
+		}
+		_, err := db.Exec(`INSERT INTO ` + tbl + ` VALUES ('a')`)
+		if err == nil || !isUniqueViolation(err) {
+			t.Errorf("%s: duplicate insert error %v not recognised", tbl, err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO nosuch VALUES (1)`); isUniqueViolation(err) {
+		t.Error("an unrelated sqlite error must not match")
 	}
 }

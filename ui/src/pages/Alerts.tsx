@@ -13,6 +13,22 @@ import {
   StateMessage,
 } from "../components/ops-ui";
 import { PageHeader } from "../components/PageHeader";
+import { formatDateTime } from "../components/ui";
+import { scrollableProps } from "../lib/scrollable";
+import { humanizeEnum } from "../lib/utils";
+
+function deliveryTone(status: string) {
+  return status === "failed"
+    ? "danger"
+    : status === "queued"
+      ? "warning"
+      : status === "acknowledged"
+        ? "success"
+        : "info";
+}
+function fmtWhen(iso?: string | null): string {
+  return iso ? formatDateTime(iso) : "—";
+}
 import { canManageNotifications, useAuthz } from "../lib/auth";
 import { extractList } from "../lib/models";
 import type {
@@ -20,6 +36,47 @@ import type {
   NotificationRule,
   NotificationSummary,
 } from "../lib/models";
+
+// The wire rule row carries percent thresholds and an optional template that
+// the generated-by-hand NotificationRule model predates.
+type RuleV2 = NotificationRule & {
+  threshold_pct?: number | null;
+  threshold_days?: number | null;
+  template_id?: string;
+};
+
+type ThresholdUnit = "days" | "percent";
+
+// Rules routed per certificate owner team use this literal target; the server
+// expands it through /notifications/team-routes (there is no owner_team field).
+const OWNER_TEAM_TARGET = "@owner_team";
+
+function thresholdLabel(rule: RuleV2): string {
+  if (rule.threshold_pct != null) {
+    return rule.threshold_pct === 0 ? "At expiry" : `${rule.threshold_pct}%`;
+  }
+  return rule.threshold_days != null ? `${rule.threshold_days}d` : "—";
+}
+
+// Unrouted alerts are logged by the server on the pseudo-channel "dashboard"
+// (nothing is sent externally); "queued_dashboard" is accepted as a status too.
+function isDashboardQueued(row: NotificationDeliveryRecord): boolean {
+  return row.channel === "dashboard" || row.status === "queued_dashboard";
+}
+
+function validateThreshold(unit: ThresholdUnit, raw: string): string | null {
+  const n = Number(raw);
+  if (raw.trim() === "" || !Number.isInteger(n)) {
+    return "Threshold must be a whole number";
+  }
+  if (unit === "percent" && (n < 0 || n > 100)) {
+    return "Percent must be between 0 and 100";
+  }
+  if (unit === "days" && (n < 1 || n > 3650)) {
+    return "Days must be between 1 and 3650";
+  }
+  return null;
+}
 
 export default function Alerts() {
   const queryClient = useQueryClient();
@@ -29,14 +86,17 @@ export default function Alerts() {
   const authz = useAuthz();
   const [tab, setTab] = useState<"deliveries" | "rules">("deliveries");
   const [ruleDialog, setRuleDialog] = useState<"create" | "edit" | null>(null);
-  const [activeRule, setActiveRule] = useState<NotificationRule | null>(null);
+  const [activeRule, setActiveRule] = useState<RuleV2 | null>(null);
   const [ruleForm, setRuleForm] = useState({
     name: "",
-    threshold_days: 30,
+    threshold_unit: "percent" as ThresholdUnit,
+    threshold: "25",
     channel: "email",
     target: "",
+    route_owner_team: false,
     enabled: true,
   });
+  const [ruleError, setRuleError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState(
     searchParams.get("status") ?? "",
   );
@@ -76,16 +136,36 @@ export default function Alerts() {
     queryFn: api.notificationRules,
     enabled: tab === "rules",
   });
-  const rules = extractList<NotificationRule>(rulesQuery.data?.data, ["items"]);
+  const rules = extractList<RuleV2>(rulesQuery.data?.data, ["items"]);
+
+  const ruleIsItsm =
+    ruleDialog === "edit"
+      ? activeRule?.channel === "itsm"
+      : ruleForm.channel === "itsm";
+  const itsmConnectionsQuery = useQuery({
+    queryKey: ["itsm-connections"],
+    queryFn: api.itsmConnections,
+    enabled: ruleDialog !== null && ruleIsItsm,
+  });
+  const itsmConnections = extractList<{
+    id: string;
+    name: string;
+    kind: string;
+  }>(itsmConnectionsQuery.data?.data, ["items"]);
 
   const createRuleMutation = useMutation({
-    mutationFn: () =>
-      api.createNotificationRule({
+    mutationFn: () => {
+      // Exactly one threshold field; 0 is a valid percent so never test truthiness.
+      const value = Number(ruleForm.threshold);
+      return api.createNotificationRule({
         name: ruleForm.name,
-        threshold_days: ruleForm.threshold_days,
+        ...(ruleForm.threshold_unit === "percent"
+          ? { threshold_pct: value }
+          : { threshold_days: value }),
         channel: ruleForm.channel,
-        target: ruleForm.target,
-      }),
+        target: ruleForm.route_owner_team ? OWNER_TEAM_TARGET : ruleForm.target,
+      });
+    },
     onSuccess: async () => {
       setRuleDialog(null);
       await queryClient.invalidateQueries({ queryKey: ["notification-rules"] });
@@ -96,9 +176,11 @@ export default function Alerts() {
   const updateRuleMutation = useMutation({
     mutationFn: () => {
       if (!activeRule) throw new Error("No rule selected");
+      // The server only updates enabled and target; thresholds are fixed
+      // once a rule exists.
       return api.updateNotificationRule(activeRule.id, {
         enabled: ruleForm.enabled,
-        target: ruleForm.target,
+        target: ruleForm.route_owner_team ? OWNER_TEAM_TARGET : ruleForm.target,
       });
     },
     onSuccess: async () => {
@@ -119,26 +201,64 @@ export default function Alerts() {
   const openCreateRule = () => {
     setRuleForm({
       name: "",
-      threshold_days: 30,
+      threshold_unit: "percent",
+      threshold: "25",
       channel: "email",
       target: "",
+      route_owner_team: false,
       enabled: true,
     });
+    setRuleError(null);
     setActiveRule(null);
     setRuleDialog("create");
   };
 
-  const openEditRule = (rule: NotificationRule) => {
+  const openEditRule = (rule: RuleV2) => {
     setActiveRule(rule);
+    const isPct = rule.threshold_pct != null;
     setRuleForm({
       name: rule.name,
-      threshold_days: rule.threshold_days,
+      threshold_unit: isPct ? "percent" : "days",
+      threshold: String(
+        isPct ? rule.threshold_pct : (rule.threshold_days ?? ""),
+      ),
       channel: rule.channel,
-      target: rule.target,
+      target: rule.target === OWNER_TEAM_TARGET ? "" : rule.target,
+      route_owner_team: rule.target === OWNER_TEAM_TARGET,
       enabled: rule.enabled,
     });
+    setRuleError(null);
     setRuleDialog("edit");
   };
+
+  // An itsm rule's target is a connection id, so it is picked, not typed.
+  const itsmConnectionPicker = (
+    <>
+      <Select
+        aria-label="ITSM connection"
+        value={ruleForm.target}
+        onChange={(e) => setRuleForm((f) => ({ ...f, target: e.target.value }))}
+        required
+      >
+        <option value="">Select a connection…</option>
+        {itsmConnections.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name} ({c.kind})
+          </option>
+        ))}
+      </Select>
+      {itsmConnectionsQuery.isError ? (
+        <p className="text-xs text-muted-foreground">
+          ITSM connections could not be loaded (listing them needs an admin
+          role).
+        </p>
+      ) : itsmConnectionsQuery.isSuccess && itsmConnections.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No ITSM connections yet. Add one under Integrations first.
+        </p>
+      ) : null}
+    </>
+  );
 
   const summary = useQuery({
     queryKey: ["notifications-summary"],
@@ -284,7 +404,16 @@ export default function Alerts() {
   const selectedDelivery =
     deliveryPageHit ??
     resolvedDelivery.data ??
-    (selectedKey ? null : (deliveriesData[0] ?? null));
+    null;
+  // The summary endpoint and the queue are separate reads and can disagree
+  // (e.g. a stale cache); never show 0 above rows that plainly say otherwise.
+  const rowsPending = deliveriesData.filter((r) =>
+    ["queued", "sending", "retrying"].includes(r.status),
+  ).length;
+  const rowsFailed = deliveriesData.filter((r) => r.status === "failed").length;
+  const pendingCount = Math.max(summaryData?.pending_notifications ?? 0, rowsPending);
+  const failedCount = Math.max(summaryData?.delivery_failures_24h ?? 0, rowsFailed);
+  const escalationCount = summaryData?.ownership_escalations ?? 0;
   const canManage = canManageNotifications(
     authz.data?.role,
     authz.data?.scopes,
@@ -345,7 +474,7 @@ export default function Alerts() {
               message="Try again shortly."
             />
           ) : (
-            <div className="overflow-hidden rounded-xl border border-border">
+            <div className="overflow-x-auto rounded-xl border border-border" {...scrollableProps}>
               <table className="min-w-full divide-y divide-border">
                 <thead className="bg-background/80">
                   <tr>
@@ -374,13 +503,15 @@ export default function Alerts() {
                         {rule.name}
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
-                        {rule.threshold_days}d
+                        {thresholdLabel(rule)}
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
                         {rule.channel}
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
-                        {rule.target}
+                        {rule.target === OWNER_TEAM_TARGET
+                          ? "Owner team routing"
+                          : rule.target}
                       </td>
                       <td className="px-4 py-3 text-sm">
                         <Badge tone={rule.enabled ? "success" : "neutral"}>
@@ -396,7 +527,9 @@ export default function Alerts() {
                             <Button
                               tone="danger"
                               onClick={() =>
-                                void deleteRuleMutation.mutateAsync(rule.id).catch(() => {})
+                                void deleteRuleMutation
+                                  .mutateAsync(rule.id)
+                                  .catch(() => {})
                               }
                               disabled={deleteRuleMutation.isPending}
                             >
@@ -435,19 +568,25 @@ export default function Alerts() {
             <Panel>
               <div className="text-sm text-muted-foreground">Pending</div>
               <div className="mt-2 text-3xl font-semibold text-foreground">
-                {summaryData?.pending_notifications ?? 0}
+                {pendingCount}
               </div>
             </Panel>
             <Panel>
               <div className="text-sm text-muted-foreground">Escalations</div>
-              <div className="mt-2 text-3xl font-semibold text-state-attn">
-                {summaryData?.ownership_escalations ?? 0}
+              <div
+                className={`mt-2 text-3xl font-semibold ${escalationCount > 0 ? "text-state-attn" : "text-foreground"}`}
+              >
+                {escalationCount}
               </div>
             </Panel>
             <Panel>
-              <div className="text-sm text-muted-foreground">Failures (24h)</div>
-              <div className="mt-2 text-3xl font-semibold text-state-over">
-                {summaryData?.delivery_failures_24h ?? 0}
+              <div className="text-sm text-muted-foreground">
+                Failures (24h)
+              </div>
+              <div
+                className={`mt-2 text-3xl font-semibold ${failedCount > 0 ? "text-state-over" : "text-foreground"}`}
+              >
+                {failedCount}
               </div>
             </Panel>
           </div>
@@ -502,7 +641,9 @@ export default function Alerts() {
                 {canManage ? (
                   <Button
                     tone="primary"
-                    onClick={() => void testDeliveryMutation.mutateAsync().catch(() => {})}
+                    onClick={() =>
+                      void testDeliveryMutation.mutateAsync().catch(() => {})
+                    }
                     disabled={testDeliveryMutation.isPending}
                   >
                     Send test delivery
@@ -552,12 +693,14 @@ export default function Alerts() {
                     <option value="slack">Slack</option>
                     <option value="pagerduty">PagerDuty</option>
                     <option value="webhook">Webhook</option>
+                    <option value="itsm">ITSM ticket</option>
                   </Select>
                 </label>
               </div>
             </Panel>
           </div>
 
+          {selectedKey ? (
           <Panel
             title="Delivery detail"
             subtitle="Inspect a single notification delivery"
@@ -576,7 +719,7 @@ export default function Alerts() {
                   <div>
                     <div className="text-muted-foreground">Channel</div>
                     <div className="text-foreground">
-                      {selectedDelivery.channel}
+                      {humanizeEnum(selectedDelivery.channel)}
                     </div>
                   </div>
                   <div>
@@ -588,18 +731,26 @@ export default function Alerts() {
                   <div>
                     <div className="text-muted-foreground">Status</div>
                     <div className="text-foreground">
-                      {selectedDelivery.status}
+                      <Badge tone={deliveryTone(selectedDelivery.status)}>
+                        {humanizeEnum(selectedDelivery.status)}
+                      </Badge>
                     </div>
                   </div>
                   <div>
                     <div className="text-muted-foreground">Queued</div>
                     <div className="text-foreground">
-                      {selectedDelivery.queued_at ||
-                        selectedDelivery.delivered_at ||
-                        "—"}
+                      {fmtWhen(selectedDelivery.queued_at || selectedDelivery.delivered_at)}
                     </div>
                   </div>
                 </div>
+              </div>
+            ) : !resolvedDelivery.isLoading && !deliveries.isLoading ? (
+              <div className="space-y-3">
+                <StateMessage
+                  title="Delivery not found"
+                  message="This delivery is not in the queue, or it was removed."
+                />
+                <Button onClick={() => navigate("/alerts")}>Back to list</Button>
               </div>
             ) : (
               <StateMessage
@@ -608,6 +759,7 @@ export default function Alerts() {
               />
             )}
           </Panel>
+          ) : null}
 
           <Panel
             title="Delivery queue"
@@ -634,7 +786,7 @@ export default function Alerts() {
               />
             ) : null}
 
-            <div className="overflow-hidden rounded-xl border border-border">
+            <div className="overflow-x-auto rounded-xl border border-border" {...scrollableProps}>
               <table className="min-w-full divide-y divide-border">
                 <thead className="bg-background/80">
                   <tr>
@@ -682,7 +834,7 @@ export default function Alerts() {
                             navigate(`/alerts/deliveries/${row.id}`);
                           }}
                         >
-                          {row.channel}
+                          {humanizeEnum(row.channel)}
                         </button>
                       </td>
                       <td className="px-4 py-3 text-sm text-muted-foreground">
@@ -698,43 +850,54 @@ export default function Alerts() {
                         </button>
                       </td>
                       <td className="px-4 py-3 text-sm">
-                        <Badge
-                          tone={
-                            row.status === "failed"
-                              ? "danger"
-                              : row.status === "queued"
-                                ? "warning"
-                                : row.status === "acknowledged"
-                                  ? "success"
-                                  : "info"
-                          }
-                        >
-                          {row.status}
-                        </Badge>
+                        {isDashboardQueued(row) ? (
+                          <div className="space-y-1">
+                            <Badge tone="info">Queued in dashboard</Badge>
+                            <p className="text-xs text-muted-foreground">
+                              No channel configured for this certificate&apos;s
+                              owner; nothing was sent externally
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="space-y-1">
+                            <Badge tone={deliveryTone(row.status)}>
+                              {humanizeEnum(row.status)}
+                            </Badge>
+                            {row.failure_reason ? (
+                              <p className="max-w-md text-xs text-muted-foreground">
+                                {row.failure_reason}
+                              </p>
+                            ) : null}
+                          </div>
+                        )}
                       </td>
-                      <td className="px-4 py-3 text-sm text-muted-foreground">
-                        {row.queued_at || row.delivered_at || "—"}
+                      <td className="whitespace-nowrap px-4 py-3 text-sm text-muted-foreground">
+                        {fmtWhen(row.queued_at || row.delivered_at)}
                       </td>
                       <td className="px-4 py-3 text-sm">
                         {canManage ? (
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              onClick={() => openAction("retry", row)}
-                              disabled={
-                                row.status === "acknowledged" ||
-                                row.status === "sent"
-                              }
-                            >
-                              Retry
-                            </Button>
-                            <Button
-                              tone="primary"
-                              onClick={() => openAction("ack", row)}
-                              disabled={row.status === "acknowledged"}
-                            >
-                              Ack
-                            </Button>
-                          </div>
+                          row.status === "failed" ||
+                          row.status === "retrying" ? (
+                            <div className="flex flex-wrap gap-2">
+                              {row.status === "failed" ? (
+                                <Button
+                                  onClick={() => openAction("retry", row)}
+                                >
+                                  Retry
+                                </Button>
+                              ) : null}
+                              <Button
+                                tone="primary"
+                                onClick={() => openAction("ack", row)}
+                              >
+                                Acknowledge
+                              </Button>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">
+                              —
+                            </span>
+                          )
                         ) : (
                           <span className="text-xs text-muted-foreground">
                             Read only
@@ -749,7 +912,8 @@ export default function Alerts() {
                         colSpan={5}
                         className="px-4 py-10 text-center text-sm text-muted-foreground"
                       >
-                        No deliveries yet. Send a test delivery above, or wait for a rule to fire.
+                        No deliveries yet. Send a test delivery above, or wait
+                        for a rule to fire.
                       </td>
                     </tr>
                   ) : null}
@@ -834,6 +998,12 @@ export default function Alerts() {
           className="space-y-4"
           onSubmit={(e) => {
             e.preventDefault();
+            const problem = validateThreshold(
+              ruleForm.threshold_unit,
+              ruleForm.threshold,
+            );
+            setRuleError(problem);
+            if (problem) return;
             void createRuleMutation.mutateAsync().catch(() => {});
           }}
         >
@@ -849,55 +1019,108 @@ export default function Alerts() {
             />
           </label>
           <label className="block space-y-2 text-sm text-foreground">
-            <span>Threshold (days before expiry)</span>
+            <span>Threshold unit</span>
             <Select
-              value={String(ruleForm.threshold_days)}
+              aria-label="Threshold unit"
+              value={ruleForm.threshold_unit}
               onChange={(e) =>
                 setRuleForm((f) => ({
                   ...f,
-                  threshold_days: Number(e.target.value),
+                  threshold_unit: e.target.value as ThresholdUnit,
+                  threshold: e.target.value === "percent" ? "25" : "30",
                 }))
               }
             >
-              {[90, 60, 30, 14, 7].map((d) => (
-                <option key={d} value={d}>
-                  {d} days
-                </option>
-              ))}
+              <option value="percent">Percent of lifetime remaining</option>
+              <option value="days">Days before expiry</option>
             </Select>
+          </label>
+          <label className="block space-y-2 text-sm text-foreground">
+            <span>Threshold</span>
+            <Input
+              aria-label="Threshold"
+              type="number"
+              step={1}
+              value={ruleForm.threshold}
+              onChange={(e) =>
+                setRuleForm((f) => ({ ...f, threshold: e.target.value }))
+              }
+            />
+            <span className="block text-xs text-muted-foreground">
+              {ruleForm.threshold_unit === "percent"
+                ? "% of certificate lifetime remaining; 0 = at expiry"
+                : "Whole days before expiry (1-3650)"}
+            </span>
+            {ruleError ? (
+              <span role="alert" className="block text-xs text-state-over">
+                {ruleError}
+              </span>
+            ) : null}
           </label>
           <label className="block space-y-2 text-sm text-foreground">
             <span>Channel</span>
             <Select
               value={ruleForm.channel}
               onChange={(e) =>
-                setRuleForm((f) => ({ ...f, channel: e.target.value }))
+                setRuleForm((f) => ({
+                  ...f,
+                  channel: e.target.value,
+                  target: "",
+                }))
               }
             >
               <option value="email">Email</option>
               <option value="slack">Slack</option>
               <option value="pagerduty">PagerDuty</option>
               <option value="webhook">Webhook</option>
+              <option value="itsm">ITSM ticket</option>
             </Select>
+          </label>
+          <label className="flex items-start gap-3 text-sm text-foreground">
+            <input
+              type="checkbox"
+              aria-label="Route to owner team"
+              checked={ruleForm.route_owner_team}
+              onChange={(e) =>
+                setRuleForm((f) => ({
+                  ...f,
+                  route_owner_team: e.target.checked,
+                }))
+              }
+              className="mt-1 h-4 w-4 rounded border-border bg-background text-primary focus:ring-ring"
+            />
+            <span>
+              Route to owner team
+              <span className="block text-xs text-muted-foreground">
+                Each alert goes to the certificate owner team&apos;s route on
+                this channel (Team routes), else the global inbox, else the
+                dashboard queue. Leave unchecked to send to one fixed target.
+              </span>
+            </span>
           </label>
           <label className="block space-y-2 text-sm text-foreground">
             <span>Target</span>
-            <Input
-              value={ruleForm.target}
-              onChange={(e) =>
-                setRuleForm((f) => ({ ...f, target: e.target.value }))
-              }
-              placeholder={
-                ruleForm.channel === "email"
-                  ? "pki-team@example.com"
-                  : ruleForm.channel === "slack"
-                    ? "#pki-alerts"
-                    : ruleForm.channel === "pagerduty"
-                      ? "routing-key"
-                      : "https://hooks.example.com/…"
-              }
-              required
-            />
+            {ruleForm.channel === "itsm" ? (
+              itsmConnectionPicker
+            ) : (
+              <Input
+                value={ruleForm.route_owner_team ? "" : ruleForm.target}
+                disabled={ruleForm.route_owner_team}
+                onChange={(e) =>
+                  setRuleForm((f) => ({ ...f, target: e.target.value }))
+                }
+                placeholder={
+                  ruleForm.channel === "email"
+                    ? "pki-team@example.com"
+                    : ruleForm.channel === "slack"
+                      ? "#pki-alerts"
+                      : ruleForm.channel === "pagerduty"
+                        ? "routing-key"
+                        : "https://hooks.example.com/…"
+                }
+                required={!ruleForm.route_owner_team}
+              />
+            )}
           </label>
           <div className="flex gap-2">
             <Button
@@ -925,15 +1148,40 @@ export default function Alerts() {
             void updateRuleMutation.mutateAsync().catch(() => {});
           }}
         >
+          {activeRule ? (
+            <p className="text-sm text-muted-foreground">
+              Threshold: {thresholdLabel(activeRule)} (fixed after creation)
+            </p>
+          ) : null}
+          <label className="flex items-center gap-3 text-sm text-foreground">
+            <input
+              type="checkbox"
+              aria-label="Route to owner team"
+              checked={ruleForm.route_owner_team}
+              onChange={(e) =>
+                setRuleForm((f) => ({
+                  ...f,
+                  route_owner_team: e.target.checked,
+                }))
+              }
+              className="h-4 w-4 rounded border-border bg-background text-primary focus:ring-ring"
+            />
+            <span>Route to owner team</span>
+          </label>
           <label className="block space-y-2 text-sm text-foreground">
             <span>Target</span>
-            <Input
-              value={ruleForm.target}
-              onChange={(e) =>
-                setRuleForm((f) => ({ ...f, target: e.target.value }))
-              }
-              placeholder="Destination"
-            />
+            {ruleIsItsm ? (
+              itsmConnectionPicker
+            ) : (
+              <Input
+                value={ruleForm.route_owner_team ? "" : ruleForm.target}
+                disabled={ruleForm.route_owner_team}
+                onChange={(e) =>
+                  setRuleForm((f) => ({ ...f, target: e.target.value }))
+                }
+                placeholder="Destination"
+              />
+            )}
           </label>
           <label className="flex items-center gap-3 text-sm text-foreground">
             <input

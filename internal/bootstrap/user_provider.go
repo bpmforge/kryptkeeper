@@ -6,9 +6,10 @@ package bootstrap
 
 import (
 	"context"
-	"log"
 	"os"
 	"strings"
+
+	"kryptkeeper/internal/logging"
 )
 
 type UserRecord struct {
@@ -18,6 +19,40 @@ type UserRecord struct {
 	Status     string `json:"status"`
 	CreatedAt  string `json:"created_at"`
 	LastSeenAt string `json:"last_seen_at,omitempty"`
+	// Tenant owns the account; "" means DefaultTenant (L-18).
+	Tenant string `json:"tenant"`
+}
+
+// TenantUserInviter is the optional UserProvider capability that stamps a
+// tenant on a new account. Kept off UserProvider so SCIM/OIDC callers and
+// existing implementers compile unchanged.
+type TenantUserInviter interface {
+	InviteUserInTenant(ctx context.Context, email, role, tenant string) (UserRecord, error)
+}
+
+// userTenant normalises a stored tenant ("" is DefaultTenant).
+func userTenant(u UserRecord) string {
+	if u.Tenant == "" {
+		return DefaultTenant
+	}
+	return u.Tenant
+}
+
+// lookupPrincipalUser finds a user record by ID with one directory read.
+func lookupPrincipalUser(ctx context.Context, userProvider UserProvider, principalID string) (UserRecord, bool, error) {
+	if userProvider == nil || strings.TrimSpace(principalID) == "" {
+		return UserRecord{}, false, nil
+	}
+	users, err := userProvider.ListUsers(ctx)
+	if err != nil {
+		return UserRecord{}, false, err
+	}
+	for _, u := range users {
+		if u.ID == principalID {
+			return u, true, nil
+		}
+	}
+	return UserRecord{}, false, nil
 }
 
 type UserProvider interface {
@@ -43,7 +78,7 @@ type UserProvider interface {
 func NewUserProviderFromEnv() UserProvider {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_USER_PROVIDER"))) {
 	case "file", "memory", "inmemory":
-		log.Print("user provider: in-memory (APP_USER_PROVIDER=file) — accounts are not persisted, " +
+		logging.Info("user provider: in-memory (APP_USER_PROVIDER=file) — accounts are not persisted, " +
 			"and existing database accounts are NOT listed; do not use outside tests/offline dev")
 		return &fileUserProvider{}
 	default:

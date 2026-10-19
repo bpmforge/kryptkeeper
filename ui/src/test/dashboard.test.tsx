@@ -69,6 +69,14 @@ describe("Dashboard", () => {
     ).toBeInTheDocument();
   });
 
+  it("KPI tiles have a structured accessible name, not run-together text", async () => {
+    vi.mocked(api.dashboardSummary).mockResolvedValue(summary as never);
+    renderDashboard();
+    expect(
+      await screen.findByRole("button", { name: /^Expiring 30d: 4, needs renewal$/ }),
+    ).toBeInTheDocument();
+  });
+
   it("shows the estate split with drill-down counts (W11-08)", async () => {
     vi.mocked(api.dashboardSummary).mockResolvedValue(summary as never);
     renderDashboard();

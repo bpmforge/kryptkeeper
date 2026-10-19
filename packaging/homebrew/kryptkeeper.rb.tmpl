@@ -1,14 +1,21 @@
 class Kryptkeeper < Formula
   desc "Self-hosted machine-identity / certificate-lifecycle platform (PKI hub)"
   homepage "https://github.com/bpmforge/kryptkeeper"
-  url "https://github.com/bpmforge/kryptkeeper/releases/download/__TAG__/kryptkeeper___VERSION___darwin_arm64.tar.gz"
   version "__VERSION__"
-  sha256 "__SHA256_DARWIN_ARM64__"
   license "Apache-2.0"
 
-  # Releases publish a darwin/arm64 build only; Intel Macs are unsupported.
-  depends_on arch: :arm64
   depends_on :macos
+
+  on_macos do
+    on_arm do
+      url "__BASE_URL__/__TAG__/kryptkeeper___VERSION___darwin_arm64.tar.gz"
+      sha256 "__SHA256_DARWIN_ARM64__"
+    end
+    on_intel do
+      url "__BASE_URL__/__TAG__/kryptkeeper___VERSION___darwin_amd64.tar.gz"
+      sha256 "__SHA256_DARWIN_AMD64__"
+    end
+  end
 
   def install
     bin.install "kryptkeeper"

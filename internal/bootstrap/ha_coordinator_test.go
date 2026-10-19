@@ -5,9 +5,15 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"log"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,4 +216,131 @@ func TestHACoordinatorRelease(t *testing.T) {
 			t.Fatalf("expected release of a nonexistent lock to be a no-op, got: %v", err)
 		}
 	})
+}
+
+// --- W23-27: readiness gate ---
+
+type haRecordingAudit struct {
+	AuditProvider
+	entries []AuditEntry
+}
+
+func (r *haRecordingAudit) AppendEntry(_ context.Context, e AuditEntry) error {
+	r.entries = append(r.entries, e)
+	return nil
+}
+
+func TestHAReadinessProbeFailsWhenDBClosed(t *testing.T) {
+	db := newTestHADB(t)
+	c := newTestHACoordinatorAt(t, db, "replica-a", time.Now().UTC())
+	probe := c.ReadinessProbe(nil)
+	if err := probe(context.Background()); err != nil {
+		t.Fatalf("healthy DB should be ready: %v", err)
+	}
+	db.Close()
+	if err := probe(context.Background()); err == nil {
+		t.Fatal("closed DB must fail the probe")
+	}
+	mux := http.NewServeMux()
+	registerMetaHandlers(mux, probe)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz = %d, want 503", rec.Code)
+	}
+}
+
+func TestHAReadinessAlertFiresOncePerOutage(t *testing.T) {
+	db := newTestHADB(t)
+	c := newTestHACoordinatorAt(t, db, "replica-a", time.Now().UTC())
+	probe := c.ReadinessProbe(nil)
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	db.Close()
+	for i := 0; i < 3; i++ {
+		_ = probe(context.Background())
+	}
+	if n := strings.Count(buf.String(), "ALERT ha.replica_not_ready"); n != 1 {
+		t.Fatalf("alert lines = %d, want 1; log: %s", n, buf.String())
+	}
+}
+
+func TestHAReadinessRecoveryWritesAuditEntry(t *testing.T) {
+	db := newTestHADB(t)
+	c := newTestHACoordinatorAt(t, db, "replica-a", time.Now().UTC())
+	audit := &haRecordingAudit{}
+	probe := c.ReadinessProbe(audit)
+	db.Close()
+	if err := probe(context.Background()); err == nil {
+		t.Fatal("expected failure while closed")
+	}
+	if len(audit.entries) != 0 {
+		t.Fatal("no audit row may be written during the outage")
+	}
+	c.db = newTestHADB(t)
+	if err := c.EnsureSchema(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := probe(context.Background()); err != nil {
+		t.Fatalf("recovered DB should be ready: %v", err)
+	}
+	if len(audit.entries) != 1 || audit.entries[0].Action != "ha.replica_not_ready" {
+		t.Fatalf("audit entries = %+v", audit.entries)
+	}
+	// A further healthy probe must not re-audit.
+	_ = probe(context.Background())
+	if len(audit.entries) != 1 {
+		t.Fatalf("recovery audited more than once: %d", len(audit.entries))
+	}
+}
+
+func TestIssuanceFailsClosedOnDBLossLeavesNoPartialRow(t *testing.T) {
+	db := setupIntegrationDB(t)
+	provider, engine := newIntegrationCAProvider(t, db)
+	ctx := context.Background()
+	caID := getFirstCAID(t, engine)
+	count := func() int {
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM certificates`).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		return n
+	}
+	if _, err := provider.IssueCertificate(ctx, CertificateIssueRequest{
+		CAID: caID, CSRPEM: generateTestCSRPEM(t, "ok.example.com", "ok.example.com"),
+	}); err != nil {
+		t.Fatalf("precondition: %v", err)
+	}
+	before := count()
+
+	c := newTestHACoordinatorAt(t, db, "replica-a", time.Now().UTC())
+	probe := c.ReadinessProbe(nil)
+	mux := http.NewServeMux()
+	registerMetaHandlers(mux, probe)
+
+	// Outage: the certificates table is unwritable (as in the persist test).
+	if _, err := db.Exec(`ALTER TABLE certificates RENAME TO certificates_lost`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := provider.IssueCertificate(ctx, CertificateIssueRequest{
+		CAID: caID, CSRPEM: generateTestCSRPEM(t, "lost.example.com", "lost.example.com"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "could not be recorded") {
+		t.Fatalf("issuance must fail closed during the outage, got %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE certificates_lost RENAME TO certificates`); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(); got != before {
+		t.Fatalf("partial rows: count %d, want %d", got, before)
+	}
+
+	// And /readyz reports 503 once the DB handle itself is gone.
+	db.Close()
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("/readyz = %d, want 503", rec.Code)
+	}
 }

@@ -1,0 +1,431 @@
+{
+  "task": "U-39",
+  "title": "Create a custom role with least privilege",
+  "sourceStory": "STORIES.md#u-39",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/roles"
+      },
+      "caption": "Open /roles",
+      "slug": "roles-list",
+      "expect": {
+        "role": "button",
+        "name": "New role"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-39/01-roles-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New role"
+      },
+      "caption": "Click **New role**",
+      "slug": "new-role-panel",
+      "expect": {
+        "label": "Role name"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-39/02-new-role-panel.png",
+        "annotated": "docs/guide/screenshots/U-39/02-new-role-panel-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1307,
+          "y": 24,
+          "w": 109,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Role name"
+      },
+      "value": "cert-reader",
+      "caption": "Fill **Role name** with \"cert-reader\"",
+      "slug": "Role name",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-39/03-role-name.png",
+        "annotated": "docs/guide/screenshots/U-39/03-role-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 239,
+          "w": 559,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Description"
+      },
+      "value": "Read-only access to certificates and reports",
+      "caption": "Fill **Description** with \"Read-only access to certificates and reports\"",
+      "slug": "Description",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-39/04-description.png",
+        "annotated": "docs/guide/screenshots/U-39/04-description-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 836,
+          "y": 239,
+          "w": 559,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "label": "certificate.read"
+      },
+      "caption": "Tick **certificate.read**",
+      "slug": "read-permissions",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-39/05-read-permissions.png",
+        "annotated": "docs/guide/screenshots/U-39/05-read-permissions-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 316,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "label": "report.read"
+      },
+      "caption": "Tick **report.read**",
+      "slug": "report.read",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-39/06-report-read.png",
+        "annotated": "docs/guide/screenshots/U-39/06-report-read-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 643,
+          "y": 316,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "label": "audit.read"
+      },
+      "caption": "Tick **audit.read**",
+      "slug": "audit.read",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-39/07-audit-read.png",
+        "annotated": "docs/guide/screenshots/U-39/07-audit-read-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1021,
+          "y": 316,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Create role"
+      },
+      "caption": "Click **Create role**",
+      "slug": "role-created",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-39/08-role-created.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New role"
+      },
+      "caption": "Click **New role**",
+      "slug": "duplicate-attempt-open",
+      "expect": {
+        "label": "Role name"
+      },
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-39/09-duplicate-attempt-open.png",
+        "annotated": "docs/guide/screenshots/U-39/09-duplicate-attempt-open-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1307,
+          "y": 24,
+          "w": 109,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Role name"
+      },
+      "value": "cert-reader",
+      "caption": "Fill **Role name** with \"cert-reader\"",
+      "slug": "Role name",
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-39/10-role-name.png",
+        "annotated": "docs/guide/screenshots/U-39/10-role-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 239,
+          "w": 559,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "label": "certificate.read"
+      },
+      "caption": "Tick **certificate.read**",
+      "slug": "certificate.read",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-39/11-certificate-read.png",
+        "annotated": "docs/guide/screenshots/U-39/11-certificate-read-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 316,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Create role"
+      },
+      "caption": "Creating a role with a name that already exists shows an error",
+      "slug": "duplicate-role-error",
+      "allow": [
+        "400",
+        "bad_request",
+        "persist",
+        "UNIQUE",
+        "already"
+      ],
+      "expectError": true,
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-39/12-duplicate-role-error.png",
+        "annotated": "docs/guide/screenshots/U-39/12-duplicate-role-error-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "DOCUMENTED",
+          "C": "PASS",
+          "attempts": 1,
+          "errorEvidence": [
+            "console: Failed to load resource: the server responded with a status of 409 (Conflict)",
+            "http: 409 POST /api/v1/roles"
+          ]
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 501,
+          "w": 102,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:45:09.735Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-39",
+    "steps": 12,
+    "shots": 12,
+    "annotated": 10,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/roles"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-39/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-39/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

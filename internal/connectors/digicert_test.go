@@ -13,6 +13,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -53,6 +54,7 @@ type digicertFixture struct {
 	pollsUntilIssued int
 	polls            int
 	rateLimit        bool
+	retryAfter       string
 	leafPEM          []byte
 }
 
@@ -66,6 +68,9 @@ func newDigiCertFixture(t *testing.T, pollsUntilIssued int) *digicertFixture {
 			return
 		}
 		if f.rateLimit {
+			if f.retryAfter != "" {
+				w.Header().Set("Retry-After", f.retryAfter)
+			}
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
@@ -173,5 +178,19 @@ func TestDigiCertRateLimitSurfacesInHealth(t *testing.T) {
 	h := c.Health(context.Background())
 	if h.Status != "degraded" || !strings.Contains(h.Detail, "rate limited") {
 		t.Fatalf("throttling must show in Health: %+v", h)
+	}
+}
+
+func TestDigiCert429CarriesRetryAfter(t *testing.T) {
+	f := newDigiCertFixture(t, 0)
+	c := digicertConnectorFor(f)
+	f.rateLimit, f.retryAfter = true, "120"
+	_, err := c.Issue(context.Background(), IssueRequest{CSRPEM: testCSRPEM(t, "x.example.com")})
+	var rl *RateLimitError
+	if !errors.As(err, &rl) || rl.RetryAfter != 2*time.Minute || rl.ConnectorID != "dc-1" || rl.Reason != "upstream_429" {
+		t.Fatalf("429 must carry the parsed Retry-After: %v", err)
+	}
+	if !strings.Contains(err.Error(), "rate limited (HTTP 429)") {
+		t.Fatalf("error text changed: %v", err)
 	}
 }

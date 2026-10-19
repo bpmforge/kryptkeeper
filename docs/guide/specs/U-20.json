@@ -1,0 +1,427 @@
+{
+  "task": "U-20",
+  "title": "Take ownership of an unmanaged certificate and edit ownership",
+  "sourceStory": "STORIES.md#u-20",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/certificates"
+      },
+      "caption": "Open /certificates",
+      "slug": "certificates-list",
+      "expect": {
+        "role": "button",
+        "name": "Issue certificate"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-20/01-certificates-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "dev-portal.acme.test"
+      },
+      "caption": "Click **dev-portal.acme.test**",
+      "slug": "certificate-detail",
+      "expect": {
+        "role": "button",
+        "name": "Take over"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-20/02-certificate-detail.png",
+        "annotated": "docs/guide/screenshots/U-20/02-certificate-detail-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 350,
+          "y": 428,
+          "w": 137,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Take over",
+        "exact": true
+      },
+      "caption": "Click **Take over**",
+      "slug": "take-over-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "Take certificate under management"
+      },
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-20/03-take-over-dialog.png",
+        "annotated": "docs/guide/screenshots/U-20/03-take-over-dialog-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 588,
+          "w": 92,
+          "h": 36
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Owner email",
+        "within": "[role=dialog]"
+      },
+      "value": "ada.admin@acme.test",
+      "caption": "Fill **Owner email** with \"ada.admin@acme.test\"",
+      "slug": "Owner email",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-20/04-owner-email.png",
+        "annotated": "docs/guide/screenshots/U-20/04-owner-email-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 380,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Owner team",
+        "within": "[role=dialog]"
+      },
+      "value": "platform",
+      "caption": "Fill **Owner team** with \"platform\"",
+      "slug": "Owner team",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-20/05-owner-team.png",
+        "annotated": "docs/guide/screenshots/U-20/05-owner-team-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 450,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Take over",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Take over**",
+      "slug": "taken-over",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-20/06-taken-over.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Done",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Done**",
+      "slug": "done",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-20/07-done.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Edit",
+        "exact": true
+      },
+      "caption": "Click **Edit**",
+      "slug": "ownership-form",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-20/08-ownership-form.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "screenshot",
+      "caption": "The ownership form: owner email, owner team, service and labels",
+      "slug": "ownership-form-fields",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-20/09-ownership-form-fields.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/certificates"
+      },
+      "caption": "Back to the inventory",
+      "slug": "certificates-list-again",
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-20/10-certificates-list-again.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "label": "Select sql-prod-02.contoso.test"
+      },
+      "caption": "Tick **Select sql-prod-02.contoso.test**",
+      "slug": "select-row",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-20/11-select-row.png",
+        "annotated": "docs/guide/screenshots/U-20/11-select-row-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 857,
+          "w": 16,
+          "h": 16
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "label": "Select wsus-core.contoso.test"
+      },
+      "caption": "Tick **Select wsus-core.contoso.test**",
+      "slug": "Select wsus-core.contoso.test",
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-20/12-select-wsus-core-contoso-test.png",
+        "annotated": "docs/guide/screenshots/U-20/12-select-wsus-core-contoso-test-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 788,
+          "w": 16,
+          "h": 16
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Take over selected"
+      },
+      "caption": "Click **Take over selected**",
+      "slug": "bulk-take-over",
+      "n": 13,
+      "capture": {
+        "file": "docs/guide/screenshots/U-20/13-bulk-take-over.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:41:58.312Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-20",
+    "steps": 13,
+    "shots": 13,
+    "annotated": 6,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/certificates"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-20/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-20/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

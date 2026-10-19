@@ -8,8 +8,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // AgentType is the OS/context of a satellite agent.
@@ -46,6 +48,12 @@ type AgentInfo struct {
 	LastSeen       *time.Time  `json:"last_seen,omitempty"`
 	Status         AgentStatus `json:"status"`
 	InventoryCount int         `json:"inventory_count"`
+	// Version is the agent build the agent last reported via X-Agent-Version;
+	// empty for agents that never reported one.
+	Version string `json:"version"`
+	// HostReport is the latest host pass (W34-09): privilege mode, unreadable
+	// paths and file posture. Nil until the agent has pushed inventory.
+	HostReport *AgentHostReport `json:"host_report,omitempty"`
 }
 
 // AgentDiscoveredCert is a certificate reported by an agent during inventory push.
@@ -137,21 +145,73 @@ func (r *agentRecord) computedStatus() AgentStatus {
 	return computeAgentStatus(r.info.LastSeen)
 }
 
-// computeAgentStatus derives agent status from its last-seen time. Shared by the
-// in-memory and DB-backed stores.
-func computeAgentStatus(lastSeen *time.Time) AgentStatus {
+const (
+	// agentStaleAfter is how long an agent may stay silent before it shows
+	// "stale"; agentOfflineAfter before "offline". The 5-minute stale cutoff is
+	// the UC-C05 acceptance threshold (stale within 5 minutes of stopping).
+	agentStaleAfter   = 5 * time.Minute
+	agentOfflineAfter = 30 * time.Minute
+
+	// maxAgentVersionLen bounds the self-reported X-Agent-Version value.
+	maxAgentVersionLen = 64
+
+	// minAgentPruneAfter is the floor for KRYPTKEEPER_AGENT_PRUNE_AFTER: a
+	// shorter window would delete agents that are merely between slow polls.
+	minAgentPruneAfter = time.Hour
+)
+
+// ErrAgentNotFound is returned by AgentStore.remove for an unknown agent id.
+var ErrAgentNotFound = errors.New("agent not found")
+
+// computeAgentStatusAt derives agent status from its last-seen time as of now
+// (a parameter so tests can drive it with a fake clock).
+func computeAgentStatusAt(lastSeen *time.Time, now time.Time) AgentStatus {
 	if lastSeen == nil {
 		return AgentStatusOffline
 	}
-	age := time.Since(*lastSeen)
+	age := now.Sub(*lastSeen)
 	switch {
-	case age < 5*time.Minute:
+	case age < agentStaleAfter:
 		return AgentStatusActive
-	case age < 30*time.Minute:
+	case age < agentOfflineAfter:
 		return AgentStatusStale
 	default:
 		return AgentStatusOffline
 	}
+}
+
+// computeAgentStatus derives agent status from its last-seen time. Shared by the
+// in-memory and DB-backed stores.
+func computeAgentStatus(lastSeen *time.Time) AgentStatus {
+	return computeAgentStatusAt(lastSeen, time.Now())
+}
+
+// agentPruneAfterFromEnv reads KRYPTKEEPER_AGENT_PRUNE_AFTER (a Go duration).
+// Unset, unparsable, or non-positive means pruning is off (0); values under
+// minAgentPruneAfter are raised to it.
+func agentPruneAfterFromEnv() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("KRYPTKEEPER_AGENT_PRUNE_AFTER"))
+	if raw == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	if d < minAgentPruneAfter {
+		logging.Infof("KRYPTKEEPER_AGENT_PRUNE_AFTER=%s is below the %s minimum; using %s", raw, minAgentPruneAfter, minAgentPruneAfter)
+		return minAgentPruneAfter
+	}
+	return d
+}
+
+// sanitizeAgentVersion trims and bounds a self-reported agent version.
+func sanitizeAgentVersion(v string) string {
+	v = strings.TrimSpace(v)
+	if len(v) > maxAgentVersionLen {
+		v = strings.ToValidUTF8(v[:maxAgentVersionLen], "")
+	}
+	return v
 }
 
 // AgentStore is the registry of satellite agents. It has an in-memory
@@ -181,6 +241,33 @@ type AgentStore interface {
 	// evaluated, and returns the number of tasks newly assigned. See
 	// renewal_agent_driver.go for the gap this closes.
 	sweepRenewals(now time.Time) int
+	// setVersion records the version an authenticated agent reported. No-op
+	// for an unknown id or an empty version.
+	setVersion(agentID, version string)
+	// setHostReport records an authenticated agent's latest host pass.
+	setHostReport(agentID string, report AgentHostReport)
+	// remove deletes an agent and all of its inventory/endpoints/tasks/results,
+	// revoking its token. ErrAgentNotFound if absent.
+	remove(agentID string) error
+	// pruneSilent removes agents whose newest sign of life (last_seen, or
+	// registered_at if never seen) is before cutoff, returning the removed ids.
+	pruneSilent(cutoff time.Time) []string
+
+	// registerWithID is register with a caller-chosen id (from newAgentID), so
+	// an enrollment token can record the agent it enrols before the row exists.
+	registerWithID(id, name string, agentType AgentType) (token string, err error)
+
+	// W29-06 per-agent enrollment tokens: hashed at rest, single-use, expiring;
+	// W33-24 adds the minting tenant and the redeeming agent id.
+	mintEnrollmentToken(label, createdBy, tenant string, ttl time.Duration, now time.Time) (tok AgentEnrollmentToken, secret string, err error)
+	// redeemEnrollmentToken consumes secret atomically and records agentID as
+	// the redeeming agent in the same step; any failure is
+	// ErrEnrollmentTokenInvalid (unknown, expired, revoked and used are indistinguishable).
+	redeemEnrollmentToken(secret, agentID string, now time.Time) (tokenID string, err error)
+	listEnrollmentTokens() []AgentEnrollmentToken
+	// revokeEnrollmentToken: absent id is ErrAgentNotFound; already redeemed
+	// or revoked is ErrEnrollmentTokenInvalid.
+	revokeEnrollmentToken(id string, now time.Time) error
 }
 
 // renewalThresholdDaysFromEnv reads RENEWAL_THRESHOLD_DAYS (default 30).
@@ -198,6 +285,7 @@ func renewalThresholdDaysFromEnv() int {
 type memAgentStore struct {
 	mu      sync.RWMutex
 	records map[string]*agentRecord
+	enroll  map[string]*memEnrollToken
 
 	// renewalThresholdDays controls how soon before expiry a cert is tasked for
 	// autopilot renewal (RENEWAL_THRESHOLD_DAYS, default 30).
@@ -209,18 +297,31 @@ type memAgentStore struct {
 func NewAgentStore() AgentStore {
 	return &memAgentStore{
 		records:              make(map[string]*agentRecord),
+		enroll:               make(map[string]*memEnrollToken),
 		renewalThresholdDays: renewalThresholdDaysFromEnv(),
 	}
 }
 
-func (s *memAgentStore) register(name string, agentType AgentType) (id, token string, err error) {
-	id, err = generateToken(8)
+func newAgentID() (string, error) {
+	id, err := generateToken(8)
 	if err != nil {
-		return "", "", fmt.Errorf("generate agent id: %w", err)
+		return "", fmt.Errorf("generate agent id: %w", err)
 	}
+	return id, nil
+}
+
+func (s *memAgentStore) register(name string, agentType AgentType) (id, token string, err error) {
+	if id, err = newAgentID(); err != nil {
+		return "", "", err
+	}
+	token, err = s.registerWithID(id, name, agentType)
+	return id, token, err
+}
+
+func (s *memAgentStore) registerWithID(id, name string, agentType AgentType) (token string, err error) {
 	token, err = generateToken(32)
 	if err != nil {
-		return "", "", fmt.Errorf("generate agent token: %w", err)
+		return "", fmt.Errorf("generate agent token: %w", err)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -235,17 +336,53 @@ func (s *memAgentStore) register(name string, agentType AgentType) (id, token st
 		token: token,
 		tasks: []AgentRenewalTask{},
 	}
-	return id, token, nil
+	return token, nil
 }
 
-func (s *memAgentStore) authenticate(agentID, token string) (*agentRecord, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	r, ok := s.records[agentID]
-	if !ok || r.token != token {
-		return nil, false
+func (s *memAgentStore) setVersion(agentID, version string) {
+	if version == "" {
+		return
 	}
-	return r, true
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r, ok := s.records[agentID]; ok {
+		r.info.Version = version
+	}
+}
+
+func (s *memAgentStore) setHostReport(agentID string, report AgentHostReport) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r, ok := s.records[agentID]; ok {
+		r.info.HostReport = &report
+	}
+}
+
+func (s *memAgentStore) remove(agentID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.records[agentID]; !ok {
+		return ErrAgentNotFound
+	}
+	delete(s.records, agentID)
+	return nil
+}
+
+func (s *memAgentStore) pruneSilent(cutoff time.Time) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var removed []string
+	for id, r := range s.records {
+		newest := r.info.RegisteredAt
+		if r.info.LastSeen != nil && r.info.LastSeen.After(newest) {
+			newest = *r.info.LastSeen
+		}
+		if newest.Before(cutoff) {
+			delete(s.records, id)
+			removed = append(removed, id)
+		}
+	}
+	return removed
 }
 
 func (s *memAgentStore) heartbeat(agentID, token string) error {
@@ -694,11 +831,18 @@ func generateToken(bytes int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// agentRegisterLimitPerMinute caps unauthenticated register attempts per
+// client IP (W33-24; token guessing is infeasible at 256 bits, this bounds noise).
+const agentRegisterLimitPerMinute = 30
+
 // registerAgentHandlers wires all /api/v1/agent* routes.
-func registerAgentHandlers(mux *http.ServeMux, auth *Authenticator, store AgentStore, auditProvider AuditProvider) {
+func registerAgentHandlers(mux routeRegistrar, auth *Authenticator, store AgentStore, auditProvider AuditProvider) {
 	// W5-07: enrollment is gated — closed by default, secret-based, or
 	// (migration only) explicitly open. Resolved once at registration.
 	enrollmentGate := NewAgentEnrollmentGateFromEnv()
+	// announcedRunning dedupes the install "running" event: an agent polls
+	// GET /agent/tasks repeatedly while a task stays queued.
+	var announcedRunning sync.Map
 
 	// POST /api/v1/agent/register — no JWT, but enrollment evidence
 	// (W5-07) is required; anonymous self-registration is refused.
@@ -706,9 +850,15 @@ func registerAgentHandlers(mux *http.ServeMux, auth *Authenticator, store AgentS
 		var req struct {
 			Name string    `json:"name"`
 			Type AgentType `json:"type"`
-			// EnrollmentSecret is consumed by the gate — never stored,
-			// never logged, never audited.
+			// EnrollmentSecret and EnrollmentToken are consumed by the gate /
+			// store — never stored, never logged, never audited.
 			EnrollmentSecret string `json:"enrollment_secret"`
+			EnrollmentToken  string `json:"enrollment_token"`
+		}
+		if !auth.allowRateLimit("agent-register:"+clientIP(r), agentRegisterLimitPerMinute, time.Minute, time.Now()) {
+			emitAuditEvent(r, auditProvider, "", "agent.register", "agent", "-", AuditOutcomeDenied)
+			writeTooManyRequests(w, "rate limit exceeded")
+			return
 		}
 		if !decodeJSONBodyOrReject(w, r, &req, maxAgentSmallBodyBytes, "invalid JSON") {
 			return
@@ -717,28 +867,60 @@ func registerAgentHandlers(mux *http.ServeMux, auth *Authenticator, store AgentS
 		if secret == "" {
 			secret = r.Header.Get("X-Enrollment-Secret")
 		}
-		if err := enrollmentGate.Check(AgentEnrollmentEvidence{Secret: secret}); err != nil {
-			emitAuditEvent(r, auditProvider, "", "agent.register", "agent", req.Name, AuditOutcomeDenied)
-			// The gate's own text names enrollment env vars and tells a probe
-			// whether secrets are configured or registration is closed; that is
-			// operator information, so it goes to the log, not the caller.
-			log.Printf("agent register refused for %q: %v", req.Name, err)
-			writeForbidden(w, "enrollment refused")
-			return
+		enrollToken := req.EnrollmentToken
+		if enrollToken == "" {
+			enrollToken = r.Header.Get("X-Enrollment-Token")
+		}
+		// Evidence order: token (wins), then configured secret / open flag.
+		if enrollToken == "" {
+			if err := enrollmentGate.Check(AgentEnrollmentEvidence{Secret: secret}); err != nil {
+				emitAuditEvent(r, auditProvider, "", "agent.register", "agent", req.Name, AuditOutcomeDenied)
+				// The gate's own text names enrollment env vars and tells a probe
+				// whether secrets are configured or registration is closed; that is
+				// operator information, so it goes to the log, not the caller.
+				logging.Warnf("agent register refused for %q: %v", req.Name, err)
+				if secret == "" {
+					writeErrorEnvelope(w, http.StatusUnauthorized, "unauthorized", "enrollment credential required")
+					return
+				}
+				writeForbidden(w, "enrollment refused")
+				return
+			}
 		}
 		if req.Name == "" {
+			emitAuditEvent(r, auditProvider, "", "agent.register", "agent", "-", AuditOutcomeFailure)
 			writeBadRequest(w, "name is required")
 			return
 		}
 		if req.Type == "" {
 			req.Type = AgentTypeLinux
 		}
-		id, token, err := store.register(req.Name, req.Type)
+		id, err := newAgentID()
 		if err != nil {
+			emitAuditEvent(r, auditProvider, "", "agent.register", "agent", req.Name, AuditOutcomeFailure)
 			writeErrorEnvelope(w, http.StatusInternalServerError, "internal_error", "internal error")
 			return
 		}
-		emitAuditEvent(r, auditProvider, "agent:"+id, "agent.register", "agent", id, AuditOutcomeSuccess)
+		via := `{"via":"secret"}`
+		if enrollToken != "" {
+			// The id is fixed before the redeem so the token row records the
+			// agent it enrolled in the same conditional UPDATE (W33-24 attach).
+			tokenID, err := store.redeemEnrollmentToken(enrollToken, id, time.Now())
+			if err != nil {
+				emitAuditEvent(r, auditProvider, "", "agent.register", "agent", req.Name, AuditOutcomeDenied)
+				writeForbidden(w, "enrollment refused")
+				return
+			}
+			via = fmt.Sprintf(`{"enrollment_token_id":%q}`, tokenID)
+		}
+		token, err := store.registerWithID(id, req.Name, req.Type)
+		if err != nil {
+			// A redeemed token is burned on a register failure (documented).
+			emitAuditEventDetail(r, auditProvider, "", "agent.register", "agent", req.Name, AuditOutcomeFailure, via)
+			writeErrorEnvelope(w, http.StatusInternalServerError, "internal_error", "internal error")
+			return
+		}
+		emitAuditEventDetail(r, auditProvider, "agent:"+id, "agent.register", "agent", id, AuditOutcomeSuccess, via)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]string{
@@ -751,13 +933,16 @@ func registerAgentHandlers(mux *http.ServeMux, auth *Authenticator, store AgentS
 	mux.HandleFunc("POST /api/v1/agent/heartbeat", func(w http.ResponseWriter, r *http.Request) {
 		agentID, token, ok := agentCredentials(r)
 		if !ok {
+			emitAuditEvent(r, auditProvider, "", "agent.heartbeat", "agent", "-", AuditOutcomeDenied)
 			writeBadRequest(w, "missing X-Agent-ID or X-Agent-Token")
 			return
 		}
 		if err := store.heartbeat(agentID, token); err != nil {
+			emitAuditEvent(r, auditProvider, "agent:"+agentID, "agent.heartbeat", "agent", agentID, AuditOutcomeDenied)
 			writeErrorEnvelope(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
 			return
 		}
+		store.setVersion(agentID, sanitizeAgentVersion(r.Header.Get("X-Agent-Version")))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	})
@@ -766,19 +951,30 @@ func registerAgentHandlers(mux *http.ServeMux, auth *Authenticator, store AgentS
 	mux.HandleFunc("POST /api/v1/agent/inventory", func(w http.ResponseWriter, r *http.Request) {
 		agentID, token, ok := agentCredentials(r)
 		if !ok {
+			emitAuditEvent(r, auditProvider, "", "agent.inventory", "agent", "-", AuditOutcomeDenied)
 			writeBadRequest(w, "missing X-Agent-ID or X-Agent-Token")
 			return
 		}
 		var req struct {
 			Certs     []AgentDiscoveredCert `json:"certs"`
 			Endpoints []AgentEndpoint       `json:"endpoints"`
+			agentHostPush
 		}
 		if !decodeJSONBodyOrReject(w, r, &req, maxAgentInventoryBodyBytes, "invalid JSON") {
 			return
 		}
+		before := taskIDSet(store.tasksFor(agentID))
 		if err := store.submitInventory(agentID, token, req.Certs, req.Endpoints); err != nil {
+			emitAuditEvent(r, auditProvider, "agent:"+agentID, "agent.inventory", "agent", agentID, AuditOutcomeDenied)
 			writeErrorEnvelope(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
 			return
+		}
+		store.setVersion(agentID, sanitizeAgentVersion(r.Header.Get("X-Agent-Version")))
+		store.setHostReport(agentID, buildAgentHostReport(req.agentHostPush, time.Now()))
+		for _, t := range store.tasksFor(agentID) {
+			if _, existed := before[t.TaskID]; !existed && isInstallTask(t) {
+				publishOperationEvent(DefaultTenant, EventKindInstall, t.TaskID, "queued", nil, "")
+			}
 		}
 		emitAuditEvent(r, auditProvider, "agent:"+agentID, "agent.inventory", "agent", agentID, AuditOutcomeSuccess)
 		w.Header().Set("Content-Type", "application/json")
@@ -789,6 +985,7 @@ func registerAgentHandlers(mux *http.ServeMux, auth *Authenticator, store AgentS
 	mux.HandleFunc("POST /api/v1/agent/renewal-result", func(w http.ResponseWriter, r *http.Request) {
 		agentID, token, ok := agentCredentials(r)
 		if !ok {
+			emitAuditEvent(r, auditProvider, "", "agent.renewal_result", "agent", "-", AuditOutcomeDenied)
 			writeBadRequest(w, "missing X-Agent-ID or X-Agent-Token")
 			return
 		}
@@ -800,6 +997,7 @@ func registerAgentHandlers(mux *http.ServeMux, auth *Authenticator, store AgentS
 			result.ReportedAt = time.Now().UTC().Format(time.RFC3339)
 		}
 		if err := store.submitRenewalResult(agentID, token, result); err != nil {
+			emitAuditEvent(r, auditProvider, "agent:"+agentID, "agent.renewal_result", "agent", agentID, AuditOutcomeDenied)
 			writeErrorEnvelope(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
 			return
 		}
@@ -810,6 +1008,11 @@ func registerAgentHandlers(mux *http.ServeMux, auth *Authenticator, store AgentS
 			outcome = AuditOutcomeFailure
 		}
 		emitAuditEvent(r, auditProvider, "agent:"+agentID, "agent.renewal_result", "certificate", result.Fingerprint, outcome)
+		if outcome == AuditOutcomeSuccess {
+			publishOperationEvent(DefaultTenant, EventKindInstall, result.TaskID, "completed", nil, "installed")
+		} else {
+			publishOperationEvent(DefaultTenant, EventKindInstall, result.TaskID, "failed", nil, "install failed")
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "recorded"})
 	})
@@ -826,15 +1029,33 @@ func registerAgentHandlers(mux *http.ServeMux, auth *Authenticator, store AgentS
 			writeErrorEnvelope(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
 			return
 		}
+		for _, t := range tasks {
+			if isInstallTask(t) {
+				if _, seen := announcedRunning.LoadOrStore(t.TaskID, struct{}{}); !seen {
+					publishOperationEvent(DefaultTenant, EventKindInstall, t.TaskID, "running", nil, "")
+				}
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"tasks": tasks})
 	})
 
 	// GET /api/v1/agents — admin list (requires bearer JWT)
 	mux.HandleFunc("GET /api/v1/agents", func(w http.ResponseWriter, r *http.Request) {
-		if _, err := auth.AuthenticatePrincipal(r, time.Now()); err != nil {
+		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
+		if err != nil {
 			writeErrorEnvelope(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
 			return
+		}
+		// D-203: agents carry no tenant column, so the fleet view is global.
+		if denyNonSuperAdminGlobal(w, r, auditProvider, pd, "agent.list", "agent", "-") {
+			return
+		}
+		// Prune is lazy (no background loop owns the agent store) and opt-in.
+		if d := agentPruneAfterFromEnv(); d > 0 {
+			for _, id := range store.pruneSilent(time.Now().Add(-d)) {
+				emitAuditEvent(r, auditProvider, "system", "agent.prune", "agent", id, AuditOutcomeSuccess)
+			}
 		}
 		agents := store.list()
 		w.Header().Set("Content-Type", "application/json")
@@ -846,13 +1067,16 @@ func registerAgentHandlers(mux *http.ServeMux, auth *Authenticator, store AgentS
 	// sub-path parsing, matching this codebase's convention for sub-resource
 	// routes (see handlers_certificates.go) rather than a Go 1.22 {id}
 	// pattern, which nothing else here uses. Authorized the same way as the
-	// list endpoint above (bearer JWT, AuthenticatePrincipal) -- agents carry
-	// no tenant column anywhere in the schema today (see agent_store_db.go),
-	// so there is no tenant dimension to scope this by; adding one is a
-	// separate, larger change than this ticket's 3 points cover.
+	// list endpoint above. Agents carry no tenant column (see agent_store_db.go),
+	// so under multi-tenancy both are global-admin-only (D-203).
 	mux.HandleFunc("GET /api/v1/agents/", func(w http.ResponseWriter, r *http.Request) {
-		if _, err := auth.AuthenticatePrincipal(r, time.Now()); err != nil {
+		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
+		if err != nil {
 			writeErrorEnvelope(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
+			return
+		}
+		// D-203: agents carry no tenant column, so the fleet view is global.
+		if denyNonSuperAdminGlobal(w, r, auditProvider, pd, "agent.tasks", "agent", strings.TrimPrefix(r.URL.Path, "/api/v1/agents/")) {
 			return
 		}
 		rest := strings.TrimPrefix(r.URL.Path, "/api/v1/agents/")
@@ -868,6 +1092,48 @@ func registerAgentHandlers(mux *http.ServeMux, auth *Authenticator, store AgentS
 		result := mergeAgentTaskResults(store.tasksFor(id), store.resultsFor(id))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"tasks": result})
+	})
+
+	registerAgentRemoveHandler(mux, auth, store, auditProvider)
+	registerAgentEnrollmentTokenHandlers(mux, auth, store, auditProvider)
+}
+
+// DELETE /api/v1/agents/{id} removes an agent and revokes its credential: the
+// token lives in the agent's row, so the agent's next call gets 401. Admin
+// only; hand-parsed like the GET sub-route above.
+func registerAgentRemoveHandler(mux routeRegistrar, auth *Authenticator, store AgentStore, auditProvider AuditProvider) {
+	mux.HandleFunc("DELETE /api/v1/agents/", func(w http.ResponseWriter, r *http.Request) {
+		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
+		if err != nil {
+			writeErrorEnvelope(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
+			return
+		}
+		id := strings.TrimPrefix(r.URL.Path, "/api/v1/agents/")
+		if id == "" || strings.Contains(id, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		if !isAdminRole(pd.Role) {
+			emitAuditEvent(r, auditProvider, pd.ID, "agent.remove", "agent", id, AuditOutcomeDenied)
+			writeForbidden(w, "forbidden")
+			return
+		}
+		// D-203: a tenant-scoped pki-admin must not delete another tenant's agents.
+		if denyNonSuperAdminGlobal(w, r, auditProvider, pd, "agent.remove", "agent", id) {
+			return
+		}
+		if err := store.remove(id); err != nil {
+			if errors.Is(err, ErrAgentNotFound) {
+				emitAuditEvent(r, auditProvider, pd.ID, "agent.remove", "agent", id, AuditOutcomeFailure)
+				writeNotFound(w, "agent not found")
+				return
+			}
+			emitAuditEvent(r, auditProvider, pd.ID, "agent.remove", "agent", id, AuditOutcomeFailure)
+			writeErrorEnvelope(w, http.StatusInternalServerError, "internal_error", "internal error")
+			return
+		}
+		emitAuditEvent(r, auditProvider, pd.ID, "agent.remove", "agent", id, AuditOutcomeSuccess)
+		w.WriteHeader(http.StatusNoContent)
 	})
 }
 
@@ -889,4 +1155,20 @@ func agentCredentials(r *http.Request) (agentID, token string, ok bool) {
 	agentID = r.Header.Get("X-Agent-ID")
 	token = r.Header.Get("X-Agent-Token")
 	return agentID, token, agentID != "" && token != ""
+}
+
+func taskIDSet(tasks []AgentRenewalTask) map[string]struct{} {
+	ids := make(map[string]struct{}, len(tasks))
+	for _, t := range tasks {
+		ids[t.TaskID] = struct{}{}
+	}
+	return ids
+}
+
+// isInstallTask reports whether a task installs the renewed cert. The hub
+// queues every task as Action "renew" carrying the matched endpoint's
+// install hints (matchRenewalTasks), so the hints, not the Action string,
+// are what mark a task as an install operation.
+func isInstallTask(t AgentRenewalTask) bool {
+	return t.Action == "install" || t.CertPath != ""
 }

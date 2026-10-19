@@ -6,9 +6,10 @@ package bootstrap
 
 import (
 	"context"
-	"log"
 	"os"
 	"strings"
+
+	"kryptkeeper/internal/logging"
 )
 
 const notificationProviderEnv = "APP_NOTIFICATION_PROVIDER"
@@ -20,7 +21,7 @@ const (
 	notificationProviderDelivery = "delivery"
 )
 
-var notificationProviderWarnf = log.Printf
+var notificationProviderWarnf = logging.Warnf
 
 type NotificationSummary struct {
 	PendingNotifications int `json:"pending_notifications"`
@@ -34,6 +35,10 @@ type NotificationDelivery struct {
 	Target   string `json:"target"`
 	Status   string `json:"status"`
 	QueuedAt string `json:"queued_at"`
+	// FailureReason is set only for failures with a known operator-actionable
+	// cause (today: the egress guard refusing the destination). Raw delivery
+	// errors stay in the log.
+	FailureReason string `json:"failure_reason,omitempty"`
 }
 
 type NotificationDeliveryQuery struct {
@@ -88,6 +93,16 @@ type NotificationRule struct {
 	Target        string `json:"target"`
 	Enabled       bool   `json:"enabled"`
 	CreatedAt     string `json:"created_at"`
+	// Tenant is the creator's tenant ("" on legacy rows = default tenant). Not
+	// serialised: ownership is enforced server-side, not shown to clients.
+	Tenant string `json:"-"`
+}
+
+// tenantRuleCreator is implemented by providers that persist a rule's owning
+// tenant. Optional so providers that cannot (test doubles) keep working; every
+// production provider implements it.
+type tenantRuleCreator interface {
+	CreateRuleForTenant(ctx context.Context, tenant, name string, thresholdDays int, channel, target string) (NotificationRule, error)
 }
 
 type NotificationProvider interface {

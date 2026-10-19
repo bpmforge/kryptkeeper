@@ -1,0 +1,6 @@
+{"CertificateAuthorities": [
+  {"Arn": "arn:aws:acm-pca:us-east-1:111122223333:certificate-authority/ca-1", "Status": "ACTIVE"},
+  {"Arn": "arn:aws:acm-pca:us-east-1:111122223333:certificate-authority/ca-2", "Status": "ACTIVE"},
+  {"Arn": "arn:aws:acm-pca:us-east-1:111122223333:certificate-authority/ca-3", "Status": "ACTIVE"},
+  {"Arn": "arn:aws:acm-pca:us-east-1:111122223333:certificate-authority/ca-4", "Status": "DISABLED"}
+]}

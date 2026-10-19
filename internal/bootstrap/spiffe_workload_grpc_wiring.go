@@ -6,7 +6,6 @@ package bootstrap
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -14,6 +13,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+
+	"kryptkeeper/internal/logging"
 )
 
 // W17-09: start the W7-01 Workload API and let operators populate the
@@ -41,10 +42,10 @@ func startWorkloadAPIIfConfigured(registry *SelectorRegistry, audit AuditProvide
 	if err != nil {
 		// A failed listener must be loud but must not take the hub down:
 		// the REST SVID mint path keeps working without it.
-		log.Printf("SPIFFE Workload API: not started on %s: %v", socket, err)
+		logging.Infof("SPIFFE Workload API: not started on %s: %v", socket, err)
 		return nil
 	}
-	log.Printf("SPIFFE Workload API listening on %s", socket)
+	logging.Infof("SPIFFE Workload API listening on %s", socket)
 	return srv
 }
 
@@ -108,7 +109,7 @@ func registerWorkloadSelectorHandlers(mux *http.ServeMux, auth *Authenticator, r
 			if err := json.NewEncoder(w).Encode(struct {
 				Data workloadSelectorRequest `json:"data"`
 			}{Data: req}); err != nil {
-				log.Printf("failed to encode selector: %v", err)
+				logging.Warnf("failed to encode selector: %v", err)
 			}
 
 		default:

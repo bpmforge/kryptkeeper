@@ -4,6 +4,13 @@ go 1.26.0
 
 toolchain go1.26.9
 
+// SQL Server's default TLS certificate has a negative serial number. Go 1.23+
+// refuses to parse such a certificate, which made the handshake to every default
+// SQL Server fail before the scanner could record it (W34-20, found against a
+// real engine). Discovery must inspect what servers actually present; this is
+// parse leniency only and verification rules are unchanged.
+godebug x509negativeserial=1
+
 require (
 	github.com/ThalesGroup/crypto11 v1.6.1
 	github.com/aws/aws-sdk-go-v2 v1.41.6
@@ -25,6 +32,7 @@ require (
 	github.com/tink-crypto/tink-go/v2 v2.8.0
 	go.mozilla.org/pkcs7 v0.10.0
 	golang.org/x/crypto v0.57.0
+	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.48.0
 	google.golang.org/grpc v1.83.2
 	modernc.org/sqlite v1.58.0
@@ -32,6 +40,13 @@ require (
 )
 
 require github.com/tetratelabs/wazero v1.12.0
+
+require github.com/pavlo-v-chernykh/keystore-go/v4 v4.5.0
+
+require (
+	github.com/Microsoft/go-winio v0.6.2 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+)
 
 require (
 	github.com/Azure/go-ntlmssp v0.1.1 // indirect
@@ -62,15 +77,14 @@ require (
 	github.com/jonboulle/clockwork v0.5.0 // indirect
 	github.com/mattermost/xml-roundtrip-validator v0.1.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
-	github.com/miekg/pkcs11 v1.1.2 // indirect
+	github.com/miekg/pkcs11 v1.1.2
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/thales-e-security/pool v0.0.2 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect

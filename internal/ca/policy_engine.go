@@ -14,6 +14,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"kryptkeeper/internal/keystore"
@@ -48,6 +51,32 @@ type PolicyViolationError struct {
 	Policy string
 	Rule   string
 	Detail string
+	// PolicyID and Observed (e.g. "2048 bits") let the admin API cite the
+	// exact row and value without parsing Detail. Error() is unchanged.
+	PolicyID string
+	Observed string
+}
+
+// Is makes errors.Is(err, ErrPolicyViolation) true for a policy refusal, so
+// handlers return the same 422 policy_violation as for template refusals.
+func (e *PolicyViolationError) Is(target error) bool { return target == ErrPolicyViolation }
+
+// PolicyInput is the policy-relevant projection of an issuance request. The
+// real path derives it from the CSR's actual key; dry-run may supply it
+// hypothetically.
+type PolicyInput struct {
+	Algorithm string
+	RSABits   int
+	Validity  time.Duration
+	IsCA      bool
+}
+
+// PolicyVerdict is the full evaluation result: every applicable policy name
+// and EVERY violated rule (Check refuses on the first, dry-run shows all).
+type PolicyVerdict struct {
+	Allowed    bool
+	Evaluated  []string
+	Violations []*PolicyViolationError
 }
 
 func (e *PolicyViolationError) Error() string {
@@ -59,6 +88,9 @@ type PolicyEngine struct {
 	db       *sql.DB
 	postgres bool
 	now      func() time.Time
+	// hook observes every refusal from Check (audit trail). Atomic so it can
+	// be installed after the engine is already serving.
+	hook atomic.Pointer[func(caID string, v *PolicyViolationError)]
 }
 
 func NewPolicyEngine(db *sql.DB, postgres bool) (*PolicyEngine, error) {
@@ -178,12 +210,7 @@ func requestedAlgorithm(req IssuanceRequest) (name string, rsaBits int) {
 	switch pub := req.CSR.PublicKey.(type) {
 	case *rsa.PublicKey:
 		bits := pub.N.BitLen()
-		switch {
-		case bits <= 2048:
-			return string(keystore.RSA2048), bits
-		default:
-			return string(keystore.RSA4096), bits
-		}
+		return rsaAlgorithmName(bits), bits
 	case *ecdsa.PublicKey:
 		switch pub.Curve {
 		case elliptic.P256():
@@ -196,6 +223,73 @@ func requestedAlgorithm(req IssuanceRequest) (name string, rsaBits int) {
 		return string(keystore.Ed25519), 0
 	}
 	return "", 0
+}
+
+// rsaAlgorithmName buckets a modulus size into the allow-list names, the one
+// classification the issuance gate applies to a CSR's RSA key.
+func rsaAlgorithmName(bits int) string {
+	switch {
+	case bits <= 2048:
+		return string(keystore.RSA2048)
+	case bits <= 3072:
+		return string(keystore.RSA3072)
+	default:
+		return string(keystore.RSA4096)
+	}
+}
+
+// rsaKeyLadder is the modulus sizes a client can be told to generate.
+var rsaKeyLadder = []int{2048, 3072, 4096, 8192, 16384}
+
+// RSAProbe answers "which RSA modulus will issuance accept" over the policies
+// that applied to one CA when it was loaded, so a request that probes many
+// templates costs one policy read instead of one per probe.
+type RSAProbe struct{ policies []IssuancePolicy }
+
+// RSAProbe loads the enabled policies that apply to caID once.
+func (p *PolicyEngine) RSAProbe(caID string) (*RSAProbe, error) {
+	policies, err := p.loadPoliciesFor(caID)
+	if err != nil {
+		return nil, err
+	}
+	return &RSAProbe{policies: policies}, nil
+}
+
+// AcceptedRSABits is RSAProbe(caID).AcceptedRSABits for a single probe.
+func (p *PolicyEngine) AcceptedRSABits(caID string, atLeast int, templateAlgos []string) (bits int, ok bool, reason string, err error) {
+	probe, err := p.RSAProbe(caID)
+	if err != nil {
+		return 0, false, "", err
+	}
+	return probe.AcceptedRSABits(atLeast, templateAlgos)
+}
+
+// AcceptedRSABits returns the smallest RSA modulus, at least atLeast and
+// among templateAlgos when that is non-empty, that the policies accept. It
+// runs the engine's own rules (evaluatePolicies) rather than re-reading
+// them, so what a protocol advertises is exactly what issuance will later
+// enforce. ok is false, with the refusal as reason, when no size is accepted.
+// The error is always nil; the signature matches PolicyEngine.AcceptedRSABits.
+func (r *RSAProbe) AcceptedRSABits(atLeast int, templateAlgos []string) (bits int, ok bool, reason string, err error) {
+	cands := []int{max(atLeast, 2048)}
+	for _, n := range rsaKeyLadder {
+		if n > cands[0] {
+			cands = append(cands, n)
+		}
+	}
+	reason = "the template permits no RSA key size"
+	for _, n := range cands {
+		alg := rsaAlgorithmName(n)
+		if !algorithmAllowed(templateAlgos, alg) {
+			continue
+		}
+		v := evaluatePolicies(r.policies, PolicyInput{Algorithm: alg, RSABits: n})
+		if v.Allowed {
+			return n, true, "", nil
+		}
+		reason = v.Violations[0].Error()
+	}
+	return 0, false, reason, nil
 }
 
 // loadPoliciesFor returns the enabled policies that apply to caID.
@@ -219,50 +313,154 @@ func (p *PolicyEngine) loadPoliciesFor(caID string) ([]IssuancePolicy, error) {
 	return out, rows.Err()
 }
 
-// Check evaluates req against every enabled policy applying to caID.
-// Every violated rule refuses, so with multiple policies the most
-// restrictive wins by construction. No policies = no restriction.
-func (p *PolicyEngine) Check(caID string, req IssuanceRequest) error {
+// GetPolicy returns one policy row by id; ok=false when it does not exist.
+func (p *PolicyEngine) GetPolicy(id string) (IssuancePolicy, bool, error) {
+	rows, err := p.db.Query(p.rebind(`SELECT id, name, enabled, ca_id, rules FROM issuance_policies WHERE id = ?`), id)
+	if err != nil {
+		return IssuancePolicy{}, false, fmt.Errorf("issuance policy: get: %w", err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return IssuancePolicy{}, false, rows.Err()
+	}
+	pol, err := scanPolicy(rows)
+	if err != nil {
+		return IssuancePolicy{}, false, err
+	}
+	return pol, true, nil
+}
+
+// RSAFloor returns the smallest RSA modulus every enabled policy accepts and
+// the name of the policy that sets it (0, "" when none restricts RSA). A
+// policy's floor is the larger of min_rsa_bits and the smallest RSA-N in its
+// allow-list; an allow-list naming no RSA size refuses RSA outright and adds
+// no floor. Policies scoped to one CA count too: a template is not bound to
+// a CA, so it must satisfy the strictest of them.
+func (p *PolicyEngine) RSAFloor() (int, string, error) {
+	policies, err := p.ListPolicies()
+	if err != nil {
+		return 0, "", err
+	}
+	bits, name := 0, ""
+	for _, pol := range policies {
+		if !pol.Enabled {
+			continue
+		}
+		f := pol.Rules.MinRSABits
+		smallest := 0
+		for _, a := range pol.Rules.AllowedAlgorithms {
+			if n, ok := rsaAlgorithmBits(a); ok && (smallest == 0 || n < smallest) {
+				smallest = n
+			}
+		}
+		f = max(f, smallest)
+		if f > bits {
+			bits, name = f, pol.Name
+		}
+	}
+	return bits, name, nil
+}
+
+// IsRSAAlgorithm reports whether an algorithm name ("RSA", "RSA-3072",
+// "rsa2048", "RSASSA-PSS") names an RSA key, for callers that must not apply
+// RSA key-size rules to anything else.
+func IsRSAAlgorithm(alg string) bool {
+	return strings.HasPrefix(strings.ToUpper(strings.TrimSpace(alg)), "RSA")
+}
+
+// rsaAlgorithmBits parses "RSA-3072".
+func rsaAlgorithmBits(alg string) (int, bool) {
+	rest, ok := strings.CutPrefix(alg, "RSA-")
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rest)
+	return n, err == nil && n > 0
+}
+
+// SetViolationHook installs fn to be called once per refused Check.
+func (p *PolicyEngine) SetViolationHook(fn func(caID string, v *PolicyViolationError)) {
+	if fn == nil {
+		p.hook.Store(nil)
+		return
+	}
+	p.hook.Store(&fn)
+}
+
+// DB exposes the handle and dialect for sibling stores (policy history).
+func (p *PolicyEngine) DB() (*sql.DB, bool) { return p.db, p.postgres }
+
+// Evaluate checks in against every enabled policy applying to caID and
+// returns all violations. Rows are read per call (no cache) so a tightened
+// rule takes effect on the next request. A load error is returned so callers
+// can fail closed.
+func (p *PolicyEngine) Evaluate(caID string, in PolicyInput) (PolicyVerdict, error) {
 	policies, err := p.loadPoliciesFor(caID)
 	if err != nil {
-		// Fail closed: an unreadable policy table must not mean
-		// unrestricted issuance.
-		return fmt.Errorf("issuance policy evaluation unavailable (refusing issuance): %w", err)
+		return PolicyVerdict{}, err
 	}
-	if len(policies) == 0 {
-		return nil
-	}
+	return evaluatePolicies(policies, in), nil
+}
 
-	algo, rsaBits := requestedAlgorithm(req)
+// evaluatePolicies is the rule set itself, over already-loaded policies, so a
+// caller that evaluates many inputs reads the table once (RSAProbe).
+func evaluatePolicies(policies []IssuancePolicy, in PolicyInput) PolicyVerdict {
+	v := PolicyVerdict{Allowed: true}
 	for _, pol := range policies {
+		v.Evaluated = append(v.Evaluated, pol.Name)
+		viol := func(rule, detail, observed string) {
+			v.Violations = append(v.Violations, &PolicyViolationError{Policy: pol.Name, PolicyID: pol.ID, Rule: rule, Detail: detail, Observed: observed})
+		}
 		if len(pol.Rules.AllowedAlgorithms) > 0 {
 			allowed := false
 			for _, a := range pol.Rules.AllowedAlgorithms {
-				if a == algo {
+				if a == in.Algorithm {
 					allowed = true
 					break
 				}
 			}
 			if !allowed {
-				return &PolicyViolationError{Policy: pol.Name, Rule: "allowed_algorithms",
-					Detail: fmt.Sprintf("requested algorithm %q is not in the allow-list %v", algo, pol.Rules.AllowedAlgorithms)}
+				viol("allowed_algorithms", fmt.Sprintf("requested algorithm %q is not in the allow-list %v", in.Algorithm, pol.Rules.AllowedAlgorithms), in.Algorithm)
 			}
 		}
-		if pol.Rules.MinRSABits > 0 && rsaBits > 0 && rsaBits < pol.Rules.MinRSABits {
-			return &PolicyViolationError{Policy: pol.Name, Rule: "min_rsa_bits",
-				Detail: fmt.Sprintf("requested RSA modulus is %d bits, floor is %d", rsaBits, pol.Rules.MinRSABits)}
+		if pol.Rules.MinRSABits > 0 && in.RSABits > 0 && in.RSABits < pol.Rules.MinRSABits {
+			viol("min_rsa_bits", fmt.Sprintf("requested RSA modulus is %d bits, floor is %d", in.RSABits, pol.Rules.MinRSABits), fmt.Sprintf("%d bits", in.RSABits))
 		}
 		if pol.Rules.MaxValidityDays > 0 {
 			maxValidity := time.Duration(pol.Rules.MaxValidityDays) * 24 * time.Hour
-			if req.Validity > maxValidity {
-				return &PolicyViolationError{Policy: pol.Name, Rule: "max_validity_days",
-					Detail: fmt.Sprintf("requested %s exceeds %dd", req.Validity, pol.Rules.MaxValidityDays)}
+			if in.Validity > maxValidity {
+				viol("max_validity_days", fmt.Sprintf("requested %s exceeds %dd", in.Validity, pol.Rules.MaxValidityDays), in.Validity.String())
 			}
 		}
-		if req.IsCA && !pol.Rules.AllowCACerts {
-			return &PolicyViolationError{Policy: pol.Name, Rule: "allow_ca_certs",
-				Detail: "CA certificate issuance through the leaf path is not allowed by this policy"}
+		if in.IsCA && !pol.Rules.AllowCACerts {
+			viol("allow_ca_certs", "CA certificate issuance through the leaf path is not allowed by this policy", "is_ca=true")
 		}
 	}
-	return nil
+	v.Allowed = len(v.Violations) == 0
+	return v
 }
+
+// Check evaluates req against every enabled policy applying to caID.
+// Every violated rule refuses, so with multiple policies the most
+// restrictive wins by construction. No policies = no restriction.
+func (p *PolicyEngine) Check(caID string, req IssuanceRequest) error {
+	algo, rsaBits := requestedAlgorithm(req)
+	v, err := p.Evaluate(caID, PolicyInput{Algorithm: algo, RSABits: rsaBits, Validity: req.Validity, IsCA: req.IsCA})
+	if err != nil {
+		// Fail closed: an unreadable policy table must not mean
+		// unrestricted issuance.
+		return fmt.Errorf("issuance policy evaluation unavailable (refusing issuance): %w", err)
+	}
+	if v.Allowed {
+		return nil
+	}
+	first := v.Violations[0]
+	if fn := p.hook.Load(); fn != nil {
+		(*fn)(caID, first)
+	}
+	return first
+}
+
+// RequestedAlgorithm exposes the key-derived algorithm/bits logic so the
+// dry-run endpoint classifies a CSR exactly as the real issue path does.
+func RequestedAlgorithm(req IssuanceRequest) (string, int) { return requestedAlgorithm(req) }

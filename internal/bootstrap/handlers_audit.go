@@ -6,11 +6,12 @@ package bootstrap
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 func registerAuditHandlers(mux *http.ServeMux, auth *Authenticator, roles *CustomRoleStore, auditProvider AuditProvider, names auditNameSources) {
@@ -41,7 +42,7 @@ func registerAuditHandlers(mux *http.ServeMux, auth *Authenticator, roles *Custo
 			Limit:        parseAuditLimit(r.URL.Query().Get("limit"), 25),
 			Offset:       parseAuditOffset(r.URL.Query().Get("cursor")),
 			Order:        parseAuditOrder(r.URL.Query().Get("order")),
-			Action:       strings.TrimSpace(r.URL.Query().Get("action")),
+			ActionPrefix: strings.TrimSpace(r.URL.Query().Get("action")),
 			ActorType:    strings.TrimSpace(r.URL.Query().Get("actor_type")),
 			ActorID:      strings.TrimSpace(r.URL.Query().Get("actor_id")),
 			ResourceType: strings.TrimSpace(r.URL.Query().Get("resource_type")),
@@ -51,11 +52,16 @@ func registerAuditHandlers(mux *http.ServeMux, auth *Authenticator, roles *Custo
 			After:        parseAuditTimestamp(r.URL.Query().Get("after")),
 			Before:       parseAuditTimestamp(r.URL.Query().Get("before")),
 		}
+		// Rows carry the tenant of the principal that produced them; only the
+		// unscoped super-admin sees across tenants.
+		if !tenantBypass(pd) {
+			query.Tenant = pd.Tenant
+		}
 
 		result, err := auditProvider.ListEntries(r.Context(), query)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal, "audit.list", "audit_log", "audit", AuditOutcomeFailure)
-			log.Printf("audit list unavailable: %v", err)
+			logging.Warnf("audit list unavailable: %v", err)
 			writeServiceUnavailable(w, "audit unavailable")
 			return
 		}
@@ -93,7 +99,7 @@ func registerAuditHandlers(mux *http.ServeMux, auth *Authenticator, roles *Custo
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/audit response: %v", err)
+			logging.Warnf("failed to encode /api/v1/audit response: %v", err)
 		}
 	})
 }

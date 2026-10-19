@@ -4,13 +4,16 @@
 
 package bootstrap
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+	"time"
+)
 
-// Event kinds recognized by GET /api/v1/events (W8-14 acceptance #2). Only
-// EventKindScan has a producer wired today (discovery scan, in
-// handlers_discovery.go) -- renew/install/migrate are follow-up tickets, but
-// the envelope and kind vocabulary are fixed now so those producers slot in
-// without a wire-format change.
+// Event kinds recognized by GET /api/v1/events (W8-14 acceptance #2). Every
+// kind has a producer: scan (handlers_discovery.go), renew
+// (handlers_renewal_execute.go), install (handlers_agents.go) and migrate
+// (pqc_wave_execute.go), the last three via publishOperationEvent (W30-13).
 const (
 	EventKindScan    = "scan"
 	EventKindRenew   = "renew"
@@ -48,10 +51,19 @@ const eventSubscriberBuffer = 16
 // started to still be delivered as long as it is in-tenant, so delivery is
 // scoped by tenant, not by which principal happened to start the operation.
 // tenant is never serialized into the SSE payload -- only Event is.
+//
+// seq is the bus-wide monotonic id written as the SSE `id:` line so a
+// reconnecting client can resume with Last-Event-ID; it is deliberately not
+// part of Event, whose wire shape is fixed at six fields.
 type tenantEvent struct {
+	seq    uint64
 	tenant string
 	event  Event
 }
+
+// eventReplayBuffer bounds the replay ring. A client that was away longer
+// than this many events misses the oldest; the stream is best-effort.
+const eventReplayBuffer = 256
 
 type eventSubscriber struct {
 	ch chan tenantEvent
@@ -67,6 +79,8 @@ type EventBus struct {
 	mu              sync.Mutex
 	subsByPrincipal map[string]map[*eventSubscriber]struct{}
 	maxPerPrincipal int
+	seq             uint64
+	ring            []tenantEvent
 }
 
 // NewEventBus constructs an EventBus that allows at most maxStreamsPerPrincipal
@@ -89,7 +103,29 @@ func NewEventBus(maxStreamsPerPrincipal int) *EventBus {
 func (b *EventBus) Subscribe(principalID string) (sub *eventSubscriber, ok bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	return b.subscribeLocked(principalID)
+}
 
+// SubscribeWithReplay is Subscribe plus the ring entries with seq > lastSeq,
+// captured under the same lock that registers the subscriber so no event can
+// fall between the replay and the live feed. The caller must still apply
+// tenant visibility to every replayed entry: the ring holds all tenants.
+func (b *EventBus) SubscribeWithReplay(principalID string, lastSeq uint64) (sub *eventSubscriber, replay []tenantEvent, ok bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	sub, ok = b.subscribeLocked(principalID)
+	if !ok {
+		return nil, nil, false
+	}
+	for _, te := range b.ring {
+		if te.seq > lastSeq {
+			replay = append(replay, te)
+		}
+	}
+	return sub, replay, true
+}
+
+func (b *EventBus) subscribeLocked(principalID string) (sub *eventSubscriber, ok bool) {
 	existing := b.subsByPrincipal[principalID]
 	if len(existing) >= b.maxPerPrincipal {
 		return nil, false
@@ -130,7 +166,12 @@ func (b *EventBus) Publish(tenant string, evt Event) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	te := tenantEvent{tenant: tenant, event: evt}
+	b.seq++
+	te := tenantEvent{seq: b.seq, tenant: tenant, event: evt}
+	if len(b.ring) >= eventReplayBuffer {
+		b.ring = append(b.ring[:0], b.ring[1:]...)
+	}
+	b.ring = append(b.ring, te)
 	for _, subs := range b.subsByPrincipal {
 		for sub := range subs {
 			select {
@@ -140,4 +181,32 @@ func (b *EventBus) Publish(tenant string, evt Event) {
 			}
 		}
 	}
+}
+
+// activeEventBus is the bus the operation producers publish to. It is set
+// once by registerSSEHandlers rather than injected, because the renew,
+// install and migrate handlers are registered from call sites that never
+// see the bus (same precedent as activeTenantStore). Atomic so a test
+// resetting it cannot race a handler goroutine.
+var activeEventBus atomic.Pointer[EventBus]
+
+func setActiveEventBus(b *EventBus) { activeEventBus.Store(b) }
+
+// publishOperationEvent is the shared renew/install/migrate producer. It is
+// a no-op with no bus or no op id, and Publish never blocks, so an operation
+// succeeds identically with zero subscribers. message must be a generic
+// class, never an error string that could carry credentials.
+func publishOperationEvent(tenant, kind, opID, status string, progress *int, message string) {
+	bus := activeEventBus.Load()
+	if bus == nil || opID == "" {
+		return
+	}
+	bus.Publish(tenant, Event{
+		OpID:     opID,
+		Kind:     kind,
+		Status:   status,
+		Progress: progress,
+		Message:  message,
+		Ts:       time.Now().UTC().Format(time.RFC3339),
+	})
 }

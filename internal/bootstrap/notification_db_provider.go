@@ -23,6 +23,7 @@ type dbNotificationStore interface {
 	TestDelivery(ctx context.Context, channel string, target string, message string) (NotificationTestDeliveryResult, error)
 	ListRules(ctx context.Context) ([]NotificationRule, error)
 	CreateRule(ctx context.Context, name string, thresholdDays int, channel string, target string) (NotificationRule, error)
+	CreateRuleForTenant(ctx context.Context, tenant, name string, thresholdDays int, channel, target string) (NotificationRule, error)
 	UpdateRule(ctx context.Context, id string, enabled bool, target string) (NotificationRule, error)
 	DeleteRule(ctx context.Context, id string) error
 }
@@ -42,18 +43,6 @@ func newDBNotificationProviderFromEnv() NotificationProvider {
 		func(db *sql.DB) dbNotificationStore { return &postgresNotificationStore{db: db} },
 	)
 	return &dbNotificationProvider{store: state.store, openErr: state.openErr}
-}
-
-func newDBNotificationStoreFromEnv() (dbNotificationStore, error) {
-	state := newDBProviderState[dbNotificationStore](
-		"notification",
-		notificationDBSQLiteDSNFromEnv,
-		notificationDBPostgresDSNFromEnv,
-		fmt.Errorf("postgres mode requires APP_NOTIFICATION_DB_DSN, KRYPTKEEPER_DB_DSN, or DATABASE_URL"),
-		func(db *sql.DB) dbNotificationStore { return &sqliteNotificationStore{db: db} },
-		func(db *sql.DB) dbNotificationStore { return &postgresNotificationStore{db: db} },
-	)
-	return state.store, state.openErr
 }
 
 func notificationDBSQLiteDSNFromEnv() (string, error) {
@@ -123,6 +112,13 @@ func (p *dbNotificationProvider) CreateRule(ctx context.Context, name string, th
 		return NotificationRule{}, err
 	}
 	return p.store.CreateRule(ctx, name, thresholdDays, channel, target)
+}
+
+func (p *dbNotificationProvider) CreateRuleForTenant(ctx context.Context, tenant, name string, thresholdDays int, channel string, target string) (NotificationRule, error) {
+	if err := dbProviderUnavailable("notification", p.openErr); err != nil {
+		return NotificationRule{}, err
+	}
+	return p.store.CreateRuleForTenant(ctx, tenant, name, thresholdDays, channel, target)
 }
 
 func (p *dbNotificationProvider) UpdateRule(ctx context.Context, id string, enabled bool, target string) (NotificationRule, error) {
@@ -516,7 +512,7 @@ VALUES ($1, $2, $3, 'queued', 'test') RETURNING id
 
 func (s *sqliteNotificationStore) ListRules(ctx context.Context) ([]NotificationRule, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, threshold_days, channel, target, enabled, created_at FROM notification_rules ORDER BY created_at ASC`)
+		`SELECT id, name, threshold_days, channel, target, enabled, created_at, tenant FROM notification_rules ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -525,15 +521,19 @@ func (s *sqliteNotificationStore) ListRules(ctx context.Context) ([]Notification
 }
 
 func (s *sqliteNotificationStore) CreateRule(ctx context.Context, name string, thresholdDays int, channel string, target string) (NotificationRule, error) {
+	return s.CreateRuleForTenant(ctx, "", name, thresholdDays, channel, target)
+}
+
+func (s *sqliteNotificationStore) CreateRuleForTenant(ctx context.Context, tenant, name string, thresholdDays int, channel string, target string) (NotificationRule, error) {
 	id := fmt.Sprintf("rule-%d", time.Now().UnixNano())
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO notification_rules (id, name, threshold_days, channel, target, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
-		id, name, thresholdDays, channel, target, now, now)
+		`INSERT INTO notification_rules (id, name, threshold_days, channel, target, enabled, created_at, updated_at, tenant) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+		id, name, thresholdDays, channel, target, now, now, tenant)
 	if err != nil {
 		return NotificationRule{}, err
 	}
-	return NotificationRule{ID: id, Name: name, ThresholdDays: thresholdDays, Channel: channel, Target: target, Enabled: true, CreatedAt: now}, nil
+	return NotificationRule{ID: id, Name: name, ThresholdDays: thresholdDays, Channel: channel, Target: target, Enabled: true, CreatedAt: now, Tenant: tenant}, nil
 }
 
 func (s *sqliteNotificationStore) UpdateRule(ctx context.Context, id string, enabled bool, target string) (NotificationRule, error) {
@@ -553,8 +553,8 @@ func (s *sqliteNotificationStore) UpdateRule(ctx context.Context, id string, ena
 	var r NotificationRule
 	var en int
 	err = s.db.QueryRowContext(ctx,
-		`SELECT id, name, threshold_days, channel, target, enabled, created_at FROM notification_rules WHERE id = ?`, id,
-	).Scan(&r.ID, &r.Name, &r.ThresholdDays, &r.Channel, &r.Target, &en, &r.CreatedAt)
+		`SELECT id, name, threshold_days, channel, target, enabled, created_at, tenant FROM notification_rules WHERE id = ?`, id,
+	).Scan(&r.ID, &r.Name, &r.ThresholdDays, &r.Channel, &r.Target, &en, &r.CreatedAt, &r.Tenant)
 	r.Enabled = en == 1
 	return r, err
 }
@@ -574,7 +574,7 @@ func (s *sqliteNotificationStore) DeleteRule(ctx context.Context, id string) err
 
 func (s *postgresNotificationStore) ListRules(ctx context.Context) ([]NotificationRule, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, threshold_days, channel, target, enabled, created_at FROM notification_rules ORDER BY created_at ASC`)
+		`SELECT id, name, threshold_days, channel, target, enabled, created_at, tenant FROM notification_rules ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -583,25 +583,29 @@ func (s *postgresNotificationStore) ListRules(ctx context.Context) ([]Notificati
 }
 
 func (s *postgresNotificationStore) CreateRule(ctx context.Context, name string, thresholdDays int, channel string, target string) (NotificationRule, error) {
+	return s.CreateRuleForTenant(ctx, "", name, thresholdDays, channel, target)
+}
+
+func (s *postgresNotificationStore) CreateRuleForTenant(ctx context.Context, tenant, name string, thresholdDays int, channel string, target string) (NotificationRule, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	var id string
 	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO notification_rules (name, threshold_days, channel, target) VALUES ($1, $2, $3, $4) RETURNING id, created_at`,
-		name, thresholdDays, channel, target,
+		`INSERT INTO notification_rules (name, threshold_days, channel, target, tenant) VALUES ($1, $2, $3, $4, $5) RETURNING id, created_at`,
+		name, thresholdDays, channel, target, tenant,
 	).Scan(&id, &now)
 	if err != nil {
 		return NotificationRule{}, err
 	}
-	return NotificationRule{ID: id, Name: name, ThresholdDays: thresholdDays, Channel: channel, Target: target, Enabled: true, CreatedAt: now}, nil
+	return NotificationRule{ID: id, Name: name, ThresholdDays: thresholdDays, Channel: channel, Target: target, Enabled: true, CreatedAt: now, Tenant: tenant}, nil
 }
 
 func (s *postgresNotificationStore) UpdateRule(ctx context.Context, id string, enabled bool, target string) (NotificationRule, error) {
 	var r NotificationRule
 	err := s.db.QueryRowContext(ctx,
 		`UPDATE notification_rules SET enabled = $1, target = $2, updated_at = NOW() WHERE id = $3
-		 RETURNING id, name, threshold_days, channel, target, enabled, created_at`,
+		 RETURNING id, name, threshold_days, channel, target, enabled, created_at, tenant`,
 		enabled, target, id,
-	).Scan(&r.ID, &r.Name, &r.ThresholdDays, &r.Channel, &r.Target, &r.Enabled, &r.CreatedAt)
+	).Scan(&r.ID, &r.Name, &r.ThresholdDays, &r.Channel, &r.Target, &r.Enabled, &r.CreatedAt, &r.Tenant)
 	if err == sql.ErrNoRows {
 		return NotificationRule{}, fmt.Errorf("rule %q not found", id)
 	}
@@ -624,7 +628,7 @@ func scanNotificationRulesSQLite(rows *sql.Rows) ([]NotificationRule, error) {
 	for rows.Next() {
 		var r NotificationRule
 		var en int
-		if err := rows.Scan(&r.ID, &r.Name, &r.ThresholdDays, &r.Channel, &r.Target, &en, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.ThresholdDays, &r.Channel, &r.Target, &en, &r.CreatedAt, &r.Tenant); err != nil {
 			return nil, err
 		}
 		r.Enabled = en == 1
@@ -637,7 +641,7 @@ func scanNotificationRulesPostgres(rows *sql.Rows) ([]NotificationRule, error) {
 	var out []NotificationRule
 	for rows.Next() {
 		var r NotificationRule
-		if err := rows.Scan(&r.ID, &r.Name, &r.ThresholdDays, &r.Channel, &r.Target, &r.Enabled, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.ThresholdDays, &r.Channel, &r.Target, &r.Enabled, &r.CreatedAt, &r.Tenant); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

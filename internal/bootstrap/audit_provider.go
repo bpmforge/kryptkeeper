@@ -7,11 +7,12 @@ package bootstrap
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 const auditProviderEnv = "APP_AUDIT_PROVIDER"
@@ -21,7 +22,7 @@ const (
 	auditProviderDB   = "db"
 )
 
-var auditProviderWarnf = log.Printf
+var auditProviderWarnf = logging.Warnf
 
 type AuditEntry struct {
 	ID            int64        `json:"id"`
@@ -53,10 +54,14 @@ type AuditEntry struct {
 }
 
 type AuditListQuery struct {
-	Limit        int
-	Offset       int
-	Order        string
-	Action       string
+	Limit  int
+	Offset int
+	Order  string
+	Action string
+	// ActionPrefix matches an action that equals it or sits under it on a dot
+	// boundary ("certificate" matches certificate.issue). Separate from
+	// Action so internal callers that count one exact action stay exact.
+	ActionPrefix string
 	ActorType    string
 	ActorID      string
 	ResourceType string
@@ -65,6 +70,9 @@ type AuditListQuery struct {
 	Outcome      AuditOutcome
 	After        string
 	Before       string
+	// Tenant, when set, restricts rows to that tenant ("" rows count as
+	// DefaultTenant). Empty = unfiltered (internal/super-admin callers).
+	Tenant string
 }
 
 type AuditListResult struct {

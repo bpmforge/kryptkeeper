@@ -343,14 +343,14 @@ func (scriptedAudit) AppendEntry(context.Context, AuditEntry) error { return nil
 
 func TestInstallStateSurfacesUnreadableHistory(t *testing.T) {
 	s := &RenewalScheduler{auditProvider: scriptedAudit{err: errors.New("disk gone")}}
-	if _, err := s.installState(context.Background(), CertificateItem{FingerprintSHA256: "fp"}); err == nil {
+	if _, err := s.installState(context.Background(), CertificateItem{FingerprintSHA256: "fp"}, ""); err == nil {
 		t.Fatal("an unreadable store must surface as an error, not as zero failures")
 	}
 }
 
 func TestInstallStateOverFileProviderReportsReadError(t *testing.T) {
 	s := &RenewalScheduler{auditProvider: &fileAuditProvider{filePath: t.TempDir()}}
-	if _, err := s.installState(context.Background(), CertificateItem{FingerprintSHA256: "fp"}); err == nil {
+	if _, err := s.installState(context.Background(), CertificateItem{FingerprintSHA256: "fp"}, ""); err == nil {
 		t.Fatal("file provider read failure must reach the scheduler")
 	}
 }
@@ -359,14 +359,14 @@ func TestInstallStateUnparseableTimestampStillBacksOff(t *testing.T) {
 	s := &RenewalScheduler{auditProvider: scriptedAudit{entries: []AuditEntry{
 		{ID: 1, Action: "certificate.renew_execute_failed", Timestamp: "not-a-time"},
 	}}}
-	st, err := s.installState(context.Background(), CertificateItem{FingerprintSHA256: "fp"})
+	st, err := s.installState(context.Background(), CertificateItem{FingerprintSHA256: "fp"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if st.failures != 1 || st.lastFailure.IsZero() {
 		t.Fatalf("bad timestamp must count as a failure that just happened: %+v", st)
 	}
-	out := s.tryAutoRenew(context.Background(), CertificateItem{FingerprintSHA256: "fp"}, ManagedTarget{}, time.Now().UTC(), st, time.Minute)
+	out := s.tryAutoRenew(context.Background(), CertificateItem{FingerprintSHA256: "fp"}, ManagedTarget{}, time.Now().UTC(), st, retryPolicy{base: time.Minute, retryCap: time.Hour})
 	if !out.pending || out.attempted {
 		t.Fatalf("expected backoff (pending, not attempted), got %+v", out)
 	}

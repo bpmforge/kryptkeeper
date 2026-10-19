@@ -159,29 +159,59 @@ export default function ExpiryTimeline() {
             title="Expiry Distribution"
             subtitle={`${report.total_certs} certificates · ${formatDateTime(report.generated_at)}`}
           >
-            <div className="space-y-3">
+            <div
+              role="img"
+              aria-label={`Bar chart: expiry distribution of ${report.total_certs} certificates across ${report.buckets.length} time buckets. A table with the same data follows.`}
+              className="space-y-3"
+            >
               {report.buckets.map((bucket, i) => (
-                <div key={bucket.label} className="flex items-center gap-3">
+                <div
+                  key={bucket.label}
+                  aria-hidden="true"
+                  className="flex items-center gap-3"
+                >
                   <div className="w-36 text-xs text-muted-foreground shrink-0 text-right">
                     {bucket.label}
                   </div>
                   <div className="flex-1 h-7 bg-muted/60 rounded-lg overflow-hidden">
-                    <div
-                      className={`h-full ${BUCKET_COLORS[i] ?? "bg-state-idle"} rounded-lg transition-all duration-700 flex items-center px-2`}
-                      style={{ width: `${(bucket.count / maxBucket) * 100}%` }}
-                    >
-                      {bucket.count > 0 && (
+                    {bucket.count > 0 && (
+                      <div
+                        className={`h-full ${BUCKET_COLORS[i] ?? "bg-state-idle"} rounded-lg transition-all duration-700 flex items-center px-2`}
+                        style={{ width: `${(bucket.count / maxBucket) * 100}%` }}
+                      >
                         <span className="text-xs font-bold text-primary-foreground whitespace-nowrap">
                           {bucket.count}
                         </span>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
                   <div className="w-12 text-right text-xs font-semibold text-foreground shrink-0">
                     {bucket.count}
                   </div>
                 </div>
               ))}
+            </div>
+            <div className="sr-only">
+              <table>
+                <caption>
+                  Expiry distribution: {report.total_certs} certificates by time until
+                  expiry.
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Expires in</th>
+                    <th scope="col">Certificates</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.buckets.map((bucket) => (
+                    <tr key={bucket.label}>
+                      <td>{bucket.label}</td>
+                      <td>{bucket.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </Panel>
 
@@ -223,7 +253,7 @@ export default function ExpiryTimeline() {
                                 : undefined
                             }
                           >
-                            {label}
+                            {label === "unknown" ? "Unknown CA" : label}
                           </span>
                         </span>
                         <div className="flex items-center gap-3 shrink-0 ml-4">
@@ -234,15 +264,22 @@ export default function ExpiryTimeline() {
                             back to it when a cert has none, so there is
                             nothing for ca_id= to filter on. Only link real
                             CAs. */}
-                          {ca !== "unknown" && (
+                          <span
+                            title={
+                              ca === "unknown"
+                                ? "These certificates have no CA on record, so there is nothing to renew by CA."
+                                : undefined
+                            }
+                          >
                             <Button
                               tone="secondary"
+                              disabled={ca === "unknown"}
                               onClick={() => navigate(renewalPath(ca))}
                             >
                               <RefreshCw size={12} aria-hidden="true" />
                               Renew
                             </Button>
-                          )}
+                          </span>
                         </div>
                       </div>
                     );
@@ -274,18 +311,27 @@ export default function ExpiryTimeline() {
                         <span className="text-sm font-semibold text-primary">
                           {count}
                         </span>
-                        <Button
-                          tone="secondary"
-                          onClick={() => {
-                            setNotifyTeam(team);
-                            setNotifyChannel("email");
-                            setNotifyTarget("");
-                            setNotifyError(null);
-                          }}
+                        <span
+                          title={
+                            team === "unassigned"
+                              ? "These certificates have no owner team, so there is nobody to notify."
+                              : undefined
+                          }
                         >
-                          <Send size={12} aria-hidden="true" />
-                          Notify owner
-                        </Button>
+                          <Button
+                            tone="secondary"
+                            disabled={team === "unassigned"}
+                            onClick={() => {
+                              setNotifyTeam(team);
+                              setNotifyChannel("email");
+                              setNotifyTarget("");
+                              setNotifyError(null);
+                            }}
+                          >
+                            <Send size={12} aria-hidden="true" />
+                            Notify owner
+                          </Button>
+                        </span>
                       </div>
                     </div>
                   ))

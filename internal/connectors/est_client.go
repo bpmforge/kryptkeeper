@@ -80,7 +80,13 @@ func (c *ESTClient) Issue(ctx context.Context, req IssueRequest) (IssueResult, e
 	if block == nil || !strings.Contains(block.Type, "CERTIFICATE REQUEST") {
 		return IssueResult{}, fmt.Errorf("est client %s: CSRPEM is not a PEM certificate request", c.id)
 	}
-	body := base64.StdEncoding.EncodeToString(block.Bytes)
+	// The trailing newline matters: libest's estserver (OpenSSL BIO base64
+	// without NO_NL) answers a single-line body that lacks one with
+	// "400 Invalid or corrupted pkcs10 request" (found live, W27-10). Wrapping
+	// at 64 columns would also satisfy it but our own internal/est server
+	// decodes the body with TrimSpace + StdEncoding, which rejects interior
+	// newlines, so a lone trailing newline is the form both accept.
+	body := base64.StdEncoding.EncodeToString(block.Bytes) + "\n"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.cfg.BaseURL+"/.well-known/est/simpleenroll", strings.NewReader(body))
 	if err != nil {

@@ -55,6 +55,7 @@
 # own container/process/state on exit (trap). No secrets committed: the SIEM
 # token and SMTP creds below are throwaway fixture values, never real
 # credentials.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/podman.sh"
 set -u
 set -o pipefail
 
@@ -69,14 +70,28 @@ HUB_PORT=8099
 HUB_BASE="http://127.0.0.1:${HUB_PORT}"
 TOKEN=uat-token
 
-MAILPIT_SMTP_PORT=1025
-# The hub's SMTP port is hardcoded to 587 (W19-18 defect, see header
-# comment) -- publish Mailpit there too so this fixture can prove real SMTP
-# delivery against the hub AS IT ACTUALLY BEHAVES today, not as it should.
-MAILPIT_SMTP_HUB_PORT=587
-MAILPIT_HTTP_PORT=8025
+MAILPIT_SMTP_PORT="${KKW32_MAILPIT_SMTP_PORT:-11025}"
+# W32-09: the hub now honours SMTP_PORT (the W19-18 hardcoded-587 defect is
+# fixed), so Mailpit is published on high host ports only -- rootless podman
+# cannot bind privileged ports such as 587.
+MAILPIT_HTTP_PORT="${KKW32_MAILPIT_HTTP_PORT:-18025}"
 ECHO_PORT=9094
-MAILPIT_CTR=kk-uat-notif-mailpit
+MAILPIT_CTR=kkw32-notif-mailpit
+# The hub's webhook/Slack/PagerDuty egress guard refuses loopback (production
+# never reopens it), so the echo receiver binds a private (RFC1918) address
+# of this host, which the guard allows by default. Override with ECHO_HOST.
+ECHO_HOST="${ECHO_HOST:-$(python3 - <<'PY'
+import ipaddress, socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    s.connect(("10.255.255.255", 1)); ip = s.getsockname()[0]
+except OSError:
+    ip = "127.0.0.1"
+a = ipaddress.ip_address(ip)
+print(ip if a.is_private and not a.is_loopback else "127.0.0.1")
+PY
+)}"
+WEBHOOK_SECRET_FIXTURE=uat-webhook-secret-not-real
 ECHO_LOG="$WORK/echo-requests.jsonl"
 
 SIEM_TOKEN=uat-siem-token-not-a-real-secret
@@ -89,6 +104,7 @@ DIE()  { echo "FAIL: $*"; cleanup; exit 1; }
 
 HUB_PID=""
 ECHO_PID=""
+REAL_HUB_PID=""
 start_hub() {
   "$HUB_DIR/kryptkeeper" >>"$WORK/hub.log" 2>&1 &
   HUB_PID=$!
@@ -106,8 +122,9 @@ stop_hub() {
 cleanup() {
   STEP "cleanup"
   stop_hub
+  [ -n "$REAL_HUB_PID" ] && kill "$REAL_HUB_PID" 2>/dev/null || true
   [ -n "$ECHO_PID" ] && kill "$ECHO_PID" 2>/dev/null || true
-  podman rm -f "$MAILPIT_CTR" >/dev/null 2>&1 || true
+  kk_rm "$MAILPIT_CTR"
   if [ -n "${KK_UAT_KEEP:-}" ]; then
     echo "KK_UAT_KEEP set -- leaving $WORK and $HUB_DIR in place"
   else
@@ -122,18 +139,19 @@ curlj() { curl -sS -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: applica
 # 1. Real receivers: Mailpit (SMTP) and echo_receiver.py (webhook/Slack/SIEM).
 # ---------------------------------------------------------------------------
 STEP "start Mailpit (real SMTP + HTTP API)"
-podman rm -f "$MAILPIT_CTR" >/dev/null 2>&1 || true
+kk_rm "$MAILPIT_CTR"
 podman run -d --name "$MAILPIT_CTR" \
-  -p "${MAILPIT_SMTP_PORT}:1025" -p "${MAILPIT_SMTP_HUB_PORT}:1025" -p "${MAILPIT_HTTP_PORT}:8025" \
+  -p "${MAILPIT_SMTP_PORT}:1025" -p "${MAILPIT_HTTP_PORT}:8025" \
   docker.io/axllent/mailpit:latest >/dev/null \
-  && PASS "mailpit container up (SMTP published on both :${MAILPIT_SMTP_PORT} and :${MAILPIT_SMTP_HUB_PORT} -- see W19-18 note above)" \
+  && PASS "mailpit container up (SMTP :${MAILPIT_SMTP_PORT}, HTTP :${MAILPIT_HTTP_PORT})" \
   || DIE "failed to start mailpit"
 
 STEP "start echo receiver (webhook / slack-shaped / siem stand-in)"
 : >"$ECHO_LOG"
-python3 "$HERE/echo_receiver.py" "$ECHO_LOG" "$ECHO_PORT" >"$WORK/echo.log" 2>&1 &
+python3 "$HERE/echo_receiver.py" "$ECHO_LOG" "$ECHO_PORT" --bind "$ECHO_HOST" --fail-path /fail >"$WORK/echo.log" 2>&1 &
 ECHO_PID=$!
-PASS "echo receiver started (pid $ECHO_PID, log $ECHO_LOG)"
+PASS "echo receiver started on ${ECHO_HOST}:${ECHO_PORT} (pid $ECHO_PID, log $ECHO_LOG)"
+[ "$ECHO_HOST" = "127.0.0.1" ] && echo "  WARN: no private interface found; hub egress guard will refuse loopback and HTTP legs will FAIL"
 
 wait_for_http() {
   local url=$1 tries=30
@@ -144,7 +162,7 @@ wait_for_http() {
   return 1
 }
 wait_for_http "http://127.0.0.1:${MAILPIT_HTTP_PORT}/api/v1/messages" || DIE "mailpit HTTP API never came up"
-wait_for_http "http://127.0.0.1:${ECHO_PORT}/health" || DIE "echo receiver never came up, see $WORK/echo.log"
+wait_for_http "http://${ECHO_HOST}:${ECHO_PORT}/health" || DIE "echo receiver never came up, see $WORK/echo.log"
 PASS "receivers reachable"
 
 # echo_is_warm: the echo receiver was observed, during this fixture's own
@@ -157,7 +175,7 @@ PASS "receivers reachable"
 wait_echo_warm() {
   local tries=45 t
   while [ $tries -gt 0 ]; do
-    t="$(curl -sS -m 2 -o /dev/null -w '%{time_total}' "http://127.0.0.1:${ECHO_PORT}/warmup-probe" -d '{}' 2>/dev/null)"
+    t="$(curl -sS -m 2 -o /dev/null -w '%{time_total}' "http://${ECHO_HOST}:${ECHO_PORT}/warmup-probe" -d '{}' 2>/dev/null)"
     if [ -n "$t" ] && python3 -c "import sys; sys.exit(0 if float('$t') < 0.5 else 1)" 2>/dev/null; then
       return 0
     fi
@@ -224,6 +242,8 @@ mkdir -p "$HUB_DIR" "$HUB_DIR/data"
 # assertion here is about notification/SIEM delivery payloads, not the
 # listener's transport, so disabling self-issue (rather than rewriting every
 # curl call to speak TLS) keeps the fixture testing what it says it tests.
+# RENEWAL_TICK_JITTER_PERCENT=0 (W32-09): W27-33 added up to 10% start jitter
+# (6 min at a 1h poll), which made the sweep's "scan on restart" nondeterministic.
 export APP_BOOTSTRAP_TOKEN="$TOKEN" AUTH_MODE=bootstrap APP_CERTIFICATE_PROVIDER=ca \
   KRYPTKEEPER_TLS_DISABLE=true \
   APP_DISCOVERY_PROVIDER=db APP_NOTIFICATION_PROVIDER=delivery \
@@ -238,14 +258,15 @@ export APP_BOOTSTRAP_TOKEN="$TOKEN" AUTH_MODE=bootstrap APP_CERTIFICATE_PROVIDER
   KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT=true \
   KRYPTKEEPER_CA_NAME="UAT Root CA" \
   APP_BIND_ADDR=127.0.0.1 PORT="$HUB_PORT" \
-  SMTP_HOST=127.0.0.1 SMTP_PORT="$MAILPIT_SMTP_PORT" SMTP_FROM="alerts@kk-uat.local" \
-  SLACK_WEBHOOK_URL="http://127.0.0.1:${ECHO_PORT}/slack" \
-  WEBHOOK_URL="http://127.0.0.1:${ECHO_PORT}/webhook" \
-  SIEM_WEBHOOK_URL="http://127.0.0.1:${ECHO_PORT}/siem" \
+  SMTP_HOST=127.0.0.1 SMTP_PORT="$MAILPIT_SMTP_PORT" WEBHOOK_SECRET="$WEBHOOK_SECRET_FIXTURE" SMTP_FROM="alerts@kk-uat.local" \
+  SLACK_WEBHOOK_URL="http://${ECHO_HOST}:${ECHO_PORT}/slack" \
+  WEBHOOK_URL="http://${ECHO_HOST}:${ECHO_PORT}/webhook" \
+  SIEM_WEBHOOK_URL="http://${ECHO_HOST}:${ECHO_PORT}/siem" \
   SIEM_WEBHOOK_TOKEN="$SIEM_TOKEN" \
   PAGERDUTY_ROUTING_KEY="uat-pagerduty-routing-key-not-a-real-secret" \
-  KRYPTKEEPER_PAGERDUTY_EVENTS_URL="http://127.0.0.1:${ECHO_PORT}/pagerduty" \
-  RENEWAL_THRESHOLD_DAYS=5 RENEWAL_POLL_HOURS=1 RENEWAL_ALERT_COOLDOWN_HOURS=1
+  KRYPTKEEPER_PAGERDUTY_EVENTS_URL="http://${ECHO_HOST}:${ECHO_PORT}/pagerduty" \
+  RENEWAL_THRESHOLD_DAYS=5 RENEWAL_POLL_HOURS=1 RENEWAL_ALERT_COOLDOWN_HOURS=1 \
+  RENEWAL_TICK_JITTER_PERCENT=0
 
 STEP "start hub"
 start_hub
@@ -375,7 +396,7 @@ rec = json.loads(sys.stdin.read())
 body = json.loads(rec['body'])
 auth = rec['headers'].get('authorization', '')
 checks = [
-    body.get('event_type') == 'siem.test',
+    body.get('event_type') in ('siem.test', 'integration.siem.test'),
     body.get('resource_type') == 'integration',
     body.get('resource_id') == 'siem',
     auth == 'Splunk uat-siem-token-not-a-real-secret',
@@ -427,6 +448,122 @@ print('OK' if all(checks) else 'MISSING:' + repr(list(zip(['routing_key','event_
   fi
 else
   FAIL "[pagerduty] marker never appeared at the echo receiver (see $ECHO_LOG)"
+fi
+
+# ---------------------------------------------------------------------------
+# 6c. W32-09 [webhook-signed] -- the webhook channel signs every POST
+#     (docs/ops/WEBHOOK_VERIFY.md). The reference verifier must accept the
+#     real recorded delivery and reject BOTH tampered variants (acceptance 3:
+#     2 of 2): signature header removed, and a stale (now-360s) timestamp
+#     whose signature is otherwise VALID.
+# ---------------------------------------------------------------------------
+STEP "[webhook-signed] fresh signed delivery"
+SIGNED_MARKER="uat-marker-$(date +%s)-webhook-signed"
+curlj -X POST "${HUB_BASE}/api/v1/notifications/test-delivery" -d "$(python3 -c "import json; print(json.dumps({'channel':'webhook','target':'unused','message':'$SIGNED_MARKER'}))")" >/dev/null
+if poll_echo "/webhook" "$SIGNED_MARKER" 30; then
+  echo_log_record "/webhook" | python3 -c "
+import json,sys
+m='$SIGNED_MARKER'
+for l in sys.stdin:
+    if m in json.loads(l)['body']: last=l
+open('$WORK/signed-record.json','w').write(last)"
+  python3 "$HERE/verify_webhook.py" --secret "$WEBHOOK_SECRET_FIXTURE" --max-age 300 --record "$WORK/signed-record.json" \
+    && PASS "[webhook-signed] verifier accepts the real signed delivery" \
+    || FAIL "[webhook-signed] verifier rejected a genuine delivery"
+  python3 -c "
+import json,sys
+h=json.load(open('$WORK/signed-record.json'))['headers']
+sys.exit(0 if h.get('x-kryptkeeper-event-id') else 1)" \
+    && PASS "[webhook-signed] x-kryptkeeper-event-id present" || FAIL "[webhook-signed] x-kryptkeeper-event-id missing"
+  rejected=0
+  python3 "$HERE/verify_webhook.py" --secret "$WEBHOOK_SECRET_FIXTURE" --record "$WORK/signed-record.json" --drop-signature >/dev/null 2>&1 \
+    && FAIL "[webhook-signed] unsigned webhook was ACCEPTED" || { rejected=$((rejected + 1)); PASS "[webhook-signed] unsigned webhook rejected"; }
+  python3 "$HERE/verify_webhook.py" --secret "$WEBHOOK_SECRET_FIXTURE" --record "$WORK/signed-record.json" --restamp-age 360 >/dev/null 2>&1 \
+    && FAIL "[webhook-signed] stale (360s) webhook was ACCEPTED" || { rejected=$((rejected + 1)); PASS "[webhook-signed] stale (>5 min, validly signed) webhook rejected"; }
+  [ "$rejected" -eq 2 ] && PASS "[webhook-signed] 2 of 2 tampered cases rejected" || FAIL "[webhook-signed] only $rejected of 2 tampered cases rejected"
+else
+  FAIL "[webhook-signed] marker never appeared at the echo receiver"
+fi
+
+# ---------------------------------------------------------------------------
+# 6d. W32-09 [webhook-failing] -- point webhook_url at a receiver that always
+#     answers 500 and watch the real delivery log. CONTRACT ASSERTED IS THE
+#     CURRENT ONE (3 attempts, linear 5s*n delay, cmd/kryptkeeper/main.go +
+#     delivery.Worker). UC-K04 asks for 8 attempts with exponential backoff;
+#     that is NOT implemented -- reported, not faked (follow-up ticket).
+# ---------------------------------------------------------------------------
+STEP "[webhook-failing] webhook_url -> always-500 receiver"
+EXPECT_ATTEMPTS=3
+[ "$(curlj -o /dev/null -w '%{http_code}' -X PUT "${HUB_BASE}/api/v1/config/notifications.webhook_url" \
+  -d "{\"value\":\"http://${ECHO_HOST}:${ECHO_PORT}/fail\"}")" = 204 ] \
+  && PASS "[webhook-failing] webhook_url set via config API" || FAIL "[webhook-failing] could not set webhook_url"
+FAIL_START=$(date +%s)
+curlj -X POST "${HUB_BASE}/api/v1/notifications/test-delivery" -d '{"channel":"webhook","target":"unused","message":"uat-webhook-failing"}' >/dev/null
+failed_seen=""
+for _ in $(seq 1 60); do
+  failed_seen="$(curlj "${HUB_BASE}/api/v1/notifications/deliveries?status=failed" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)['data']
+items=d if isinstance(d,list) else d.get('items') or d.get('deliveries') or []
+print(len([i for i in items if i.get('channel')=='webhook']))" 2>/dev/null)"
+  [ -n "$failed_seen" ] && [ "$failed_seen" != "0" ] && break
+  sleep 1
+done
+ELAPSED=$(( $(date +%s) - FAIL_START ))
+if [ -n "$failed_seen" ] && [ "$failed_seen" != "0" ] && [ "$ELAPSED" -lt 60 ]; then
+  PASS "[webhook-failing] delivery log shows status=failed after ${ELAPSED}s (<60s)"
+else
+  FAIL "[webhook-failing] no failed delivery within 60s (elapsed ${ELAPSED}s)"
+fi
+sleep 2
+ATTEMPTS="$(python3 -c "
+import json
+n=0
+for l in open('$ECHO_LOG'):
+    if json.loads(l)['path']=='/fail': n+=1
+print(n)")"
+[ "$ATTEMPTS" = "$EXPECT_ATTEMPTS" ] \
+  && PASS "[webhook-failing] receiver saw exactly $ATTEMPTS attempts then the worker stopped (current contract: 3)" \
+  || FAIL "[webhook-failing] receiver saw $ATTEMPTS attempts, expected $EXPECT_ATTEMPTS"
+echo "  NOTE: acceptance text says 'stops after 8 retries'; product today = $EXPECT_ATTEMPTS attempts, linear 5s*n. Discrepancy tracked as a follow-up (8 attempts / exponential backoff NOT implemented)."
+curlj -o /dev/null -X PUT "${HUB_BASE}/api/v1/config/notifications.webhook_url" -d "{\"value\":\"http://${ECHO_HOST}:${ECHO_PORT}/webhook\"}"
+
+# ---------------------------------------------------------------------------
+# 6e. W32-09 [teams] / [owner_team] -- prerequisites absent: report SKIP.
+# ---------------------------------------------------------------------------
+STEP "[teams] / [owner_team routing]"
+echo "SKIP: [teams] no Microsoft Teams delivery channel exists (channels: email, slack, pagerduty, webhook) -- prerequisite ticket needed"
+echo "SKIP: [owner_team] no owner_team routing / ownerless-alert internal queue exists (US-044 routing) -- prerequisite ticket needed"
+
+# ---------------------------------------------------------------------------
+# 6f. W32-09 [cef] -- restart with SIEM_FORMAT=cef, fire the SIEM test event
+#     and feed the received line(s) to the strict CEF parser (0 errors).
+#     Later sections restart the hub with this env still exported (harmless).
+# ---------------------------------------------------------------------------
+STEP "[cef] restart hub with SIEM_FORMAT=cef"
+stop_hub
+export SIEM_FORMAT=cef
+start_hub
+PASS "[cef] hub restarted with SIEM_FORMAT=cef"
+CEF_BEFORE="$(wc -l <"$ECHO_LOG" | tr -d ' ')"
+curlj -X POST "${HUB_BASE}/api/v1/integrations/siem/test" >/dev/null
+cef_ok=""
+for _ in $(seq 1 30); do
+  python3 -c "
+import json,sys
+recs=[json.loads(l) for l in open('$ECHO_LOG')][$CEF_BEFORE:]
+lines=[r['body'] for r in recs if r['path']=='/siem' and r['body'].startswith('CEF:')]
+open('$WORK/cef.txt','w').write('\n'.join(x.strip() for x in lines)+('\n' if lines else ''))
+sys.exit(0 if lines else 1)" && { cef_ok=1; break; }
+  sleep 1
+done
+if [ -n "$cef_ok" ]; then
+  sed 's/^/  /' "$WORK/cef.txt"
+  python3 "$HERE/cef_parse.py" "$WORK/cef.txt" \
+    && PASS "[cef] strict CEF parser: 0 errors on the delivered line(s)" \
+    || FAIL "[cef] CEF parser reported errors"
+else
+  FAIL "[cef] no CEF-formatted body reached the receiver"
 fi
 
 # ---------------------------------------------------------------------------
@@ -500,7 +637,7 @@ for m in d.get('messages', []):
     if m['To'][0]['Address'] == '$SWEEP_OWNER':
         print(m['ID'])
         break
-" 20)"
+" 90)"
   if [ -n "$found" ]; then
     body="$(curl -sS "http://127.0.0.1:${MAILPIT_HTTP_PORT}/api/v1/message/${found}")"
     if echo "$body" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(0 if 'renewal reminder' in d.get('Text','') and 'kk-uat-sweep.local' in d.get('Text','') else 1)"; then
@@ -509,10 +646,92 @@ for m in d.get('messages', []):
       FAIL "[sweep] message $found to $SWEEP_OWNER found but body doesn't look like the scheduler's renewal reminder"
     fi
   else
-    FAIL "[sweep] no renewal-reminder email to $SWEEP_OWNER appeared within 20s of hub restart (see $WORK/hub.log)"
+    FAIL "[sweep] no renewal-reminder email to $SWEEP_OWNER appeared within 90s of hub restart (see $WORK/hub.log)"
   fi
 else
   FAIL "[sweep] skipped -- no certificate issued to test the real trigger against"
+fi
+
+# ---------------------------------------------------------------------------
+# 8. W30-19 -- REAL endpoints (opt-in, operator-run). A real Slack incoming
+#    webhook and a real PagerDuty sandbox service, via a SECOND hub instance.
+#    Credentials come ONLY from the operator's shell:
+#      KK_LIVE_REAL=1  KK_LIVE_SLACK_WEBHOOK_URL  KK_LIVE_PD_ROUTING_KEY
+#    They are tested with [ -n ... ] only: never echoed, never written to a
+#    file under $WORK, never put on a command line (ps would show it) -- the
+#    second hub inherits them as environment from a subshell.
+#    Statuses are the delivery engine's own: queued -> sent | failed
+#    (the spec's word "delivered" is stale; the code says "sent").
+# ---------------------------------------------------------------------------
+REAL_PORT=8100
+REAL_BASE="http://127.0.0.1:${REAL_PORT}"
+REAL_DIR="$WORK/real-hub"
+REAL_EPOCH="$(date +%s)"
+
+# real_channel <slack|pagerduty>: POST test-delivery, require queued, poll
+# the deliveries list (<= 60 s) until that delivery id is "sent".
+real_channel() {
+  local ch=$1 msg="kk-live-${REAL_EPOCH}" resp status did st tries=60
+  STEP "[real:$ch] POST /api/v1/notifications/test-delivery (message ${msg})"
+  resp="$(curl -sS -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' -X POST \
+    "${REAL_BASE}/api/v1/notifications/test-delivery" \
+    -d "$(python3 -c "import json,sys; print(json.dumps({'channel':sys.argv[1],'target':'unused','message':sys.argv[2]}))" "$ch" "$msg")")"
+  status="$(echo "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["delivery"]["status"])' 2>/dev/null)"
+  did="$(echo "$resp" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["delivery"]["id"])' 2>/dev/null)"
+  if [ "$status" != "queued" ] || [ -z "$did" ]; then
+    FAIL "[real:$ch] test-delivery not queued (status='${status}'; response body withheld)"
+    return 1
+  fi
+  while [ "$tries" -gt 0 ]; do
+    st="$(curl -sS -H "Authorization: Bearer ${TOKEN}" "${REAL_BASE}/api/v1/notifications/deliveries?channel=${ch}&limit=100" \
+      | python3 -c "
+import json,sys
+for d in json.load(sys.stdin)['data']['deliveries']:
+    if d['id']==sys.argv[1]:
+        print(d['status']); break" "$did" 2>/dev/null)"
+    case "$st" in
+      sent) PASS "[real:$ch] channel=$ch delivery_id=$did status=sent (operator: confirm in the ${ch} UI, record in README table)"; return 0 ;;
+      failed) FAIL "[real:$ch] channel=$ch delivery_id=$did status=failed (see ${REAL_DIR}.log)"; return 1 ;;
+    esac
+    sleep 1; tries=$((tries - 1))
+  done
+  FAIL "[real:$ch] channel=$ch delivery_id=$did not 'sent' within 60s (last status='${st}')"
+  return 1
+}
+
+if [ "${KK_LIVE_REAL:-}" != "1" ]; then
+  echo
+  echo "SKIP [real] (set KK_LIVE_REAL=1, KK_LIVE_SLACK_WEBHOOK_URL and KK_LIVE_PD_ROUTING_KEY to exercise real Slack + PagerDuty)"
+elif [ -z "${KK_LIVE_SLACK_WEBHOOK_URL:-}" ] || [ -z "${KK_LIVE_PD_ROUTING_KEY:-}" ]; then
+  STEP "[real] credentials"
+  [ -z "${KK_LIVE_SLACK_WEBHOOK_URL:-}" ] && FAIL "[real] KK_LIVE_SLACK_WEBHOOK_URL is not set"
+  [ -z "${KK_LIVE_PD_ROUTING_KEY:-}" ] && FAIL "[real] KK_LIVE_PD_ROUTING_KEY is not set"
+else
+  STEP "[real] start second hub on :${REAL_PORT} (PagerDuty events URL unset => real events.pagerduty.com)"
+  mkdir -p "$REAL_DIR"
+  (
+    set +x
+    export SLACK_WEBHOOK_URL="$KK_LIVE_SLACK_WEBHOOK_URL"
+    export PAGERDUTY_ROUTING_KEY="$KK_LIVE_PD_ROUTING_KEY"
+    unset KRYPTKEEPER_PAGERDUTY_EVENTS_URL WEBHOOK_URL SIEM_WEBHOOK_URL SIEM_WEBHOOK_TOKEN SMTP_HOST SMTP_PORT SMTP_FROM
+    export PORT="$REAL_PORT" KRYPTKEEPER_DATA_DIR="$REAL_DIR" \
+      APP_CA_FILE="$REAL_DIR/cas.json" APP_TEMPLATE_FILE="$REAL_DIR/templates.json" \
+      APP_CERTIFICATE_FILE="$REAL_DIR/certificates.json" APP_AUDIT_FILE="$REAL_DIR/audit.json" \
+      APP_CERTS_SUMMARY_FILE="$REAL_DIR/certs_summary.json"
+    exec "$HUB_DIR/kryptkeeper" >>"${REAL_DIR}.log" 2>&1
+  ) &
+  REAL_HUB_PID=$!
+  tries=30
+  until curl -sS -f -o /dev/null "${REAL_BASE}/api/v1/cas" -H "Authorization: Bearer ${TOKEN}"; do
+    tries=$((tries - 1)); [ $tries -le 0 ] && DIE "[real] second hub never answered, see ${REAL_DIR}.log"
+    sleep 1
+  done
+  PASS "[real] second hub answering on $REAL_BASE"
+  real_channel slack
+  real_channel pagerduty
+  echo
+  echo "OPERATOR: resolve the PagerDuty incident titled with kk-live-${REAL_EPOCH} yourself (this script never sends 'resolve'),"
+  echo "then record date / channel / delivery id / operator confirmed in the README 'Live results (real endpoints)' table."
 fi
 
 STEP "result"

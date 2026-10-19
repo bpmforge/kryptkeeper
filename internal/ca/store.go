@@ -18,6 +18,10 @@ type KeyRotation struct {
 	NewCertSN string
 	Method    string // "rekey_reissue" | "cross_sign"
 	RotatedAt time.Time
+	// OldCertPEM is the CA certificate the retired key signed under (W23-19),
+	// so OCSP can answer for certificates issued before the rotation. Empty
+	// on rows written before migration 000129.
+	OldCertPEM []byte
 }
 
 // Store persists and retrieves CA metadata and certificates.
@@ -35,6 +39,13 @@ type Store interface {
 	RecordKeyRotation(r KeyRotation) error
 	// ListKeyRotations returns the rotation history for a CA, newest first.
 	ListKeyRotations(caID string) ([]KeyRotation, error)
+}
+
+// CADeleter is an optional Store capability (kept off Store so existing test
+// doubles need not implement it).
+type CADeleter interface {
+	// Delete removes a CA record. Returns ErrCANotFound if absent.
+	Delete(id string) error
 }
 
 // MemStore is a thread-safe in-memory Store suitable for tests and
@@ -107,4 +118,14 @@ func (s *MemStore) ListKeyRotations(caID string) ([]KeyRotation, error) {
 		}
 	}
 	return result, nil
+}
+
+func (s *MemStore) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.data[id]; !ok {
+		return ErrCANotFound
+	}
+	delete(s.data, id)
+	return nil
 }

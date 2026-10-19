@@ -102,6 +102,13 @@ function ApprovalRow({
         </div>
       </div>
 
+      {request.status === "pending" && (
+        <p className="mt-3 text-xs text-muted-foreground">
+          Issuance adds a certificate and removes nothing, so no blast radius
+          applies.
+        </p>
+      )}
+
       <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-xs text-muted-foreground sm:grid-cols-4">
         <span>
           <span className="text-muted-foreground">CA</span>{" "}

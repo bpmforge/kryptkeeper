@@ -17,14 +17,15 @@
 #
 # Idempotent, PASS/FAIL per step, cleans up on exit. Keys are generated per
 # run and never committed.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/podman.sh"
 set -u
 set -o pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 WORK="$(mktemp -d /tmp/kk-uat-sshca.XXXXXX)"
-HUB_PORT="${HUB_PORT:-8098}"
-SSH_PORT="${SSH_PORT:-2224}"
+HUB_PORT="${HUB_PORT:-$(kk_free_port)}"
+SSH_PORT="${SSH_PORT:-$(kk_free_port)}"
 HUB="http://127.0.0.1:$HUB_PORT"
 TOKEN="uat-sshca-bootstrap-token"
 IMAGE=localhost/kk-uat-sshca:latest
@@ -42,7 +43,7 @@ FAIL() { echo "FAIL: $*"; FAILED=1; }
 DIE()  { echo "FAIL: $*"; exit 1; }
 cleanup() {
   [ -n "$HUB_PID" ] && kill "$HUB_PID" 2>/dev/null
-  podman rm -f "$CTR" >/dev/null 2>&1
+  kk_rm "$CTR"
   wait 2>/dev/null
   if [ "$FAILED" = 1 ] && [ -f "$WORK/hub.log" ]; then echo "--- hub.log (last 20) ---"; tail -20 "$WORK/hub.log"; fi
   rm -rf "$WORK"
@@ -92,7 +93,7 @@ env APP_BOOTSTRAP_TOKEN="$TOKEN" AUTH_MODE=bootstrap APP_CERTIFICATE_PROVIDER=ca
 HUB_PID=$!
 for _ in $(seq 1 60); do curl -sf "$HUB/healthz" >/dev/null 2>&1 && break; sleep 0.5; done
 curl -sf "$HUB/healthz" >/dev/null || DIE "hub did not start"
-podman rm -f "$CTR" >/dev/null 2>&1
+kk_rm "$CTR"
 podman run -d --name "$CTR" -p "127.0.0.1:$SSH_PORT:22" "$IMAGE" >/dev/null || DIE "container did not start"
 for _ in $(seq 1 50); do podman exec "$CTR" test -f /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null && break; sleep 0.2; done
 PASS "hub and container up"

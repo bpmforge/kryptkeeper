@@ -87,6 +87,9 @@ func TestManagedTargetStoreRoundTripsInstallProfile(t *testing.T) {
 
 func newSweepScheduler(t *testing.T, provider CertificateProvider, targets ManagedTargetStore, engine *RenewalExecutor) *RenewalScheduler {
 	t.Helper()
+	// Sweep failures land in the package-level failure queue; isolate each test.
+	resetRenewalRetryStateForTest()
+	t.Cleanup(resetRenewalRetryStateForTest)
 	s := &RenewalScheduler{
 		certProvider:  provider,
 		auditProvider: stubAuditProvider{},
@@ -95,6 +98,9 @@ func newSweepScheduler(t *testing.T, provider CertificateProvider, targets Manag
 		cooldown:      time.Hour,
 		targetStore:   targets,
 		stop:          make(chan struct{}),
+		// A fresh store has not run the backfill, so the first tick binds the
+		// CN/SAN == host matches these fixtures are built around.
+		bindingStore: newFreshBindingStore(t),
 	}
 	return s.WithRenewalExecutor(engine)
 }

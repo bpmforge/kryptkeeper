@@ -9,7 +9,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
+	"strings"
 
 	"kryptkeeper/internal/cloudinventory"
 )
@@ -68,6 +69,66 @@ type cloudScanSummary struct {
 	Provider     string                            `json:"provider"`
 	Certificates int                               `json:"certificates"`
 	Items        []cloudinventory.CloudCertificate `json:"items"`
+	// Scopes is the per-scope outcome of a W24-17 fan-out; empty on the
+	// legacy single-connector path.
+	Scopes []cloudScopeSummary `json:"scopes"`
+}
+
+type cloudScopeSummary struct {
+	Scope        string `json:"scope"`
+	Certificates int    `json:"certificates"`
+	Error        string `json:"error,omitempty"`
+}
+
+// cloudProviderForScanType maps a scan type to its Scope provider.
+func cloudProviderForScanType(scanType string) string {
+	switch scanType {
+	case scanTypeCloudACM:
+		return cloudinventory.ProviderAWSACM
+	case scanTypeCloudAzureKV:
+		return cloudinventory.ProviderAzureKeyVault
+	case scanTypeCloudGCPCM:
+		return cloudinventory.ProviderGCPCertManager
+	}
+	return ""
+}
+
+// loadCloudScopes reads discovery.cloud_scopes (config store, else env
+// KRYPTKEEPER_CLOUD_SCOPES): a JSON array of Scope. Package var so tests inject.
+var loadCloudScopes = func(ctx context.Context) ([]cloudinventory.Scope, error) {
+	cfg, _ := sharedDiscoveryStores.get()
+	return parseCloudScopes(discoveryConfigValueFrom(ctx, cfg, "discovery.cloud_scopes"))
+}
+
+func parseCloudScopes(raw string) ([]cloudinventory.Scope, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	var scopes []cloudinventory.Scope
+	if err := json.Unmarshal([]byte(raw), &scopes); err != nil {
+		return nil, fmt.Errorf("not a valid JSON array of scopes")
+	}
+	for _, sc := range scopes {
+		if err := sc.Validate(); err != nil {
+			return nil, err
+		}
+	}
+	return scopes, nil
+}
+
+// newCloudScopeConnector builds the connector for one scope; package var so
+// tests inject fakes.
+var newCloudScopeConnector = func(ctx context.Context, s cloudinventory.Scope) (cloudConnector, error) {
+	switch s.Provider {
+	case cloudinventory.ProviderAWSACM:
+		return cloudinventory.NewACMConnectorForScope(ctx, s)
+	case cloudinventory.ProviderAzureKeyVault:
+		return cloudinventory.NewAzureKVConnectorForScope(ctx, s)
+	case cloudinventory.ProviderGCPCertManager:
+		return cloudinventory.NewGCPCertManagerConnectorForScope(ctx, s)
+	}
+	return nil, fmt.Errorf("unknown cloud provider %q", s.Provider)
 }
 
 // cloudScanMaxItems bounds the JSON persisted per job; the count is
@@ -87,8 +148,25 @@ func runCloudScanAndFinalize(ctx context.Context, db *sql.DB, postgres bool, job
 	}
 	finalize := func(status, summary, errMsg string) {
 		if _, err := db.ExecContext(ctx, update, status, summary, errMsg, jobID); err != nil {
-			log.Printf("cloud scan %s: finalize failed: %v", jobID, err)
+			logging.Warnf("cloud scan %s: finalize failed: %v", jobID, err)
 		}
+	}
+
+	scopes, err := loadCloudScopes(ctx)
+	if err != nil {
+		finalize("failed", "", fmt.Sprintf("scope config: %v", err))
+		return
+	}
+	provider := cloudProviderForScanType(scanType)
+	var mine []cloudinventory.Scope
+	for _, sc := range scopes {
+		if sc.Provider == provider {
+			mine = append(mine, sc)
+		}
+	}
+	if len(mine) > 0 {
+		runCloudScopeFanOut(ctx, finalize, jobID, scanType, mine)
+		return
 	}
 
 	connector, err := newCloudConnector(ctx, scanType)
@@ -101,8 +179,37 @@ func runCloudScanAndFinalize(ctx context.Context, db *sql.DB, postgres bool, job
 		finalize("failed", "", fmt.Sprintf("list certificates: %v", err))
 		return
 	}
+	finalizeCloudSummary(finalize, jobID, cloudScanSummary{Provider: scanType, Certificates: len(certs), Items: certs}, "completed", "")
+}
 
-	summary := cloudScanSummary{Provider: scanType, Certificates: len(certs), Items: certs}
+// runCloudScopeFanOut scans every configured scope; one failing scope only
+// fails its own result. Messages carry scope keys and provider errors, never
+// credentials.
+func runCloudScopeFanOut(ctx context.Context, finalize func(status, summary, errMsg string), jobID, scanType string, scopes []cloudinventory.Scope) {
+	results := cloudinventory.FanOut(ctx, scopes, func(c context.Context, s cloudinventory.Scope) (cloudinventory.Lister, error) {
+		return newCloudScopeConnector(c, s)
+	}, 0)
+	merged := cloudinventory.MergeUnique(results)
+	summary := cloudScanSummary{Provider: scanType, Certificates: len(merged), Items: merged}
+	var failed []string
+	for _, r := range results {
+		row := cloudScopeSummary{Scope: r.Scope.Key(), Certificates: len(r.Certs), Error: r.Err}
+		summary.Scopes = append(summary.Scopes, row)
+		if r.Err != "" {
+			failed = append(failed, row.Scope+": "+r.Err)
+		}
+	}
+	status, errMsg := "completed", ""
+	switch {
+	case len(failed) == len(results):
+		status, errMsg = "failed", fmt.Sprintf("%d of %d scopes failed: %s", len(failed), len(results), strings.Join(failed, "; "))
+	case len(failed) > 0:
+		status, errMsg = scanStatusCompletedWithErrors, fmt.Sprintf("%d of %d scopes failed: %s", len(failed), len(results), strings.Join(failed, "; "))
+	}
+	finalizeCloudSummary(finalize, jobID, summary, status, errMsg)
+}
+
+func finalizeCloudSummary(finalize func(status, summary, errMsg string), jobID string, summary cloudScanSummary, status, errMsg string) {
 	if len(summary.Items) > cloudScanMaxItems {
 		summary.Items = summary.Items[:cloudScanMaxItems]
 	}
@@ -111,6 +218,6 @@ func runCloudScanAndFinalize(ctx context.Context, db *sql.DB, postgres bool, job
 		finalize("failed", "", fmt.Sprintf("summary marshal: %v", err))
 		return
 	}
-	finalize("completed", string(raw), "")
-	log.Printf("cloud scan %s (%s): %d certificates inventoried", jobID, scanType, len(certs))
+	finalize(status, string(raw), errMsg)
+	logging.Infof("cloud scan %s (%s): %d certificates inventoried, status %s", jobID, summary.Provider, summary.Certificates, status)
 }

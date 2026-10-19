@@ -53,9 +53,9 @@ export default function Login() {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-sm space-y-6">
         <div className="text-center">
-          <span className="text-2xl font-bold tracking-wide text-primary">
+          <h1 className="text-2xl font-bold tracking-wide text-primary">
             Kryptkeeper
-          </span>
+          </h1>
           <p className="mt-2 text-sm text-muted-foreground">
             Sign in to your PKI console
           </p>
@@ -92,12 +92,11 @@ export default function Login() {
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
               required
             />
           </label>
           {error ? (
-            <p className="rounded-xl bg-state-over/10 border border-state-over/50 px-3 py-2 text-sm text-state-over">
+            <p role="alert" className="rounded-xl bg-state-over/10 border border-state-over/50 px-3 py-2 text-sm text-state-over">
               {error}
             </p>
           ) : null}

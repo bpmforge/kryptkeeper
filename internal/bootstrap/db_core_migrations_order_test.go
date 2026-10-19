@@ -5,7 +5,9 @@
 package bootstrap
 
 import (
+	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -55,27 +57,101 @@ func constructAllSelfHealingStores(t *testing.T) {
 	t.Setenv("APP_AUDIT_PROVIDER", "db")
 
 	_ = NewPendingActionStoreFromEnv()
+	_ = chatopsRefStoreForActions(NewPendingActionStoreFromEnv())
 	_ = NewAgentStoreFromEnv()
 	_ = NewConfigStoreFromEnv()
+	_ = newUserPrefsStoreFromEnv()
 	_ = NewDiscoveryProviderFromEnv()
+	_ = newDiscoveryScheduleStoreFromEnv()
 	_ = NewEvidenceScheduleStoreFromEnv()
+	_ = NewComplianceAttestationStoreFromEnv()
 	_ = NewManagedTargetStoreFromEnv()
+	_ = newCertTargetBindingStoreFromEnv()
+	_ = newTargetGroupStoreFromEnv()
 	_ = NewNHIStoreFromEnv()
+	_ = NewCodesignTrustStoreFromEnv()
 	_ = NewMigrationWaveStoreFromEnv()
 	_ = NewTenantStoreFromEnv()
 	_, _ = NewPostureSnapshotStoreFromEnv()
 	_, _ = newApprovalStoreFromEnv()
 	_ = newConnectorStoreFromEnv()
+	_ = newDCVStoreFromEnv()
+	_ = newAuthorizedIssuerStoreFromEnv()
 	_, _ = newFindingExceptionStoreFromEnv()
+	_, _ = newFindingIdentityStoreFromEnv()
 	_ = newSCIMGroupStoreFromEnv()
 	_ = newInventorySourceStoreFromEnv()
 	_, _ = newRenewalAlertCooldownStoreFromEnv()
+	_, _ = newRenewalFailureStoreFromEnv()
 	_, _ = newNotificationSilenceStoreFromEnv()
 	_, _ = newDBAuditProviderFromEnv()
 	_, _ = newHACoordinatorFromEnv()
 	_ = newSSHCertStoreFromEnv()
 	_ = NewCustomRoleStoreFromEnv()
 	_ = newOutboundCredentialStoreFromEnv()
+	_ = newAccessReviewStoreFromEnv()
+	_ = newBreakGlassStoreFromEnv()
+	constructAuditArchiveSchema(t)
+	constructPolicyVersionSchema(t)
+	constructTeamPolicySchema(t)
+}
+
+// constructPolicyVersionSchema: the policy-version store borrows the core DB
+// handle (it is built from the PolicyEngine), so open that file directly.
+func constructPolicyVersionSchema(t *testing.T) {
+	t.Helper()
+	dsn, err := resolveSQLiteDSNFromEnv("APP_CORE_DB_DSN", "KRYPTKEEPER_DATA_DIR", "kryptkeeper.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := (&policyVersionStore{db: db, ph: sqlitePlaceholder}).EnsureSchema(context.Background()); err != nil {
+		t.Fatalf("issuance_policy_versions schema: %v", err)
+	}
+}
+
+// constructTeamPolicySchema: the team-policy store takes the core DB handle
+// from main, so open that file directly (W33-20).
+func constructTeamPolicySchema(t *testing.T) {
+	t.Helper()
+	dsn, err := resolveSQLiteDSNFromEnv("APP_CORE_DB_DSN", "KRYPTKEEPER_DATA_DIR", "kryptkeeper.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := newDBTeamPolicyStore(db, false).EnsureSchema(context.Background()); err != nil {
+		t.Fatalf("team_policies schema: %v", err)
+	}
+	if err := newTeamCounterStore(db, false).EnsureSchema(context.Background()); err != nil {
+		t.Fatalf("team_request_counters schema: %v", err)
+	}
+}
+
+// constructAuditArchiveSchema mirrors cmd/kryptkeeper: the archive manager
+// shares the database the audit trail lives in and creates audit_archives
+// itself, so this exercises that DDL against both migration orders.
+func constructAuditArchiveSchema(t *testing.T) {
+	t.Helper()
+	state := newDBProviderState[*AuditArchiveManager](
+		"audit-archive", auditSQLiteDSNFromEnv, auditPostgresDSNFromEnv,
+		fmt.Errorf("no audit DSN"),
+		func(db *sql.DB) *AuditArchiveManager { return NewAuditArchiveManager(db, false, nil, nil) },
+		func(db *sql.DB) *AuditArchiveManager { return NewAuditArchiveManager(db, true, nil, nil) },
+	)
+	if state.store == nil {
+		t.Fatalf("audit archive store: %v", state.openErr)
+	}
+	if err := state.store.EnsureSchema(context.Background()); err != nil {
+		t.Fatalf("audit_archives schema: %v", err)
+	}
 }
 
 // A data directory first used with a non-ca provider has every store's
@@ -118,13 +194,13 @@ func TestStoresSelfHealAfterMigrations(t *testing.T) {
 // missed the ssh-cert, custom-role and outbound-credential stores because
 // nothing forced the list to track the code.
 var selfHealingDDLFiles = map[string]bool{
-	"agent_store_db.go": true, "approval_store.go": true, "audit_db_provider.go": true,
-	"authz_custom_roles_handlers.go": true, "config_store.go": true, "connector_store.go": true,
-	"discovery_db_provider.go": true, "evidence_schedule_store.go": true, "finding_exception_store.go": true,
+	"access_review_campaign.go": true, "agent_store_db.go": true, "approval_store.go": true, "chatops_approval_post.go": true, "breakglass.go": true, "codesign_oidc.go": true, "audit_archive.go": true, "audit_db_provider.go": true, "authorized_issuer_store.go": true,
+	"authz_custom_roles_handlers.go": true, "compliance_attestation.go": true, "config_store.go": true, "handlers_user_prefs.go": true, "connector_store.go": true, "dcv_tracker.go": true,
+	"discovery_db_provider.go": true, "discovery_schedule_store.go": true, "evidence_schedule_store.go": true, "finding_exception_store.go": true, "finding_identity.go": true, "report_schedule_store.go": true,
 	"ha_coordinator.go": true, "handlers_ssh_certs.go": true, "inventory_source.go": true,
-	"managed_target_store.go": true, "nhi_identity.go": true, "notification_dedup.go": true,
+	"managed_target_store.go": true, "cert_target_binding_store.go": true, "target_group_store.go": true, "nhi_identity.go": true, "notification_dedup.go": true, "renewal_retry.go": true,
 	"notification_rule_store.go": true, "outbound_credential_store.go": true, "pending_action_store.go": true,
-	"posture_snapshot_store.go": true, "pqc_wave_store.go": true, "scim.go": true, "tenant_store.go": true,
+	"posture_snapshot_store.go": true, "pqc_wave_store.go": true, "policy_versions.go": true, "scim.go": true, "tenant_store.go": true, "team_policy_store.go": true, "team_policy_enforce.go": true,
 	// db_core.go only mentions the phrase in a comment.
 	"db_core.go": true,
 }

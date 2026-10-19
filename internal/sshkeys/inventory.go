@@ -6,8 +6,7 @@ package sshkeys
 
 import (
 	"context"
-	"crypto/sha256"
-	"fmt"
+	"sync"
 	"time"
 )
 
@@ -50,8 +49,13 @@ func (k *SSHKey) IsStale(now time.Time) bool {
 
 // Inventory manages the SSH key inventory.
 type Inventory struct {
+	mu   sync.RWMutex
 	keys map[string]*SSHKey // keyed by fingerprint
 }
+
+// Shared is the process-wide inventory read by the unified key inventory
+// (W24-33). Nothing in production populates it yet; it is in-memory only.
+var Shared = NewInventory()
 
 // NewInventory creates an SSH key inventory.
 func NewInventory() *Inventory {
@@ -61,11 +65,15 @@ func NewInventory() *Inventory {
 // Add registers a discovered SSH key.
 func (inv *Inventory) Add(key SSHKey) {
 	key.RiskScore, key.RiskFlags = computeSSHRisk(key)
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
 	inv.keys[key.Fingerprint] = &key
 }
 
 // List returns all inventoried SSH keys.
 func (inv *Inventory) List() []SSHKey {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
 	result := make([]SSHKey, 0, len(inv.keys))
 	for _, k := range inv.keys {
 		result = append(result, *k)
@@ -75,6 +83,8 @@ func (inv *Inventory) List() []SSHKey {
 
 // StaleKeys returns keys that haven't been rotated within their window.
 func (inv *Inventory) StaleKeys(now time.Time) []SSHKey {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
 	var stale []SSHKey
 	for _, k := range inv.keys {
 		if k.IsStale(now) {
@@ -86,6 +96,8 @@ func (inv *Inventory) StaleKeys(now time.Time) []SSHKey {
 
 // Stats returns inventory summary statistics.
 func (inv *Inventory) Stats(now time.Time) InventoryStats {
+	inv.mu.RLock()
+	defer inv.mu.RUnlock()
 	stats := InventoryStats{Total: len(inv.keys)}
 	for _, k := range inv.keys {
 		if k.IsStale(now) {
@@ -118,12 +130,6 @@ type InventoryStats struct {
 
 // ScanFunc discovers SSH keys on a host.
 type ScanFunc func(ctx context.Context, host string) ([]SSHKey, error)
-
-// FingerprintPublicKey computes SHA-256 fingerprint of an SSH public key.
-func FingerprintPublicKey(pubKeyBytes []byte) string {
-	hash := sha256.Sum256(pubKeyBytes)
-	return fmt.Sprintf("SHA256:%x", hash)
-}
 
 func computeSSHRisk(key SSHKey) (int, []string) {
 	score := 0

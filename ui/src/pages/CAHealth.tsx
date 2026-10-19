@@ -1,7 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
+import { scrollableProps } from "../lib/scrollable";
+import { Link } from "react-router-dom";
 import { CheckCircle2, AlertTriangle, XCircle, Clock } from "lucide-react";
 import { api } from "../lib/api";
-import { Badge, Panel, StateMessage } from "../components/ui";
+import { Badge, Panel, StateMessage, formatDateTime } from "../components/ui";
+import { humanizeEnum } from "../lib/utils";
 import { PageHeader } from "../components/PageHeader";
 import { ReportSkeleton } from "../components/Skeletons";
 
@@ -93,12 +96,12 @@ export default function CAHealth() {
                 className="glass rounded-2xl p-4 gradient-border"
               >
                 <div className="flex items-center gap-2 mb-2">
-                  <Icon size={14} className={cls} />
+                  <Icon size={14} className={value === 0 ? "text-muted-foreground" : cls} />
                   <span className="text-xs text-muted-foreground uppercase tracking-widest">
                     {label}
                   </span>
                 </div>
-                <div className={`text-3xl font-bold ${cls}`}>{value}</div>
+                <div className={`text-3xl font-bold ${value === 0 ? "text-foreground" : cls}`}>{value}</div>
               </div>
             ))}
           </div>
@@ -106,9 +109,9 @@ export default function CAHealth() {
           {/* CA table */}
           <Panel
             title="Certificate Authorities"
-            subtitle={`${report.total_cas} CAs · Generated ${new Date(report.generated_at).toLocaleString()}`}
+            subtitle={`${report.total_cas} CAs · Generated ${formatDateTime(report.generated_at)}`}
           >
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto" {...scrollableProps}>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-border text-left">
@@ -136,13 +139,24 @@ export default function CAHealth() {
                       className="hover:bg-foreground/[0.02] transition"
                     >
                       <td className="py-3 pr-4 font-medium text-foreground">
-                        {ca.name}
+                        <Link
+                          to={`/certificates?ca_id=${encodeURIComponent(ca.id)}`}
+                          className="hover:text-primary hover:underline"
+                        >
+                          {ca.name}
+                        </Link>
                       </td>
                       <td className="py-3 pr-4">
                         <Badge
-                          tone={ca.status === "active" ? "success" : "warning"}
+                          tone={
+                            ca.status === "active"
+                              ? "success"
+                              : ca.status === "revoked"
+                                ? "danger"
+                                : "warning"
+                          }
                         >
-                          {ca.status}
+                          {humanizeEnum(ca.status)}
                         </Badge>
                       </td>
                       <td className="py-3 pr-4 font-mono text-xs text-foreground">
@@ -151,9 +165,9 @@ export default function CAHealth() {
                       <td className="py-3 pr-4">
                         {strengthBadge(ca.algorithm_strength)}
                       </td>
-                      <td className="py-3 pr-4 text-muted-foreground text-xs">
+                      <td className="py-3 pr-4 text-muted-foreground text-xs whitespace-nowrap">
                         {ca.expires_at
-                          ? new Date(ca.expires_at).toLocaleDateString()
+                          ? formatDateTime(ca.expires_at)
                           : "—"}
                       </td>
                       <td className="py-3 pr-4">

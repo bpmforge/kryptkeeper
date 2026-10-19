@@ -1,0 +1,331 @@
+{
+  "task": "U-09",
+  "title": "Run a root key ceremony (M-of-N): initiator starts",
+  "sourceStory": "STORIES.md#u-09",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/ceremonies"
+      },
+      "caption": "Open /ceremonies",
+      "slug": "ceremony-list-pending",
+      "expect": {
+        "role": "button",
+        "name": "Start ceremony"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09/01-ceremony-list-pending.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Start ceremony"
+      },
+      "caption": "Click **Start ceremony**",
+      "slug": "start-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "Start"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09/02-start-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Name",
+        "within": "[role=dialog]"
+      },
+      "value": "Root R3",
+      "caption": "Fill **Name** with \"Root R3\"",
+      "slug": "Name",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09/03-name.png",
+        "annotated": "docs/guide/screenshots/U-09/03-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 279,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Common name",
+        "within": "[role=dialog]"
+      },
+      "value": "Acme Root R3",
+      "caption": "Fill **Common name** with \"Acme Root R3\"",
+      "slug": "Common name",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09/04-common-name.png",
+        "annotated": "docs/guide/screenshots/U-09/04-common-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 349,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "css": "select",
+        "within": "[role=dialog]"
+      },
+      "value": "ECDSA-P384",
+      "caption": "Select \"ECDSA-P384\" in **select**",
+      "slug": "select",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09/05-select.png",
+        "annotated": "docs/guide/screenshots/U-09/05-select-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 419,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Validity days",
+        "within": "[role=dialog]"
+      },
+      "value": "3650",
+      "caption": "Fill **Validity days** with \"3650\"",
+      "slug": "Validity days",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09/06-validity-days.png",
+        "annotated": "docs/guide/screenshots/U-09/06-validity-days-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 489,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Approvers",
+        "within": "[role=dialog]"
+      },
+      "value": "alice,bob",
+      "caption": "Fill **Approvers** with \"alice,bob\"",
+      "slug": "Approvers",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09/07-approvers.png",
+        "annotated": "docs/guide/screenshots/U-09/07-approvers-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 559,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Quorum",
+        "within": "[role=dialog]"
+      },
+      "value": "2",
+      "caption": "Fill **Quorum** with \"2\"",
+      "slug": "Quorum",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09/08-quorum.png",
+        "annotated": "docs/guide/screenshots/U-09/08-quorum-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 629,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Start",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Start**",
+      "slug": "ceremony-started-0-of-2",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09/09-ceremony-started-0-of-2.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "flags": "MULTI-USER (approvers alice and bob sign in separately: U-09b, U-09c)",
+  "lastRun": {
+    "at": "2026-10-18T12:46:47.412Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-09",
+    "steps": 9,
+    "shots": 9,
+    "annotated": 6,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/ceremonies"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-09/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-09/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

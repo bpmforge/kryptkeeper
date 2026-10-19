@@ -228,20 +228,21 @@ func TestWriteRoutesUseTheVocabulary(t *testing.T) {
 // each handler), so they need no rule. A route on neither list fails the
 // coverage test below: decide it, then put it on one.
 var readOnlyAPIRoutes = map[string]bool{
-	"/api/v1/agents": true, "/api/v1/agents/x": true, "/api/v1/audit": true,
+	"/api/v1/agents": true, "/api/v1/audit": true,
+	"/api/v1/audit/export":                  true,
 	"/api/v1/audit/transparency/checkpoint": true, "/api/v1/audit/transparency/consistency": true,
 	"/api/v1/audit/transparency/inclusion": true, "/api/v1/authz-check": true, "/api/v1/blast-radius": true,
-	"/api/v1/cbom": true, "/api/v1/certificates/x": true, "/api/v1/certificates/x/download": true, "/api/v1/events": true, "/api/v1/meta": true,
+	"/api/v1/cbom": true, "/api/v1/certificates/x": true, "/api/v1/certificates/quota": true, "/api/v1/certificates/x/download": true, "/api/v1/ct/findings": true, "/api/v1/events": true, "/api/v1/meta": true, "/api/v1/openapi.yaml": true,
 	"/api/v1/pending-actions/x": true, "/api/v1/protected/certs/summary": true, "/api/v1/protected/config": true,
 	"/api/v1/protected/ping": true, "/api/v1/protected/whoami": true, "/api/v1/reports/algorithm-sunset": true,
 	"/api/v1/reports/anomalies": true, "/api/v1/reports/ca-health": true, "/api/v1/reports/change-audit": true,
 	"/api/v1/reports/compliance-evidence": true, "/api/v1/reports/crypto-posture": true,
-	"/api/v1/reports/crypto-posture/trend": true, "/api/v1/reports/executive-summary": true,
+	"/api/v1/reports/crypto-posture/trend": true, "/api/v1/reports/estate": true, "/api/v1/reports/executive-summary": true,
 	"/api/v1/reports/expiry-timeline": true, "/api/v1/reports/export/findings": true,
 	"/api/v1/reports/export/inventory": true, "/api/v1/reports/issuance-velocity": true,
 	"/api/v1/reports/key-custody": true, "/api/v1/reports/pqc-countdown": true, "/api/v1/reports/pqc-migration": true,
 	"/api/v1/reports/renewal-slo": true, "/api/v1/reports/revocation-activity": true,
-	"/api/v1/scheduler/renewal/status": true, "/api/v1/search": true, "/api/v1/ssh/ca": true,
+	"/api/v1/scheduler/renewal/status": true, "/api/v1/target-policy": true, "/api/v1/search": true, "/api/v1/ssh/ca": true,
 }
 
 // Every route the server registers, the UI calls or the spec lists as a

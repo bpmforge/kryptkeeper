@@ -24,6 +24,8 @@ vi.mock("../lib/api", () => ({
     notificationsSummary: vi.fn(),
     notificationDeliveries: vi.fn(),
     notificationRules: vi.fn(),
+    createNotificationRule: vi.fn(),
+    itsmConnections: vi.fn(),
     testNotificationDelivery: vi.fn(),
     retryNotificationDelivery: vi.fn(),
     acknowledgeNotificationDelivery: vi.fn(),
@@ -115,10 +117,13 @@ describe("Certificates page", () => {
     expect(scroller.className).toContain("overflow-x-auto");
     expect(scroller.className).not.toContain("overflow-hidden");
     let el: HTMLElement | null = scroller;
-    while (el && !el.className.includes?.("minmax(0,1.2fr)")) el = el.parentElement;
+    while (el && !el.className.includes?.("minmax(0,1.45fr)"))
+      el = el.parentElement;
     expect(el).not.toBeNull();
     for (const col of ["Risk", "Estate", "Status"]) {
-      expect(screen.getByRole("columnheader", { name: col })).toBeInTheDocument();
+      expect(
+        screen.getByRole("columnheader", { name: col }),
+      ).toBeInTheDocument();
     }
   });
 
@@ -246,7 +251,9 @@ describe("Certificates page", () => {
     renderWithQuery(<Certificates />);
 
     // The unmanaged cert's detail pane offers the takeover.
-    await user.click(await screen.findByRole("button", { name: /take over/i }));
+    await user.click(
+      await screen.findByRole("button", { name: /^take over$/i }),
+    );
     const dialog = screen.getByRole("dialog", {
       name: /take certificate under management/i,
     });
@@ -519,6 +526,29 @@ describe("Certificates page", () => {
     );
   });
 
+  it("S-07: an inventory-only revocation says so instead of claiming a real one", async () => {
+    vi.mocked(api.certificates).mockResolvedValue({
+      data: { items: [{ ...certMock, ca_id: "" }] },
+      meta: { total: 1, limit: 50 },
+    } as unknown as never);
+    vi.mocked(api.revokeCertificate).mockResolvedValue({
+      data: { fingerprint_sha256: "fp-1", revocation_scope: "inventory_only" },
+    } as unknown as never);
+
+    const user = userEvent.setup();
+    renderWithQuery(<Certificates />);
+
+    await screen.findByRole("button", { name: /api\.example\.com/i });
+    await user.click(screen.getByRole("button", { name: /^revoke$/i }));
+    const revokeDialog = screen.getByRole("dialog", {
+      name: /revoke certificate/i,
+    });
+    fireEvent.submit(revokeDialog.querySelector("form")!);
+    expect(
+      (await screen.findAllByText(/marked revoked in inventory/i)).length,
+    ).toBeGreaterThan(0);
+  });
+
   it("renders DNS SANs from the wire field subject_alt_names (W2-05/G-10 regression)", async () => {
     vi.mocked(api.certificates).mockResolvedValue({
       data: {
@@ -615,10 +645,12 @@ describe("Discovery page", () => {
 
     renderWithQuery(<Discovery />);
 
-    expect(await screen.findByText(/discovered/i)).toBeInTheDocument();
+    // Wait on the endpoint row: the "Discovered certificates" panel (W27-13)
+    // also matches /discovered/ and renders before the data loads.
     expect(
-      screen.getByRole("button", { name: /host1\.example\.com/i }),
+      await screen.findByRole("button", { name: /host1\.example\.com/i }),
     ).toBeInTheDocument();
+    expect(screen.getAllByText(/discovered/i).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/scan jobs/i).length).toBeGreaterThan(0);
     expect(api.discoveryScanJobs).toHaveBeenCalled();
 
@@ -830,13 +862,18 @@ describe("Alerts page", () => {
     await waitFor(() =>
       expect(api.retryNotificationDelivery).toHaveBeenCalledWith(
         expect.objectContaining({
-          delivery_id: "del-1",
+          delivery_id: "del-2",
           reason: "retry later",
         }),
       ),
     );
 
-    await user.click(screen.getAllByRole("button", { name: /ack/i })[0]);
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: /retry delivery/i }),
+      ).toBeNull(),
+    );
+    await user.click(screen.getByRole("button", { name: "Acknowledge" }));
     expect(
       screen.getByRole("dialog", { name: /acknowledge delivery/i }),
     ).toBeInTheDocument();
@@ -844,8 +881,85 @@ describe("Alerts page", () => {
     await user.click(screen.getByRole("button", { name: /confirm/i }));
     await waitFor(() =>
       expect(api.acknowledgeNotificationDelivery).toHaveBeenCalledWith(
-        expect.objectContaining({ delivery_id: "del-1", note: "seen" }),
+        expect.objectContaining({ delivery_id: "del-2", note: "seen" }),
       ),
+    );
+  });
+
+  it("unknown delivery id shows a not-found state instead of the list", async () => {
+    vi.mocked(api.notificationsSummary).mockResolvedValue({
+      data: {},
+    } as unknown as never);
+    vi.mocked(api.notificationDeliveries).mockResolvedValue({
+      data: { deliveries: [] },
+      meta: {},
+    } as unknown as never);
+    renderWithQuery(
+      <Routes>
+        <Route path="/alerts/deliveries/:id" element={<Alerts />} />
+      </Routes>,
+      ["/alerts/deliveries/nope"],
+    );
+    expect(await screen.findByText("Delivery not found")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Back to list" }),
+    ).toBeInTheDocument();
+  });
+
+  it("offers the ITSM channel with a connection picker and creates the rule", async () => {
+    vi.mocked(api.notificationsSummary).mockResolvedValue({
+      data: {},
+    } as unknown as never);
+    vi.mocked(api.notificationDeliveries).mockResolvedValue({
+      data: { deliveries: [] },
+    } as unknown as never);
+    vi.mocked(api.itsmConnections).mockResolvedValue({
+      data: {
+        items: [
+          { id: "conn-snow", name: "Prod ServiceNow", kind: "servicenow" },
+          { id: "conn-jira", name: "Eng Jira", kind: "jira" },
+        ],
+      },
+    } as unknown as never);
+    vi.mocked(api.createNotificationRule).mockResolvedValue({
+      data: { id: "rule-1" },
+    } as unknown as never);
+
+    const user = userEvent.setup();
+    renderWithQuery(<Alerts />);
+    await user.click(
+      await screen.findByRole("button", { name: /alert rules/i }),
+    );
+    await user.click(await screen.findByRole("button", { name: /new rule/i }));
+    const dialog = await screen.findByRole("dialog");
+    expect(api.itsmConnections).not.toHaveBeenCalled();
+
+    const channelSelect = within(dialog).getAllByRole("combobox")[1];
+    expect(
+      within(channelSelect).getByRole("option", { name: /itsm ticket/i }),
+    ).toBeInTheDocument();
+    await user.selectOptions(channelSelect, "itsm");
+
+    const picker = await within(dialog).findByLabelText("ITSM connection");
+    await waitFor(() => expect(api.itsmConnections).toHaveBeenCalled());
+    await within(dialog).findByRole("option", { name: /Prod ServiceNow/ });
+    await user.type(
+      within(dialog).getByPlaceholderText(/expiry alert/i),
+      "ticket rule",
+    );
+    await user.selectOptions(picker, "conn-snow");
+    await user.click(
+      within(dialog).getByRole("button", { name: /create rule/i }),
+    );
+
+    await waitFor(() =>
+      expect(api.createNotificationRule).toHaveBeenCalledWith({
+        name: "ticket rule",
+        // W30-18: the new-rule dialog defaults to a 25% lifetime threshold.
+        threshold_pct: 25,
+        channel: "itsm",
+        target: "conn-snow",
+      }),
     );
   });
 });
@@ -1044,9 +1158,10 @@ describe("W8-10 empty-state CTAs", () => {
 
     renderWithQuery(<Templates />);
 
-    await screen.findByText("drill-template");
-    // Both rows render "90d"; the raw ISO form never reaches the user.
-    expect(screen.getAllByText("90d")).toHaveLength(2);
+    await screen.findAllByText("drill-template");
+    // Both rows render "90d" and the auto-selected first template repeats it in
+    // the detail pane; the raw ISO form never reaches the user.
+    expect(screen.getAllByText("90d")).toHaveLength(3);
     expect(screen.queryByText("P90D")).not.toBeInTheDocument();
   });
 
@@ -1091,7 +1206,7 @@ describe("W8-10 empty-state CTAs", () => {
 
     const user = userEvent.setup();
     renderWithQuery(<Templates />);
-    await user.click(await screen.findByText("KK Windows"));
+    await user.click((await screen.findAllByText("KK Windows"))[0]);
     expect(await screen.findByText("Machines")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /^edit$/i }));
     const dialog = screen.getByRole("dialog");
@@ -1110,6 +1225,7 @@ describe("W8-10 empty-state CTAs", () => {
         min_key_size: 3072,
         enrollee_type: "user",
       }),
+      undefined,
     );
   });
 
@@ -1156,7 +1272,7 @@ describe("W8-10 empty-state CTAs", () => {
     renderWithQuery(<Templates />);
 
     // Existing policy is summarised, loaded into the editor, and re-sent on save.
-    await user.click(await screen.findByText("SSH Ops"));
+    await user.click((await screen.findAllByText("SSH Ops"))[0]);
     expect(await screen.findByText("user, max 4h")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /^edit$/i }));
     let dialog = screen.getByRole("dialog");
@@ -1176,6 +1292,7 @@ describe("W8-10 empty-state CTAs", () => {
           max_ttl_hours: 4,
         },
       }),
+      undefined,
     );
 
     // A template without one sends none until the section is switched on.
@@ -1321,7 +1438,7 @@ describe("S-49 CA row accessible names and empty-state copy", () => {
 
     expect(
       await screen.findByRole("button", {
-        name: "acme-root, root CA, software storage, active",
+        name: "acme-root Root · Software Active",
       }),
     ).toBeInTheDocument();
     // The pre-fix accessible name concatenated with no separators.

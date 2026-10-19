@@ -6,9 +6,12 @@ package bootstrap
 
 import (
 	"encoding/json"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"time"
+
+	"kryptkeeper/internal/connectors"
+	"kryptkeeper/internal/metrics"
 )
 
 // RenewalSLOReport summarizes Renewal Autopilot health for the dashboard.
@@ -23,6 +26,35 @@ type RenewalSLOReport struct {
 	MeanTimeToRenewSecs int             `json:"mean_time_to_renew_secs"` // mean over measurable samples
 	MTTRSamples         int             `json:"mttr_samples"`
 	FailedRenewals      []FailedRenewal `json:"failed_renewals"`
+	// Queue is the renewal sweep's backlog and per-connector throttle state
+	// (W27-33): depth, drain ETA, in-flight vs cap, daily budget use.
+	Queue RenewalQueueReport `json:"queue"`
+	SLOs  []sloBudgetView    `json:"slos"` // W30-05: 30-day error budget + burn rates per ratio SLO
+}
+
+// sloBudgetView is the wire form of metrics.SLOStatus. Fleet-wide, so it is
+// served only behind the same aggregate-super-admin gate as the rest (D-102).
+type sloBudgetView struct {
+	Name               string  `json:"name"`
+	Objective          float64 `json:"objective"`
+	WindowDays         int     `json:"window_days"`
+	HasData            bool    `json:"has_data"`
+	BudgetRemainingPct float64 `json:"budget_remaining_pct"`
+	BurnRate1h         float64 `json:"burn_rate_1h"`
+	BurnRate6h         float64 `json:"burn_rate_6h"`
+	Breached           bool    `json:"breached"`
+}
+
+func sloBudgetViews() []sloBudgetView {
+	out := []sloBudgetView{}
+	for _, st := range latestSLOStatus() {
+		out = append(out, sloBudgetView{
+			Name: st.Name, Objective: st.Objective, WindowDays: int(metrics.SLOBudgetWindow.Hours() / 24),
+			HasData: st.HasData, BudgetRemainingPct: st.BudgetRemainingPct,
+			BurnRate1h: st.BurnRate1h, BurnRate6h: st.BurnRate6h, Breached: st.Breached,
+		})
+	}
+	return out
 }
 
 // FailedRenewal is one entry in the failed-renewal queue.
@@ -35,6 +67,14 @@ type FailedRenewal struct {
 	Detail            string `json:"detail,omitempty"`
 	ServedFingerprint string `json:"served_fingerprint,omitempty"`
 	ReportedAt        string `json:"reported_at"`
+	// Type is "agent_result" for agent-reported rows, else the scheduler
+	// queue kind ("execute_failure" | "notification_dead_letter").
+	Type          string `json:"type"`
+	TargetID      string `json:"target_id,omitempty"`
+	Attempt       int    `json:"attempt,omitempty"`
+	MaxAttempts   int    `json:"max_attempts,omitempty"`
+	NextAttemptAt string `json:"next_attempt_at,omitempty"`
+	GaveUp        bool   `json:"gave_up,omitempty"`
 }
 
 // isLaterResult reports whether candidate is at least as recent as current
@@ -63,7 +103,7 @@ func isSuccessOutcome(outcome string, rolledBack bool) bool {
 // aggregates agent-reported renewal results into an autopilot health summary.
 // MTTR is computed for results whose cert can be matched to the inventory
 // (renewed cert ValidFrom → result ReportedAt); unmatched results are skipped.
-func registerRenewalSLOHandler(mux *http.ServeMux, auth *Authenticator, store AgentStore, certProvider CertificateProvider, auditProvider AuditProvider) {
+func registerRenewalSLOHandler(mux routeRegistrar, auth *Authenticator, store AgentStore, certProvider CertificateProvider, auditProvider AuditProvider) {
 	mux.HandleFunc("/api/v1/reports/renewal-slo", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w, http.MethodGet)
@@ -90,7 +130,7 @@ func registerRenewalSLOHandler(mux *http.ServeMux, auth *Authenticator, store Ag
 		endpoints, err := store.endpointCount()
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "report.renewal_slo", "report", "renewal-slo", AuditOutcomeFailure)
-			log.Printf("renewal-slo: endpoint count unavailable: %v", err)
+			logging.Warnf("renewal-slo: endpoint count unavailable: %v", err)
 			writeServiceUnavailable(w, "renewal SLO report unavailable")
 			return
 		}
@@ -101,6 +141,7 @@ func registerRenewalSLOHandler(mux *http.ServeMux, auth *Authenticator, store Ag
 			EndpointsManaged: endpoints,
 			Outcomes:         map[string]int{},
 			FailedRenewals:   []FailedRenewal{},
+			SLOs:             sloBudgetViews(),
 		}
 
 		entries := store.allResults()
@@ -141,15 +182,15 @@ func registerRenewalSLOHandler(mux *http.ServeMux, auth *Authenticator, store Ag
 				Detail:            res.Detail,
 				ServedFingerprint: res.ServedFingerprint,
 				ReportedAt:        res.ReportedAt,
+				Type:              "agent_result",
 			})
 		}
-		// W2-07: the scheduler's own renewal-notification trigger failures
-		// (dead-lettered after renewalTriggerMaxAttempts consecutive
-		// attempts) are a distinct failure domain from agent-reported
-		// renewal outcomes above — surface both in the same queue so an
-		// operator has one place to look, not logs for one and this report
-		// for the other.
-		report.FailedRenewals = append(report.FailedRenewals, renewalDeadLetterSnapshot()...)
+		// W2-07/W27-18: the scheduler's own execute failures and dead-lettered
+		// notification triggers are a distinct failure domain from
+		// agent-reported outcomes above — surface all in one queue so an
+		// operator has one place to look. Durable, so it survives a restart.
+		report.FailedRenewals = append(report.FailedRenewals, renewalFailureSnapshot(r.Context())...)
+		report.Queue = renewalQueueReport(connectors.DefaultThrottle)
 		if report.TotalRenewals > 0 {
 			report.SuccessRatePercent = successes * 100 / report.TotalRenewals
 		}
@@ -164,7 +205,7 @@ func registerRenewalSLOHandler(mux *http.ServeMux, auth *Authenticator, store Ag
 		if err := json.NewEncoder(w).Encode(struct {
 			Data RenewalSLOReport `json:"data"`
 		}{Data: report}); err != nil {
-			log.Printf("failed to encode renewal SLO report: %v", err)
+			logging.Warnf("failed to encode renewal SLO report: %v", err)
 		}
 	})
 }

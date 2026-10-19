@@ -107,6 +107,11 @@ mapfile -t doc_path_list <<< "$doc_paths"
 route_is_covered() {
   local route="$1"
   case "$route" in
+    "/api/")
+      # Catch-all that answers 404 JSON for unmounted API paths (handlers_meta.go);
+      # it is a fallback, not an endpoint, so it has no spec entry.
+      return 0
+      ;;
     "/"|"/healthz"|"/readyz")
       for p in "${doc_path_list[@]}"; do
         [[ "$p" == "$route" ]] && return 0

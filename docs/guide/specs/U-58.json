@@ -1,0 +1,257 @@
+{
+  "task": "U-58",
+  "title": "Forward security events and manage discovery sources (Settings)",
+  "sourceStory": "STORIES.md#u-58",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/settings"
+      },
+      "caption": "Open /settings",
+      "slug": "settings-overview",
+      "expect": {
+        "role": "button",
+        "name": "Refresh"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-58/01-settings-overview.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Add cluster"
+      },
+      "caption": "Click **Add cluster**",
+      "slug": "add-cluster-row",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-58/02-add-cluster-row.png",
+        "annotated": "docs/guide/screenshots/U-58/02-add-cluster-row-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 642,
+          "w": 127,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Cluster name"
+      },
+      "value": "prod-k8s",
+      "caption": "Fill **Cluster name** with \"prod-k8s\"",
+      "slug": "Cluster name",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-58/03-cluster-name.png",
+        "annotated": "docs/guide/screenshots/U-58/03-cluster-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 428,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Cluster namespace"
+      },
+      "value": "payments",
+      "caption": "Fill **Cluster namespace** with \"payments\"",
+      "slug": "Cluster namespace",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-58/04-cluster-namespace.png",
+        "annotated": "docs/guide/screenshots/U-58/04-cluster-namespace-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 520,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Add endpoint"
+      },
+      "caption": "Click **Add endpoint**",
+      "slug": "add-endpoint-row",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-58/05-add-endpoint-row.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Add domain"
+      },
+      "caption": "Click **Add domain**",
+      "slug": "add-domain-row",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-58/06-add-domain-row.png",
+        "annotated": "docs/guide/screenshots/U-58/06-add-domain-row-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 678,
+          "w": 130,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Add cloud source"
+      },
+      "caption": "Click **Add cloud source**",
+      "slug": "add-cloud-source-row",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-58/07-add-cloud-source-row.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "flags": "CONFIG + EXTERNAL (SIEM forwarding is configured by hub env; see U-58b)",
+  "lastRun": {
+    "at": "2026-10-18T12:47:54.559Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-58",
+    "steps": 7,
+    "shots": 7,
+    "annotated": 4,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/settings"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-58/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-58/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

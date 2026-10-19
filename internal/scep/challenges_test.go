@@ -22,7 +22,7 @@ import (
 // database, so the tests run against the real 000066 schema.
 func newTestChallengeStore(t *testing.T) *DBChallengeStore {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "scep.db"))
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "scep.db")+"?_journal_mode=WAL&_busy_timeout=5000") // production DSN params (db_provider_helpers.go): racing writers wait instead of SQLITE_BUSY
 	if err != nil {
 		t.Fatal(err)
 	}

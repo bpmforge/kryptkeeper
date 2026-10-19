@@ -8,13 +8,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 
 	"kryptkeeper/internal/keyinventory"
+	"kryptkeeper/internal/sshkeys"
 )
 
 // W17-03: the W15-01 unified cloud key inventory, wired into the product.
@@ -50,7 +51,7 @@ var newKeyInventorySources = func(ctx context.Context) []keyinventory.KeySource 
 		if src, err := keyinventory.NewAWSKeySource(ctx, region); err == nil {
 			sources = append(sources, src)
 		} else {
-			log.Printf("key inventory: aws source unavailable: %v", err)
+			logging.Warnf("key inventory: aws source unavailable: %v", err)
 		}
 	}
 	// Azure Key Vault: same vault URL the cert-side connector uses.
@@ -68,6 +69,55 @@ var newKeyInventorySources = func(ctx context.Context) []keyinventory.KeySource 
 	return sources
 }
 
+// keyInventoryProviderTimeout and sshUserKeyInventory are test seams (W24-33).
+var keyInventoryProviderTimeout = keyinventory.DefaultProviderTimeout
+var sshUserKeyInventory = sshkeys.Shared
+
+// discoverySSHHostKeyLister adapts the discovery provider's SSH endpoints.
+type discoverySSHHostKeyLister struct{ p DiscoveryProvider }
+
+const sshHostKeyMaxPages = 100
+
+func (l discoverySSHHostKeyLister) ListSSHHostKeys(ctx context.Context) ([]keyinventory.SSHHostKeyRecord, error) {
+	var out []keyinventory.SSHHostKeyRecord
+	cursor := 0
+	for page := 0; page < sshHostKeyMaxPages; page++ {
+		res, err := l.p.ListEndpoints(ctx, DiscoveryEndpointQuery{Protocol: "ssh", Limit: 100, Cursor: cursor})
+		if err != nil {
+			return nil, err
+		}
+		for _, ep := range res.Endpoints {
+			if len(ep.SSHHostKeyAlgorithms) == 0 {
+				continue
+			}
+			out = append(out, keyinventory.SSHHostKeyRecord{
+				Host: ep.Hostname, Port: ep.Port, Algorithms: ep.SSHHostKeyAlgorithms, LastScanned: ep.LastSeenAt,
+			})
+		}
+		if res.NextCursor == nil {
+			break
+		}
+		cursor = *res.NextCursor
+	}
+	return out, nil
+}
+
+// keyInventoryDiscovery is the discovery provider the SSH host-key source
+// reads; registerKeyInventoryHandler sets it once at registration so other
+// reports (executive summary, W24-35) collect the same unified inventory.
+var keyInventoryDiscovery DiscoveryProvider
+
+// collectKeyInventory gathers cloud, SSH host and SSH user keys, each provider
+// bounded by keyInventoryProviderTimeout.
+func collectKeyInventory(ctx context.Context) keyinventory.KeyInventory {
+	sources := newKeyInventorySources(ctx)
+	if keyInventoryDiscovery != nil {
+		sources = append(sources, keyinventory.NewSSHHostKeySource(discoverySSHHostKeyLister{keyInventoryDiscovery}))
+	}
+	sources = append(sources, keyinventory.NewSSHUserKeySource(sshUserKeyInventory, time.Now))
+	return keyinventory.CollectWithTimeout(ctx, keyInventoryProviderTimeout, sources...)
+}
+
 // sanitizeInventoryErrors keeps the raw cloud SDK errors (ARNs, account and
 // tenant ids, key-ring paths) in the server log and hands the client only
 // the provider name. Collect formats each error as "<provider>: <error>".
@@ -77,7 +127,7 @@ func sanitizeInventoryErrors(raw []string) []string {
 	}
 	out := make([]string, 0, len(raw))
 	for _, e := range raw {
-		log.Printf("key inventory: provider error: %s", e)
+		logging.Infof("key inventory: provider error: %s", e)
 		provider := "provider"
 		if i := strings.Index(e, ": "); i > 0 && !strings.ContainsAny(e[:i], " /:") {
 			provider = e[:i]
@@ -102,7 +152,8 @@ func firstNonEmptyEnv(names ...string) string {
 // accounts and fans out live to each provider, so authentication alone is
 // not enough. It needs key.manage or report.read, resolved by the same
 // principalPermissions the write gate uses (mcp-agent resolves to nothing).
-func registerKeyInventoryHandler(mux *http.ServeMux, auth *Authenticator, roles *CustomRoleStore, auditProvider AuditProvider) {
+func registerKeyInventoryHandler(mux *http.ServeMux, auth *Authenticator, roles *CustomRoleStore, auditProvider AuditProvider, discovery DiscoveryProvider) {
+	keyInventoryDiscovery = discovery
 	mux.HandleFunc("/api/v1/inventory/keys", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			writeMethodNotAllowed(w, http.MethodGet)
@@ -121,7 +172,7 @@ func registerKeyInventoryHandler(mux *http.ServeMux, auth *Authenticator, roles 
 			return
 		}
 
-		inv := keyinventory.Collect(r.Context(), newKeyInventorySources(r.Context())...)
+		inv := collectKeyInventory(r.Context())
 
 		resp := KeyInventoryResponse{
 			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
@@ -161,7 +212,7 @@ func registerKeyInventoryHandler(mux *http.ServeMux, auth *Authenticator, roles 
 		if err := json.NewEncoder(w).Encode(struct {
 			Data KeyInventoryResponse `json:"data"`
 		}{Data: resp}); err != nil {
-			log.Printf("failed to encode key inventory: %v", err)
+			logging.Warnf("failed to encode key inventory: %v", err)
 		}
 	})
 }

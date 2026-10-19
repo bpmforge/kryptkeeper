@@ -205,3 +205,37 @@ func TestCommercialSourceTypesRegistered(t *testing.T) {
 		}
 	}
 }
+
+// A token stored through POST /api/v1/credentials as a JSON string must reach
+// the vendor unquoted; before this the bearer header carried the quotes and
+// every live gcp_cas/digicert sync failed with 401 (found by W24-28).
+func TestSingleSecretSourcesUnwrapJSONStringCredential(t *testing.T) {
+	gcp, err := newGCPCASSource(context.Background(),
+		`{"project":"p","location":"l","ca_pool":"c"}`, "cred-c", commercialCreds(t, `"ya29.fake-token"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gcp.(*gcpCASSource).token; got != "ya29.fake-token" {
+		t.Errorf("gcp_cas token = %q, want unquoted", got)
+	}
+	dc, err := newDigicertSource(context.Background(), `{}`, "cred-c", commercialCreds(t, `"dc-fake-key"`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dc.(*digicertSource).apiKey; got != "dc-fake-key" {
+		t.Errorf("digicert api key = %q, want unquoted", got)
+	}
+	for in, want := range map[string]string{
+		`{"token":"t1"}`:   "t1",
+		`{"api_key":"k1"}`: "k1",
+		"bare-secret\n":    "bare-secret",
+	} {
+		field := "token"
+		if strings.Contains(in, "api_key") {
+			field = "api_key"
+		}
+		if got := credentialSecretString([]byte(in), field); got != want {
+			t.Errorf("credentialSecretString(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

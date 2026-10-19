@@ -74,6 +74,8 @@ export type CaRecord = {
   crl_distribution_points?: string[];
   ocsp_service_url?: string;
   active_issued_certificates?: number;
+  csr_pem?: string;
+  warnings?: string[];
 };
 
 export type NotificationRule = {
@@ -110,9 +112,23 @@ export type DiscoveryEndpointRecord = {
   issues?: string[];
   last_seen_at?: string;
   server_tech?: string;
+  // W34-06: least-trusted inventory class among the endpoint's leaf certs.
+  inventory_class?: string;
   recommended_install_mode?: string;
   ssh_banner?: string;
   ssh_host_key_algorithms?: string[];
+  // W34-08: posture of the discovered file holding the served leaf.
+  install_posture?: {
+    file_id?: string;
+    posture: "standard" | "privileged" | "root_service" | "unknown";
+    path: string;
+    host: string;
+    owner?: string;
+    mode?: string;
+    service_tech?: string;
+    findings?: string[];
+    accepted_findings?: string[];
+  };
   crypto_posture?: {
     negotiated_version?: string;
     negotiated_cipher?: string;
@@ -132,6 +148,12 @@ export type DiscoveryEndpointRecord = {
     risk_score: number;
     risk_flags?: string[];
     trust_class?: string;
+    // W34-06: trust_class refined with the operator's authorized issuers, the
+    // headline class derived from it, and the issuer as observed (what the
+    // Authorize this issuer action declares).
+    issuer_class?: string;
+    inventory_class?: string;
+    issuer_dn?: string;
     // An intermediate/root the endpoint served alongside its leaf.
     chain_ca?: boolean;
     // Absent = could not be judged for this endpoint; false = an intermediate
@@ -158,6 +180,8 @@ export type NotificationDeliveryRecord = {
   status: string;
   queued_at?: string;
   delivered_at?: string;
+  /** Set when the hub knows why it failed and what to change (e.g. the egress guard refused the destination). */
+  failure_reason?: string;
 };
 
 export type HistoryRecord = {
@@ -195,6 +219,8 @@ export type DashboardSummary = {
     managed?: number;
     external?: number;
     unmanaged?: number;
+    // Active certificates with no owner team (W22-24); same predicate as ?owner=unassigned.
+    unowned?: number;
   };
   discovery?: {
     discovered_endpoints?: number;
@@ -205,12 +231,23 @@ export type DashboardSummary = {
   protocols?: { status?: string };
 };
 
+export type AuthorizedIssuer = {
+  id: string;
+  name: string;
+  kind: "ca_cert" | "issuer_dn" | "spki_sha256";
+  value: string;
+  notes?: string;
+  created_by: string;
+  created_at: string;
+};
+
 export type DiscoverySummary = {
   discovered_endpoints?: number;
   mapped_certificates?: number;
   risky_endpoints?: number;
   active_scan_jobs?: number;
   trust_classes?: TrustClassCounts;
+  inventory_classes?: Record<string, number>;
 };
 
 export type NotificationSummary = {
@@ -269,6 +306,7 @@ export type TemplateRecord = {
   enrollee_type?: "machine" | "user";
   require_approval?: boolean;
   approval_roles?: string[];
+  enrollment_permissions?: { enroll: string[] };
   ssh_policy?: SSHPolicy;
   name_policy?: NamePolicy;
   active: boolean;
@@ -276,6 +314,14 @@ export type TemplateRecord = {
   issued_count: number;
   created_at: string;
   updated_at: string;
+};
+
+export type TemplateFieldChange = { field: string; old: unknown; new: unknown };
+export type TemplateRevision = {
+  revision: number;
+  changed_at: string;
+  snapshot: TemplateRecord;
+  changes: TemplateFieldChange[] | null;
 };
 
 export type SearchResult = {
@@ -409,6 +455,28 @@ export type FailedRenewal = {
   detail?: string;
   served_fingerprint?: string;
   reported_at: string;
+  type?: "execute_failure" | "notification_dead_letter" | "agent_result";
+  target_id?: string;
+  attempt?: number;
+  max_attempts?: number;
+  next_attempt_at?: string;
+  gave_up?: boolean;
+};
+
+export type RenewalConnectorBudget = {
+  connector_id: string;
+  in_flight: number;
+  cap: number;
+  daily_used?: number;
+  daily_limit?: number;
+};
+
+export type RenewalQueueMetrics = {
+  depth: number;
+  eta_seconds: number;
+  eta_known?: boolean;
+  workers?: number;
+  connector_budgets: RenewalConnectorBudget[];
 };
 
 export type RenewalSLOReport = {
@@ -422,6 +490,20 @@ export type RenewalSLOReport = {
   mean_time_to_renew_secs: number;
   mttr_samples: number;
   failed_renewals: FailedRenewal[];
+  queue?: RenewalQueueMetrics;
+  // W30-05: per-SLO 30-day error budget (ratio SLOs only).
+  slos?: RenewalSLOBudget[];
+};
+
+export type RenewalSLOBudget = {
+  name: string;
+  objective: number;
+  window_days: number;
+  has_data: boolean;
+  budget_remaining_pct: number;
+  burn_rate_1h: number;
+  burn_rate_6h: number;
+  breached: boolean;
 };
 
 export type ExecutiveSummary = {
@@ -528,6 +610,31 @@ export type PQCMigrationRoadmap = {
   items: PQCMigrationItem[];
 };
 
+export type Ceremony = {
+  id: string;
+  ca_id: string;
+  ca_name: string;
+  common_name: string;
+  algorithm: string;
+  validity_days: number;
+  initiator: string;
+  approvers: string[];
+  quorum: number;
+  approvals: string[];
+  status: "pending" | "completed" | "aborted" | "expired";
+  created_at: string;
+  expires_at?: string;
+};
+
+export type StartCeremonyRequest = {
+  name: string;
+  common_name: string;
+  algorithm: string;
+  validity_days: number;
+  approvers: string[];
+  quorum: number;
+};
+
 export type PendingAction = {
   id: string;
   action_type: string;
@@ -584,6 +691,31 @@ export type AgentInfo = {
   last_seen?: string | null;
   status: AgentStatus;
   inventory_count: number;
+  host_report?: AgentHostReport;
+};
+
+// W34-09: the agent's latest host pass. posture_known=false means the agent
+// predates privilege reporting; its files are unknown, never assumed standard.
+export type AgentHostReport = {
+  received_at: string;
+  posture_known: boolean;
+  privilege_mode?: string;
+  scan_user?: string;
+  unreadable_count: number;
+  unreadable_paths?: { path: string; error: string }[];
+  findings?: string[];
+  files?: {
+    path: string;
+    kind: string;
+    owner?: string;
+    mode?: string;
+    posture: string;
+    service_tech?: string;
+    findings?: string[];
+  }[];
+  posture_counts?: Record<string, number>;
+  listener_count: number;
+  listeners_hidden: number;
 };
 
 // Multi-tenancy (v2.2)
@@ -614,3 +746,25 @@ export function extractList<T>(
   }
   return [];
 }
+
+export type RotateCaKeyResult = {
+  id?: string;
+  status?: string;
+  key_id?: string;
+  rotated_at?: string;
+  ledger_id?: string;
+  ledger_persisted?: boolean;
+  cross_cert_pem?: string;
+  old_cert_pem?: string;
+  old_key_id?: string;
+};
+
+export type BlastRadiusAction = "revoke" | "retire_ca" | "deprecate_algorithm";
+export type BlastRadiusResult = {
+  action: string;
+  target: string;
+  total_affected: number;
+  severity: "none" | "low" | "medium" | "high" | "critical";
+  affected_by_kind: Record<string, string[]>;
+  graph_size: string;
+};

@@ -163,14 +163,25 @@ func TestESTCSRAttrs(t *testing.T) {
 	ts := newTestESTServer(t)
 	defer ts.Close()
 
+	// W26-06: csrattrs now needs credentials like every route but cacerts.
 	resp, err := ts.Client().Get(ts.URL + "/.well-known/est/csrattrs")
 	if err != nil {
 		t.Fatalf("GET csrattrs: %v", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("anonymous: expected 401, got %d", resp.StatusCode)
+	}
 
-	if resp.StatusCode != http.StatusNoContent {
-		t.Errorf("expected 204, got %d", resp.StatusCode)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/.well-known/est/csrattrs", nil)
+	req.SetBasicAuth(testUser, testPassword)
+	authed, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET csrattrs: %v", err)
+	}
+	defer authed.Body.Close()
+	if authed.StatusCode != http.StatusNoContent {
+		t.Errorf("authenticated: expected 204, got %d", authed.StatusCode)
 	}
 }
 

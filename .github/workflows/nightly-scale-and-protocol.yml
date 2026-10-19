@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
+    inputs:
+      certs:
+        description: "perf-regression certificate count (1000000 = published stretch run, no pass bar)"
+        required: false
+        default: "100000"
+      storm_full:
+        description: "also run the full 50,000-cert renewal storm (W30-22, up to an hour)"
+        required: false
+        default: "false"
 
 permissions:
   contents: read
@@ -23,7 +32,9 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-          cache: true
+          # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
+          # setup-go's cache re-downloaded ~2.7 GB over them on every job.
+          cache: false
       - name: Ensure PyYAML (integration suite parses workflow YAML)
         # GitHub's hosted image ships PyYAML; the self-hosted act image does not.
         run: python3 -c 'import yaml' 2>/dev/null || { SUDO=$(command -v sudo || true); $SUDO apt-get update -qq && $SUDO apt-get install -y -qq python3-yaml; }
@@ -38,6 +49,140 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-          cache: true
+          # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
+          # setup-go's cache re-downloaded ~2.7 GB over them on every job.
+          cache: false
       - name: Run full Go test suite
+        env:
+          KRYPTKEEPER_SCALE_TESTS: "1"
         run: go test ./... -count=1
+
+  keycloak-sso:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with: { go-version-file: go.mod, cache: true }
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq podman jq
+      - name: Keycloak OIDC + SAML login
+        run: bash tests/live/keycloak/run.sh
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: { name: keycloak-sso-results, path: tests/live/keycloak/last-run.md }
+
+  xlsx-libreoffice:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install LibreOffice Calc
+        run: |
+          SUDO=$(command -v sudo || true)
+          $SUDO apt-get update -qq && $SUDO apt-get install -y -qq --no-install-recommends libreoffice-calc
+      - name: Checker rejects corrupt fixtures
+        run: bash scripts/test/xlsx-libreoffice.sh --self-test
+      - name: Export inventory and findings XLSX from the real handlers
+        run: KK_XLSX_FIXTURE_DIR="$RUNNER_TEMP/xlsx" go test ./internal/bootstrap/ -run TestExportXLSXFixtures -count=1
+        # TestExportXLSXFixtures (W28-07) writes kryptkeeper-inventory.xlsx and kryptkeeper-findings.xlsx
+      - name: Open each export in LibreOffice headless
+        run: bash scripts/test/xlsx-libreoffice.sh "$RUNNER_TEMP"/xlsx/kryptkeeper-inventory.xlsx "$RUNNER_TEMP"/xlsx/kryptkeeper-findings.xlsx
+
+  # W30-20: zero default egress. Needs podman, so ubuntu-latest resolves to the self-hosted
+  # self-hosted runner.
+  egress-capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Default config, 10 minutes (any unlisted host fails)
+        run: bash tests/live/egress/run.sh --short
+      - name: CT variants in parallel (crt.sh only; crt.sh plus Cert Spotter)
+        run: |
+          set -u
+          bash tests/live/egress/run.sh --ct & p1=$!
+          bash tests/live/egress/run.sh --ct --second-source & p2=$!
+          rc=0; wait "$p1" || rc=1; wait "$p2" || rc=1; exit "$rc"
+      - name: Self-test, an unlisted lookup must fail the harness
+        run: "! bash tests/live/egress/run.sh --inject-unlisted"
+      - name: Upload captures on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: egress-capture
+          path: tests/live/egress/out/
+
+  # W30-21: Postgres scale benchmark. Needs podman (self-hosted runner, as egress-capture).
+  # The 100k run is judged against tests/perf/budgets.json (pass bars and the 20% regression gate);
+  # a 1M workflow_dispatch run only publishes numbers.
+  perf-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Benchmark, then compare with budgets.json
+        env:
+          PERF_CERTS: ${{ github.event.inputs.certs || '100000' }}
+        run: |
+          set -eu
+          bash tests/perf/bench.sh --certs "$PERF_CERTS" --out perf-out
+          KK_PERF_RESULTS="$PWD/perf-out/results.json" go test ./tests/perf/... -count=1 -v
+      - name: Upload results.json
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: perf-results
+          path: perf-out/results.json
+      # W30-22: scaled renewal storm (5,000 certs, bar 6 min, key storm_drain_minutes_5k).
+      - name: Renewal storm, 5,000 certs scaled
+        run: |
+          set -eu
+          bash tests/perf/storm.sh --certs 5000 --agents 16 --out storm-out
+          KK_PERF_RESULTS="$PWD/storm-out/storm.json" go test ./tests/perf/... -count=1 -v
+      - name: Upload storm.json
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: storm-results
+          path: storm-out/storm.json
+
+  # W30-22: the full 50,000-cert drain (bar 60 min). Dispatch-only until a measured 50k run
+  # finishes in under 20 minutes; then it moves into the nightly job above.
+  renewal-storm-full:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.storm_full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Renewal storm, 50,000 certs, 16 agents, unlimited rate
+        run: |
+          set -eu
+          bash tests/perf/storm.sh --certs 50000 --agents 16 --out storm-out
+          KK_PERF_RESULTS="$PWD/storm-out/storm.json" go test ./tests/perf/... -count=1 -v
+      - name: Upload storm.json
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: storm-results-50k
+          path: storm-out/storm.json

@@ -14,11 +14,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"slices"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 func validateAPIKeyToken(token string, cfg authValidatorConfig, now time.Time) (AuthPrincipal, bool, error) {
@@ -242,7 +243,7 @@ func (a *Authenticator) reportUserStoreError(r *http.Request, principalID string
 	}
 	a.userStoreErrAt = now
 	a.userStoreErrMu.Unlock()
-	log.Printf("auth: user store error, refusing session principal %q (fail closed): %v", principalID, err)
+	logging.Warnf("auth: user store error, refusing session principal %q (fail closed): %v", principalID, err)
 	emitAuditEvent(r, a.auditProvider, principalID, "authz.userstore_error", "auth", "userstore", AuditOutcomeDenied)
 }
 
@@ -259,6 +260,12 @@ func (a *Authenticator) Refresh(refreshToken string, now time.Time) (string, int
 	}
 	a.refreshMu.Unlock()
 	if !ok || !now.Before(session.ExpiresAt) {
+		return "", 0, "", 0, errInvalidRefreshToken
+	}
+	// Idle timeout: every issue (login or rotation) stamps ExpiresAt = issue +
+	// refreshTTL, so the issue time is recoverable; a token unused for longer
+	// than idleTimeout is dead even though its absolute expiry is far off.
+	if a.config.idleTimeout > 0 && now.Sub(session.ExpiresAt.Add(-a.config.refreshTTL)) > a.config.idleTimeout {
 		return "", 0, "", 0, errInvalidRefreshToken
 	}
 
@@ -384,7 +391,7 @@ func (a *Authenticator) CreateAPIKey(name string, principalID string, role strin
 // through the free-text principal id.
 func (a *Authenticator) CreateAPIKeyAs(createdBy, name string, principalID string, role string, scopes []string, expiresAt string, tenant string, now time.Time) (apiKeyRecord, string, error) {
 	if strings.TrimSpace(a.config.apiKeyPepper) == "" {
-		return apiKeyRecord{}, "", fmt.Errorf("api key auth unavailable")
+		return apiKeyRecord{}, "", errAPIKeyMintingOff
 	}
 	if strings.TrimSpace(principalID) == "" {
 		return apiKeyRecord{}, "", fmt.Errorf("invalid api key principal")
@@ -434,7 +441,7 @@ func (a *Authenticator) CreateAPIKeyAs(createdBy, name string, principalID strin
 		err := store.Insert(ctx, record)
 		cancel()
 		if err != nil {
-			log.Printf("error: persist minted api key %s: %v", kid, err)
+			logging.Errorf("persist minted api key %s: %v", kid, err)
 			return apiKeyRecord{}, "", errAPIKeyPersist
 		}
 	}
@@ -493,7 +500,7 @@ func (a *Authenticator) RevokeAPIKey(kid string) (found bool, persistErr error) 
 		}
 	}
 	if err != nil {
-		log.Printf("error: persist api key revocation %s (rejected in-process, not durable; retry the delete): %v", trimmed, err)
+		logging.Errorf("persist api key revocation %s (rejected in-process, not durable; retry the delete): %v", trimmed, err)
 		return true, err
 	}
 	a.apiKeyMu.Lock()

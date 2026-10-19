@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -140,5 +141,201 @@ func TestUnknownScanTypeRefusedBeforeInsert(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("refused scan must not leave a row, found %d", count)
+	}
+}
+
+// W24-17: scope fan-out.
+
+type scopeFake struct {
+	certs []cloudinventory.CloudCertificate
+	err   error
+}
+
+func (f scopeFake) ListCertificates(context.Context) ([]cloudinventory.CloudCertificate, error) {
+	return f.certs, f.err
+}
+
+func awsTestScope(region string) cloudinventory.Scope {
+	return cloudinventory.Scope{Provider: cloudinventory.ProviderAWSACM, Profile: "prod", Region: region}
+}
+
+// overrideCloudScopes injects scopes and per-region fakes and returns the
+// completion channel. A scan of the legacy factory fails the test.
+func overrideCloudScopes(t *testing.T, scopes []cloudinventory.Scope, fakes map[string]scopeFake) <-chan struct{} {
+	t.Helper()
+	done := make(chan struct{})
+	origLoad, origScope, origAfter := loadCloudScopes, newCloudScopeConnector, afterDiscoveryScanPersist
+	loadCloudScopes = func(context.Context) ([]cloudinventory.Scope, error) { return scopes, nil }
+	newCloudScopeConnector = func(_ context.Context, s cloudinventory.Scope) (cloudConnector, error) {
+		f, ok := fakes[s.Region]
+		if !ok {
+			return nil, errors.New("no credentials")
+		}
+		return f, nil
+	}
+	afterDiscoveryScanPersist = func(string) { close(done) }
+	t.Cleanup(func() {
+		loadCloudScopes, newCloudScopeConnector, afterDiscoveryScanPersist = origLoad, origScope, origAfter
+	})
+	return done
+}
+
+func runCloudACMScan(t *testing.T, done <-chan struct{}) (status, errMsg string, sum cloudScanSummary) {
+	t.Helper()
+	db := setupDiscoveryTestDB(t)
+	store := &sqliteDiscoveryStore{db: db}
+	result, err := store.CreateScan(context.Background(), "cloud_acm", "", nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	waitForScan(t, done)
+	var summary, em *string
+	if err := db.QueryRow("SELECT status, results_summary, error_message FROM scan_jobs WHERE id = ?", result.ID).Scan(&status, &summary, &em); err != nil {
+		t.Fatal(err)
+	}
+	if em != nil {
+		errMsg = *em
+	}
+	if summary != nil && *summary != "" {
+		if err := json.Unmarshal([]byte(*summary), &sum); err != nil {
+			t.Fatalf("summary: %v", err)
+		}
+	}
+	return status, errMsg, sum
+}
+
+func fakeACMCerts(region string, n int) []cloudinventory.CloudCertificate {
+	out := make([]cloudinventory.CloudCertificate, n)
+	for i := range out {
+		out[i] = cloudinventory.CloudCertificate{Provider: "aws-acm", Region: region, ResourceID: fmt.Sprintf("arn:%s:%d", region, i)}
+	}
+	return out
+}
+
+func TestCloudScanFanOutOneScopeFails(t *testing.T) {
+	done := overrideCloudScopes(t, []cloudinventory.Scope{awsTestScope("us-east-1"), awsTestScope("eu-west-1")}, map[string]scopeFake{
+		"us-east-1": {certs: fakeACMCerts("us-east-1", 2)},
+		"eu-west-1": {err: errors.New("list certificates: AccessDenied")},
+	})
+	status, errMsg, sum := runCloudACMScan(t, done)
+	if status != scanStatusCompletedWithErrors {
+		t.Fatalf("status %q", status)
+	}
+	if !strings.Contains(errMsg, "1 of 2 scopes failed: aws-acm/prod/eu-west-1: list certificates: AccessDenied") {
+		t.Fatalf("error_message %q", errMsg)
+	}
+	if sum.Certificates != 2 || len(sum.Items) != 2 || len(sum.Scopes) != 2 || sum.Scopes[1].Error == "" || sum.Scopes[0].Error != "" {
+		t.Fatalf("summary %+v", sum)
+	}
+}
+
+func TestCloudScanAllScopesFail(t *testing.T) {
+	done := overrideCloudScopes(t, []cloudinventory.Scope{awsTestScope("a"), awsTestScope("b")}, map[string]scopeFake{
+		"a": {err: errors.New("boom")},
+	})
+	status, errMsg, _ := runCloudACMScan(t, done)
+	if status != "failed" || !strings.Contains(errMsg, "2 of 2 scopes failed") || !strings.Contains(errMsg, "aws-acm/prod/b: connector init: no credentials") {
+		t.Fatalf("status %q msg %q", status, errMsg)
+	}
+}
+
+func TestCloudScanRerunNoDuplicates(t *testing.T) {
+	scopes := []cloudinventory.Scope{awsTestScope("us-east-1"), awsTestScope("eu-west-1")}
+	fakes := map[string]scopeFake{
+		"us-east-1": {certs: append(fakeACMCerts("us-east-1", 3), fakeACMCerts("us-east-1", 1)...)}, // provider repeats an id
+		"eu-west-1": {certs: fakeACMCerts("eu-west-1", 2)},
+	}
+	var counts [2]int
+	for i := range counts {
+		done := overrideCloudScopes(t, scopes, fakes)
+		_, _, sum := runCloudACMScan(t, done)
+		seen := map[string]bool{}
+		for _, it := range sum.Items {
+			k := it.Scope + "|" + it.ResourceID
+			if seen[k] {
+				t.Fatalf("duplicate %s", k)
+			}
+			seen[k] = true
+		}
+		counts[i] = sum.Certificates
+	}
+	if counts[0] != 5 || counts[1] != 5 {
+		t.Fatalf("counts %v, want 5 and 5", counts)
+	}
+}
+
+func TestCloudScanNoScopesUsesLegacyConnector(t *testing.T) {
+	origLoad := loadCloudScopes
+	loadCloudScopes = func(context.Context) ([]cloudinventory.Scope, error) {
+		// A scope for another provider must not divert an ACM scan.
+		return []cloudinventory.Scope{{Provider: cloudinventory.ProviderGCPCertManager, ProjectID: "p"}}, nil
+	}
+	t.Cleanup(func() { loadCloudScopes = origLoad })
+	done := overrideCloudConnector(t, &fakeCloudConnector{certs: fakeACMCerts("us-east-1", 2)}, "cloud_acm")
+	status, _, sum := runCloudACMScan(t, done)
+	if status != "completed" || sum.Certificates != 2 || len(sum.Scopes) != 0 {
+		t.Fatalf("status %q summary %+v", status, sum)
+	}
+}
+
+func TestCloudScanScopeConfigErrorFails(t *testing.T) {
+	origLoad := loadCloudScopes
+	loadCloudScopes = func(context.Context) ([]cloudinventory.Scope, error) { return nil, errors.New("bad") }
+	t.Cleanup(func() { loadCloudScopes = origLoad })
+	done := overrideCloudConnector(t, &fakeCloudConnector{}, "cloud_acm")
+	status, errMsg, _ := runCloudACMScan(t, done)
+	if status != "failed" || errMsg != "scope config: bad" {
+		t.Fatalf("status %q msg %q", status, errMsg)
+	}
+}
+
+func TestParseCloudScopes(t *testing.T) {
+	good := `[{"provider":"aws-acm","profile":"prod","region":"us-east-1"},{"provider":"azure-keyvault","vault_url":"https://a.vault.azure.net"},{"provider":"gcp-certmanager","project_id":"p1"}]`
+	if s, err := parseCloudScopes(good); err != nil || len(s) != 3 {
+		t.Fatalf("%v %v", s, err)
+	}
+	if s, err := parseCloudScopes(" "); err != nil || s != nil {
+		t.Fatalf("empty: %v %v", s, err)
+	}
+	for _, bad := range []string{`nope`, `[{"provider":"aws-acm"}]`, `[{"provider":"x"}]`} {
+		if _, err := parseCloudScopes(bad); err == nil {
+			t.Fatalf("expected error for %s", bad)
+		}
+	}
+}
+
+func fanOutScopes() ([]cloudinventory.Scope, map[string]scopeFake) {
+	regions := []string{"us-east-1", "eu-west-1", "ap-south-1"}
+	var scopes []cloudinventory.Scope
+	fakes := map[string]scopeFake{}
+	for _, r := range regions {
+		scopes = append(scopes, awsTestScope(r))
+		fakes[r] = scopeFake{certs: fakeACMCerts(r, 500)}
+	}
+	return scopes, fakes
+}
+
+func TestCloudScan500PerScope(t *testing.T) {
+	scopes, fakes := fanOutScopes()
+	done := overrideCloudScopes(t, scopes, fakes)
+	start := time.Now()
+	_, _, sum := runCloudACMScan(t, done)
+	if sum.Certificates != 1500 || len(sum.Items) != cloudScanMaxItems {
+		t.Fatalf("certificates %d items %d", sum.Certificates, len(sum.Items))
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("1500 certs took %s", d)
+	}
+}
+
+func BenchmarkCloudScan500(b *testing.B) {
+	scopes, fakes := fanOutScopes()
+	origLoad, origScope := loadCloudScopes, newCloudScopeConnector
+	loadCloudScopes = func(context.Context) ([]cloudinventory.Scope, error) { return scopes, nil }
+	newCloudScopeConnector = func(_ context.Context, s cloudinventory.Scope) (cloudConnector, error) { return fakes[s.Region], nil }
+	b.Cleanup(func() { loadCloudScopes, newCloudScopeConnector = origLoad, origScope })
+	noop := func(string, string, string) {}
+	for i := 0; i < b.N; i++ {
+		runCloudScopeFanOut(context.Background(), noop, "bench", scanTypeCloudACM, scopes)
 	}
 }

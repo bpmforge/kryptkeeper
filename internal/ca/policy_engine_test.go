@@ -247,3 +247,152 @@ func TestPolicyFailsClosedWhenTableUnreadable(t *testing.T) {
 		t.Fatalf("fail-closed refusal expected, got: %v", err)
 	}
 }
+
+func TestEvaluateReturnsAllViolations(t *testing.T) {
+	_, pe, caObj := newPolicyTestEngine(t)
+	if _, err := pe.UpsertPolicy(IssuancePolicy{
+		Name: "strict", Enabled: true,
+		Rules: PolicyRules{AllowedAlgorithms: []string{"ECDSA-P256"}, MinRSABits: 3072, MaxValidityDays: 30},
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	v, err := pe.Evaluate(caObj.ID, PolicyInput{Algorithm: "RSA-2048", RSABits: 2048, Validity: 90 * 24 * time.Hour, IsCA: true})
+	if err != nil {
+		t.Fatalf("evaluate: %v", err)
+	}
+	if v.Allowed || len(v.Violations) != 4 {
+		t.Fatalf("want 4 violations (all rules), got allowed=%v n=%d", v.Allowed, len(v.Violations))
+	}
+	if len(v.Evaluated) != 1 || v.Evaluated[0] != "strict" {
+		t.Fatalf("evaluated = %v", v.Evaluated)
+	}
+	for _, viol := range v.Violations {
+		if viol.PolicyID == "" || viol.Observed == "" {
+			t.Fatalf("violation missing PolicyID/Observed: %+v", viol)
+		}
+	}
+	ok, err := pe.Evaluate(caObj.ID, PolicyInput{Algorithm: "ECDSA-P256", Validity: 24 * time.Hour})
+	if err != nil || !ok.Allowed {
+		t.Fatalf("compliant input must be allowed: %+v %v", ok, err)
+	}
+}
+
+func TestViolationIsErrPolicyViolation(t *testing.T) {
+	var err error = &PolicyViolationError{Policy: "p", Rule: "r", Detail: "d"}
+	if !errors.Is(err, ErrPolicyViolation) {
+		t.Fatal("PolicyViolationError must match ErrPolicyViolation")
+	}
+	if errors.Is(err, ErrInvalidCSR) {
+		t.Fatal("must not match unrelated sentinels")
+	}
+}
+
+func TestViolationHookFires(t *testing.T) {
+	engine, pe, caObj := newPolicyTestEngine(t)
+	if _, err := pe.UpsertPolicy(IssuancePolicy{Name: "p", Enabled: true, Rules: PolicyRules{MaxValidityDays: 1}}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	var calls int
+	var gotCA, gotRule string
+	pe.SetViolationHook(func(caID string, v *PolicyViolationError) { calls++; gotCA, gotRule = caID, v.Rule })
+	if err := issuePolicyTest(engine, caObj.ID, ecdsaCSR(t), 48*time.Hour, false); err == nil {
+		t.Fatal("must be refused")
+	}
+	if calls != 1 || gotCA != caObj.ID || gotRule != "max_validity_days" {
+		t.Fatalf("hook calls=%d ca=%q rule=%q", calls, gotCA, gotRule)
+	}
+	if err := issuePolicyTest(engine, caObj.ID, ecdsaCSR(t), 12*time.Hour, false); err != nil {
+		t.Fatalf("compliant: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("hook must not fire on success, calls=%d", calls)
+	}
+}
+
+func TestGetPolicy(t *testing.T) {
+	_, pe, _ := newPolicyTestEngine(t)
+	pol, err := pe.UpsertPolicy(IssuancePolicy{Name: "g", Enabled: true, Rules: PolicyRules{MinRSABits: 4096}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := pe.GetPolicy(pol.ID)
+	if err != nil || !ok || got.Name != "g" || got.Rules.MinRSABits != 4096 {
+		t.Fatalf("get: %+v %v %v", got, ok, err)
+	}
+	if _, ok, err := pe.GetPolicy("nope"); ok || err != nil {
+		t.Fatalf("missing: ok=%v err=%v", ok, err)
+	}
+}
+
+// B2 (ADCS cutover rehearsal): the RSA floor migrated templates are raised to.
+func TestRSAFloorIsStrictestEnabledPolicy(t *testing.T) {
+	_, pe, _ := newPolicyTestEngine(t)
+	if bits, name, err := pe.RSAFloor(); err != nil || bits != 0 || name != "" {
+		t.Fatalf("no policies: %d %q %v", bits, name, err)
+	}
+	for _, pol := range []IssuancePolicy{
+		{Name: "Baseline", Enabled: true, Rules: PolicyRules{AllowedAlgorithms: []string{"ECDSA-P256", "RSA-3072", "RSA-4096"}, MinRSABits: 3072}},
+		{Name: "AllowList", Enabled: true, Rules: PolicyRules{AllowedAlgorithms: []string{"RSA-2048", "RSA-4096"}}},
+		{Name: "EcOnly", Enabled: true, Rules: PolicyRules{AllowedAlgorithms: []string{"ECDSA-P384"}}},
+		{Name: "Disabled", Enabled: false, Rules: PolicyRules{MinRSABits: 8192}},
+	} {
+		if _, err := pe.UpsertPolicy(pol); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bits, name, err := pe.RSAFloor()
+	if err != nil || bits != 3072 || name != "Baseline" {
+		t.Fatalf("floor: %d %q %v", bits, name, err)
+	}
+	if _, err := pe.UpsertPolicy(IssuancePolicy{Name: "Strict", Enabled: true, CAID: "ca-x", Rules: PolicyRules{AllowedAlgorithms: []string{"RSA-4096"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if bits, name, _ := pe.RSAFloor(); bits != 4096 || name != "Strict" {
+		t.Fatalf("CA-scoped allow-list floor: %d %q", bits, name)
+	}
+}
+
+func TestAcceptedRSABits(t *testing.T) {
+	_, pe, caObj := newPolicyTestEngine(t)
+	upsert := func(rules PolicyRules) {
+		t.Helper()
+		if _, err := pe.UpsertPolicy(IssuancePolicy{ID: "p1", Name: "Baseline", Enabled: true, Rules: rules}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	probe := func(atLeast int, tmplAlgos []string) (int, bool, string) {
+		t.Helper()
+		bits, ok, reason, err := pe.AcceptedRSABits(caObj.ID, atLeast, tmplAlgos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return bits, ok, reason
+	}
+
+	if bits, ok, _ := probe(2048, nil); !ok || bits != 2048 {
+		t.Fatalf("no policy: got %d %v, want 2048", bits, ok)
+	}
+	upsert(PolicyRules{MinRSABits: 3072})
+	if bits, ok, _ := probe(2048, nil); !ok || bits != 3072 {
+		t.Fatalf("min_rsa_bits 3072: got %d %v", bits, ok)
+	}
+	if bits, ok, _ := probe(4096, nil); !ok || bits != 4096 {
+		t.Fatalf("template 4096: got %d %v", bits, ok)
+	}
+	// Templates usually list bare families (the lab's KKMachine is
+	// ["RSA","ECDSA"]); a family entry admits every RSA size.
+	if bits, ok, reason := probe(2048, []string{"RSA", "ECDSA"}); !ok || bits != 3072 {
+		t.Fatalf("family allow-list under min_rsa_bits 3072: got %d %v %q", bits, ok, reason)
+	}
+	upsert(PolicyRules{AllowedAlgorithms: []string{"ECDSA-P256", "RSA-4096"}})
+	if bits, ok, _ := probe(2048, nil); !ok || bits != 4096 {
+		t.Fatalf("allow-list RSA-4096 only: got %d %v", bits, ok)
+	}
+	if _, ok, reason := probe(2048, []string{"RSA-2048", "RSA-3072"}); ok || reason == "" {
+		t.Fatalf("template and policy disjoint must refuse with a reason, got ok=%v reason=%q", ok, reason)
+	}
+	upsert(PolicyRules{AllowedAlgorithms: []string{"ECDSA-P256"}})
+	if _, ok, reason := probe(2048, nil); ok || !strings.Contains(reason, "allowed_algorithms") {
+		t.Fatalf("ECDSA-only policy must refuse RSA citing the rule, got ok=%v reason=%q", ok, reason)
+	}
+}

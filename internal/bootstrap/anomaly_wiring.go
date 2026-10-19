@@ -8,7 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -34,6 +35,10 @@ type AnomalyScheduler struct {
 	target       string
 	pollInterval time.Duration
 
+	// audit joins issuance events to their requester (W30-07); nil leaves
+	// RequestedBy empty.
+	audit AuditProvider
+
 	// nil when unavailable (soft-fail) — single-replica behavior.
 	haCoordinator *HACoordinator
 
@@ -42,6 +47,9 @@ type AnomalyScheduler struct {
 	scannedAt time.Time
 	// previous tick's finding keys — only NEW findings page.
 	seen map[string]bool
+	// requester -> fingerprints issued in the last hour, from the latest tick
+	// (W30-08 revoke_batch proposals).
+	fingerprintsByRequester map[string][]string
 
 	stop chan struct{}
 	once sync.Once
@@ -86,14 +94,64 @@ func (s *AnomalyScheduler) Start() {
 
 func (s *AnomalyScheduler) Stop() { s.once.Do(func() { close(s.stop) }) }
 
-// issuanceEvents derives detector input from the inventory. ValidFrom
-// is the issuance instant; RequestedBy maps from TeamID — the closest
-// requester-shaped field the inventory carries today (when a real
-// requester field lands on CertificateItem this tightens without
-// touching the detector).
+// WithAuditProvider enables requester attribution (nil allowed).
+func (s *AnomalyScheduler) WithAuditProvider(a AuditProvider) *AnomalyScheduler {
+	s.audit = a
+	return s
+}
+
+const (
+	issuerPageSize = 500
+	issuerMaxPages = 200
+)
+
+// issuerByFingerprint maps certificate fingerprint to the principal that
+// issued it, from successful certificate.issue audit rows since `since`.
+// System actors (anonymous/bootstrap) are not requesters.
+func (s *AnomalyScheduler) issuerByFingerprint(ctx context.Context, since time.Time) (map[string]string, error) {
+	issuers := map[string]string{}
+	if s.audit == nil {
+		return issuers, nil
+	}
+	after := since.UTC().Format(time.RFC3339)
+	for page := 0; page < issuerMaxPages; page++ {
+		res, err := s.audit.ListEntries(ctx, AuditListQuery{
+			Action:  "certificate.issue",
+			Outcome: AuditOutcomeSuccess,
+			After:   after,
+			Limit:   issuerPageSize,
+			Offset:  page * issuerPageSize,
+			Order:   "asc",
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range res.Entries {
+			if e.ActorType == "system" || e.ResourceID == "" {
+				continue
+			}
+			issuers[e.ResourceID] = e.ActorID
+		}
+		if len(res.Entries) < issuerPageSize {
+			return issuers, nil
+		}
+	}
+	slog.Warn("anomaly scheduler: issuer join hit the page cap; older issuances unattributed", "max_rows", issuerPageSize*issuerMaxPages)
+	return issuers, nil
+}
+
+// issuanceEvents derives detector input from the inventory. ValidFrom is
+// the issuance instant. RequestedBy is the authenticated principal from
+// the certificate.issue audit row (W30-07), empty when none exists or the
+// audit read fails — never the owning team.
 func (s *AnomalyScheduler) issuanceEvents(ctx context.Context) ([]IssuanceEvent, error) {
+	issuers, err := s.issuerByFingerprint(ctx, time.Now().Add(-30*24*time.Hour))
+	if err != nil {
+		slog.Warn("anomaly scheduler: requester attribution unavailable; requester_burst degraded", "error", err.Error())
+		issuers = nil
+	}
 	var events []IssuanceEvent
-	err := ForEachCertificate(ctx, s.certProvider, CertificateListQuery{}, func(item CertificateItem) error {
+	err = ForEachCertificate(ctx, s.certProvider, CertificateListQuery{}, func(item CertificateItem) error {
 		issued, err := time.Parse(time.RFC3339, item.ValidFrom)
 		if err != nil {
 			return nil
@@ -101,7 +159,8 @@ func (s *AnomalyScheduler) issuanceEvents(ctx context.Context) ([]IssuanceEvent,
 		events = append(events, IssuanceEvent{
 			Subject:     item.CommonName,
 			CAID:        item.CAID,
-			RequestedBy: item.TeamID,
+			RequestedBy: issuers[item.FingerprintSHA256],
+			Fingerprint: item.FingerprintSHA256,
 			IssuedAt:    issued,
 		})
 		return nil
@@ -126,7 +185,7 @@ func (s *AnomalyScheduler) tick(ctx context.Context, now time.Time) {
 	if s.haCoordinator != nil {
 		ok, err := s.haCoordinator.TryAcquire(ctx, haLockAnomalyScheduler, 2*s.pollInterval)
 		if err != nil {
-			log.Printf("anomaly scheduler: ha lock check failed, skipping this tick: %v", err)
+			logging.Warnf("anomaly scheduler: ha lock check failed, skipping this tick: %v", err)
 			return
 		}
 		if !ok {
@@ -136,7 +195,7 @@ func (s *AnomalyScheduler) tick(ctx context.Context, now time.Time) {
 
 	events, err := s.issuanceEvents(ctx)
 	if err != nil {
-		log.Printf("anomaly scheduler: inventory sweep failed: %v", err)
+		logging.Warnf("anomaly scheduler: inventory sweep failed: %v", err)
 		return
 	}
 	findings := s.detector.Scan(events, now)
@@ -154,6 +213,7 @@ func (s *AnomalyScheduler) tick(ctx context.Context, now time.Time) {
 	s.seen = current
 	s.latest = findings
 	s.scannedAt = now
+	s.fingerprintsByRequester = recentFingerprintsByRequester(events, now)
 	s.mu.Unlock()
 
 	if s.channel == nil {
@@ -170,7 +230,7 @@ func (s *AnomalyScheduler) tick(ctx context.Context, now time.Time) {
 			CreatedAt: now,
 		}
 		if err := s.channel.Send(ctx, ev); err != nil {
-			log.Printf("anomaly scheduler: notify failed for %s: %v", anomalyKey(f), err)
+			slog.Error("anomaly scheduler: notify failed", "finding", anomalyKey(f), "err", delivery.RedactURLs(err.Error()))
 		}
 	}
 }

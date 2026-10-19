@@ -626,6 +626,24 @@ func TestACMENewAccountMissingJWSRejected(t *testing.T) {
 // instead of hand-rolling a shorter, less representative one.
 func runACMEFullOrderFlow(t *testing.T, ts *httptest.Server) (finalOrder Order, certPEM []byte, cert *x509.Certificate) {
 	t.Helper()
+	finalizeStatus, finalOrder, _, challengeHost, _ := runACMEOrderToFinalize(t, ts)
+	if finalizeStatus != http.StatusOK {
+		t.Fatalf("expected 200 from finalize, got %d", finalizeStatus)
+	}
+	if finalOrder.Status != "valid" {
+		t.Fatalf("expected valid order after finalize, got %s", finalOrder.Status)
+	}
+	if finalOrder.Certificate == "" {
+		t.Fatal("expected certificate URL")
+	}
+	return finishACMEFullOrderFlow(t, finalOrder, challengeHost)
+}
+
+// runACMEOrderToFinalize drives account, order, HTTP-01 validation and the
+// finalize POST, and returns the finalize response without judging it, so a
+// test can assert on a refused finalize as well as a successful one.
+func runACMEOrderToFinalize(t *testing.T, ts *httptest.Server) (finalizeStatus int, finalOrder Order, finalizeBody []byte, challengeHost, orderURL string) {
+	t.Helper()
 
 	// 1. Create account.
 	client := newACMEAccount(t, ts)
@@ -633,7 +651,7 @@ func runACMEFullOrderFlow(t *testing.T, ts *httptest.Server) (finalOrder Order, 
 	// Stand up a local HTTP server that serves the expected KeyAuthorization
 	// for any ACME challenge token (RFC 8555 §8.3: token+"."+thumbprint),
 	// now that HTTP-01 validation checks the full value, not just a prefix.
-	challengeHost := startChallengeHost(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	challengeHost = startChallengeHost(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
 		token := parts[len(parts)-1]
 		w.WriteHeader(http.StatusOK)
@@ -707,7 +725,7 @@ func runACMEFullOrderFlow(t *testing.T, ts *httptest.Server) (finalOrder Order, 
 	}
 
 	// 6. Check order is now ready.
-	orderURL := orderResp.Header.Get("Location")
+	orderURL = orderResp.Header.Get("Location")
 	readyResp, _ := http.Get(orderURL)
 	var readyOrder Order
 	json.NewDecoder(readyResp.Body).Decode(&readyOrder)
@@ -728,23 +746,18 @@ func runACMEFullOrderFlow(t *testing.T, ts *httptest.Server) (finalOrder Order, 
 
 	finalizePayload, _ := json.Marshal(map[string]any{"csr": csrB64})
 	finalizeResp := client.postJWS(t, ts, readyOrder.Finalize, finalizePayload)
-	json.NewDecoder(finalizeResp.Body).Decode(&finalOrder)
-	finalizeStatus := finalizeResp.StatusCode
+	finalizeBody, _ = io.ReadAll(finalizeResp.Body)
+	_ = json.Unmarshal(finalizeBody, &finalOrder)
+	finalizeStatus = finalizeResp.StatusCode
 	finalizeResp.Body.Close()
+	return finalizeStatus, finalOrder, finalizeBody, challengeHost, orderURL
+}
 
-	if finalizeStatus != http.StatusOK {
-		t.Fatalf("expected 200 from finalize, got %d", finalizeStatus)
-	}
-	if finalOrder.Status != "valid" {
-		t.Fatalf("expected valid order after finalize, got %s", finalOrder.Status)
-	}
-	if finalOrder.Certificate == "" {
-		t.Fatal("expected certificate URL")
-	}
-
+func finishACMEFullOrderFlow(t *testing.T, finalOrder Order, challengeHost string) (Order, []byte, *x509.Certificate) {
+	t.Helper()
 	// 8. Download certificate.
 	certResp, _ := http.Get(finalOrder.Certificate)
-	certPEM, _ = io.ReadAll(certResp.Body)
+	certPEM, _ := io.ReadAll(certResp.Body)
 	certResp.Body.Close()
 
 	if certResp.StatusCode != http.StatusOK {
@@ -759,8 +772,7 @@ func runACMEFullOrderFlow(t *testing.T, ts *httptest.Server) (finalOrder Order, 
 	if block == nil {
 		t.Fatal("failed to decode PEM")
 	}
-	var err error
-	cert, err = x509.ParseCertificate(block)
+	cert, err := x509.ParseCertificate(block)
 	if err != nil {
 		t.Fatalf("parse cert: %v", err)
 	}
@@ -2563,4 +2575,44 @@ func decodePEM(data []byte) ([]byte, error) {
 	b64 := strings.TrimSpace(s[start+len("-----BEGIN CERTIFICATE-----") : end])
 	b64 = strings.ReplaceAll(b64, "\n", "")
 	return base64.StdEncoding.DecodeString(b64)
+}
+
+// W23-35: finalize through a revoked CA is refused with a 403, the order goes
+// invalid, and nothing is recorded.
+func TestACMEFinalizeRefusedWhenCARevoked(t *testing.T) {
+	keys, err := keystore.NewSoftwareStore(t.TempDir(), []byte("acme-test-passphrase-32chars-ok!"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := ca.NewEngine(keys, ca.NewMemStore())
+	rootCA, err := engine.CreateRootCA("ACME Test Root", pkix.Name{CommonName: "ACME Test Root CA"}, keystore.ECDSAP256, 10*365*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := &fakeIssuedRecorder{}
+	ts := httptest.NewServer(nil)
+	defer ts.Close()
+	srv := NewServerWithStore(ts.URL, engine, rootCA.ID, NewMemStore(), ca.NewMemRevocationStore()).WithIssuedRecorder(recorder)
+	srv.SetHTTP01DialContext(testHTTP01Dial)
+	ts.Config.Handler = srv.Handler()
+
+	if err := engine.UpdateCAStatus(rootCA.ID, "revoked"); err != nil {
+		t.Fatal(err)
+	}
+	status, _, body, _, orderURL := runACMEOrderToFinalize(t, ts)
+	if status != http.StatusForbidden || !strings.Contains(string(body), "urn:ietf:params:acme:error:unauthorized") {
+		t.Fatalf("want 403 unauthorized, got %d: %s", status, body)
+	}
+	resp, _ := http.Get(orderURL)
+	var o Order
+	_ = json.NewDecoder(resp.Body).Decode(&o)
+	resp.Body.Close()
+	if o.Status != "invalid" {
+		t.Fatalf("order status = %q, want invalid", o.Status)
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if recorder.calls != 0 {
+		t.Fatalf("a certificate was recorded through a revoked CA: %d", recorder.calls)
+	}
 }

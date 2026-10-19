@@ -53,10 +53,28 @@ jobs:
           cache-dependency-path: terraform-provider-kryptkeeper/go.sum
       - run: go test ./...
 
+  # W32-04: real apply/plan/destroy round-trip of the provider binary against a
+  # hub built from this checkout (tests/live/terraform/run.sh starts it natively).
+  acceptance:
+    name: Acceptance (live hub)
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: terraform-provider-kryptkeeper/go.mod
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.9.8
+          terraform_wrapper: false
+      - run: bash tests/live/terraform/run.sh
+
   build:
     name: Build provider binaries
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, acceptance]
     defaults:
       run:
         working-directory: terraform-provider-kryptkeeper

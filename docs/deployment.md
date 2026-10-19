@@ -17,6 +17,13 @@ the **Terraform provider** are also fully CGO-free.
 
 ---
 
+## Reference architectures and data residency
+
+Three reference topologies (single node, HA active/active, active/passive DR) with sizing and
+RPO/RTO are in [ops/REFERENCE_ARCHITECTURES.md](ops/REFERENCE_ARCHITECTURES.md). Every outbound
+connection the product can make, by feature and with its default, is in
+[ops/DATA_RESIDENCY.md](ops/DATA_RESIDENCY.md).
+
 ## Docker Compose (quickstart / small teams)
 
 ### Prerequisites
@@ -86,6 +93,9 @@ Copy `.env.example` to `.env` and set at minimum:
 | `APP_BOOTSTRAP_TOKEN` | **Yes** | — | Initial admin token |
 | `POSTGRES_PASSWORD` | No | `changeme` | PostgreSQL password; only used with the opt-in `postgres` profile |
 | `KRYPTKEEPER_DB_MODE` | No | `sqlite` | `sqlite` or `postgres` |
+| `KRYPTKEEPER_DB_MAX_OPEN_CONNS` | No | `3` | PostgreSQL only. Max open connections per store pool. See [PostgreSQL connection budget](#postgresql-connection-budget). Invalid values log a warning and use the default |
+| `KRYPTKEEPER_DB_MAX_IDLE_CONNS` | No | `1` | PostgreSQL only. Idle connections kept per store pool (must be <= max open); idle connections close after 60 s |
+| `KRYPTKEEPER_READINESS_DRAIN_SECONDS` | No | `0` (image and Helm chart: `5`) | Seconds between SIGTERM/SIGINT and closing the listener. During the window `/readyz` returns 503 (`{"status":"unready","error":"shutting down"}`) while requests are still served and `/healthz` stays 200, so Service endpoint removal can propagate. Range 0-120, `0` = close immediately; invalid values use the default. Set the orchestrator stop timeout above drain + 10 s (chart: `terminationGracePeriodSeconds`, default 40). Not the same as `KRYPTKEEPER_SHUTDOWN_DRAIN`: that one is how long the renewal scheduler waits for in-flight scans after stop; this one is the not-ready window before the listener closes |
 | `KRYPTKEEPER_BASE_URL` | No | — | Public URL (for SCEP admin URL generation) |
 
 ### Notification provider
@@ -159,6 +169,18 @@ then `KRYPTKEEPER_DATA_DIR/kryptkeeper.db` for SQLite), with the same driver
 (`KRYPTKEEPER_DB_MODE`). A PostgreSQL hub never audits into a local SQLite
 file; with no DSN it fails to start. Set `APP_AUDIT_DB_DSN` only to put the
 audit trail in a different database.
+
+### PostgreSQL connection budget
+
+Each store type opens its own pool (about 40 per hub, measured at 40 idle
+connections after startup; constructors of the same store share one pool), so
+connections scale as `replicas x 40 x KRYPTKEEPER_DB_MAX_OPEN_CONNS`. Steady state is much lower
+(idle pools hold at most `KRYPTKEEPER_DB_MAX_IDLE_CONNS` = 1 each, released
+after 60 s idle): 2 replicas hold about 80 connections, leaving headroom under
+the default `max_connections=100` for migrations and admin. If the server runs
+out of connections, stores fail to open and some fall back to in-memory
+state, so raise `max_connections` (or lower these knobs) before adding
+replicas. The effective settings are logged once at startup.
 
 ### SQLite vs PostgreSQL
 
@@ -424,6 +446,90 @@ spec:
     kind: KryptKeeperIssuer
     group: certmanager.kryptkeeper.io
 ```
+
+---
+
+## Upgrade and rollback
+
+A rollback is a schema operation plus a binary swap. The hub never rolls a database back on its own.
+
+### Before you upgrade: the backup precondition
+
+Take a backup first. It is the only way back from a rollback that goes wrong, and the CLI will not roll back without one.
+
+- Postgres: `scripts/deploy/backup.sh <dir>` (see [DR_RUNBOOK.md](ops/DR_RUNBOOK.md), "Backup schedule" and "Restore procedure").
+- SQLite: the same script with `KRYPTKEEPER_DB_MODE=sqlite` (SQLite-mode procedure in [DR_RUNBOOK.md](ops/DR_RUNBOOK.md)).
+
+Keep the artifact name the script prints, for example `db-20261016T002938Z`. That string is the `--backup-id` you pass later. Automatic pre-upgrade snapshots are not built: the backup is an operator step, and the CLI only records the id you give it; it does not look for the file.
+
+### The hub refuses a newer database
+
+A binary older than the database exits non-zero at start, within seconds, and names both schema versions:
+
+```
+database schema version 000079 is newer than this binary's schema version 000076: refusing to start; run a newer kryptkeeper release, or restore a backup taken before the upgrade (docs/deployment.md, 'Upgrade and rollback')
+```
+
+Either run the newer release again, or roll the schema back as below. Do not edit `schema_migrations` by hand.
+
+### Check state
+
+```bash
+kryptkeeper migrate status
+```
+
+Four lines: `engine`, `database schema`, `binary schema`, `state` (`current`, `pending (N to apply)` or `newer (database is ahead of this binary)`). The exit code is 1 only when the database is newer. It only reads, and works with the hub stopped or running.
+
+### Roll back the schema
+
+1. Stop **every** hub replica. The SQLite down migration of 000076 rebuilds `audit_log` and must not race a running hub.
+2. Run the command with the **newer** binary, the one you are rolling back from. Only it embeds the `.down.sql` files for the migrations being undone, and releases before this feature have no `migrate` command at all. Use the same environment (`KRYPTKEEPER_DB_MODE`, DSN or data directory) as the hub:
+
+   ```bash
+   kryptkeeper migrate down --to <version> --backup-id <db-timestamp>
+   ```
+
+   `<version>` is the schema version of the release you are going back to (its `migrate status` or `schema_migrations` value; that version stays applied). Each newer migration's `.down.sql` is applied in descending order. The result is audited as `schema.migrate.down` (outcome `success`, `failure` or `denied`, with the backup id, `from` and `to` in the change summary). The audit write is best effort: rolling back past the migration that creates `audit_log` removes the table, and the command then warns instead of failing.
+3. Start the **older** binary.
+
+The command refuses, exit 1, when:
+
+- `--backup-id` is missing or malformed (letters, digits, `.`, `_`, `:`, `-`, 8 to 128 characters, starting with a letter or digit).
+- Rows exist that only the newer schema can represent. Today that is `audit_log` rows whose outcome was added by migration 000076 (`pending_approval`, `proposed`, `executed`, `skipped`, `partial`, `issuance_failed`) or whose actor type was. The audit log is append-only, so those rows are never deleted or rewritten and the rollback is refused. The refusal is itself audited as `denied`. Migrations 000076 and later can still be rolled back to a version at or above 76.
+- A migration is applied but not embedded in this binary. Use the release that applied it.
+
+`migrate down` destroys data held in tables or columns that the rolled-back migrations created. That is why the backup is mandatory.
+
+### Rollback of the rollback
+
+If the rollback was wrong, restore the backup you took before it. Follow the ordering rule in [DR_RUNBOOK.md](ops/DR_RUNBOOK.md): restore into an empty database before any hub boots against it, then start the newer binary. Never hand-edit `schema_migrations` to get unstuck.
+
+### Kubernetes and Compose
+
+- **Helm.** `helm rollback` reverts manifests, not the database. Scale the hub to 0, run the CLI from a one-off pod using the **newer** image and the same Secret as the hub, then `helm rollback`:
+
+  ```bash
+  kubectl -n kryptkeeper scale deployment/kryptkeeper --replicas=0
+  kubectl -n kryptkeeper run kk-migrate --rm -it --restart=Never --image <newer image> \
+    --overrides '<same env/envFrom as the deployment>' --command -- /kryptkeeper migrate down --to <version> --backup-id <db-timestamp>
+  helm rollback kryptkeeper <revision> -n kryptkeeper
+  ```
+
+- **Compose.** The `kryptkeeper` service has no `entrypoint:` override, so arguments reach the hub binary:
+
+  ```bash
+  docker compose stop kryptkeeper
+  docker compose run --rm kryptkeeper migrate status
+  docker compose run --rm kryptkeeper migrate down --to <version> --backup-id <db-timestamp>
+  ```
+
+  Run `down` from the newer image, then change the image tag back and `docker compose up -d`.
+
+### Who may do this
+
+The CLI's authority is shell access plus the database credentials. There is no `pki-admin` role check on a local command, and `--backup-id` is a label that is recorded, not proof. Control who can run it the way you control access to the database.
+
+A recorded rehearsal (backup, upgrade, rollback, row counts compared) is in [ROLLBACK_REHEARSAL_v0.13.md](release/ROLLBACK_REHEARSAL_v0.13.md).
 
 ---
 

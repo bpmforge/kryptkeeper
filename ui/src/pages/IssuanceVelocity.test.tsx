@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../lib/api", () => ({
   api: {
     issuanceVelocity: vi.fn(),
+    cas: vi.fn(),
+    templates: vi.fn(),
   },
 }));
 
@@ -119,7 +121,7 @@ describe("anomaly threshold visibility (S-64)", () => {
     expect(await screen.findByText(/Anomaly detected/)).toBeInTheDocument();
     // The value comes from the payload (5 here), never a component constant.
     expect(
-      screen.getByText(/minimum sample of 5 certificates/i),
+      screen.getByText(/at least 5 certificates were issued/i),
     ).toBeInTheDocument();
   });
 
@@ -140,5 +142,25 @@ describe("anomaly threshold visibility (S-64)", () => {
       await screen.findByText(/requires a minimum sample of 5/i),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Anomaly detected/)).not.toBeInTheDocument();
+  });
+});
+
+describe("IssuanceVelocity drill-through (W28-21)", () => {
+  it("links each By CA row to the certificate list filtered by that CA id", async () => {
+    vi.mocked(api.cas).mockResolvedValue({
+      data: { items: [{ id: "ca-1", name: "Root One" }] },
+    } as unknown as never);
+    vi.mocked(api.templates).mockResolvedValue({
+      data: { items: [] },
+    } as unknown as never);
+    vi.mocked(api.issuanceVelocity).mockResolvedValue({
+      data: report({ by_ca: { "ca-1": 3, unknown: 1 } }),
+    } as unknown as never);
+
+    renderPage();
+
+    const link = await screen.findByRole("link", { name: "Root One" });
+    expect(link).toHaveAttribute("href", "/certificates?ca_id=ca-1");
+    expect(screen.queryByRole("link", { name: "unknown" })).toBeNull();
   });
 });

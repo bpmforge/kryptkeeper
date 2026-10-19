@@ -23,7 +23,9 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-          cache: true
+          # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
+          # setup-go's cache re-downloaded ~2.7 GB over them on every job.
+          cache: false
       - name: Run protocol + integration suites via harness
         run: bash scripts/test/run.sh --suite protocol --suite integration
 
@@ -37,7 +39,9 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-          cache: true
+          # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
+          # setup-go's cache re-downloaded ~2.7 GB over them on every job.
+          cache: false
       - name: Run smoke suite via harness (auth matrix)
         env:
           KRYPTKEEPER_SMOKE_MODE: local
@@ -53,7 +57,9 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-          cache: true
+          # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
+          # setup-go's cache re-downloaded ~2.7 GB over them on every job.
+          cache: false
       - name: Setup Node
         if: ${{ hashFiles('ui/package.json') != '' }}
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -86,9 +92,9 @@ jobs:
 
   unit-backend:
     runs-on: ubuntu-latest
-    # 45: internal/bootstrap alone takes ~10 min under -race, and this job
-    # shares the runner with integration-core's own bootstrap run.
-    timeout-minutes: 45
+    # 70: headroom for a runner shared with several builds at once;
+    # internal/bootstrap is sharded (scripts/test/go-unit-sharded.sh).
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Setup Go
@@ -96,17 +102,41 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-          cache: true
+          # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
+          # setup-go's cache re-downloaded ~2.7 GB over them on every job.
+          cache: false
       - name: Backend unit tests
         if: ${{ hashFiles('go.mod') != '' }}
         run: |
           set -euo pipefail
-          # -timeout 30m: internal/bootstrap under -race exceeds the 10m
-          # default (same reason as the integration-core job below).
-          go test ./... -race -timeout 30m
+          # Same `go test ./... -race`, with internal/bootstrap (the ~23 min
+          # critical path) split over 4 parallel processes.
+          bash scripts/test/go-unit-sharded.sh 4
       - name: Skip marker
         if: ${{ hashFiles('go.mod') == '' }}
         run: echo "No Go module detected; skipping backend unit tests"
+
+  fips-only:
+    name: Go FIPS 140-3 (fips140=only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
+          # setup-go's cache re-downloaded ~2.7 GB over them on every job.
+          cache: false
+      # The whole keystore suite cannot run under "only" (software store's
+      # AES-GCM uses arbitrary IVs), so this is a scoped set. -v output plus
+      # TestFIPSOnlyModeIsActiveWhenExpected guard against a vacuous green.
+      - name: Approved algorithms and ML-DSA refusal under fips140=only
+        env:
+          GODEBUG: fips140=only
+          KK_EXPECT_FIPS_ONLY: "1"
+        run: go test ./internal/keystore/ -run '^(TestFIPSOnly|TestCheckFIPSAlgorithm|TestFIPSPosture|TestRootKeyCustody)' -count=1 -v
 
   unit-frontend:
     runs-on: ubuntu-latest
@@ -125,7 +155,12 @@ jobs:
         run: |
           set -euo pipefail
           npm --prefix ui ci
-          npm --prefix ui run test
+          # 20s, not vitest's 5s default: render-heavy tests passed locally but
+          # timed out on the runner when several builds shared its CPUs.
+          npm --prefix ui run test -- --testTimeout=20000
+          # vitest does not type-check; the production build runs tsc -b and
+          # caught nothing until a merge left a duplicate interface field.
+          (cd ui && npx --no-install tsc -b)
       - name: Skip marker
         if: ${{ hashFiles('ui/package.json') == '' }}
         run: echo "No frontend package detected; skipping frontend unit tests"
@@ -141,8 +176,14 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
         ports:
-          - 5432:5432
+          # Host port chosen by the engine: fixed host ports collide when one
+          # runner executes two of these jobs at once.
+          - 5432
+        # tmpfs: a throwaway test database needs no durable writes, and
+        # fsync on the amd64 runner VM's disk made the Postgres suites ~19x
+        # slower than on the Mac runner (~80 synced writes/s).
         options: >-
+          --tmpfs /var/lib/postgresql/data:rw
           --health-cmd "pg_isready -U postgres -d kryptkeeper_test"
           --health-interval 10s
           --health-timeout 5s
@@ -150,7 +191,7 @@ jobs:
       redis:
         image: redis:7
         ports:
-          - 6379:6379
+          - 6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 10s
@@ -163,18 +204,25 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-          cache: true
+          # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
+          # setup-go's cache re-downloaded ~2.7 GB over them on every job.
+          cache: false
       - name: Integration tests
         if: ${{ hashFiles('go.mod') != '' }}
+        env:
+          # Engine-assigned host ports, used only when the job runs on the VM
+          # (GitHub-hosted); container runners reach the services by name.
+          PG_HOST_PORT: ${{ job.services.postgres.ports['5432'] }}
+          REDIS_HOST_PORT: ${{ job.services.redis.ports['6379'] }}
         run: |
           set -euo pipefail
           # On a container runner (act_runner) the job is itself a container on
           # the services' network, so the service hostname resolves; a
           # GitHub-hosted job runs on the VM and reaches the published ports.
-          if getent hosts postgres >/dev/null 2>&1; then pg=postgres redis=redis; else pg=127.0.0.1 redis=127.0.0.1; fi
-          export KRYPTKEEPER_TEST_POSTGRES_DSN="postgres://postgres:postgres@${pg}:5432/kryptkeeper_test?sslmode=disable"
+          if getent hosts postgres >/dev/null 2>&1; then pg=postgres:5432 redis=redis:6379; else pg="127.0.0.1:${PG_HOST_PORT}" redis="127.0.0.1:${REDIS_HOST_PORT}"; fi
+          export KRYPTKEEPER_TEST_POSTGRES_DSN="postgres://postgres:postgres@${pg}/kryptkeeper_test?sslmode=disable"
           export DATABASE_URL="$KRYPTKEEPER_TEST_POSTGRES_DSN"
-          export REDIS_URL="redis://${redis}:6379/0"
+          export REDIS_URL="redis://${redis}/0"
           bash tests/integration/run.sh
           # The live-Postgres tests live beside the code they cover and skip
           # unless KRYPTKEEPER_TEST_POSTGRES_DSN is set; tests/integration has
@@ -201,7 +249,9 @@ jobs:
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
-          cache: true
+          # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
+          # setup-go's cache re-downloaded ~2.7 GB over them on every job.
+          cache: false
       - name: Go vulnerability check
         if: ${{ hashFiles('go.mod') != '' }}
         run: |
@@ -239,7 +289,12 @@ jobs:
           # Probe the declared dependency, not `npm exec playwright`: npm exec
           # downloads the package on demand, so that probe always passed and
           # then ran Playwright over the vitest files.
-          if node -e 'const p=require("./ui/package.json");process.exit(({...p.dependencies,...p.devDependencies})["@playwright/test"]?0:1)'; then
+          if [ -f ui/playwright.config.ts ]; then
+            # W33-01: the Playwright suite drives a compose hub (ui/e2e) and lives in
+            # ui-e2e.yml; running it here without a hub (and without its config, from
+            # the repo root) only re-ran the vitest files under Playwright.
+            echo "UI Playwright suite needs a compose hub; it runs in ui-e2e.yml"
+          elif node -e 'const p=require("./ui/package.json");process.exit(({...p.dependencies,...p.devDependencies})["@playwright/test"]?0:1)'; then
             npm --prefix ui exec playwright test
           else
             echo "No Playwright dependency found; skipping e2e smoke"

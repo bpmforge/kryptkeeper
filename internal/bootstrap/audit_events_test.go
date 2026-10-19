@@ -24,41 +24,41 @@ func (p *capturingAuditProvider) AppendEntry(_ context.Context, entry AuditEntry
 	return nil
 }
 
-// TestEmitAuditEventRecordsHeaderSwitchedTenant is the W2-04 regression: two
-// otherwise-identical actions with different X-Tenant headers must produce
-// distinguishable Tenant values in the audit trail.
-func TestEmitAuditEventRecordsHeaderSwitchedTenant(t *testing.T) {
+// TestEmitAuditEventStampsResolvedPrincipalTenant (W2-04, tightened by L-12):
+// the audit tenant is the RESOLVED principal's tenant, never the raw X-Tenant
+// header, so a forged header cannot file rows under another tenant.
+func TestEmitAuditEventStampsResolvedPrincipalTenant(t *testing.T) {
 	t.Setenv("MULTI_TENANCY", "on")
 
 	provider := &capturingAuditProvider{}
-
-	acmeReq := httptest.NewRequest("POST", "/api/v1/cas/ca-1/suspend", nil)
-	acmeReq.Header.Set("X-Tenant", "acme")
-	emitAuditEvent(acmeReq, provider, "svc-principal", "ca.suspend", "ca", "ca-1", "success")
-	if provider.last.Tenant != "acme" {
-		t.Fatalf("expected tenant %q, got %q", "acme", provider.last.Tenant)
+	emit := func(resolved, header string) string {
+		var got string
+		withAuditTenant(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			if resolved != "" {
+				recordAuditTenant(r, resolved)
+			}
+			emitAuditEvent(r, provider, "svc-principal", "ca.suspend", "ca", "ca-1", "success")
+			got = provider.last.Tenant
+		})).ServeHTTP(nil, func() *http.Request {
+			r := httptest.NewRequest("POST", "/api/v1/cas/ca-1/suspend", nil)
+			if header != "" {
+				r.Header.Set("X-Tenant", header)
+			}
+			return r
+		}())
+		return got
 	}
 
-	globexReq := httptest.NewRequest("POST", "/api/v1/cas/ca-1/suspend", nil)
-	globexReq.Header.Set("X-Tenant", "globex")
-	emitAuditEvent(globexReq, provider, "svc-principal", "ca.suspend", "ca", "ca-1", "success")
-	if provider.last.Tenant != "globex" {
-		t.Fatalf("expected tenant %q, got %q", "globex", provider.last.Tenant)
+	if got := emit("acme", "globex"); got != "acme" {
+		t.Fatalf("resolved principal tenant must win over header, got %q", got)
 	}
-
-	// No header at all (and multi-tenancy off) both resolve to DefaultTenant.
-	noHeaderReq := httptest.NewRequest("POST", "/api/v1/cas/ca-1/suspend", nil)
-	emitAuditEvent(noHeaderReq, provider, "svc-principal", "ca.suspend", "ca", "ca-1", "success")
-	if provider.last.Tenant != DefaultTenant {
-		t.Fatalf("expected no-header action to record %q, got %q", DefaultTenant, provider.last.Tenant)
+	if got := emit("", "globex"); got != DefaultTenant {
+		t.Fatalf("unauthenticated request must not adopt the header, got %q", got)
 	}
 
 	t.Setenv("MULTI_TENANCY", "off")
-	offReq := httptest.NewRequest("POST", "/api/v1/cas/ca-1/suspend", nil)
-	offReq.Header.Set("X-Tenant", "acme")
-	emitAuditEvent(offReq, provider, "svc-principal", "ca.suspend", "ca", "ca-1", "success")
-	if provider.last.Tenant != DefaultTenant {
-		t.Fatalf("expected tenancy-off action to record %q regardless of header, got %q", DefaultTenant, provider.last.Tenant)
+	if got := emit("acme", "acme"); got != DefaultTenant {
+		t.Fatalf("tenancy-off must record %q, got %q", DefaultTenant, got)
 	}
 }
 

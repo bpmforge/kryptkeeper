@@ -5,13 +5,15 @@
 package bootstrap
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 const maxBulkBodyBytes int64 = 128 * 1024
@@ -19,6 +21,8 @@ const maxBulkBodyBytes int64 = 128 * 1024
 type bulkRevokeItem struct {
 	Fingerprint string `json:"fingerprint"`
 	Error       string `json:"error,omitempty"`
+	// RevocationScope is set on succeeded items only; see CertificateRevokeResult.
+	RevocationScope string `json:"revocation_scope,omitempty"`
 }
 
 type bulkReissueItem struct {
@@ -56,18 +60,22 @@ func registerBulkHandlers(mux *http.ServeMux, auth *Authenticator, provider Cert
 		defer body.Close()
 		raw, err := io.ReadAll(body)
 		if err != nil {
+			emitAuditEvent(r, auditProvider, principal, "certificate.bulk_revoke", "certificate", "bulk", AuditOutcomeFailure)
 			writeBadRequest(w, "invalid request body")
 			return
 		}
 		if err := json.Unmarshal(raw, &req); err != nil {
+			emitAuditEvent(r, auditProvider, principal, "certificate.bulk_revoke", "certificate", "bulk", AuditOutcomeFailure)
 			writeBadRequest(w, "invalid request body")
 			return
 		}
 		if len(req.Fingerprints) == 0 {
+			emitAuditEvent(r, auditProvider, principal, "certificate.bulk_revoke", "certificate", "bulk", AuditOutcomeFailure)
 			writeBadRequest(w, "fingerprints must not be empty")
 			return
 		}
 		if len(req.Fingerprints) > 500 {
+			emitAuditEvent(r, auditProvider, principal, "certificate.bulk_revoke", "certificate", "bulk", AuditOutcomeFailure)
 			writeBadRequest(w, "bulk revoke limited to 500 certificates per request")
 			return
 		}
@@ -77,15 +85,19 @@ func registerBulkHandlers(mux *http.ServeMux, auth *Authenticator, provider Cert
 
 		for _, fp := range req.Fingerprints {
 			fp = strings.TrimSpace(fp)
+			if !bulkTargetVisible(r.Context(), provider, pd, fp) {
+				failed = append(failed, bulkRevokeItem{Fingerprint: fp, Error: bulkNotVisibleMessage})
+				continue
+			}
 			revokeReq := CertificateRevokeRequest{ReasonCode: req.ReasonCode}
-			_, rerr := provider.RevokeCertificate(r.Context(), fp, revokeReq)
+			res, rerr := provider.RevokeCertificate(r.Context(), fp, revokeReq)
 			if rerr != nil {
-				log.Printf("bulk revoke %s: %v", fp, rerr)
+				logging.Infof("bulk revoke %s: %v", fp, rerr)
 				failed = append(failed, bulkRevokeItem{Fingerprint: fp, Error: rerr.Error()})
 			} else {
 				emitAuditEventDetail(r, auditProvider, principal, "certificate.revoke", "certificate", fp, AuditOutcomeSuccess,
-					fmt.Sprintf(`{"fingerprint":%q,"reason":%d,"bulk":true}`, fp, req.ReasonCode))
-				succeeded = append(succeeded, bulkRevokeItem{Fingerprint: fp})
+					fmt.Sprintf(`{"fingerprint":%q,"reason":%d,"bulk":true,"revocation_scope":%q}`, fp, req.ReasonCode, res.RevocationScope))
+				succeeded = append(succeeded, bulkRevokeItem{Fingerprint: fp, RevocationScope: res.RevocationScope})
 			}
 		}
 
@@ -127,18 +139,22 @@ func registerBulkHandlers(mux *http.ServeMux, auth *Authenticator, provider Cert
 		defer body.Close()
 		raw, err := io.ReadAll(body)
 		if err != nil {
+			emitAuditEvent(r, auditProvider, principal, "certificate.bulk_reissue", "certificate", "bulk", AuditOutcomeFailure)
 			writeBadRequest(w, "invalid request body")
 			return
 		}
 		if err := json.Unmarshal(raw, &req); err != nil {
+			emitAuditEvent(r, auditProvider, principal, "certificate.bulk_reissue", "certificate", "bulk", AuditOutcomeFailure)
 			writeBadRequest(w, "invalid request body")
 			return
 		}
 		if len(req.Fingerprints) == 0 {
+			emitAuditEvent(r, auditProvider, principal, "certificate.bulk_reissue", "certificate", "bulk", AuditOutcomeFailure)
 			writeBadRequest(w, "fingerprints must not be empty")
 			return
 		}
 		if len(req.Fingerprints) > 200 {
+			emitAuditEvent(r, auditProvider, principal, "certificate.bulk_reissue", "certificate", "bulk", AuditOutcomeFailure)
 			writeBadRequest(w, "bulk reissue limited to 200 certificates per request")
 			return
 		}
@@ -148,9 +164,13 @@ func registerBulkHandlers(mux *http.ServeMux, auth *Authenticator, provider Cert
 
 		for _, fp := range req.Fingerprints {
 			fp = strings.TrimSpace(fp)
+			if !bulkTargetVisible(r.Context(), provider, pd, fp) {
+				failed = append(failed, bulkReissueItem{OldFingerprint: fp, Error: bulkNotVisibleMessage})
+				continue
+			}
 			issued, rerr := provider.RenewCertificate(r.Context(), fp, CertificateRenewRequest{})
 			if rerr != nil {
-				log.Printf("bulk reissue %s: %v", fp, rerr)
+				logging.Infof("bulk reissue %s: %v", fp, rerr)
 				failed = append(failed, bulkReissueItem{OldFingerprint: fp, Error: rerr.Error()})
 			} else {
 				emitAuditEventDetail(r, auditProvider, principal, "certificate.renew", "certificate", fp, AuditOutcomeSuccess,
@@ -169,4 +189,21 @@ func registerBulkHandlers(mux *http.ServeMux, auth *Authenticator, provider Cert
 			Failed    []bulkReissueItem `json:"failed"`
 		}{Succeeded: succeeded, Failed: failed})
 	})
+}
+
+// bulkNotVisibleMessage is deliberately identical for "exists in another
+// tenant" and "does not exist" so a bulk call cannot probe other tenants.
+const bulkNotVisibleMessage = "not visible in your tenant"
+
+// bulkTargetVisible reports whether the certificate's issuing CA is visible to
+// the caller (L-06). Unresolvable certificates are treated as not visible.
+func bulkTargetVisible(ctx context.Context, provider CertificateProvider, pd AuthPrincipal, fingerprint string) bool {
+	if tenantBypass(pd) {
+		return true
+	}
+	item, found, err := provider.GetCertificate(ctx, fingerprint)
+	if err != nil || !found {
+		return false
+	}
+	return caVisibleToTenant(ctx, activeTenantStore, pd, item.CAID)
 }

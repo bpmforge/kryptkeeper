@@ -20,6 +20,12 @@
 // and a changed leaf on the TLS vhost) — see README.md for the three
 // compounding defects that had to clear to get there and docs/STATUS.md for
 // full per-step evidence.
+//
+// W29-07 adds the enrollment-hardening cases to run.sh: anonymous and
+// wrong-secret registration refused, shared-secret warning logged without the
+// secret, per-agent token mint, single-use redemption, second redemption
+// refused, issued agent token drives tasks/heartbeat, revoked token refused,
+// agent.register / agent.token_revoke audit rows, and cleanup.
 package agent_test
 
 import (

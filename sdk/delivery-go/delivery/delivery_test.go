@@ -56,3 +56,34 @@ func TestDispatch(t *testing.T) {
 		t.Error("no registered plugin, no error")
 	}
 }
+
+type readbackFake struct{ fake }
+
+func (readbackFake) Verify(_ *Host, req abi.VerifyRequest) (abi.VerifyResult, error) {
+	if req.Handle == "boom" {
+		return abi.VerifyResult{}, errors.New("store unreachable")
+	}
+	return abi.VerifyResult{CertPEM: "pem-for-" + req.Handle}, nil
+}
+
+func TestDispatchVerify(t *testing.T) {
+	noHost := func(string, []byte) ([]byte, error) { return nil, errors.New("no host") }
+	var resp abi.Response
+	_ = json.Unmarshal(DispatchTo(readbackFake{}, noHost, abi.OpVerify, []byte(`{"name":"n","handle":"v3"}`)), &resp)
+	var vr abi.VerifyResult
+	_ = json.Unmarshal(resp.Result, &vr)
+	if resp.Error != "" || vr.CertPEM != "pem-for-v3" {
+		t.Errorf("verify: %+v %+v", resp, vr)
+	}
+	resp = abi.Response{}
+	_ = json.Unmarshal(DispatchTo(readbackFake{}, noHost, abi.OpVerify, []byte(`{"handle":"boom"}`)), &resp)
+	if resp.Error != "store unreachable" {
+		t.Errorf("verify error not surfaced: %+v", resp)
+	}
+	// A plugin without the hook fails closed.
+	resp = abi.Response{}
+	_ = json.Unmarshal(DispatchTo(fake{}, noHost, abi.OpVerify, []byte(`{}`)), &resp)
+	if resp.Error == "" || len(resp.Result) != 0 {
+		t.Errorf("a plugin without verify must error: %+v", resp)
+	}
+}

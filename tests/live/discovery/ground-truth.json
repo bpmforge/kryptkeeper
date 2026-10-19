@@ -1,0 +1,665 @@
+{
+ "subnet_octet4_start": 11,
+ "endpoints": [
+  {
+   "id": "tls10-1",
+   "ip_index": 0,
+   "port": 443,
+   "class": "tls10",
+   "tls_min": "TLSv1.0",
+   "tls_max": "TLSv1.0",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": [
+    "DEPRECATED_TLS_VERSION"
+   ]
+  },
+  {
+   "id": "tls10-2",
+   "ip_index": 1,
+   "port": 443,
+   "class": "tls10",
+   "tls_min": "TLSv1.0",
+   "tls_max": "TLSv1.0",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": [
+    "DEPRECATED_TLS_VERSION"
+   ]
+  },
+  {
+   "id": "tls10-3",
+   "ip_index": 2,
+   "port": 443,
+   "class": "tls10",
+   "tls_min": "TLSv1.0",
+   "tls_max": "TLSv1.0",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": [
+    "DEPRECATED_TLS_VERSION"
+   ]
+  },
+  {
+   "id": "tls10-4",
+   "ip_index": 3,
+   "port": 443,
+   "class": "tls10",
+   "tls_min": "TLSv1.0",
+   "tls_max": "TLSv1.0",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": [
+    "DEPRECATED_TLS_VERSION"
+   ]
+  },
+  {
+   "id": "tls11-1",
+   "ip_index": 4,
+   "port": 443,
+   "class": "tls11",
+   "tls_min": "TLSv1.1",
+   "tls_max": "TLSv1.1",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": [
+    "DEPRECATED_TLS_VERSION"
+   ]
+  },
+  {
+   "id": "tls11-2",
+   "ip_index": 5,
+   "port": 443,
+   "class": "tls11",
+   "tls_min": "TLSv1.1",
+   "tls_max": "TLSv1.1",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": [
+    "DEPRECATED_TLS_VERSION"
+   ]
+  },
+  {
+   "id": "tls11-3",
+   "ip_index": 6,
+   "port": 443,
+   "class": "tls11",
+   "tls_min": "TLSv1.1",
+   "tls_max": "TLSv1.1",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": [
+    "DEPRECATED_TLS_VERSION"
+   ]
+  },
+  {
+   "id": "tls11-4",
+   "ip_index": 7,
+   "port": 443,
+   "class": "tls11",
+   "tls_min": "TLSv1.1",
+   "tls_max": "TLSv1.1",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": [
+    "DEPRECATED_TLS_VERSION"
+   ]
+  },
+  {
+   "id": "tls12-1",
+   "ip_index": 8,
+   "port": 443,
+   "class": "tls12",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.2",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "tls12-2",
+   "ip_index": 9,
+   "port": 443,
+   "class": "tls12",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.2",
+   "cert": "ca_signed",
+   "key": "p256",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "tls12-3",
+   "ip_index": 10,
+   "port": 443,
+   "class": "tls12",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.2",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "tls12-4",
+   "ip_index": 11,
+   "port": 443,
+   "class": "tls12",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.2",
+   "cert": "ca_signed",
+   "key": "p256",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "tls12-5",
+   "ip_index": 12,
+   "port": 443,
+   "class": "tls12",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.2",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "tls12-6",
+   "ip_index": 13,
+   "port": 443,
+   "class": "tls12",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.2",
+   "cert": "ca_signed",
+   "key": "p256",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "tls13-1",
+   "ip_index": 14,
+   "port": 443,
+   "class": "tls13",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "tls13-2",
+   "ip_index": 15,
+   "port": 443,
+   "class": "tls13",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "p256",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "tls13-3",
+   "ip_index": 16,
+   "port": 443,
+   "class": "tls13",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "tls13-4",
+   "ip_index": 17,
+   "port": 443,
+   "class": "tls13",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "p256",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "tls13-5",
+   "ip_index": 18,
+   "port": 443,
+   "class": "tls13",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "tls13-6",
+   "ip_index": 19,
+   "port": 443,
+   "class": "tls13",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "p256",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "selfsigned-1",
+   "ip_index": 20,
+   "port": 443,
+   "class": "selfsigned",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.3",
+   "cert": "self_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [
+    "SELF_SIGNED"
+   ],
+   "expect_findings": []
+  },
+  {
+   "id": "selfsigned-2",
+   "ip_index": 21,
+   "port": 443,
+   "class": "selfsigned",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.3",
+   "cert": "self_signed",
+   "key": "p256",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [
+    "SELF_SIGNED"
+   ],
+   "expect_findings": []
+  },
+  {
+   "id": "selfsigned-3",
+   "ip_index": 22,
+   "port": 443,
+   "class": "selfsigned",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.3",
+   "cert": "self_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [
+    "SELF_SIGNED"
+   ],
+   "expect_findings": []
+  },
+  {
+   "id": "selfsigned-4",
+   "ip_index": 23,
+   "port": 443,
+   "class": "selfsigned",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.3",
+   "cert": "self_signed",
+   "key": "p256",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [
+    "SELF_SIGNED"
+   ],
+   "expect_findings": []
+  },
+  {
+   "id": "selfsigned-5",
+   "ip_index": 24,
+   "port": 443,
+   "class": "selfsigned",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.3",
+   "cert": "self_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [
+    "SELF_SIGNED"
+   ],
+   "expect_findings": []
+  },
+  {
+   "id": "selfsigned-6",
+   "ip_index": 25,
+   "port": 443,
+   "class": "selfsigned",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.3",
+   "cert": "self_signed",
+   "key": "p256",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [
+    "SELF_SIGNED"
+   ],
+   "expect_findings": []
+  },
+  {
+   "id": "expired-1",
+   "ip_index": 26,
+   "port": 443,
+   "class": "expired",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.3",
+   "cert": "expired",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [
+    "EXPIRED"
+   ],
+   "expect_findings": []
+  },
+  {
+   "id": "expired-2",
+   "ip_index": 27,
+   "port": 443,
+   "class": "expired",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.3",
+   "cert": "expired",
+   "key": "p256",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [
+    "EXPIRED"
+   ],
+   "expect_findings": []
+  },
+  {
+   "id": "expired-3",
+   "ip_index": 28,
+   "port": 443,
+   "class": "expired",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.3",
+   "cert": "expired",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [
+    "EXPIRED"
+   ],
+   "expect_findings": []
+  },
+  {
+   "id": "expired-4",
+   "ip_index": 29,
+   "port": 443,
+   "class": "expired",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.3",
+   "cert": "expired",
+   "key": "p256",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [
+    "EXPIRED"
+   ],
+   "expect_findings": []
+  },
+  {
+   "id": "expired-5",
+   "ip_index": 30,
+   "port": 443,
+   "class": "expired",
+   "tls_min": "TLSv1.2",
+   "tls_max": "TLSv1.3",
+   "cert": "expired",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [
+    "EXPIRED"
+   ],
+   "expect_findings": []
+  },
+  {
+   "id": "mlkem_hybrid-1",
+   "ip_index": 31,
+   "port": 443,
+   "class": "mlkem_hybrid",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": true,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "mlkem_hybrid-2",
+   "ip_index": 32,
+   "port": 443,
+   "class": "mlkem_hybrid",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "p256",
+   "hybrid": true,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "mlkem_hybrid-3",
+   "ip_index": 33,
+   "port": 443,
+   "class": "mlkem_hybrid",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": true,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "mlkem_hybrid-4",
+   "ip_index": 34,
+   "port": 443,
+   "class": "mlkem_hybrid",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "p256",
+   "hybrid": true,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "mlkem_hybrid-5",
+   "ip_index": 35,
+   "port": 443,
+   "class": "mlkem_hybrid",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": true,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "sni_only-1",
+   "ip_index": 36,
+   "port": 443,
+   "class": "sni_only",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": true,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "sni_only-2",
+   "ip_index": 37,
+   "port": 443,
+   "class": "sni_only",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "p256",
+   "hybrid": false,
+   "sni_only": true,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "sni_only-3",
+   "ip_index": 38,
+   "port": 443,
+   "class": "sni_only",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "rsa2048",
+   "hybrid": false,
+   "sni_only": true,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "sni_only-4",
+   "ip_index": 39,
+   "port": 443,
+   "class": "sni_only",
+   "tls_min": "TLSv1.3",
+   "tls_max": "TLSv1.3",
+   "cert": "ca_signed",
+   "key": "p256",
+   "hybrid": false,
+   "sni_only": true,
+   "expect_flags": [],
+   "expect_findings": []
+  },
+  {
+   "id": "not_tls-1",
+   "ip_index": 40,
+   "port": 443,
+   "class": "not_tls",
+   "tls_min": "",
+   "tls_max": "",
+   "cert": "none",
+   "key": "",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": [
+    "NOT_TLS"
+   ]
+  },
+  {
+   "id": "not_tls-2",
+   "ip_index": 41,
+   "port": 443,
+   "class": "not_tls",
+   "tls_min": "",
+   "tls_max": "",
+   "cert": "none",
+   "key": "",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": [
+    "NOT_TLS"
+   ]
+  },
+  {
+   "id": "not_tls-3",
+   "ip_index": 42,
+   "port": 443,
+   "class": "not_tls",
+   "tls_min": "",
+   "tls_max": "",
+   "cert": "none",
+   "key": "",
+   "hybrid": false,
+   "sni_only": false,
+   "expect_flags": [],
+   "expect_findings": [
+    "NOT_TLS"
+   ]
+  }
+ ],
+ "extra_port_endpoints": [
+  {
+   "id": "extra-8443",
+   "ip_index": 0,
+   "port": 8443,
+   "clone_of": "tls10-1"
+  },
+  {
+   "id": "extra-9443",
+   "ip_index": 1,
+   "port": 9443,
+   "clone_of": "tls10-2"
+  }
+ ]
+}

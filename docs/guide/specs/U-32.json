@@ -1,0 +1,326 @@
+{
+  "task": "U-32",
+  "title": "Roll a certificate out to a cluster (rollout group, canary first)",
+  "sourceStory": "STORIES.md#u-32",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/renewal/rollout-groups"
+      },
+      "caption": "Open /renewal/rollout-groups",
+      "slug": "empty-state",
+      "expect": {
+        "role": "button",
+        "name": "New group"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-32/01-empty-state.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New group"
+      },
+      "caption": "Click **New group**",
+      "slug": "new-group-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "New rollout group"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-32/02-new-group-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Group name",
+        "within": "[role=dialog]"
+      },
+      "value": "web-cluster",
+      "caption": "Fill **Group name** with \"web-cluster\"",
+      "slug": "Group name",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-32/03-group-name.png",
+        "annotated": "docs/guide/screenshots/U-32/03-group-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 304,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "label": "web-01",
+        "within": "[role=dialog]"
+      },
+      "caption": "Tick **web-01**",
+      "slug": "pick-nodes",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-32/04-pick-nodes.png",
+        "annotated": "docs/guide/screenshots/U-32/04-pick-nodes-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 402,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "label": "web-02",
+        "within": "[role=dialog]"
+      },
+      "caption": "Tick **web-02**",
+      "slug": "web-02",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-32/05-web-02.png",
+        "annotated": "docs/guide/screenshots/U-32/05-web-02-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 414,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Window start",
+        "within": "[role=dialog]"
+      },
+      "value": "2",
+      "caption": "Fill **Window start** with \"2\"",
+      "slug": "Window start",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-32/06-window-start.png",
+        "annotated": "docs/guide/screenshots/U-32/06-window-start-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 566,
+          "w": 309,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Window end",
+        "within": "[role=dialog]"
+      },
+      "value": "4",
+      "caption": "Fill **Window end** with \"4\"",
+      "slug": "Window end",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-32/07-window-end.png",
+        "annotated": "docs/guide/screenshots/U-32/07-window-end-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 726,
+          "y": 566,
+          "w": 309,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Save group",
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Save group**",
+      "slug": "group-saved",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-32/08-group-saved.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "text": "web-cluster"
+      },
+      "caption": "Click **web-cluster**",
+      "slug": "group-selected",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-32/09-group-selected.png",
+        "annotated": "docs/guide/screenshots/U-32/09-group-selected-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 255,
+          "w": 79,
+          "h": 18
+        }
+      }
+    }
+  ],
+  "flags": "LAB (UI steps only; executing a rollout needs reachable hosts)",
+  "lastRun": {
+    "at": "2026-10-18T12:44:27.149Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-32",
+    "steps": 9,
+    "shots": 9,
+    "annotated": 6,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/renewal/rollout-groups"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-32/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-32/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

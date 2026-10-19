@@ -1,0 +1,83 @@
+{
+  "task": "U-50",
+  "title": "Review cloud KMS key inventory",
+  "sourceStory": "STORIES.md#u-50",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/inventory/keys"
+      },
+      "caption": "Open /inventory/keys",
+      "slug": "cloud-keys-empty",
+      "allow": [
+        "404",
+        "503"
+      ],
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-50/01-cloud-keys-empty.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "flags": "EXTERNAL CLOUD (empty state only; no cloud credentials)",
+  "lastRun": {
+    "at": "2026-10-18T12:37:34.295Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-50",
+    "steps": 1,
+    "shots": 1,
+    "annotated": 0,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/inventory/keys"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-50/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-50/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

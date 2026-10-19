@@ -5,7 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 )
 
 // newTestClient builds a HubClient pointing at a test server.
@@ -129,5 +135,62 @@ func TestHubClient_SetsBearerToken(t *testing.T) {
 	_, _ = c.Get(context.Background(), "/api/v1/cas")
 	if authHeader != "Bearer my-secret-token" {
 		t.Errorf("expected Bearer token, got %q", authHeader)
+	}
+}
+
+func TestHubClient_PendingApproval202IsAnError(t *testing.T) {
+	cases := map[string]string{
+		"data.action_id": `{"data":{"status":"proposed","action_id":"act-7"}}`,
+		"approval_id":    `{"status":"pending_approval","approval_id":"act-7"}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(body))
+			}))
+			defer srv.Close()
+			c := newTestClient(srv)
+			ctx := context.Background()
+			if _, err := c.Post(ctx, "/x", nil); err == nil || !strings.Contains(err.Error(), "action id act-7") {
+				t.Errorf("Post error = %v, want pending action id act-7", err)
+			}
+			if err := c.Delete(ctx, "/x"); err == nil || !strings.Contains(err.Error(), "action id act-7") {
+				t.Errorf("Delete error = %v, want pending action id act-7", err)
+			}
+		})
+	}
+}
+
+func TestCAResource_Delete_RevokePendingFailsWithActionID(t *testing.T) {
+	var deleted bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"data":{"status":"active"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/cas/ca-1/revoke":
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"data":{"action_id":"act-9"}}`))
+		case r.Method == http.MethodDelete:
+			deleted = true
+		}
+	}))
+	defer srv.Close()
+
+	r := &CAResource{client: newTestClient(srv)}
+	ctx := context.Background()
+	var sch resource.SchemaResponse
+	r.Schema(ctx, resource.SchemaRequest{}, &sch)
+	state := tfsdk.State{Schema: sch.Schema, Raw: tftypes.NewValue(sch.Schema.Type().TerraformType(ctx), nil)}
+	if d := state.SetAttribute(ctx, path.Root("id"), "ca-1"); d.HasError() {
+		t.Fatal(d)
+	}
+	var resp resource.DeleteResponse
+	r.Delete(ctx, resource.DeleteRequest{State: state}, &resp)
+	if !resp.Diagnostics.HasError() || !strings.Contains(resp.Diagnostics.Errors()[0].Detail(), "act-9") {
+		t.Fatalf("diagnostics = %v, want an error naming act-9", resp.Diagnostics)
+	}
+	if deleted {
+		t.Error("DELETE was sent although the revoke is only pending")
 	}
 }

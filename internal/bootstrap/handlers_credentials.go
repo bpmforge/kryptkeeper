@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -50,6 +51,17 @@ func ProductionWinRMPreflighter(ctx context.Context, cfg agentdiscovery.WinRMCon
 // is deliberately no update/rotate route — that is W5-10's disclosed gap,
 // and adding one here would un-disclose it.
 
+// validateSSHCredentialPayload checks the sudo_* combination at the API edge so
+// a bad mix fails at create time, not at the first scan. Errors never carry
+// payload values.
+func validateSSHCredentialPayload(raw json.RawMessage) error {
+	var p sshCredentialPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return errors.New("ssh_key payload is not the documented JSON object shape")
+	}
+	return p.validatePrivilege()
+}
+
 func newOutboundCredentialID() (string, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
@@ -59,21 +71,21 @@ func newOutboundCredentialID() (string, error) {
 }
 
 func registerCredentialHandlers(mux *http.ServeMux, auth *Authenticator, store OutboundCredentialStore, auditProvider AuditProvider, preflight WinRMPreflighter) {
-	authorize := func(w http.ResponseWriter, r *http.Request, action string) (string, bool) {
+	authorize := func(w http.ResponseWriter, r *http.Request, action string) (AuthPrincipal, bool) {
 		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
 		if err != nil {
 			emitAuditEvent(r, auditProvider, "", action, "credential", "-", AuditOutcomeDenied)
 			writeUnauthorized(w)
-			return "", false
+			return AuthPrincipal{}, false
 		}
 		// A credential reaches devices as root/Administrator. Creating or
 		// deleting one is an admin act, same bar as the key endpoints.
 		if !isAdminRole(pd.Role) {
 			emitAuditEvent(r, auditProvider, pd.ID, action, "credential", "-", AuditOutcomeDenied)
 			writeForbidden(w, "admin role required for outbound credentials")
-			return "", false
+			return AuthPrincipal{}, false
 		}
-		return pd.ID, true
+		return pd, true
 	}
 
 	unconfigured := func(w http.ResponseWriter) bool {
@@ -89,26 +101,32 @@ func registerCredentialHandlers(mux *http.ServeMux, auth *Authenticator, store O
 	mux.HandleFunc("/api/v1/credentials", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			principal, ok := authorize(w, r, "credential.list")
+			pd, ok := authorize(w, r, "credential.list")
 			if !ok || unconfigured(w) {
 				return
 			}
+			principal := pd.ID
 			metas, err := store.List(r.Context())
 			if err != nil {
 				emitAuditEvent(r, auditProvider, principal, "credential.list", "credential", "-", AuditOutcomeFailure)
 				writeServiceUnavailable(w, "credential store unavailable")
 				return
 			}
-			if metas == nil {
-				metas = []OutboundCredentialMeta{}
+			visible := make([]OutboundCredentialMeta, 0, len(metas))
+			for _, m := range metas {
+				if stampedTenantVisible(pd, m.Tenant) {
+					visible = append(visible, m)
+				}
 			}
+			metas = visible
 			writeJSONData(w, map[string]any{"items": metas})
 
 		case http.MethodPost:
-			principal, ok := authorize(w, r, "credential.create")
+			pd, ok := authorize(w, r, "credential.create")
 			if !ok || unconfigured(w) {
 				return
 			}
+			principal := pd.ID
 			var req struct {
 				Name           string `json:"name"`
 				CredentialType string `json:"credential_type"`
@@ -124,15 +142,23 @@ func registerCredentialHandlers(mux *http.ServeMux, auth *Authenticator, store O
 			}
 			if decodeErr != nil ||
 				strings.TrimSpace(req.Name) == "" || len(req.Payload) == 0 {
+				emitAuditEvent(r, auditProvider, principal, "credential.create", "credential", "-", AuditOutcomeFailure)
 				writeBadRequest(w, "name, credential_type and payload are required")
 				return
+			}
+			if req.CredentialType == CredentialTypeSSHKey {
+				if err := validateSSHCredentialPayload(req.Payload); err != nil {
+					emitAuditEvent(r, auditProvider, principal, "credential.create", "credential", req.Name, AuditOutcomeFailure)
+					writeBadRequest(w, err.Error())
+					return
+				}
 			}
 			id, err := newOutboundCredentialID()
 			if err != nil {
 				writeServiceUnavailable(w, "could not generate credential id")
 				return
 			}
-			meta, err := store.Create(r.Context(), id, strings.TrimSpace(req.Name), req.CredentialType, "", []byte(req.Payload))
+			meta, err := store.Create(r.Context(), id, strings.TrimSpace(req.Name), req.CredentialType, pd.Tenant, []byte(req.Payload))
 			if err != nil {
 				emitAuditEvent(r, auditProvider, principal, "credential.create", "credential", req.Name, AuditOutcomeFailure)
 				writeBadRequest(w, err.Error())
@@ -156,20 +182,32 @@ func registerCredentialHandlers(mux *http.ServeMux, auth *Authenticator, store O
 			handleCredentialPreflight(w, r, id, store, auditProvider, preflight, authorize, unconfigured)
 			return
 		}
+		if id, isPriv := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/credentials/"), "/privileged"); isPriv {
+			handleCredentialPrivileged(w, r, id, store, auditProvider, authorize, unconfigured)
+			return
+		}
 		if r.Method != http.MethodDelete {
 			writeMethodNotAllowed(w, http.MethodDelete)
 			return
 		}
-		principal, ok := authorize(w, r, "credential.delete")
+		pd, ok := authorize(w, r, "credential.delete")
 		if !ok || unconfigured(w) {
 			return
 		}
+		principal := pd.ID
 		id := strings.TrimPrefix(r.URL.Path, "/api/v1/credentials/")
 		if id == "" || strings.Contains(id, "/") {
 			writeBadRequest(w, "credential id required")
 			return
 		}
-		if _, err := store.Get(r.Context(), id); err != nil {
+		existing, err := store.Get(r.Context(), id)
+		if err != nil {
+			emitAuditEvent(r, auditProvider, principal, "credential.delete", "credential", id, AuditOutcomeFailure)
+			writeNotFound(w, "credential not found")
+			return
+		}
+		if !stampedTenantVisible(pd, existing.Tenant) {
+			emitAuditEvent(r, auditProvider, principal, "credential.delete", "credential", id, AuditOutcomeDenied)
 			writeNotFound(w, "credential not found")
 			return
 		}
@@ -188,25 +226,35 @@ func registerCredentialHandlers(mux *http.ServeMux, auth *Authenticator, store O
 // leaves the process; the response carries the verdict only.
 func handleCredentialPreflight(w http.ResponseWriter, r *http.Request, id string, store OutboundCredentialStore,
 	auditProvider AuditProvider, preflight WinRMPreflighter,
-	authorize func(http.ResponseWriter, *http.Request, string) (string, bool), unconfigured func(http.ResponseWriter) bool) {
+	authorize func(http.ResponseWriter, *http.Request, string) (AuthPrincipal, bool), unconfigured func(http.ResponseWriter) bool) {
 	if r.Method != http.MethodPost {
 		writeMethodNotAllowed(w, http.MethodPost)
 		return
 	}
-	principal, ok := authorize(w, r, "credential.preflight")
+	pd, ok := authorize(w, r, "credential.preflight")
 	if !ok || unconfigured(w) {
 		return
 	}
+	principal := pd.ID
 	if id == "" || strings.Contains(id, "/") {
 		writeBadRequest(w, "credential id required")
 		return
 	}
 	meta, err := store.Get(r.Context(), id)
 	if err != nil {
+		emitAuditEvent(r, auditProvider, principal, "credential.preflight", "credential", id, AuditOutcomeFailure)
+		writeNotFound(w, "credential not found")
+		return
+	}
+	// Preflight resolves the plaintext, so another tenant's credential must be
+	// as unreachable here as on delete.
+	if !stampedTenantVisible(pd, meta.Tenant) {
+		emitAuditEvent(r, auditProvider, principal, "credential.preflight", "credential", id, AuditOutcomeDenied)
 		writeNotFound(w, "credential not found")
 		return
 	}
 	if meta.CredentialType != CredentialTypeWindowsPassword {
+		emitAuditEvent(r, auditProvider, principal, "credential.preflight", "credential", id, AuditOutcomeFailure)
 		writeBadRequest(w, fmt.Sprintf("preflight is defined for %s credentials only; %q is %s", CredentialTypeWindowsPassword, id, meta.CredentialType))
 		return
 	}
@@ -238,4 +286,69 @@ func handleCredentialPreflight(w http.ResponseWriter, r *http.Request, id string
 		CredentialID string `json:"credential_id"`
 		agentdiscovery.WinRMPreflight
 	}{CredentialID: id, WinRMPreflight: verdict})
+}
+
+// handleCredentialPrivileged sets or clears the manual privileged flag (W34-11,
+// D-208): flag and audit only, no approval gate. The automatic path is the sudo
+// preflight; both audit credential.privileged.set with the reason and source.
+func handleCredentialPrivileged(w http.ResponseWriter, r *http.Request, id string, store OutboundCredentialStore,
+	auditProvider AuditProvider,
+	authorize func(http.ResponseWriter, *http.Request, string) (AuthPrincipal, bool), unconfigured func(http.ResponseWriter) bool) {
+	if r.Method != http.MethodPut {
+		writeMethodNotAllowed(w, http.MethodPut)
+		return
+	}
+	pd, ok := authorize(w, r, "credential.privileged.set")
+	if !ok || unconfigured(w) {
+		return
+	}
+	if id == "" || strings.Contains(id, "/") {
+		writeBadRequest(w, "credential id required")
+		return
+	}
+	var req struct {
+		Privileged *bool  `json:"privileged"`
+		Reason     string `json:"reason"`
+	}
+	decodeErr := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4*1024)).Decode(&req)
+	if rejectOversizeBody(w, decodeErr) {
+		return
+	}
+	if decodeErr != nil || req.Privileged == nil || len(req.Reason) > 500 {
+		emitAuditEvent(r, auditProvider, pd.ID, "credential.privileged.set", "credential", id, AuditOutcomeFailure)
+		writeBadRequest(w, "privileged (boolean) is required; reason is at most 500 characters")
+		return
+	}
+	meta, err := store.Get(r.Context(), id)
+	if err != nil || !stampedTenantVisible(pd, meta.Tenant) {
+		outcome := AuditOutcomeFailure
+		if err == nil {
+			outcome = AuditOutcomeDenied
+		}
+		emitAuditEvent(r, auditProvider, pd.ID, "credential.privileged.set", "credential", id, outcome)
+		writeNotFound(w, "credential not found")
+		return
+	}
+	ps, ok := store.(credentialPrivilegeStore)
+	if !ok {
+		emitAuditEvent(r, auditProvider, pd.ID, "credential.privileged.set", "credential", id, AuditOutcomeFailure)
+		writeServiceUnavailable(w, "this credential store cannot carry the privileged flag")
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if *req.Privileged && reason == "" {
+		reason = "marked privileged by an administrator"
+	}
+	if err := ps.SetPrivileged(r.Context(), id, *req.Privileged, reason, "manual:"+pd.ID); err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "credential.privileged.set", "credential", id, AuditOutcomeFailure)
+		writeServiceUnavailable(w, "could not update the credential")
+		return
+	}
+	emitAuditEventDetail(r, auditProvider, pd.ID, "credential.privileged.set", "credential", id, AuditOutcomeSuccess,
+		fmt.Sprintf(`{"privileged":%t,"reason":%q,"source":"manual"}`, *req.Privileged, reason))
+	updated, err := store.Get(r.Context(), id)
+	if err != nil {
+		updated = meta
+	}
+	writeJSONData(w, updated)
 }

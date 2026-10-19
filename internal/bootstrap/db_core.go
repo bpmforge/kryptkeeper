@@ -20,6 +20,26 @@ import (
 // Returns the DB connection, whether it is Postgres (vs SQLite), and any error.
 // The caller is responsible for closing the returned *sql.DB.
 func OpenCoreDB() (*sql.DB, bool, error) {
+	db, isPostgres, err := OpenCoreDBNoMigrate()
+	if err != nil {
+		return nil, isPostgres, err
+	}
+	engine := "sqlite"
+	if isPostgres {
+		engine = "postgres"
+	}
+	if err := kkdb.RunMigrations(db, engine); err != nil {
+		_ = db.Close()
+		return nil, isPostgres, fmt.Errorf("run %s migrations: %w", engine, err)
+	}
+	return db, isPostgres, nil
+}
+
+// OpenCoreDBNoMigrate opens the core database exactly as OpenCoreDB does but
+// leaves the schema alone. `kryptkeeper migrate status|down` needs this: it
+// must report on, or roll back, a database that RunMigrations would refuse
+// (newer schema) or alter (pending). The caller closes the returned *sql.DB.
+func OpenCoreDBNoMigrate() (*sql.DB, bool, error) {
 	mode := currentDBMode()
 	switch mode {
 	case dbModeSQLite:
@@ -31,23 +51,15 @@ func OpenCoreDB() (*sql.DB, bool, error) {
 		if err != nil {
 			return nil, false, err
 		}
-		if err := kkdb.RunMigrations(db, "sqlite"); err != nil {
-			_ = db.Close()
-			return nil, false, fmt.Errorf("run sqlite migrations: %w", err)
-		}
 		return db, false, nil
 	case dbModePostgres:
 		dsn := resolvePostgresDSNFromEnv("APP_CORE_DB_DSN", "KRYPTKEEPER_DB_DSN", "DATABASE_URL")
 		if dsn == "" {
 			return nil, true, fmt.Errorf("postgres core DB requires APP_CORE_DB_DSN, KRYPTKEEPER_DB_DSN, or DATABASE_URL")
 		}
-		db, err := openConfiguredDB("pgx", dsn, 5, 2)
+		db, err := openPostgresDB(dsn)
 		if err != nil {
 			return nil, true, err
-		}
-		if err := kkdb.RunMigrations(db, "postgres"); err != nil {
-			_ = db.Close()
-			return nil, true, fmt.Errorf("run postgres migrations: %w", err)
 		}
 		return db, true, nil
 	default:

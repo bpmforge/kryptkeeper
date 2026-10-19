@@ -60,7 +60,7 @@ func deepOpenPorts(ctx context.Context, host string, lo, hi int) []int {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	open := make([]int, 0)
-	dialer := &net.Dialer{Timeout: deepProbeTimeout}
+	dialer := guardedDialer(deepProbeTimeout)
 
 	for port := lo; port <= hi; port++ {
 		select {

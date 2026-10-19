@@ -1,0 +1,25 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "id": "kryptkeeper.azure-keyvault",
+  "name": "Azure Key Vault secret",
+  "version": "1.0.0",
+  "publisher": "Kryptkeeper Authors",
+  "license": "Apache-2.0",
+  "source": "https://github.com/bpmforge/kryptkeeper/tree/main/plugins/azure-keyvault",
+  "artifact": {"file": "plugin.wasm", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "verification": "readback",
+  "capabilities": {
+    "receive_private_key": true,
+    "network": {"hosts_from_credential": "vault_url", "hosts": ["login.microsoftonline.com"]},
+    "tls_verify": true
+  },
+  "credential_schema": {
+    "vault_url": {"type": "url", "required": true},
+    "tenant_id": {"type": "string", "required": true},
+    "client_id": {"type": "string", "required": true},
+    "client_secret": {"type": "string", "required": true, "secret": true}
+  },
+  "target_schema": {
+    "secret_name": {"type": "string", "required": true}
+  }
+}

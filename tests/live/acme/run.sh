@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/podman.sh"
 set -uo pipefail
 
 # filename: tests/live/acme/run.sh
@@ -57,7 +58,8 @@ curl_hub() {
 }
 
 cleanup() {
-  podman rm -f kk-certbot kk-lego kk-verify "$HUB_NAME" >/dev/null 2>&1 || true
+  # One name per call: podman 4.9 rm -f silently removes nothing when any listed name is already gone.
+  kk_rm kk-certbot kk-lego kk-verify "$HUB_NAME"
   podman network rm "$NETWORK" >/dev/null 2>&1 || true
 }
 
@@ -74,7 +76,7 @@ for img in docker.io/certbot/certbot:latest docker.io/goacme/lego:latest \
 done
 
 echo "--- building hub binary (linux/arm64, CGO_ENABLED=0: pure-Go sqlite driver, no cross-toolchain needed) ---"
-if ! (cd "$ROOT_DIR" && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o "$RUN_DIR/bin/kryptkeeper" ./cmd/kryptkeeper); then
+if ! (cd "$ROOT_DIR" && GOOS=linux GOARCH="$(kk_goarch)" CGO_ENABLED=0 go build -o "$RUN_DIR/bin/kryptkeeper" ./cmd/kryptkeeper); then
   fail "build hub binary"
   echo "=== RESULT: $PASS passed, $FAIL failed ==="
   exit 1
@@ -118,7 +120,12 @@ podman run -d --name "$HUB_NAME" --network "$NETWORK" --hostname "$HUB_HOST" \
   -e KRYPTKEEPER_BASE_URL="https://$HUB_HOST:$HUB_PORT" \
   alpine:3 /kryptkeeper >/dev/null
 
-sleep 3
+# Poll, don't sleep: first-boot migrations take well over 3s on a loaded runner
+# (the hub logs "starting kryptkeeper" only after they finish).
+for _ in $(seq 1 120); do
+  podman logs "$HUB_NAME" 2>&1 | grep -q "starting kryptkeeper on $HUB_HOST:$HUB_PORT" && break
+  sleep 1
+done
 if ! podman logs "$HUB_NAME" 2>&1 | grep -q "starting kryptkeeper on $HUB_HOST:$HUB_PORT"; then
   fail "hub startup (see: podman logs $HUB_NAME)"
   podman logs "$HUB_NAME" 2>&1 | tail -40
@@ -231,8 +238,15 @@ ocsp_says_good_or_revoked() {
   # verifies the OCSP response's application-layer signature, not the
   # transport -- so the OCSP responder's signing key (the same CA that
   # issues the TLS listener cert here) is the only trust anchor needed.
-  resp=$(podman exec kk-verify openssl ocsp -issuer /verify/ca-chain.pem -CAfile /verify/ca-chain.pem -cert "$relpath" \
-    -url "https://$HUB_HOST:$HUB_PORT/ocsp" -no_nonce 2>&1) || true
+  # Retry only a resolver failure ("Try again" from BIO_lookup_ex): podman 4.9's DNS
+  # blackout after a container removal (tests/live/lib/podman.sh), not an OCSP answer.
+  local try
+  for try in 1 2 3 4 5 6; do
+    resp=$(podman exec kk-verify openssl ocsp -issuer /verify/ca-chain.pem -CAfile /verify/ca-chain.pem -cert "$relpath" \
+      -url "https://$HUB_HOST:$HUB_PORT/ocsp" -no_nonce 2>&1) || true
+    echo "$resp" | grep -q "BIO_lookup_ex" || break
+    sleep 10
+  done
   if echo "$resp" | grep -qi "$want" && echo "$resp" | grep -qi "Response verify OK"; then
     pass "$label: OCSP responder reports $want (signature verified)"
   else
@@ -320,7 +334,7 @@ else
   tail -30 "$RUN_DIR/certbot/revoke.log"
 fi
 
-podman rm -f kk-certbot >/dev/null 2>&1
+kk_rm kk-certbot
 
 # ---------------------------------------------------------------------------
 # lego
@@ -338,12 +352,28 @@ echo "=== lego ==="
 LEGO_COMMON=(--accept-tos --email uat@example.test --server "$ACME_SERVER" --path /data)
 LEGO_ENV=(-e LEGO_CA_CERTIFICATES=/etc/kk-ca/ca.pem -v "$RUN_DIR/tls-export/ca.pem:/etc/kk-ca/ca.pem:ro")
 
-podman run --name kk-lego --network "$NETWORK" --hostname kk-lego \
-    -v "$RUN_DIR/lego:/data" "${LEGO_ENV[@]}" \
-    docker.io/goacme/lego:latest \
-    run "${LEGO_COMMON[@]}" --domains kk-lego --http --http.address :80 \
-    > "$RUN_DIR/lego/issue.log" 2>&1
-podman rm -f kk-lego >/dev/null 2>&1
+# run_lego_http01 LOG ARGS...: one lego run on the network. podman 4.9's DNS can
+# drop the next client's name for a while after another container is removed
+# (see tests/live/lib/podman.sh); the hub's http-01 fetch then fails with
+# "could not fetch" before any ACME rule is exercised. That one failure text,
+# and only that one, is retried; every other outcome is returned as-is.
+run_lego_http01() {
+  local log="$1" try rc=1; shift
+  for try in 1 2 3; do
+    kk_wait_dns "$NETWORK" "$HUB_HOST" || { fail "dns: $HUB_HOST did not resolve on $NETWORK (podman DNS blackout after a container removal), so the next step cannot be trusted"; return 1; }
+    podman run --name kk-lego --network "$NETWORK" --hostname kk-lego \
+        -v "$RUN_DIR/lego:/data" "${LEGO_ENV[@]}" \
+        docker.io/goacme/lego:latest "$@" > "$log" 2>&1
+    rc=$?
+    kk_rm kk-lego
+    [[ $rc -eq 0 ]] && return 0
+    grep -q "acme:error:connection :: could not fetch" "$log" || return $rc
+    echo "NOTE: lego http-01 fetch failed (attempt $try/3), retrying" >&2
+  done
+  return $rc
+}
+
+run_lego_http01 "$RUN_DIR/lego/issue.log" run "${LEGO_COMMON[@]}" --domains kk-lego --http --http.address :80
 
 # lego's actual success wording ("Server responded with a certificate", per
 # the pulled image) doesn't match "obtained"/"successfully" -- the ticket's
@@ -363,12 +393,7 @@ else
 fi
 
 LEGO_PRE_RENEW_FP=$(openssl x509 -in "$RUN_DIR/verify/lego-cert.pem" -noout -fingerprint -sha256 2>/dev/null || true)
-podman run --name kk-lego --network "$NETWORK" --hostname kk-lego \
-    -v "$RUN_DIR/lego:/data" "${LEGO_ENV[@]}" \
-    docker.io/goacme/lego:latest \
-    run "${LEGO_COMMON[@]}" --domains kk-lego --http --http.address :80 --renew-force --ari-disable --no-random-sleep \
-    > "$RUN_DIR/lego/renew.log" 2>&1
-podman rm -f kk-lego >/dev/null 2>&1
+run_lego_http01 "$RUN_DIR/lego/renew.log" run "${LEGO_COMMON[@]}" --domains kk-lego --http --http.address :80 --renew-force --ari-disable --no-random-sleep
 
 # Same reasoning as the obtain step above: assert on the artifact (a new
 # cert file with a DIFFERENT fingerprint than before renewal -- not just any
@@ -386,6 +411,7 @@ else
   tail -30 "$RUN_DIR/lego/renew.log"
 fi
 
+kk_wait_dns "$NETWORK" "$HUB_HOST" || fail "dns: $HUB_HOST did not resolve on $NETWORK (podman DNS blackout after a container removal), so the next step cannot be trusted"
 podman run --name kk-lego --network "$NETWORK" --hostname kk-lego \
     -v "$RUN_DIR/lego:/data" "${LEGO_ENV[@]}" \
     docker.io/goacme/lego:latest \
@@ -400,7 +426,7 @@ else
   fail "lego: revoke"
   tail -30 "$RUN_DIR/lego/revoke.log"
 fi
-podman rm -f kk-lego >/dev/null 2>&1
+kk_rm kk-lego
 
 echo "--- hub log tail ---"
 podman logs "$HUB_NAME" 2>&1 | tail -60

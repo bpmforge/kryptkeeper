@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 )
@@ -326,5 +327,20 @@ func TestDeepPortRangeHonorsNarrowing(t *testing.T) {
 	lo, hi = deepPortRange(ScanConfig{})
 	if lo != 1 || hi != 65535 {
 		t.Errorf("default deep range should be full: %d-%d", lo, hi)
+	}
+}
+
+func TestComputeCertRiskWeakSignatureAllKeyTypes(t *testing.T) {
+	for _, alg := range []x509.SignatureAlgorithm{x509.SHA1WithRSA, x509.MD5WithRSA, x509.MD2WithRSA, x509.ECDSAWithSHA1, x509.DSAWithSHA1} {
+		c := &x509.Certificate{
+			NotBefore:          time.Now().Add(-time.Hour),
+			NotAfter:           time.Now().Add(365 * 24 * time.Hour),
+			PublicKeyAlgorithm: x509.Ed25519,
+			SignatureAlgorithm: alg,
+		}
+		_, flags := computeCertRisk(c, "", true)
+		if !slices.Contains(flags, "WEAK_SIGNATURE") {
+			t.Errorf("%v: expected WEAK_SIGNATURE, got %v", alg, flags)
+		}
 	}
 }

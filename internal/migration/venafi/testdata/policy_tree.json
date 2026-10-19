@@ -1,0 +1,50 @@
+{
+  "folders": [
+    {
+      "path": "\\VED\\Policy\\Certificates\\Web Servers",
+      "attributes": {
+        "Approver": ["AD+corp:secops"],
+        "Certificate Authority": ["\\VED\\Policy\\CA Templates\\Internal"],
+        "Contact": ["local:{guid}", "AD+corp:alice"],
+        "Disable Automatic Renewal": ["0"],
+        "Domain Suffix Whitelist": ["example.com", "corp.example.com"],
+        "Key Algorithm": ["RSA"],
+        "Key Bit Strength": ["3072"],
+        "Management Type": ["Enrollment"],
+        "Prohibit Wildcard": ["1"],
+        "Renewal Window": ["30"],
+        "Validity Period": ["365"]
+      }
+    },
+    {
+      "path": "\\VED\\Policy\\Certificates",
+      "attributes": {
+        "Contact": ["AD+corp:pki-team"],
+        "Management Type": ["Provisioning"]
+      }
+    },
+    {
+      "path": "\\VED\\Policy\\Certificates\\Internal",
+      "attributes": {
+        "Contact": ["AD+corp:platform"],
+        "Disable Automatic Renewal": ["1"],
+        "Key Algorithm": ["ECC"],
+        "Key Bit Strength": ["256"],
+        "Renewal Window": ["14"],
+        "Validity Period": ["90"]
+      }
+    },
+    {
+      "path": "\\VED\\Policy\\Certificates\\Web-Servers",
+      "attributes": {
+        "Key Algorithm": ["RSA"],
+        "Key Bit Strength": ["2048"],
+        "Validity Period": ["30"]
+      }
+    },
+    {
+      "path": "\\VED\\Policy\\Certificates\\Empty",
+      "attributes": {}
+    }
+  ]
+}

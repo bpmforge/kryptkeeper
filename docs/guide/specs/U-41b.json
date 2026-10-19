@@ -1,0 +1,211 @@
+{
+  "task": "U-41b",
+  "title": "Turn on multi-tenancy and manage tenants: MULTI_TENANCY=on hub",
+  "sourceStory": "STORIES.md#u-41b",
+  "persona": "platform super-admin (bootstrap token session)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/tenants"
+      },
+      "caption": "Open /tenants",
+      "slug": "tenants-on-empty",
+      "expect": {
+        "role": "button",
+        "name": "Create tenant"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-41b/01-tenants-on-empty.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "placeholder": "acme"
+      },
+      "value": "acme",
+      "caption": "Fill **acme** with \"acme\"",
+      "slug": "tenant-id",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-41b/02-tenant-id.png",
+        "annotated": "docs/guide/screenshots/U-41b/02-tenant-id-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 279,
+          "w": 196,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "placeholder": "Acme Corp"
+      },
+      "value": "Acme Corp",
+      "caption": "Fill **Acme Corp** with \"Acme Corp\"",
+      "slug": "tenant-display-name",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-41b/03-tenant-display-name.png",
+        "annotated": "docs/guide/screenshots/U-41b/03-tenant-display-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 469,
+          "y": 279,
+          "w": 196,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Create tenant"
+      },
+      "caption": "Click **Create tenant**",
+      "slug": "tenant-created",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-41b/04-tenant-created.png",
+        "annotated": "docs/guide/screenshots/U-41b/04-tenant-created-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 673,
+          "y": 289,
+          "w": 140,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Tenant view"
+      },
+      "value": {
+        "index": 1
+      },
+      "caption": "Select \"[object Object]\" in **Tenant view**",
+      "slug": "tenant-switcher",
+      "optional": true,
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-41b/05-tenant-switcher.png",
+        "annotated": "docs/guide/screenshots/U-41b/05-tenant-switcher-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 16,
+          "y": 722,
+          "w": 187,
+          "h": 32
+        }
+      }
+    }
+  ],
+  "flags": "CONFIG (MULTI_TENANCY=on + KRYPTKEEPER_MULTI_TENANCY_EXPERIMENTAL=accept-risk; only the platform super-admin session can administer tenants)",
+  "principal": "tenboot",
+  "lastRun": {
+    "at": "2026-10-18T12:53:33.322Z",
+    "base": "http://127.0.0.1:14183",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-41b",
+    "steps": 5,
+    "shots": 5,
+    "annotated": 4,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/tenants"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-41b/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-41b/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

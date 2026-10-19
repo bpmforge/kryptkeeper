@@ -411,3 +411,61 @@ func TestNewConfigStoreFromEnv_OpensWithPassphrase(t *testing.T) {
 		t.Fatalf("Set on env-constructed store: %v", err)
 	}
 }
+
+func TestEscalationConfigKeysRoundTripAndValidate(t *testing.T) {
+	s := newFreshConfigStore(t, []byte("test-passphrase"))
+	ctx := context.Background()
+	if err := s.Set(ctx, "notifications.escalation_channel", "slack", "a"); err != nil {
+		t.Fatalf("slack rejected: %v", err)
+	}
+	if err := s.Set(ctx, "notifications.escalation_channel", "", "a"); err != nil {
+		t.Fatalf("empty rejected: %v", err)
+	}
+	if err := s.Set(ctx, "notifications.escalation_channel", "sms", "a"); err == nil {
+		t.Fatal("sms accepted, want rejection")
+	}
+	const target = "https://hooks.example.com/t/ESCTOKEN"
+	if err := s.Set(ctx, "notifications.escalation_target", target, "a"); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := EffectiveSettings(ctx, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(settings)
+	if strings.Contains(string(b), "ESCTOKEN") {
+		t.Fatal("escalation target leaked in effective settings")
+	}
+}
+
+func TestSLOObjectiveKeysValidate(t *testing.T) {
+	cases := []struct {
+		key, val string
+		ok       bool
+	}{
+		{"slo.renewal_success_objective", "0.995", true},
+		{"slo.renewal_success_objective", "1", false},
+		{"slo.renewal_success_objective", "0.4", false},
+		{"slo.renewal_success_objective", "0.5", false},
+		{"slo.issuance_success_objective", "abc", false},
+		{"slo.issuance_success_objective", "NaN", false},
+		{"slo.issuance_success_objective", "Inf", false},
+		{"slo.issuance_latency_p95_seconds", "0", false},
+		{"slo.issuance_latency_p95_seconds", "7.5", true},
+		{"slo.issuance_latency_p95_seconds", "3601", false},
+		{"notifications.smtp_host", "anything", true},
+	}
+	for _, c := range cases {
+		err := validateConfigValue(c.key, c.val)
+		if (err == nil) != c.ok {
+			t.Errorf("validateConfigValue(%s, %q) err=%v, want ok=%v", c.key, c.val, err, c.ok)
+		}
+		if err != nil && errors.Is(err, errConfigUnknownKey) {
+			t.Errorf("%s %q: validation error must not be unknown-key", c.key, c.val)
+		}
+	}
+	store := newConfigTestStore(t)
+	if err := store.Set(t.Context(), "slo.renewal_success_objective", "1", "tester"); err == nil {
+		t.Fatal("store.Set must reject an out-of-range objective")
+	}
+}

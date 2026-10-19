@@ -7,7 +7,7 @@ package bootstrap
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"time"
 
@@ -60,7 +60,8 @@ func registerAgilityHandler(mux *http.ServeMux, auth *Authenticator, certProvide
 			writeMethodNotAllowed(w, http.MethodPost)
 			return
 		}
-		principal, err := auth.AuthenticatePrincipal(r, time.Now())
+		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
+		principal := pd.ID
 		if err != nil {
 			emitAuditEvent(r, auditProvider, "", "crypto_agility.roadmap", "policy", "crypto-agility", AuditOutcomeDenied)
 			writeUnauthorized(w)
@@ -81,12 +82,16 @@ func registerAgilityHandler(mux *http.ServeMux, auth *Authenticator, certProvide
 		result, err := listAllCertificates(r.Context(), certProvider, CertificateListQuery{})
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal, "crypto_agility.roadmap", "policy", "crypto-agility", AuditOutcomeFailure)
-			log.Printf("crypto agility: list certs: %v", err)
+			logging.Infof("crypto agility: list certs: %v", err)
 			writeServiceUnavailable(w, "inventory unavailable")
 			return
 		}
-		records := make([]pqc.CertRecord, 0, len(result.Items))
-		for _, item := range result.Items {
+		// Tenant scope first, then active-only: a revoked or renewed
+		// predecessor is not "remaining" work, and counting it would stop
+		// progress ever reaching 100% after a migration.
+		items := activeCertificates(filterCertificatesByTenant(r.Context(), activeTenantStore, pd, result.Items))
+		records := make([]pqc.CertRecord, 0, len(items))
+		for _, item := range items {
 			records = append(records, toPQCCertRecord(item))
 		}
 

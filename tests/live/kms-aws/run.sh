@@ -6,9 +6,10 @@
 set -u -o pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
+. "$HERE/../lib/podman.sh"
 CE="${CONTAINER_ENGINE:-podman}"
 NAME=kk-uat-moto
-PORT="${KK_MOTO_PORT:-5555}"
+PORT="${KK_MOTO_PORT:-$(kk_free_port)}"
 IMAGE="${KK_MOTO_IMAGE:-docker.io/motoserver/moto:latest}"
 cleanup() { "$CE" rm -f "$NAME" >/dev/null 2>&1 || true; }
 trap cleanup EXIT

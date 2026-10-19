@@ -92,19 +92,6 @@ export default function Tenants() {
         }
       />
 
-      {enabled ? (
-        <div
-          role="status"
-          className="flex items-center gap-2 rounded-xl border border-border px-4 py-3 text-sm text-foreground"
-        >
-          <Badge tone="warning">Experimental</Badge>
-          <span>
-            Experimental: tenant isolation is not a security boundary in this
-            release.
-          </span>
-        </div>
-      ) : null}
-
       {ctxQuery.isLoading ? (
         <StateMessage title="Loading" message="Fetching tenant context…" />
       ) : !enabled ? (
@@ -118,6 +105,12 @@ export default function Tenants() {
           <p className="text-sm text-foreground">
             You are scoped to tenant <Badge tone="info">{ctx?.tenant}</Badge>.
             Tenant administration is restricted to super-admins.
+          </p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Super-admin is a property of the credential, not of a role: only the raw bootstrap
+            (root) token resolves as super-admin while multi-tenancy is on. A named user is
+            tenant-scoped even with the pki-admin role, so tenants are administered with the
+            bootstrap token.
           </p>
         </Panel>
       ) : (
@@ -153,20 +146,20 @@ export default function Tenants() {
 
             <div className="mt-4 flex flex-wrap items-end gap-2">
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
+                <label htmlFor="tenant-new-id" className="mb-1 block text-xs text-muted-foreground">
                   Tenant ID
                 </label>
-                <Input
+                <Input id="tenant-new-id"
                   value={newId}
                   onChange={(e) => setNewId(e.target.value)}
                   placeholder="acme"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
+                <label htmlFor="tenant-new-name" className="mb-1 block text-xs text-muted-foreground">
                   Display name
                 </label>
-                <Input
+                <Input id="tenant-new-name"
                   value={newName}
                   onChange={(e) => setNewName(e.target.value)}
                   placeholder="Acme Corp"
@@ -195,8 +188,8 @@ export default function Tenants() {
           <Panel title="Assign a CA to a tenant">
             <div className="flex flex-wrap items-end gap-2">
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">CA</label>
-                <Select value={caId} onChange={(e) => setCaId(e.target.value)}>
+                <label htmlFor="tenant-assign-ca" className="mb-1 block text-xs text-muted-foreground">CA</label>
+                <Select id="tenant-assign-ca" value={caId} onChange={(e) => setCaId(e.target.value)}>
                   <option value="">Select a CA…</option>
                   {cas.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -206,10 +199,10 @@ export default function Tenants() {
                 </Select>
               </div>
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
+                <label htmlFor="tenant-assign-ca-tenant" className="mb-1 block text-xs text-muted-foreground">
                   Tenant
                 </label>
-                <Select
+                <Select id="tenant-assign-ca-tenant"
                   value={caTenant}
                   onChange={(e) => setCaTenant(e.target.value)}
                 >
@@ -242,10 +235,10 @@ export default function Tenants() {
             </p>
             <div className="flex flex-wrap items-end gap-2">
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
+                <label htmlFor="tenant-tpl" className="mb-1 block text-xs text-muted-foreground">
                   Template
                 </label>
-                <Select
+                <Select id="tenant-tpl"
                   value={tplId}
                   onChange={(e) => setTplId(e.target.value)}
                 >
@@ -258,10 +251,10 @@ export default function Tenants() {
                 </Select>
               </div>
               <div>
-                <label className="mb-1 block text-xs text-muted-foreground">
+                <label htmlFor="tenant-tpl-tenant" className="mb-1 block text-xs text-muted-foreground">
                   Tenant
                 </label>
-                <Select
+                <Select id="tenant-tpl-tenant"
                   value={tplTenant}
                   onChange={(e) => setTplTenant(e.target.value)}
                 >

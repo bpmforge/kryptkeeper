@@ -34,6 +34,18 @@ func isActiveCertificate(item *CertificateItem) bool {
 		item.RenewalStatus != string(RenewalStatusRenewed)
 }
 
+// ownerFilterUnassigned is the only value of the list `owner` filter.
+const ownerFilterUnassigned = "unassigned"
+
+// unownedCertSQL is isUnownedCertificate for the certificates table: the
+// dashboard count and the ?owner=unassigned list must be one definition
+// (W22-24), so both build on the active-certificate rule.
+const unownedCertSQL = activeCertSQL + " AND COALESCE(owner_team,'') = ''"
+
+func isUnownedCertificate(item *CertificateItem) bool {
+	return isActiveCertificate(item) && item.OwnerTeam == ""
+}
+
 // activeCertificates filters certs to the active ones, returning certs
 // unchanged (no copy) when every certificate is active.
 func activeCertificates(certs []CertificateItem) []CertificateItem {

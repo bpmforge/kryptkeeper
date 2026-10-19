@@ -36,6 +36,10 @@ type device struct {
 	mu      sync.Mutex
 	certs   map[string][2]string // name -> cert PEM, key PEM
 	binding string
+	// failBind makes PUT /api/binding answer 500 after POST /api/certs has
+	// already stored the new certificate: the "push failed mid-way" fault the
+	// W27-06 UAT uses to prove the previous binding stays current.
+	failBind bool
 }
 
 func selfSigned(cn string, dns []string, ca *x509.Certificate, caKey *ecdsa.PrivateKey, isCA bool) (*x509.Certificate, *ecdsa.PrivateKey, []byte, []byte) {
@@ -72,6 +76,7 @@ func main() {
 	token := flag.String("token", "", "bearer token the API requires")
 	caOut := flag.String("ca-out", "", "write the management CA certificate (PEM) here")
 	san := flag.String("san", "", "comma-separated DNS names for the leaf certificates (the container name the hub dials)")
+	failBind := flag.Bool("fail-bind", false, "answer PUT /api/binding with 500 (after the certificate upload), leaving the previous binding in place")
 	flag.Parse()
 	var sans []string
 	for _, n := range strings.Split(*san, ",") {
@@ -86,7 +91,7 @@ func main() {
 	}
 	_, _, mgmtCert, mgmtKey := selfSigned("mock-device-mgmt", sans, ca, caKey, false)
 	_, _, initCert, initKey := selfSigned("factory-default", sans, nil, nil, false)
-	d := &device{token: *token, certs: map[string][2]string{"factory": {string(initCert), string(initKey)}}, binding: "factory"}
+	d := &device{token: *token, certs: map[string][2]string{"factory": {string(initCert), string(initKey)}}, binding: "factory", failBind: *failBind}
 
 	mgmtPair, err := tls.X509KeyPair(mgmtCert, mgmtKey)
 	if err != nil {
@@ -142,6 +147,11 @@ func (d *device) api(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/binding":
 		_ = json.NewEncoder(w).Encode(map[string]string{"cert": d.binding})
 	case r.Method == http.MethodPut && r.URL.Path == "/api/binding":
+		if d.failBind {
+			log.Printf("mock device: -fail-bind: refusing to bind %s", body["cert"])
+			http.Error(w, "binding failed (injected)", http.StatusInternalServerError)
+			return
+		}
 		if _, ok := d.certs[body["cert"]]; !ok {
 			http.Error(w, "no such certificate", http.StatusNotFound)
 			return

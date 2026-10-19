@@ -1,0 +1,352 @@
+{
+  "task": "U-55",
+  "title": "Read the PKI risk reports",
+  "sourceStory": "STORIES.md#u-55",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/crypto-posture"
+      },
+      "caption": "Open /crypto-posture",
+      "slug": "crypto-posture",
+      "expect": {
+        "role": "button",
+        "name": "Notify owner"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-55/01-crypto-posture.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Trend range"
+      },
+      "value": "Last 30 days",
+      "caption": "Select \"Last 30 days\" in **Trend range**",
+      "slug": "trend-30-days",
+      "optional": true,
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-55/02-trend-30-days.png",
+        "annotated": "docs/guide/screenshots/U-55/02-trend-30-days-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 401,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Notify owner"
+      },
+      "caption": "Click **Notify owner**",
+      "slug": "notify-owner-dialog",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-55/03-notify-owner-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "press",
+      "value": "Escape",
+      "caption": "press",
+      "slug": "press",
+      "capture": false,
+      "n": 4
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/pqc-migration"
+      },
+      "caption": "Open /reports/pqc-migration",
+      "slug": "pqc-migration",
+      "expect": {
+        "role": "button",
+        "name": "Start migration wave"
+      },
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-55/05-pqc-migration.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Start migration wave"
+      },
+      "caption": "Click **Start migration wave**",
+      "slug": "start-migration-wave-panel",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-55/06-start-migration-wave-panel.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/algorithm-sunset"
+      },
+      "caption": "Open /reports/algorithm-sunset",
+      "slug": "algorithm-sunset",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-55/07-algorithm-sunset.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/expiry-timeline"
+      },
+      "caption": "Open /reports/expiry-timeline",
+      "slug": "expiry-timeline",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-55/08-expiry-timeline.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "role": "button",
+        "name": "Open PQC wave"
+      },
+      "caption": "Locate **Open PQC wave**",
+      "slug": "open-pqc-wave",
+      "optional": true,
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-55/09-open-pqc-wave.png",
+        "annotated": "docs/guide/screenshots/U-55/09-open-pqc-wave-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1163,
+          "y": 24,
+          "w": 155,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/ca-health"
+      },
+      "caption": "Open /reports/ca-health",
+      "slug": "ca-health",
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-55/10-ca-health.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/revocation-activity"
+      },
+      "caption": "Open /reports/revocation-activity",
+      "slug": "revocation-activity",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-55/11-revocation-activity.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/issuance-velocity"
+      },
+      "caption": "Open /reports/issuance-velocity",
+      "slug": "issuance-velocity",
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-55/12-issuance-velocity.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:48:09.818Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-55",
+    "steps": 12,
+    "shots": 11,
+    "annotated": 2,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/reports/issuance-velocity"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-55/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-55/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

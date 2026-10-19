@@ -5,11 +5,12 @@
 package bootstrap
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"strings"
 	"time"
@@ -58,6 +59,12 @@ func registerKeyHandlers(mux *http.ServeMux, auth *Authenticator, store keystore
 				writeServiceUnavailable(w, "key list unavailable")
 				return
 			}
+			// W23-23: keys inside a provider recovery window are listed (flagged
+			// pending_deletion) so they can be seen and cancelled.
+			if pl, ok := store.(keystore.PendingDeletionLister); ok {
+				metas = append(metas, pl.PendingDeletions(time.Now())...)
+			}
+			metas = filterKeyMetasByTenant(r.Context(), activeTenantStore, principalDetails, metas)
 			emitAuditEvent(r, auditProvider, principal, "key.list", "key", "keys", AuditOutcomeSuccess)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -66,6 +73,9 @@ func registerKeyHandlers(mux *http.ServeMux, auth *Authenticator, store keystore
 			}{Data: metas})
 
 		case http.MethodPost:
+			if denyTenantPrincipalKeyOp(w, r, auditProvider, principalDetails, "key.generate", "key", "keys") {
+				return
+			}
 			var req struct {
 				ID        string `json:"id"`
 				Algorithm string `json:"algorithm"`
@@ -126,7 +136,7 @@ func registerKeyHandlers(mux *http.ServeMux, auth *Authenticator, store keystore
 					writeBadRequest(w, "unsupported algorithm")
 					return
 				}
-				log.Printf("key generate failed: %v", err)
+				logging.Warnf("key generate failed: %v", err)
 				emitAuditEvent(r, auditProvider, principal, "key.generate", "key", req.ID, AuditOutcomeFailure)
 				writeServiceUnavailable(w, "key generation failed")
 				return
@@ -171,6 +181,9 @@ func registerKeyHandlers(mux *http.ServeMux, auth *Authenticator, store keystore
 				writeMethodNotAllowed(w, http.MethodPost)
 				return
 			}
+			if denyTenantPrincipalKeyOp(w, r, auditProvider, principalDetails, "key.import", "key", "-") {
+				return
+			}
 			var req struct {
 				ID         string `json:"id"`
 				BackupPEM  string `json:"backup_pem"`
@@ -209,11 +222,60 @@ func registerKeyHandlers(mux *http.ServeMux, auth *Authenticator, store keystore
 			return
 		}
 
+		// W23 per-key routes (policy, compromise, cancel-deletion) are tenant
+		// scoped like rotate/export: a key outside the caller's tenant is 404.
+		for _, suffix := range []string{"/policy", "/compromise", "/cancel-deletion"} {
+			if !strings.HasSuffix(tail, suffix) {
+				continue
+			}
+			if id := strings.TrimSuffix(tail, suffix); !keyVisibleToTenant(r.Context(), activeTenantStore, principalDetails, id) {
+				emitAuditEvent(r, auditProvider, principal, "key"+strings.ReplaceAll(suffix, "/", "."), "key", id, AuditOutcomeDenied)
+				writeNotFound(w, "key not found")
+				return
+			}
+		}
+
+		// GET/PUT /api/v1/keys/{id}/policy (W23-38). Admin-only but not
+		// ACL-gated: a lost owner must not brick a key.
+		if strings.HasSuffix(tail, "/policy") {
+			handleKeyPolicy(w, r, store, auditProvider, principal, strings.TrimSuffix(tail, "/policy"))
+			return
+		}
+
+		// POST /api/v1/keys/{id}/compromise (W23-38). Always dual-controlled.
+		if strings.HasSuffix(tail, "/compromise") {
+			handleKeyCompromise(w, r, store, dualControl, auditProvider, principalDetails, strings.TrimSuffix(tail, "/compromise"))
+			return
+		}
+
+		// POST /api/v1/keys/{id}/cancel-deletion (W23-22)
+		if strings.HasSuffix(tail, "/cancel-deletion") {
+			id := strings.TrimSuffix(tail, "/cancel-deletion")
+			if r.Method != http.MethodPost {
+				writeMethodNotAllowed(w, http.MethodPost)
+				return
+			}
+			if id == "" || strings.Contains(id, "/") {
+				writeNotFound(w, "key not found")
+				return
+			}
+			handleCancelKeyDeletion(w, r, store, dualControl, auditProvider, principal, id)
+			return
+		}
+
 		// Routes: /api/v1/keys/{id} or /api/v1/keys/{id}/...
 		if strings.HasSuffix(tail, "/rotate") {
 			id := strings.TrimSuffix(tail, "/rotate")
 			if r.Method != http.MethodPost {
 				writeMethodNotAllowed(w, http.MethodPost)
+				return
+			}
+			if !keyVisibleToTenant(r.Context(), activeTenantStore, principalDetails, id) {
+				emitAuditEvent(r, auditProvider, principal, "key.rotate", "key", id, AuditOutcomeDenied)
+				writeNotFound(w, "key not found")
+				return
+			}
+			if !authorizeKeyOp(w, r, auditProvider, principalDetails, id) {
 				return
 			}
 			var req struct {
@@ -264,7 +326,7 @@ func registerKeyHandlers(mux *http.ServeMux, auth *Authenticator, store keystore
 					writeNotFound(w, "key not found")
 					return
 				}
-				log.Printf("key rotate failed: %v", err)
+				logging.Warnf("key rotate failed: %v", err)
 				emitAuditEvent(r, auditProvider, principal, "key.rotate", "key", id, AuditOutcomeFailure)
 				writeServiceUnavailable(w, "key rotation failed")
 				return
@@ -283,6 +345,14 @@ func registerKeyHandlers(mux *http.ServeMux, auth *Authenticator, store keystore
 			id := strings.TrimSuffix(tail, "/export")
 			if r.Method != http.MethodPost {
 				writeMethodNotAllowed(w, http.MethodPost)
+				return
+			}
+			if !keyVisibleToTenant(r.Context(), activeTenantStore, principalDetails, id) {
+				emitAuditEvent(r, auditProvider, principal, "key.export", "key", id, AuditOutcomeDenied)
+				writeNotFound(w, "key not found")
+				return
+			}
+			if !authorizeKeyOp(w, r, auditProvider, principalDetails, id) {
 				return
 			}
 			var req struct {
@@ -340,6 +410,11 @@ func registerKeyHandlers(mux *http.ServeMux, auth *Authenticator, store keystore
 			writeNotFound(w, "key not found")
 			return
 		}
+		if !keyVisibleToTenant(r.Context(), activeTenantStore, principalDetails, id) {
+			emitAuditEvent(r, auditProvider, principal, "key.op", "key", id, AuditOutcomeDenied)
+			writeNotFound(w, "key not found")
+			return
+		}
 
 		switch r.Method {
 		case http.MethodGet:
@@ -362,6 +437,9 @@ func registerKeyHandlers(mux *http.ServeMux, auth *Authenticator, store keystore
 			}{Data: meta})
 
 		case http.MethodDelete:
+			if !authorizeKeyOp(w, r, auditProvider, principalDetails, id) {
+				return
+			}
 			// W19-19: same in-use guard /rotate applies (W9-04/G-35) --
 			// deleting a key that backs a CA would orphan it just as
 			// silently as rotating it out from under the CA would.
@@ -406,4 +484,108 @@ func registerKeyHandlers(mux *http.ServeMux, auth *Authenticator, store keystore
 			writeMethodNotAllowed(w, http.MethodGet+", "+http.MethodDelete)
 		}
 	})
+}
+
+// handleCancelKeyDeletion un-schedules a provider-side key deletion. Refusals
+// are audited too: an attempt to cancel is itself a security-relevant event.
+func handleCancelKeyDeletion(w http.ResponseWriter, r *http.Request, store keystore.Store, dualControl *KeyDualControl, auditProvider AuditProvider, principal, id string) {
+	const auditAction = "key.destroy_cancel"
+	c, ok := store.(keystore.DeletionCanceller)
+	if !ok {
+		emitAuditEvent(r, auditProvider, principal, auditAction, "key", id, AuditOutcomeDenied)
+		writeErrorEnvelope(w, http.StatusConflict, "conflict", "this keystore backend has no scheduled deletions to cancel")
+		return
+	}
+	can, err := c.CanCancelDeletion(id, time.Now())
+	if err != nil {
+		emitAuditEvent(r, auditProvider, principal, auditAction, "key", id, AuditOutcomeFailure)
+		writeServiceUnavailable(w, "key deletion status unavailable")
+		return
+	}
+	if !can {
+		emitAuditEvent(r, auditProvider, principal, auditAction, "key", id, AuditOutcomeDenied)
+		writeErrorEnvelope(w, http.StatusConflict, "conflict", "key is not in a cancellable pending-deletion window")
+		return
+	}
+	if dualControl.Enabled() {
+		action, err := dualControl.Propose(r.Context(), keyActionCancelDelete, id, principal)
+		if err != nil {
+			emitAuditEvent(r, auditProvider, principal, auditAction, "key", id, AuditOutcomeFailure)
+			writeServiceUnavailable(w, "dual-control proposal failed")
+			return
+		}
+		emitAuditEventDetail(r, auditProvider, principal, auditAction, "key", id, AuditOutcomeProposed,
+			fmt.Sprintf(`{"action_id":%q}`, action.ID))
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"data":{"status":"proposed","action_id":%q,"message":"dual control is on — a second approver must approve this cancellation"}}`, action.ID)))
+		return
+	}
+	if err := c.CancelDeletion(r.Context(), id); err != nil {
+		emitAuditEvent(r, auditProvider, principal, auditAction, "key", id, AuditOutcomeFailure)
+		if errors.Is(err, keystore.ErrNotCancellable) {
+			writeErrorEnvelope(w, http.StatusConflict, "conflict", "key is not in a cancellable pending-deletion window")
+			return
+		}
+		logging.Warnf("key deletion cancel failed: %v", err)
+		writeServiceUnavailable(w, "key deletion cancel failed")
+		return
+	}
+	emitAuditEventDetail(r, auditProvider, principal, auditAction, "key", id, AuditOutcomeSuccess,
+		fmt.Sprintf(`{"id":%q}`, id))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(fmt.Sprintf(`{"data":{"status":"cancelled","id":%q}}`, id)))
+}
+
+// keyOwnerTenant maps a keystore key to the tenant of the CA it backs. Keys the
+// CA store cannot attribute to a CA (ssh-ca, escrow material, standalone keys)
+// have no owner, so only an unscoped super-admin may touch them.
+func keyOwnerTenant(ctx context.Context, ts TenantStore, keyID string) (string, bool) {
+	if activeCAStore == nil || ts == nil {
+		return "", false
+	}
+	caID, found, err := ca.KeyInUseByCA(activeCAStore, keyID)
+	if err != nil || !found {
+		return "", false
+	}
+	t, err := ts.CATenant(ctx, caID)
+	if err != nil {
+		return "", false // deny by default on lookup failure
+	}
+	return t, true
+}
+
+// keyVisibleToTenant reports whether pd may see/operate on keyID.
+func keyVisibleToTenant(ctx context.Context, ts TenantStore, pd AuthPrincipal, keyID string) bool {
+	if tenantBypass(pd) {
+		return true
+	}
+	t, ok := keyOwnerTenant(ctx, ts, keyID)
+	return ok && t == pd.Tenant
+}
+
+// denyTenantPrincipalKeyOp refuses key operations that are not attributable to a
+// single tenant (backup, restore, escrow, generate, import) unless the caller is
+// an unscoped super-admin. Returns true when it has written the 403.
+func denyTenantPrincipalKeyOp(w http.ResponseWriter, r *http.Request, audit AuditProvider, pd AuthPrincipal, action, resType, resID string) bool {
+	if tenantBypass(pd) {
+		return false
+	}
+	emitAuditEventDetail(r, audit, pd.ID, action, resType, resID, AuditOutcomeDenied, `{"reason":"super-admin only when multi-tenancy is on"}`)
+	writeForbidden(w, "this key operation is restricted to the platform super-admin when multi-tenancy is on")
+	return true
+}
+
+func filterKeyMetasByTenant(ctx context.Context, ts TenantStore, pd AuthPrincipal, metas []keystore.KeyMetadata) []keystore.KeyMetadata {
+	if tenantBypass(pd) {
+		return metas
+	}
+	out := make([]keystore.KeyMetadata, 0, len(metas))
+	for _, m := range metas {
+		if keyVisibleToTenant(ctx, ts, pd, m.ID) {
+			out = append(out, m)
+		}
+	}
+	return out
 }

@@ -1,0 +1,72 @@
+{{- if .Values.dashboard.enabled -}}
+{{- $fn := include "kryptkeeper.fullname" . -}}
+{{- $scheme := ternary "https" "http" .Values.tls.enabled -}}
+{{- $upstream := printf "%s://%s:%v" $scheme $fn .Values.service.port -}}
+{{- if and .Values.tls.enabled (not .Values.dashboard.hubCA.existingSecret) -}}
+{{- fail "dashboard.hubCA.existingSecret is required when dashboard.enabled and tls.enabled" -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kryptkeeper.dashboardFullname" . }}
+  labels:
+    {{- include "kryptkeeper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+data:
+  # Derived from the repo-root nginx.conf. The hub's TLS certificate is
+  # always verified when TLS is on; with TLS off there is nothing to verify and
+  # no proxy_ssl_* directive is emitted (never "verify off").
+  default.conf: |
+    server {
+        listen 8080;
+        root /usr/share/nginx/html;
+        index index.html;
+
+        location /api/ {
+            proxy_pass {{ $upstream }};
+            {{- if .Values.tls.enabled }}
+            proxy_ssl_trusted_certificate /etc/kryptkeeper/tls/{{ .Values.dashboard.hubCA.key }};
+            proxy_ssl_verify on;
+            proxy_ssl_verify_depth 2;
+            proxy_ssl_name {{ $fn }};
+            {{- end }}
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            # Append, never pass through: the hub reads X-Forwarded-For
+            # right-to-left and trusts only what a trusted proxy wrote.
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+
+        location /healthz {
+            proxy_pass {{ $upstream }};
+            {{- if .Values.tls.enabled }}
+            proxy_ssl_trusted_certificate /etc/kryptkeeper/tls/{{ .Values.dashboard.hubCA.key }};
+            proxy_ssl_verify on;
+            proxy_ssl_verify_depth 2;
+            proxy_ssl_name {{ $fn }};
+            {{- end }}
+        }
+
+        location /readyz {
+            proxy_pass {{ $upstream }};
+            {{- if .Values.tls.enabled }}
+            proxy_ssl_trusted_certificate /etc/kryptkeeper/tls/{{ .Values.dashboard.hubCA.key }};
+            proxy_ssl_verify on;
+            proxy_ssl_verify_depth 2;
+            proxy_ssl_name {{ $fn }};
+            {{- end }}
+        }
+
+        # OWASP-003 baseline headers; in this location only because nginx drops
+        # inherited add_header once a block declares its own. No script CSP or
+        # HSTS: the SPA is unverified against script-src and TLS terminates
+        # at the ingress.
+        location / {
+            add_header X-Content-Type-Options "nosniff" always;
+            add_header Referrer-Policy "no-referrer" always;
+            add_header X-Frame-Options "DENY" always;
+            add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+            try_files $uri $uri/ /index.html;
+        }
+    }
+{{- end }}

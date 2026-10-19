@@ -31,13 +31,36 @@ export function useFirstRun(): {
   useEffect(() => {
     if (dismissed) return;
     let cancelled = false;
-    api
-      .cas({ limit: 1 })
-      .then((res) => {
-        if (!cancelled) setCaCount(extractList<CaRecord>(res.data).length);
-      })
-      .catch(() => {
-        if (!cancelled) setCaCount(UNKNOWN_ERRORED);
+    // Server pref first (W33-03): a second browser for the same user must not
+    // re-trigger the wizard. Any prefs error is ignored and falls through to
+    // the CA-count check (localStorage already handled above is the offline
+    // fallback). Promise.resolve().then() also turns a synchronous throw into
+    // a rejection.
+    Promise.resolve()
+      .then(() => api.userPrefs())
+      .then(
+        (res) => res.data?.onboarding_dismissed === true,
+        () => false,
+      )
+      .then((serverDismissed) => {
+        if (cancelled) return;
+        if (serverDismissed) {
+          try {
+            localStorage.setItem(STORAGE_KEY, "1");
+          } catch {
+            // storage unavailable: the server pref still holds
+          }
+          setDismissed(true);
+          return;
+        }
+        return api
+          .cas({ limit: 1 })
+          .then((res) => {
+            if (!cancelled) setCaCount(extractList<CaRecord>(res.data).length);
+          })
+          .catch(() => {
+            if (!cancelled) setCaCount(UNKNOWN_ERRORED);
+          });
       });
     return () => {
       cancelled = true;
@@ -47,6 +70,10 @@ export function useFirstRun(): {
   const dismiss = () => {
     localStorage.setItem(STORAGE_KEY, "1");
     setDismissed(true);
+    // Best effort, never blocks the shell; localStorage is the fallback.
+    Promise.resolve()
+      .then(() => api.setUserPrefs({ onboarding_dismissed: true }))
+      .catch(() => {});
   };
 
   return {

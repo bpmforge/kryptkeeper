@@ -7,12 +7,15 @@ package bootstrap
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -37,22 +40,77 @@ import (
 const auditTransparencyMaxEntries = 100000
 
 // auditTransparencySigningKey returns the Ed25519 key that signs
-// checkpoints, from a base64 seed in the environment.
+// checkpoints. The seed comes from AUDIT_TRANSPARENCY_SIGNING_SEED (base64,
+// 32 bytes; an invalid value is a hard error). When unset, a seed is
+// generated once and PERSISTED under KRYPTKEEPER_DATA_DIR so the hub
+// works out of the box (W22-04).
 //
-// Deliberately fail-closed with NO ephemeral fallback: a checkpoint
-// signed by a per-process key is unverifiable after a restart, which
-// looks like tamper evidence while providing none. Unconfigured must
-// mean "no checkpoints", not "checkpoints you cannot trust".
+// The old "no ephemeral fallback" rule still holds: a checkpoint signed by
+// a per-process key is unverifiable after a restart, which looks like
+// tamper evidence while providing none. If the seed cannot be persisted
+// this returns an error (callers answer 503) rather than using a key that
+// would vanish.
 func auditTransparencySigningKey() (ed25519.PrivateKey, error) {
 	seedB64 := strings.TrimSpace(os.Getenv("AUDIT_TRANSPARENCY_SIGNING_SEED"))
 	if seedB64 == "" {
-		return nil, fmt.Errorf("AUDIT_TRANSPARENCY_SIGNING_SEED is not set")
+		var err error
+		if seedB64, err = provisionAuditSeed(); err != nil {
+			return nil, err
+		}
 	}
 	seed, err := base64.StdEncoding.DecodeString(seedB64)
 	if err != nil || len(seed) != ed25519.SeedSize {
-		return nil, fmt.Errorf("AUDIT_TRANSPARENCY_SIGNING_SEED must be %d base64-encoded bytes", ed25519.SeedSize)
+		return nil, fmt.Errorf("audit transparency signing seed must be %d base64-encoded bytes", ed25519.SeedSize)
 	}
 	return ed25519.NewKeyFromSeed(seed), nil
+}
+
+// provisionAuditSeed reads or creates <data dir>/audit-transparency.seed.
+// O_EXCL makes concurrent first requests converge on one winner: losers
+// re-read the file instead of overwriting it with a different key.
+func provisionAuditSeed() (string, error) {
+	dir := strings.TrimSpace(os.Getenv("KRYPTKEEPER_DATA_DIR"))
+	if dir == "" {
+		dir = "./var" // same default as sqliteDSNFromEnv
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("audit signing seed: data dir unavailable: %w", err)
+	}
+	path := filepath.Join(dir, "audit-transparency.seed")
+	read := func() (string, error) {
+		raw, err := os.ReadFile(path)
+		return strings.TrimSpace(string(raw)), err
+	}
+	if v, err := read(); err == nil && v != "" {
+		return v, nil
+	}
+	seed := make([]byte, ed25519.SeedSize)
+	if _, err := rand.Read(seed); err != nil {
+		return "", fmt.Errorf("audit signing seed: %w", err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(seed)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		v, rerr := read()
+		if rerr != nil || v == "" {
+			return "", fmt.Errorf("audit signing seed: %s exists but is unreadable or empty", path)
+		}
+		return v, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("audit signing seed: cannot persist: %w", err)
+	}
+	_, werr := f.WriteString(encoded + "\n")
+	cerr := f.Close()
+	if werr != nil || cerr != nil {
+		_ = os.Remove(path) // never leave a truncated seed for the next reader
+		return "", fmt.Errorf("audit signing seed: cannot persist: %v", errors.Join(werr, cerr))
+	}
+	// Logged on creation only (not per process via a package-level Once):
+	// the file existing afterwards makes every later call silent. The seed
+	// value itself is never logged.
+	logging.Warnf("AUDIT_TRANSPARENCY_SIGNING_SEED is unset; generated a transparency signing seed at %s. Set the env var or back this file up: losing it invalidates every published checkpoint", path)
+	return encoded, nil
 }
 
 // canonicalAuditLeaf is the exact byte encoding hashed into the tree.
@@ -111,7 +169,7 @@ func registerAuditTrustHandlers(mux *http.ServeMux, auth *Authenticator, roles *
 		tree, err := buildAuditMerkleLog(r.Context(), auditProvider)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal, action, "audit", "transparency", AuditOutcomeFailure)
-			log.Printf("audit transparency: build tree: %v", err)
+			logging.Infof("audit transparency: build tree: %v", err)
 			writeServiceUnavailable(w, "audit log unavailable")
 			return nil, false
 		}

@@ -7,7 +7,7 @@
 | ACME | No | Fixed profile: 90 days, server-auth, names validated by challenge. |
 | EST | No | Fixed profile: one year, client-auth, identity bound by EST authentication (D-112). |
 | SCEP | No | Fixed profile: one year, client-auth. Names come from a one-time challenge minted through the API, never the CSR (W20-16, `docs/ops/SCEP.md`). |
-| CMP | No | Fixed profile: one year, client-auth, shared-secret MAC. |
+| CMP | Approval only | Fixed profile: one year, client-auth, shared-secret MAC. `KRYPTKEEPER_CMP_TEMPLATE` names a template whose `require_approval` makes ir/cr/kur answer `waiting` until approved (clients poll with `pollReq`). |
 
 The protocols without templates are not unconstrained. Every issuance on
 every path also passes the data-driven issuance policy engine

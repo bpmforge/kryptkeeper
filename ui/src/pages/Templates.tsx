@@ -11,10 +11,43 @@ import {
   StateMessage,
 } from "../components/ops-ui";
 import { EmptyState } from "../components/EmptyState";
+import { PolicyDraftDialog } from "../components/PolicyDraftDialog";
 import { PageHeader } from "../components/PageHeader";
 import { extractList } from "../lib/models";
+import { formatDateTime } from "../components/ui";
 import { formatValidityPeriod } from "../lib/utils";
-import type { NamePolicy, SSHPolicy, TemplateRecord } from "../lib/models";
+import type {
+  NamePolicy,
+  SSHPolicy,
+  TemplateRecord,
+  TemplateRevision,
+} from "../lib/models";
+
+const EKU_LABELS: Record<string, string> = {
+  serverAuth: "Server auth",
+  clientAuth: "Client auth",
+  codeSigning: "Code signing",
+  emailProtection: "Email protection",
+  timeStamping: "Time stamping",
+  ocspSigning: "OCSP signing",
+  anyExtendedKeyUsage: "Any",
+};
+
+function ekuLabel(eku: string): string {
+  return EKU_LABELS[eku] ?? eku;
+}
+
+const BUILT_IN_ROLES = [
+  "pki-admin",
+  "pki-operator",
+  "approver",
+  "viewer",
+  "auditor",
+  "service-account",
+];
+
+const showValue = (v: unknown) =>
+  typeof v === "string" ? v : JSON.stringify(v);
 
 type TemplateForm = {
   name: string;
@@ -27,6 +60,7 @@ type TemplateForm = {
   enrolleeType: "machine" | "user";
   active: boolean;
   requireApproval: boolean;
+  enrollRoles: string;
   sshEnabled: boolean;
   sshUser: boolean;
   sshHost: boolean;
@@ -90,6 +124,7 @@ const emptyForm: TemplateForm = {
   enrolleeType: "machine",
   active: true,
   requireApproval: false,
+  enrollRoles: "",
   sshEnabled: false,
   sshUser: true,
   sshHost: false,
@@ -129,6 +164,8 @@ function formToPayload(f: TemplateForm) {
     // pki-admin is the server's default approver set; sending it explicitly
     // keeps the stored template self-describing.
     approval_roles: f.requireApproval ? ["pki-admin"] : [],
+    // PUT replaces the template: always send it or any edit wipes the roles.
+    enrollment_permissions: { enroll: splitList(f.enrollRoles) },
     ssh_policy: sshPolicyFromForm(f),
     name_policy: namePolicyFromForm(f),
   };
@@ -137,6 +174,7 @@ function formToPayload(f: TemplateForm) {
 export default function Templates() {
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [draftOpen, setDraftOpen] = useState(false);
   const [dialog, setDialog] = useState<"create" | "edit" | "delete" | null>(
     null,
   );
@@ -156,9 +194,22 @@ export default function Templates() {
     templatesQuery.data?.data,
     ["items"],
   );
-  const selected = selectedId
-    ? (templates.find((t) => t.id === selectedId) ?? null)
-    : null;
+  // Nothing explicitly chosen (first load, or after a delete): show the first
+  // template so the detail pane is never an empty half-page.
+  const selected =
+    (selectedId ? templates.find((t) => t.id === selectedId) : undefined) ??
+    templates[0] ??
+    null;
+
+  const revisionsQuery = useQuery({
+    queryKey: ["template-revisions", selected?.id, selected?.revision],
+    queryFn: () => api.templateRevisions(selected!.id),
+    enabled: !!selected,
+    retry: false,
+  });
+  const revisions: TemplateRevision[] = [
+    ...(revisionsQuery.data?.data ?? []),
+  ].sort((a, b) => b.revision - a.revision);
 
   const refresh = () =>
     queryClient.invalidateQueries({ queryKey: ["templates"] });
@@ -188,17 +239,21 @@ export default function Templates() {
       // PUT replaces the whole template: carry over what this form does not
       // edit, or saving would wipe the OID (dropping the template from
       // Windows autoenrollment), minimum key size and renewal overlap.
-      return api.updateTemplate(selected.id, {
-        ...formToPayload(form),
-        oid: selected.oid,
-        min_key_size: selected.min_key_size,
-        renewal_overlap: selected.renewal_overlap,
-        approval_roles: form.requireApproval
-          ? selected.approval_roles?.length
-            ? selected.approval_roles
-            : ["pki-admin"]
-          : [],
-      });
+      return api.updateTemplate(
+        selected.id,
+        {
+          ...formToPayload(form),
+          oid: selected.oid,
+          min_key_size: selected.min_key_size,
+          renewal_overlap: selected.renewal_overlap,
+          approval_roles: form.requireApproval
+            ? selected.approval_roles?.length
+              ? selected.approval_roles
+              : ["pki-admin"]
+            : [],
+        },
+        selected.revision,
+      );
     },
     onSuccess: async () => {
       setStatusMessage({
@@ -209,12 +264,20 @@ export default function Templates() {
       setDialog(null);
       await refresh();
     },
-    onError: (e) =>
-      setStatusMessage({
-        tone: "error",
-        title: "Update failed",
-        message: e instanceof Error ? e.message : "Try again.",
-      }),
+    onError: (e) => {
+      const msg = e instanceof Error ? e.message : "Try again.";
+      if (/if-match|412|precondition/i.test(msg)) {
+        setStatusMessage({
+          tone: "error",
+          title: "Update failed",
+          message:
+            "This template changed since you opened it. Reload and retry.",
+        });
+        void refresh();
+        return;
+      }
+      setStatusMessage({ tone: "error", title: "Update failed", message: msg });
+    },
   });
 
   const deleteMutation = useMutation({
@@ -259,6 +322,7 @@ export default function Templates() {
       enrolleeType: selected.enrollee_type === "user" ? "user" : "machine",
       active: selected.active,
       requireApproval: selected.require_approval ?? false,
+      enrollRoles: (selected.enrollment_permissions?.enroll ?? []).join(","),
       sshEnabled: !!selected.ssh_policy,
       sshUser: selected.ssh_policy?.cert_types.includes("user") ?? true,
       sshHost: selected.ssh_policy?.cert_types.includes("host") ?? false,
@@ -288,9 +352,14 @@ export default function Templates() {
         title="Certificate Templates"
         description="Define issuance policy: key usage, algorithms, and validity constraints."
         actions={
-          <Button tone="primary" onClick={openCreate}>
-            New template
-          </Button>
+          <div className="flex gap-2">
+            <Button tone="secondary" onClick={() => setDraftOpen(true)}>
+              Draft policy from text
+            </Button>
+            <Button tone="primary" onClick={openCreate}>
+              New template
+            </Button>
+          </div>
         }
       />
 
@@ -350,10 +419,10 @@ export default function Templates() {
                       {formatValidityPeriod(t.validity_period)}
                     </td>
                     <td className="px-4 py-3 text-sm text-foreground">
-                      {(t.extended_key_usage ?? []).join(", ")}
+                      {(t.extended_key_usage ?? []).map(ekuLabel).join(", ")}
                     </td>
                     <td className="px-4 py-3">
-                      <Badge tone={t.active ? "success" : "neutral"}>
+                      <Badge tone={t.active ? "neutral" : "warning"}>
                         {t.active ? "active" : "inactive"}
                       </Badge>
                     </td>
@@ -410,7 +479,7 @@ export default function Templates() {
                 <div>
                   <div className="text-muted-foreground">EKU</div>
                   <div className="text-foreground">
-                    {(selected.extended_key_usage ?? []).join(", ")}
+                    {(selected.extended_key_usage ?? []).map(ekuLabel).join(", ")}
                   </div>
                 </div>
                 <div>
@@ -439,6 +508,14 @@ export default function Templates() {
                     {selected.name_policy
                       ? "Names restricted"
                       : "None — any names"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Enrollment roles</div>
+                  <div className="text-foreground">
+                    {selected.enrollment_permissions?.enroll?.length
+                      ? selected.enrollment_permissions.enroll.join(", ")
+                      : "Any role"}
                   </div>
                 </div>
                 <div>
@@ -472,6 +549,74 @@ export default function Templates() {
         </Panel>
       </div>
 
+      {selected ? (
+        <Panel
+          title="Revision history"
+          subtitle={`Current revision ${selected.revision}`}
+        >
+          {revisionsQuery.isError &&
+          (revisionsQuery.error as { status?: number }).status === 503 ? (
+            // The file-backed template store (APP_TEMPLATE_FILE, the compose
+            // default) has no history; that is a configuration, not a fault.
+            <StateMessage
+              title="No revision history"
+              message="This hub's template store does not keep revisions."
+            />
+          ) : revisionsQuery.isError ? (
+            <StateMessage
+              tone="error"
+              title="History unavailable"
+              message={
+                revisionsQuery.error instanceof Error
+                  ? revisionsQuery.error.message
+                  : "Try again."
+              }
+            />
+          ) : revisionsQuery.isLoading ? (
+            <p role="status" className="text-sm text-muted-foreground">
+              Loading history...
+            </p>
+          ) : (
+            <ol className="space-y-4">
+              {revisions.map((r) => (
+                <li key={r.revision} data-testid="revision-item">
+                  <h4 className="text-sm font-semibold text-foreground">
+                    Revision {r.revision}{" "}
+                    <span className="font-normal text-muted-foreground">
+                      {formatDateTime(r.changed_at)}
+                    </span>
+                  </h4>
+                  {r.changes?.length ? (
+                    <table className="mt-2 min-w-full text-sm">
+                      <thead>
+                        <tr className="text-left text-muted-foreground">
+                          <th className="pr-4">Field</th>
+                          <th className="pr-4">Old</th>
+                          <th>New</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {r.changes.map((c) => (
+                          <tr key={c.field} data-testid="rev-change-row">
+                            <td className="pr-4 font-mono">{c.field}</td>
+                            <td className="pr-4">{showValue(c.old)}</td>
+                            <td>{showValue(c.new)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Initial revision
+                    </p>
+                  )}
+                </li>
+              ))}
+            </ol>
+          )}
+        </Panel>
+      ) : null}
+
       {statusMessage ? (
         <StateMessage
           tone={statusMessage.tone}
@@ -486,8 +631,22 @@ export default function Templates() {
         title={dialog === "create" ? "New template" : "Edit template"}
         description="Define issuance policy constraints."
         onClose={() => setDialog(null)}
+        footer={
+          <>
+            <Button
+              tone="primary"
+              type="submit"
+              form="template-form"
+              disabled={createMutation.isPending || updateMutation.isPending}
+            >
+              {dialog === "create" ? "Create" : "Save changes"}
+            </Button>
+            <Button onClick={() => setDialog(null)}>Cancel</Button>
+          </>
+        }
       >
         <form
+          id="template-form"
           className="space-y-3"
           onSubmit={(e) => {
             e.preventDefault();
@@ -615,6 +774,47 @@ export default function Templates() {
               <option value="inactive">Inactive</option>
             </Select>
           </label>
+          <div className="space-y-1 text-sm text-foreground">
+            <label className="block space-y-1">
+              <span>Roles allowed to enroll</span>
+              <Input
+                value={form.enrollRoles}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, enrollRoles: e.target.value }))
+                }
+                placeholder="pki-admin,pki-operator"
+              />
+            </label>
+            <p className="text-xs text-muted-foreground">
+              Leave empty to allow every role that may issue certificates.
+              The list also applies to Windows enrollment (XCEP/WSTEP): once it
+              is set, only protocol:wstep or protocol:wstep:&lt;host fqdn&gt;
+              lets Windows clients enroll.
+            </p>
+            <div className="flex flex-wrap gap-1">
+              {BUILT_IN_ROLES.map((role) => (
+                <Button
+                  key={role}
+                  type="button"
+                  onClick={() =>
+                    setForm((f) =>
+                      splitList(f.enrollRoles).includes(role)
+                        ? f
+                        : {
+                            ...f,
+                            enrollRoles: [
+                              ...splitList(f.enrollRoles),
+                              role,
+                            ].join(","),
+                          },
+                    )
+                  }
+                >
+                  {role}
+                </Button>
+              ))}
+            </div>
+          </div>
           <label className="flex items-center gap-2 pt-1 text-sm text-foreground">
             <input
               type="checkbox"
@@ -855,16 +1055,6 @@ export default function Templates() {
               </>
             ) : null}
           </fieldset>
-          <div className="flex gap-2 pt-2">
-            <Button
-              tone="primary"
-              type="submit"
-              disabled={createMutation.isPending || updateMutation.isPending}
-            >
-              {dialog === "create" ? "Create" : "Save changes"}
-            </Button>
-            <Button onClick={() => setDialog(null)}>Cancel</Button>
-          </div>
         </form>
       </Dialog>
 
@@ -892,6 +1082,7 @@ export default function Templates() {
           </div>
         </div>
       </Dialog>
+      <PolicyDraftDialog open={draftOpen} onClose={() => setDraftOpen(false)} />
     </div>
   );
 }

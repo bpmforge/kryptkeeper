@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { scrollableProps } from "../lib/scrollable";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
@@ -7,8 +8,11 @@ import { PageHeader } from "../components/PageHeader";
 import { StateMessage } from "../components/ops-ui";
 import { Wizard, type WizardStepDef } from "../components/Wizard";
 import { canManageCertificates, useAuthz } from "../lib/auth";
+import { isRequesterOnly } from "../lib/nav";
+import { useTeamAllowedOptions } from "../lib/myRequests";
 import { extractList } from "../lib/models";
 import { savePemFile } from "../lib/utils";
+import { parsePolicyViolation } from "../lib/policiesApi";
 import type {
   CaRecord,
   CertificateRecord,
@@ -25,7 +29,7 @@ type PendingApprovalResponse = {
 
 type IssueResult =
   | { kind: "issued"; cert: CertificateRecord }
-  | { kind: "pending"; approvalId: string; message: string };
+  | { kind: "pending"; approvalId: string; message: string; approvers: string[] };
 
 function isPendingApproval(value: unknown): value is PendingApprovalResponse {
   return (
@@ -40,10 +44,56 @@ function isPendingApproval(value: unknown): value is PendingApprovalResponse {
 // no subject/SAN field to fill server-side. Common name and SANs are
 // collected here purely to build the openssl hint below; they are never
 // sent to the API, matching the pattern established in Onboarding.tsx.
+function isIpAddress(s: string): boolean {
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s);
+  if (v4) return v4.slice(1).every((o) => Number(o) <= 255);
+  if (!s.includes(":") || !/^[0-9A-Fa-f:.]+$/.test(s)) return false;
+  try {
+    new URL("http://[" + s + "]");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isDnsName(s: string): boolean {
+  const name = s.startsWith("*.") ? s.slice(2) : s;
+  if (!name || name.length > 253) return false;
+  return name
+    .split(".")
+    .every((l) => /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(l));
+}
+
+const SAN_LIMIT = 100;
+
+// Returns the first SAN problem as a user-facing message, or null.
+function validateSans(sans: string[], template: TemplateRecord | null) {
+  if (sans.length > SAN_LIMIT) return `Too many SANs (limit ${SAN_LIMIT}).`;
+  const np = template?.name_policy;
+  const suffixes = np?.allowed_dns_suffixes ?? [];
+  for (const san of sans) {
+    const ip = isIpAddress(san);
+    if (!ip && !isDnsName(san)) {
+      return `"${san}" is not a valid DNS name or IP address. Use letters, digits and hyphens, for example api.example.com.`;
+    }
+    if (!np) continue;
+    if (ip) {
+      if (!np.allow_ip_sans) return "This template does not allow IP address SANs.";
+    } else if (
+      suffixes.length > 0 &&
+      !(np.allowed_dns_names ?? []).includes(san) &&
+      !suffixes.some((suf) => san.endsWith(suf))
+    ) {
+      return `"${san}" is outside this template's allowed domains (${suffixes.join(", ")}).`;
+    }
+  }
+  return null;
+}
+
 function buildCsrHint(commonName: string, sans: string[]) {
   const subj = `/CN=${commonName.trim() || "example.com"}`;
   const sanExt = sans.length
-    ? ` \\\n  -addext "subjectAltName=${sans.map((s) => `DNS:${s}`).join(",")}"`
+    ? ` \\\n  -addext "subjectAltName=${sans.map((s) => `${isIpAddress(s) ? "IP" : "DNS"}:${s}`).join(",")}"`
     : "";
   return `openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 \\
   -nodes -keyout issuance.key -out issuance.csr \\
@@ -62,7 +112,11 @@ const emptyState = {
 export default function IssueWizard() {
   const navigate = useNavigate();
   const authz = useAuthz();
-  const canManage = canManageCertificates(authz.data?.role, authz.data?.scopes);
+  // A requester files requests for its own team; the server confines it.
+  const canManage =
+    canManageCertificates(authz.data?.role, authz.data?.scopes) ||
+    isRequesterOnly(authz.data?.role);
+  const allowed = useTeamAllowedOptions();
 
   const [caId, setCaId] = useState(emptyState.caId);
   const [templateId, setTemplateId] = useState(emptyState.templateId);
@@ -83,7 +137,9 @@ export default function IssueWizard() {
     queryFn: () => api.templates({ limit: 50 }),
   });
 
-  const cas: CaRecord[] = extractList<CaRecord>(casQuery.data?.data, ["items"]);
+  const cas: CaRecord[] = allowed.filterCas(
+    extractList<CaRecord>(casQuery.data?.data, ["items"]),
+  );
   const allTemplates: TemplateRecord[] = extractList<TemplateRecord>(
     templatesQuery.data?.data,
     ["items"],
@@ -91,13 +147,32 @@ export default function IssueWizard() {
   // Only templates the CA will actually accept. Offering an inactive one
   // walked a user through four steps to a "template policy violation" at
   // Finish — the wizard must not offer what the server will refuse.
-  const templates = allTemplates.filter((t) => t.active !== false);
+  const templates = allowed
+    .filterTemplates(allTemplates)
+    .filter((t) => t.active !== false);
   const sans = sansText
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
   const selectedCa = cas.find((ca) => ca.id === caId) ?? null;
   const selectedTemplate = templates.find((t) => t.id === templateId) ?? null;
+  const violation = issueError ? parseViolation(issueError) : null;
+
+  // Engine-policy refusals carry policy/rule/observed; template refusals read
+  // "policy violation [field]: detail" (handlers_certificates.go), where the
+  // bracketed field is the rule name.
+  function parseViolation(message: string) {
+    const engine = parsePolicyViolation(message);
+    if (engine) return engine;
+    const m = /policy violation \[(\w+)\]: (.+)$/.exec(message);
+    if (!m) return null;
+    return {
+      policy:
+        selectedTemplate?.display_name || selectedTemplate?.name || "template",
+      rule: m[1],
+      detail: m[2],
+    };
+  }
 
   const issueMutation = useMutation({
     mutationFn: () =>
@@ -134,6 +209,9 @@ export default function IssueWizard() {
           kind: "pending",
           approvalId: res.approval_id,
           message: res.message,
+          approvers: selectedTemplate?.approval_roles?.length
+            ? selectedTemplate.approval_roles
+            : ["pki-admin"],
         });
       } else {
         setIssueError("Unexpected response from the issuance API.");
@@ -252,7 +330,9 @@ export default function IssueWizard() {
       id: "subject",
       title: "Subject & SANs",
       validate: () =>
-        commonName.trim() ? null : "Enter a subject common name to continue.",
+        commonName.trim()
+          ? validateSans(sans, selectedTemplate)
+          : "Enter a subject common name to continue.",
       render: () => (
         <div className="space-y-3">
           <p className="text-sm text-muted-foreground">
@@ -339,7 +419,7 @@ export default function IssueWizard() {
             </button>
           </div>
           {keyMode === "generate" ? (
-            <pre className="overflow-x-auto rounded-xl bg-card p-3 text-xs text-foreground">
+            <pre className="overflow-x-auto rounded-xl bg-card p-3 text-xs text-foreground" {...scrollableProps}>
               {buildCsrHint(commonName, sans)}
             </pre>
           ) : null}
@@ -400,6 +480,12 @@ export default function IssueWizard() {
                 >
                   View in inventory
                 </Button>
+                <Button onClick={() => navigate("/targets/setup")}>
+                  Deploy to a target
+                </Button>
+                <Button onClick={() => navigate("/targets/renewal-policy")}>
+                  Set up renewal
+                </Button>
                 <Button onClick={reset}>Issue another</Button>
               </div>
               {downloadError ? (
@@ -409,11 +495,18 @@ export default function IssueWizard() {
           ) : (
             <div className="space-y-3 text-sm">
               <p className="text-foreground">{result.message}</p>
+              <p className="text-foreground">
+                Waiting for approval from: {result.approvers.join(", ")}.
+              </p>
+              <p className="text-xs text-muted-foreground">
+                You cannot approve your own request; another person with one of
+                these roles must.
+              </p>
               <p className="text-xs text-muted-foreground">
                 Approval ID: {result.approvalId}
               </p>
               <div className="flex flex-wrap gap-2 pt-2">
-                <Button tone="primary" onClick={() => navigate("/approvals")}>
+                <Button tone="primary" onClick={() => navigate("/inbox")}>
                   View approvals
                 </Button>
                 <Button onClick={reset}>Issue another</Button>
@@ -442,7 +535,9 @@ export default function IssueWizard() {
           <Wizard
             steps={steps}
             onComplete={submit}
-            onCancel={() => navigate("/certificates")}
+            onCancel={() =>
+              navigate(isRequesterOnly(authz.data?.role) ? "/my-requests" : "/certificates")
+            }
             summary={() => (
               <div className="space-y-3 text-sm">
                 <div className="grid grid-cols-2 gap-3">
@@ -480,9 +575,26 @@ export default function IssueWizard() {
                   </div>
                 </div>
                 {issueError ? (
-                  <p role="alert" className="text-xs text-state-over">
-                    {issueError}
-                  </p>
+                  <div role="alert" className="text-xs text-state-over">
+                    {violation ? (
+                      <dl className="space-y-0.5">
+                        <div>
+                          <dt className="inline font-semibold">Policy: </dt>
+                          <dd className="inline">{violation.policy}</dd>
+                        </div>
+                        <div>
+                          <dt className="inline font-semibold">Rule: </dt>
+                          <dd className="inline">{violation.rule}</dd>
+                        </div>
+                        <div>
+                          <dt className="inline font-semibold">Observed: </dt>
+                          <dd className="inline">{violation.detail}</dd>
+                        </div>
+                      </dl>
+                    ) : (
+                      issueError
+                    )}
+                  </div>
                 ) : null}
               </div>
             )}

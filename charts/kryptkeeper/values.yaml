@@ -1,4 +1,16 @@
-replicaCount: 1
+# 2 is the default (W25-04): Postgres HA with scheduler leases
+# (ha_scheduler_locks, internal/bootstrap/ha_coordinator.go) keeping one active
+# runner per scheduler. Proven on kind (tests/live/helm-ha, W25-05). Requirements
+# for >1: config.dbMode=postgres (sqlite refuses to render), a keystore volume
+# every replica can mount (RWX, or cloudKMS.provider/pkcs11), root CA created
+# ONCE (KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT on a single replica first, then
+# upgrade without it), and Postgres max_connections sized per config.db below.
+replicaCount: 2
+
+# Seconds Kubernetes waits after SIGTERM before SIGKILL. Must exceed
+# config.readinessDrainSeconds + the hub's 10s http shutdown timeout (the
+# template refuses to render otherwise).
+terminationGracePeriodSeconds: 40
 
 image:
   repository: ghcr.io/bpmforge/kryptkeeper
@@ -43,7 +55,25 @@ ingress:
       paths:
         - path: /
           pathType: Prefix
+          # backend: api | dashboard   (default api; see the dashboard block)
   tls: []
+
+# Optional dashboard (nginx serving the SPA, proxying /api, /healthz, /readyz
+# to the hub). Ingress paths pick a target with `backend: api|dashboard`
+# (default api). Intended split when the dashboard is on: `/` -> dashboard,
+# and the protocol paths that must bypass the SPA (/.well-known, /acme, /scep,
+# /cmp, /ocsp, /crl, /metrics) -> api. NetworkPolicy does not restrict egress
+# today, so the dashboard pod can reach the hub without extra rules.
+dashboard:
+  enabled: false
+  replicaCount: 1
+  image: {repository: ghcr.io/bpmforge/kryptkeeper-dashboard, tag: "", digest: "", pullPolicy: IfNotPresent}  # tag defaults to .Chart.AppVersion; digest overrides it
+  service: {type: ClusterIP, port: 80}
+  # The hub self-issues its TLS cert, so the proxy needs the CA to verify it.
+  # Name of a Secret holding the hub CA PEM under `key`. REQUIRED when
+  # dashboard.enabled and tls.enabled (render fails rather than skip verification).
+  hubCA: {existingSecret: "", key: "ca.pem"}
+  resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {cpu: 250m, memory: 128Mi}}
 
 # Sized from the RC1 measurements (docs/perf/rc1/03-measurements.md): about
 # 160 MB fresh, 484 MB idle at 52.6k certificates, 1-1.5 GB RSS under list /
@@ -67,6 +97,10 @@ autoscaling:
 persistence:
   enabled: true
   storageClass: ""
+  # Two replicas sign with the same CA key files in this volume. RWO only
+  # works when both pods land on one node (single-node clusters, kind); multi-
+  # node HA needs ReadWriteMany storage or cloudKMS.provider / an external key
+  # backend. No default pod anti-affinity for the same reason.
   accessMode: ReadWriteOnce
   size: 1Gi
   mountPath: /var/kryptkeeper
@@ -93,7 +127,24 @@ extraEnv: []
 
 config:
   authMode: bootstrap
-  dbMode: postgres  # sqlite or postgres — this chart does not bundle a PostgreSQL sub-chart; bring your own and set secrets.databaseURL / secrets.existingSecret
+  # After SIGTERM the hub reports /readyz 503 but keeps serving this long so
+  # Service endpoint removal propagates before the listener closes (distroless
+  # image: no shell for a sleep preStop). 0 = close immediately. Max 120.
+  readinessDrainSeconds: 5
+  # Postgres pool sizing. Each store opens its OWN pool (about 33 per hub), so
+  # capacity is: replicaCount x 33 pools x maxOpenConns <= Postgres
+  # max_connections (default 100), with headroom for migrations/admin. Idle
+  # connections are the steady-state cost (maxIdleConns, returned after 60s
+  # idle), the product above is only reached if every store is saturated.
+  # Unset = code defaults (maxOpenConns 3, maxIdleConns 1; ~66 idle at 2
+  # replicas). Raise max_connections before raising these or the replica count.
+  # Measured on kind (W25-05): 2 replicas peaked at 93 of 100 connections, and
+  # a rolling update briefly runs a third pod, so give Postgres
+  # max_connections >= 200 for the 2-replica default.
+  db: {}
+  #  maxOpenConns: 3   # KRYPTKEEPER_DB_MAX_OPEN_CONNS
+  #  maxIdleConns: 1   # KRYPTKEEPER_DB_MAX_IDLE_CONNS (<= maxOpenConns)
+  dbMode: postgres  # sqlite = single replica only (the chart refuses to render sqlite with replicaCount>1). This chart does not bundle a PostgreSQL sub-chart; bring your own and set secrets.databaseURL / secrets.existingSecret
   certificateProvider: ca
   discoveryProvider: db  # db (persisted, full-featured) | file (dev stub) | scanner (minimal in-memory: 443 only, nothing persisted)
   notificationProvider: delivery
@@ -199,11 +250,10 @@ metrics:
     # Hub. To verify, set e.g. {ca: {secret: {name: kryptkeeper-ca, key: ca.pem}}, serverName: <fullname>}.
     tlsConfig: {}
 
-# PodDisruptionBudget. NOTE: safe replicaCount>1 needs W6-01 (process-local
-# schedulers still assume a single replica) — leave replicaCount at 1 until
-# that lands even if this is enabled.
+# PodDisruptionBudget. Skipped automatically when the chart runs a single
+# replica (minAvailable: 1 on one pod would block every node drain).
 pdb:
-  enabled: false
+  enabled: true
   minAvailable: 1
 
 # NetworkPolicy: ingress to the app port is limited to pods in this namespace

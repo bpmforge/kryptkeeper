@@ -8,8 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -21,7 +22,7 @@ const (
 	// room to breathe while still bounding a truly unused stream.
 	defaultSSEIdleTimeoutSeconds     = 300
 	defaultSSEMaxLifetimeSeconds     = 1800 // 30 minutes
-	defaultSSEMaxStreamsPerPrincipal = 3
+	defaultSSEMaxStreamsPerPrincipal = 5
 )
 
 // sseConfig bounds one SSE connection's lifecycle (W8-14 acceptance #5/#6).
@@ -48,6 +49,7 @@ func sseMaxStreamsPerPrincipalFromEnv() int {
 // clients filter client-side on each event's `kind` field rather than
 // opening a stream per kind (acceptance #1).
 func registerSSEHandlers(mux *http.ServeMux, auth *Authenticator, bus *EventBus, auditProvider AuditProvider, cfg sseConfig) {
+	setActiveEventBus(bus)
 	mux.HandleFunc("/api/v1/events", func(w http.ResponseWriter, r *http.Request) {
 		// Auth is checked before the method, matching handlers_discovery.go
 		// and response.go's getOnly doc comment: an authenticated route must
@@ -79,9 +81,18 @@ func registerSSEHandlers(mux *http.ServeMux, auth *Authenticator, bus *EventBus,
 		// Cap concurrent streams per principal (acceptance #5): rejecting
 		// here, before any header is written, means a 429 never touches any
 		// of the principal's existing streams.
-		sub, ok := bus.Subscribe(principal.ID)
+		// A reconnecting client sends Last-Event-ID; a first connect has no
+		// header and must not be replayed the whole ring.
+		var sub *eventSubscriber
+		var replay []tenantEvent
+		if h := r.Header.Get("Last-Event-ID"); h != "" {
+			lastSeq, _ := strconv.ParseUint(h, 10, 64) // invalid -> 0, replays the ring
+			sub, replay, ok = bus.SubscribeWithReplay(principal.ID, lastSeq)
+		} else {
+			sub, ok = bus.Subscribe(principal.ID)
+		}
 		if !ok {
-			emitAuditEvent(r, auditProvider, principal.ID, "events.stream", "events", "stream", AuditOutcomeDenied)
+			emitAuditEvent(r, auditProvider, principal.ID, "events.stream.reject", "events", "stream", AuditOutcomeDenied)
 			writeTooManyRequests(w, "too many concurrent event streams for this principal")
 			return
 		}
@@ -114,7 +125,16 @@ func registerSSEHandlers(mux *http.ServeMux, auth *Authenticator, bus *EventBus,
 		w.WriteHeader(http.StatusOK)
 		flusher.Flush()
 
-		emitAuditEvent(r, auditProvider, principal.ID, "events.stream", "events", "stream", AuditOutcomeSuccess)
+		emitAuditEvent(r, auditProvider, principal.ID, "events.stream.open", "events", "stream", AuditOutcomeSuccess)
+
+		for _, te := range replay {
+			if !tenantVisible(principal, te.tenant) {
+				continue
+			}
+			if !writeSSEEvent(w, flusher, te) {
+				return
+			}
+		}
 
 		serveEventStream(r, w, flusher, principal, sub, cfg)
 	})
@@ -170,18 +190,27 @@ func serveEventStream(r *http.Request, w http.ResponseWriter, flusher http.Flush
 			if !tenantVisible(principal, te.tenant) {
 				continue
 			}
-			payload, err := json.Marshal(te.event)
-			if err != nil {
-				log.Printf("sse: failed to encode event op_id=%s: %v", te.event.OpID, err)
-				continue
-			}
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+			if !writeSSEEvent(w, flusher, te) {
 				return
 			}
-			flusher.Flush()
 			resetTimer(idle, cfg.idleTimeout)
 		}
 	}
+}
+
+// writeSSEEvent writes one frame with its replay id and reports whether the
+// connection is still writable. An unencodable event is skipped, not fatal.
+func writeSSEEvent(w io.Writer, flusher http.Flusher, te tenantEvent) bool {
+	payload, err := json.Marshal(te.event)
+	if err != nil {
+		slog.Warn("sse: failed to encode event", "op_id", te.event.OpID, "error", err.Error())
+		return true
+	}
+	if _, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", te.seq, payload); err != nil {
+		return false
+	}
+	flusher.Flush()
+	return true
 }
 
 // resetTimer safely reschedules t to fire after d, draining an already-fired

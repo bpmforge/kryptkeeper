@@ -6,7 +6,9 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,10 +65,14 @@ func TestSLOTickFeedsExpiryHistogram(t *testing.T) {
 func TestSLOTickPagesOnBreach(t *testing.T) {
 	// Drive the live renewal counters into breach (global metrics: only
 	// push one direction; other tests tolerate it).
-	metrics.CertRenewalFailure.Add(5000)
 	ch := &sloFakeChannel{}
 	s := sloTestScheduler(nil, ch)
-	s.tick(context.Background(), time.Now())
+	// W30-05: paging is judged over the 30-day window, so the first tick
+	// records the baseline and the failures must land after it.
+	base := time.Now()
+	s.tick(context.Background(), base)
+	metrics.CertRenewalFailure.Add(5000)
+	s.tick(context.Background(), base.Add(15*time.Minute))
 	found := false
 	for _, ev := range ch.events {
 		if ev.Priority == "critical" {
@@ -78,7 +84,7 @@ func TestSLOTickPagesOnBreach(t *testing.T) {
 	}
 	// Steady breach on the next tick: no re-page (transition latch).
 	n := len(ch.events)
-	s.tick(context.Background(), time.Now())
+	s.tick(context.Background(), base.Add(30*time.Minute))
 	if len(ch.events) != n {
 		t.Fatalf("steady breach must not re-page: %v", ch.events)
 	}
@@ -111,5 +117,178 @@ func TestExecuteRenewalCountsFailures(t *testing.T) {
 	}
 	if metrics.CertRenewalFailure.Load() != before+1 {
 		t.Fatalf("failure must increment the renewal-failure counter")
+	}
+}
+
+type fanFake struct {
+	name   string
+	events []delivery.Event
+	err    error
+	cfg    bool
+}
+
+func (f *fanFake) Name() string { return f.name }
+func (f *fanFake) Send(_ context.Context, ev delivery.Event) error {
+	f.events = append(f.events, ev)
+	return f.err
+}
+
+type fanConfigurable struct{ fanFake }
+
+func (f *fanConfigurable) Configured(context.Context) bool { return f.cfg }
+
+func TestFanOutDeliversOnAllChannels(t *testing.T) {
+	a, b, c := &fanFake{name: "a"}, &fanFake{name: "b"}, &fanFake{name: "c"}
+	f := NewFanOutChannel([]delivery.Channel{a, b, c})
+	if err := f.Send(context.Background(), delivery.Event{ID: "x", Channel: "fanout"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []*fanFake{a, b, c} {
+		if len(m.events) != 1 || m.events[0].Channel != m.name || m.events[0].ID != "x#"+m.name {
+			t.Fatalf("%s: got %+v", m.name, m.events)
+		}
+	}
+	if f.Members() != 3 || f.Name() != "fanout" {
+		t.Fatalf("members=%d name=%s", f.Members(), f.Name())
+	}
+}
+
+func TestFanOutOneFailureDoesNotBlockOthers(t *testing.T) {
+	a, b, c := &fanFake{name: "a"}, &fanFake{name: "b", err: errors.New("boom")}, &fanFake{name: "c"}
+	err := NewFanOutChannel([]delivery.Channel{a, b, c}).Send(context.Background(), delivery.Event{ID: "x"})
+	if err == nil || !strings.Contains(err.Error(), "b:") {
+		t.Fatalf("expected error mentioning b:, got %v", err)
+	}
+	if len(a.events) != 1 || len(c.events) != 1 {
+		t.Fatalf("a=%d c=%d", len(a.events), len(c.events))
+	}
+}
+
+func TestFanOutSkipsUnconfigured(t *testing.T) {
+	off := &fanConfigurable{fanFake{name: "off", cfg: false}}
+	on := &fanConfigurable{fanFake{name: "on", cfg: true}}
+	if err := NewFanOutChannel([]delivery.Channel{off, on}).Send(context.Background(), delivery.Event{ID: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(off.events) != 0 || len(on.events) != 1 {
+		t.Fatalf("off=%d on=%d", len(off.events), len(on.events))
+	}
+}
+
+func TestFanOutNoMembersReportsUndelivered(t *testing.T) {
+	err := NewFanOutChannel(nil).Send(context.Background(), delivery.Event{})
+	if !errors.Is(err, ErrNoConfiguredChannel) {
+		t.Fatalf("want ErrNoConfiguredChannel, got %v", err)
+	}
+}
+
+func TestSLOBreachFansOut(t *testing.T) {
+	a, b, c := &fanFake{name: "a"}, &fanFake{name: "b", err: errors.New("down")}, &fanFake{name: "c"}
+	s := sloTestScheduler(nil, NewFanOutChannel([]delivery.Channel{a, b, c}))
+	base := time.Now()
+	s.tick(context.Background(), base) // W30-05: baseline before the failures
+	metrics.CertRenewalFailure.Add(5000)
+	s.tick(context.Background(), base.Add(15*time.Minute))
+	if len(a.events) == 0 || len(b.events) != len(a.events) || len(c.events) != len(a.events) {
+		t.Fatalf("every member must get each page: a=%d b=%d c=%d", len(a.events), len(b.events), len(c.events))
+	}
+	// A failing member must not cause a re-page next sweep (breach is latched).
+	n := len(a.events)
+	s.tick(context.Background(), base.Add(30*time.Minute))
+	if len(a.events) != n || len(b.events) != n || len(c.events) != n {
+		t.Fatalf("steady breach re-paged: a=%d b=%d c=%d", len(a.events), len(b.events), len(c.events))
+	}
+}
+
+func TestSLOTickPublishesBudgetStatus(t *testing.T) {
+	s := sloTestScheduler(nil, nil)
+	s.set = metrics.NewSLOSet(metrics.RatioSLO("renewal-success-rate", "t", 0.99, &metrics.Counter{}, &metrics.Counter{}))
+	s.tick(context.Background(), time.Now())
+	got := latestSLOStatus()
+	if len(got) != 1 || got[0].Name != "renewal-success-rate" || got[0].HasData || got[0].BudgetRemainingPct != 100 {
+		t.Fatalf("published status: %+v", got)
+	}
+}
+
+// w3006Scheduler builds a scheduler whose renewal SLO reads private counters
+// (90% success once feed is called), so the test controls the SLI without
+// touching globals. Ratio SLOs are judged over a window, so feed must run
+// after the baseline tick.
+func w3006Scheduler(t *testing.T, store ConfigStore) (s *SLOScheduler, feed func()) {
+	t.Helper()
+	good := metrics.Default.Counter("w3006_"+t.Name()+"_good", "test")
+	bad := metrics.Default.Counter("w3006_"+t.Name()+"_bad", "test")
+	s = sloTestScheduler(nil, nil)
+	s.set = metrics.NewSLOSet(metrics.RatioSLO("renewal-success-rate", "test", 0.99, good, bad))
+	s.configStore = store
+	return s, func() { good.Add(90); bad.Add(10) }
+}
+
+func renewalBreached(s *SLOScheduler, now time.Time) bool {
+	return len(s.set.Evaluate(now)) > 0
+}
+
+func TestObjectiveChangeAppliesNextTick(t *testing.T) {
+	t.Setenv("KRYPTKEEPER_SLO_RENEWAL_OBJECTIVE", "")
+	store := newConfigTestStore(t)
+	s, feed := w3006Scheduler(t, store)
+	set := s.set
+	now := time.Now()
+
+	s.tick(context.Background(), now)
+	feed()
+	s.tick(context.Background(), now.Add(time.Minute))
+	if !renewalBreached(s, now) {
+		t.Fatal("90% success must breach the 0.99 default")
+	}
+	if err := store.Set(context.Background(), "slo.renewal_success_objective", "0.80", "tester"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	s.tick(context.Background(), now.Add(15*time.Minute))
+	if renewalBreached(s, now.Add(15*time.Minute)) {
+		t.Fatal("objective 0.80 must clear the breach on the next tick")
+	}
+	if s.set != set {
+		t.Fatal("SLOSet was rebuilt; the change must apply in place")
+	}
+	if st := s.set.Status(now); len(st) != 1 || st[0].Objective != 0.80 {
+		t.Fatalf("status objective = %+v, want 0.80", st)
+	}
+}
+
+func TestObjectiveResetRestoresDefault(t *testing.T) {
+	t.Setenv("KRYPTKEEPER_SLO_RENEWAL_OBJECTIVE", "")
+	store := newConfigTestStore(t)
+	s, feed := w3006Scheduler(t, store)
+	now := time.Now()
+	s.tick(context.Background(), now.Add(-time.Minute))
+	feed()
+	if err := store.Set(context.Background(), "slo.renewal_success_objective", "0.80", "tester"); err != nil {
+		t.Fatal(err)
+	}
+	s.tick(context.Background(), now)
+	if renewalBreached(s, now) {
+		t.Fatal("override must clear the breach")
+	}
+	if err := store.Delete(context.Background(), "slo.renewal_success_objective"); err != nil {
+		t.Fatal(err)
+	}
+	s.tick(context.Background(), now.Add(15*time.Minute))
+	if st := s.set.Status(now); len(st) != 1 || st[0].Objective != 0.99 {
+		t.Fatalf("objective after reset = %+v, want 0.99", st)
+	}
+}
+
+func TestEnvObjectiveFallback(t *testing.T) {
+	t.Setenv("KRYPTKEEPER_SLO_RENEWAL_OBJECTIVE", "0.95")
+	s, _ := w3006Scheduler(t, nil)
+	s.tick(context.Background(), time.Now())
+	if st := s.set.Status(time.Now()); len(st) != 1 || st[0].Objective != 0.95 {
+		t.Fatalf("env objective not applied: %+v", st)
+	}
+	t.Setenv("KRYPTKEEPER_SLO_RENEWAL_OBJECTIVE", "2")
+	s.tick(context.Background(), time.Now())
+	if st := s.set.Status(time.Now()); st[0].Objective != 0.99 {
+		t.Fatalf("invalid env objective must fall back to default: %+v", st)
 	}
 }

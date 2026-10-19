@@ -199,3 +199,83 @@ and the reverse.
   hub release; disable any plugin version signed by it
   (`signer_key_id` in the plugin API) until it is re-signed and reviewed.
 
+
+## Package repository signing (apt/yum)
+
+W25-11. The apt and yum repositories at `https://pkg.kryptkeeper.io` (see
+`packaging/repo/README.md`) are signed with a dedicated GPG key. This is a
+separate trust root from the keyless cosign signatures on release assets:
+cosign proves a release artifact came from this repo's `release.yml`; the GPG
+key proves the repository metadata (`InRelease`, `Release.gpg`,
+`repomd.xml.asc`) was produced by the publisher. The publish workflow checks
+the former before it applies the latter, and never weakens either.
+
+- **Generation.** Once, offline, never in CI:
+  `gpg --quick-generate-key "Kryptkeeper Package Signing <contact@kryptkeeper.io>" rsa4096 sign 2y`.
+  Fingerprint: `PENDING-OWNER` (the key is created by the owner, not by an
+  implementer).
+- **Private half.** GitHub secrets `PKG_REPO_GPG_PRIVATE_KEY` (ASCII-armored)
+  and `PKG_REPO_GPG_PASSPHRASE`; offline backup in the same tier as
+  `cosign.key` (see "Key custody" above). The workflow imports it into a
+  throwaway `GNUPGHOME`, deletes that directory in an `always()` step, and
+  fails rather than publish if the secret is empty. The passphrase is only
+  ever fed on stdin (`--passphrase-fd 0`).
+- **Public half.** Published as `kryptkeeper.asc` and `kryptkeeper.gpg` at the
+  repo root; fingerprint printed in `packaging/repo/README.md` and in the
+  release notes. Consumers pin it via apt `signed-by` / dnf `repo_gpgcheck=1`.
+- **Hosting credentials.** `CLOUDFLARE_API_TOKEN` (scope: Cloudflare Pages
+  Edit on the one account) and `CLOUDFLARE_ACCOUNT_ID` deploy to the
+  `kryptkeeper-pkg` Pages project. They can replace the published repo, so
+  they are as sensitive as the signing key; rotate on suspected exposure.
+- **Scope.** Repository metadata is signed. Individual `.rpm` files are not
+  (`gpgcheck=0`, `repo_gpgcheck=1`); rpm signing (`rpmsign --addsign`) is a
+  follow-up.
+- **Rotation.** Generate a new key, publish a keyring containing old and new
+  for one release, then drop the old key.
+- **Compromise.** Revoke the key, generate a new one, republish the whole repo
+  (the workflow rebuilds it from the verified release assets), and announce
+  the new fingerprint.
+
+## Verify a release and reproduce it (W33-09)
+
+Every release is signed keyless by `.github/workflows/release.yml`. The
+`release-verify` job re-checks all of it right after publish (identity below,
+issuer `https://token.actions.githubusercontent.com`); if it fails, the run
+fails and `promote-latest` is skipped, so `:latest` keeps pointing at the
+previous release (goreleaser no longer pushes `:latest`; rc/prerelease tags
+never get it).
+
+Verify by hand (replace `vX.Y.Z`):
+
+```sh
+ID="https://github.com/bpmforge/kryptkeeper/.github/workflows/release.yml@refs/tags/vX.Y.Z"
+ISS=https://token.actions.githubusercontent.com
+gh release download vX.Y.Z --repo bpmforge/kryptkeeper --dir rel
+cosign verify-blob --certificate rel/checksums.txt.pem --signature rel/checksums.txt.sig \
+  --certificate-identity "$ID" --certificate-oidc-issuer "$ISS" rel/checksums.txt
+(cd rel && sha256sum --check --ignore-missing checksums.txt)
+cosign verify --certificate-identity "$ID" --certificate-oidc-issuer "$ISS" ghcr.io/bpmforge/kryptkeeper:X.Y.Z
+```
+
+Reproduce the linux/amd64 binaries: `bash scripts/repro-check.sh rebuild`
+(needs goreleaser v2.18.3) clones HEAD into two different directories, builds
+the four binaries in each and prints a `MATCH`/`DIFF` SHA-256 table. Builds
+are reproducible because `-trimpath`, `CGO_ENABLED=0`, `mod_timestamp` and
+`main.date` are all derived from the commit time (`{{ .CommitTimestamp }}` /
+`{{ .CommitDate }}`), never the wall clock. The `reproducible-build.yml`
+workflow runs the same check on every `v*` tag. The Windows agent and MSI are
+not reproducible and are not covered.
+
+SBOM completeness: `bash scripts/repro-check.sh sbom <dir>` requires every
+module linked into the four shipped commands (`go list -deps`) to appear in
+the CycloneDX SBOMs, and reports how many other `go list -m all` modules
+(test-only or unlinked) are absent; those cannot appear in a binary SBOM.
+
+## Release signing on the self-hosted forge (D-210)
+
+the self-hosted forge has no OIDC issuer, so releases are signed with a cosign key pair:
+`checksums.txt` and `kryptkeeper.rb` get a `.sig`. The public key is
+`packaging/cosign.pub`; verify with
+`cosign verify-blob --key cosign.pub --signature checksums.txt.sig checksums.txt`.
+The private key and its password live only in the the self-hosted forge repo secrets
+`COSIGN_PRIVATE_KEY` and `COSIGN_PASSWORD`, plus the owner's offline copy.

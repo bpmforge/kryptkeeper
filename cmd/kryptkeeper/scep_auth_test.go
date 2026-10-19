@@ -33,3 +33,12 @@ func TestSCEPDisabledReason(t *testing.T) {
 		}
 	}
 }
+
+func TestSCEPNotRSAReasonNamesTheFix(t *testing.T) {
+	got := scepNotRSAReason("ca-ec")
+	for _, want := range []string{"ca-ec", "RSA", "KRYPTKEEPER_SCEP_CA_ID"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("reason %q lacks %q", got, want)
+		}
+	}
+}

@@ -20,6 +20,8 @@ func TestKeygenPolicyDefaults(t *testing.T) {
 		wantErr string // "" = allowed; otherwise the rule the error must cite
 	}{
 		{RSA2048, PurposeGeneral, "min_rsa_bits"}, // below the 3072 floor
+		{RSA3072, PurposeGeneral, ""},
+		{RSA3072, PurposeCA, "min_rsa_bits"}, // CA floor stays 4096
 		{RSA4096, PurposeGeneral, ""},
 		{RSA4096, PurposeCA, ""}, // meets the 4096 CA floor
 		{RSA2048, PurposeCA, "min_rsa_bits"},

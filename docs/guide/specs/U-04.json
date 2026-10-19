@@ -1,0 +1,316 @@
+{
+  "task": "U-04",
+  "title": "Create a root CA",
+  "sourceStory": "STORIES.md#u-04",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/cas"
+      },
+      "caption": "Open Certificate Authorities",
+      "slug": "cas-list",
+      "expect": {
+        "role": "button",
+        "name": "New CA"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-04/01-cas-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New CA"
+      },
+      "caption": "Click **New CA**",
+      "slug": "new-ca-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "New Certificate Authority"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-04/02-new-ca-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Type"
+      },
+      "value": "Root",
+      "caption": "Select \"Root\" in **Type**",
+      "slug": "type-root",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-04/03-type-root.png",
+        "annotated": "docs/guide/screenshots/U-04/03-type-root-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 343,
+          "w": 369,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Subject CN"
+      },
+      "value": "Lab Root CA",
+      "caption": "Fill **Subject CN** with \"Lab Root CA\"",
+      "slug": "Subject CN",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-04/04-subject-cn.png",
+        "annotated": "docs/guide/screenshots/U-04/04-subject-cn-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 384,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Subject Org"
+      },
+      "value": "Acme",
+      "caption": "Fill **Subject Org** with \"Acme\"",
+      "slug": "Subject Org",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-04/05-subject-org.png",
+        "annotated": "docs/guide/screenshots/U-04/05-subject-org-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 454,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Algorithm"
+      },
+      "value": "ECDSA P-384",
+      "caption": "Select \"ECDSA P-384\" in **Algorithm**",
+      "slug": "Algorithm",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-04/06-algorithm.png",
+        "annotated": "docs/guide/screenshots/U-04/06-algorithm-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 524,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Validity"
+      },
+      "value": "10y",
+      "caption": "Fill **Validity** with \"10y\"",
+      "slug": "Validity",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-04/07-validity.png",
+        "annotated": "docs/guide/screenshots/U-04/07-validity-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 594,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "screenshot",
+      "caption": "The filled **New Certificate Authority** dialog",
+      "slug": "new-ca-filled",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-04/08-new-ca-filled.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Create CA",
+        "exact": true
+      },
+      "caption": "Click **Create CA**",
+      "slug": "ca-created",
+      "expect": {
+        "text": "Lab Root CA"
+      },
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-04/09-ca-created.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:38:51.435Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-04",
+    "steps": 9,
+    "shots": 9,
+    "annotated": 5,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/cas?type=root"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-04/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-04/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

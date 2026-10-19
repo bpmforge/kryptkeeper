@@ -1,0 +1,28 @@
+# Smoke-style stack for the targets E2E specs (W33-26): API-key auth on, a first
+# root CA created by the hub, engine-assigned loopback dashboard port, and a
+# subnet distinct from the base file and the onboarding override.
+#
+#   export APP_BOOTSTRAP_TOKEN=... KRYPTKEEPER_KEYSTORE_PASSPHRASE=... APP_API_KEY_PEPPER=...
+#   F=(-p kkw33-b -f docker-compose.yml -f ui/e2e/targets/docker-compose.targets.yml)
+#   podman compose "${F[@]}" up -d --build --wait
+#   podman compose "${F[@]}" port dashboard 8080   # -> host:PORT for KK_E2E_BASE_URL
+#   podman compose "${F[@]}" down -v
+services:
+  kryptkeeper:
+    ports: !reset []
+    environment:
+      APP_API_KEY_AUTH_ENABLED: "true"
+      APP_API_KEY_PEPPER: ${APP_API_KEY_PEPPER:?set APP_API_KEY_PEPPER}
+      KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT: "true"
+      APP_TRUSTED_PROXY_CIDRS: 172.29.252.10/32
+  dashboard:
+    ports: !override
+      - "127.0.0.1::8080"
+    networks:
+      default:
+        ipv4_address: 172.29.252.10
+networks:
+  default:
+    ipam:
+      config: !override
+        - subnet: 172.29.252.0/24

@@ -66,7 +66,7 @@ describe("ExpiryTimeline (S-46)", () => {
       "title",
       IDENTIFIER_TITLE,
     );
-    expect(screen.getByText("unknown")).not.toHaveAttribute("title");
+    expect(screen.getByText("Unknown CA")).not.toHaveAttribute("title");
 
     // Root CA's row still renders a Renew button keyed on the raw ca_id
     // (renewalPath("ca-root")), not the resolved display name.
@@ -75,9 +75,13 @@ describe("ExpiryTimeline (S-46)", () => {
     expect(rootRow!.querySelector("button")).toHaveTextContent(/renew/i);
 
     // "unknown" is the no-CA sentinel -- there is nothing for ca_id= to
-    // filter on, so it must not get a Renew button.
-    const unknownRow = screen.getByText("unknown").closest("div.flex")!;
-    expect(unknownRow.querySelector("button")).toBeNull();
+    // filter on, so its Renew button is disabled and explains why.
+    const unknownRow = screen.getByText("Unknown CA").closest("div.flex")!;
+    expect(unknownRow.querySelector("button")).toBeDisabled();
+    expect(unknownRow.querySelector("span[title]")).toHaveAttribute(
+      "title",
+      expect.stringMatching(/no CA on record/i),
+    );
   });
 
   it("does not touch By Owner Team, which already carries a free-text name", async () => {

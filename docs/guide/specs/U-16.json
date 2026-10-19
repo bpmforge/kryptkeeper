@@ -1,0 +1,381 @@
+{
+  "task": "U-16",
+  "title": "Browse, filter and inspect certificates",
+  "sourceStory": "STORIES.md#u-16",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/certificates"
+      },
+      "caption": "Open /certificates",
+      "slug": "certificates-list",
+      "expect": {
+        "role": "button",
+        "name": "Issue certificate"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-16/01-certificates-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Search certificates"
+      },
+      "value": "acme",
+      "caption": "Fill **Search certificates** with \"acme\"",
+      "slug": "search-acme",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-16/02-search-acme.png",
+        "annotated": "docs/guide/screenshots/U-16/02-search-acme-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 2
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 265,
+          "w": 178,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Filter by CA"
+      },
+      "value": "Acme Issuing CA",
+      "caption": "Select \"Acme Issuing CA\" in **Filter by CA**",
+      "slug": "filter-ca",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-16/03-filter-ca.png",
+        "annotated": "docs/guide/screenshots/U-16/03-filter-ca-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 455,
+          "y": 265,
+          "w": 178,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Filter by certificate status"
+      },
+      "value": "Active",
+      "caption": "Select \"Active\" in **Filter by certificate status**",
+      "slug": "Filter by certificate status",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-16/04-filter-by-certificate-status.png",
+        "annotated": "docs/guide/screenshots/U-16/04-filter-by-certificate-status-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 836,
+          "y": 265,
+          "w": 178,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Sort certificates"
+      },
+      "value": "Oldest first",
+      "caption": "Select \"Oldest first\" in **Sort certificates**",
+      "slug": "Sort certificates",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-16/05-sort-certificates.png",
+        "annotated": "docs/guide/screenshots/U-16/05-sort-certificates-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 646,
+          "y": 335,
+          "w": 178,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Apply filters"
+      },
+      "caption": "Click **Apply filters**",
+      "slug": "filters-applied",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-16/06-filters-applied.png",
+        "annotated": "docs/guide/screenshots/U-16/06-filters-applied-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 389,
+          "w": 110,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Unowned only"
+      },
+      "caption": "Click **Unowned only**",
+      "slug": "unowned-only",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-16/07-unowned-only.png",
+        "annotated": "docs/guide/screenshots/U-16/07-unowned-only-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 383,
+          "y": 389,
+          "w": 117,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Reset"
+      },
+      "caption": "Click **Reset**",
+      "slug": "filters-reset",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-16/08-filters-reset.png",
+        "annotated": "docs/guide/screenshots/U-16/08-filters-reset-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 508,
+          "y": 389,
+          "w": 68,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "lab-switch.acme.test"
+      },
+      "caption": "Click **lab-switch.acme.test**",
+      "slug": "certificate-detail",
+      "expect": {
+        "role": "button",
+        "name": "Back to list"
+      },
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-16/09-certificate-detail.png",
+        "annotated": "docs/guide/screenshots/U-16/09-certificate-detail-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 350,
+          "y": 428,
+          "w": 138,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "scroll",
+      "value": 700,
+      "caption": "Scroll down the detail card for risk score, fingerprint, SANs and ownership",
+      "slug": "certificate-detail-lower",
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-16/10-certificate-detail-lower.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Back to list"
+      },
+      "caption": "Click **Back to list**",
+      "slug": "back-to-list",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-16/11-back-to-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:41:33.945Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-16",
+    "steps": 11,
+    "shots": 11,
+    "annotated": 8,
+    "blocked": 0,
+    "retries": 1,
+    "errors": [],
+    "finalUrl": "/certificates"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-16/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-16/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

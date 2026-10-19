@@ -6,7 +6,9 @@ package bootstrap
 
 import (
 	"context"
-	"log"
+	"errors"
+
+	"kryptkeeper/internal/logging"
 )
 
 type templateIssuedCounter interface {
@@ -38,7 +40,7 @@ func WithIssuedCounts(tp TemplateProvider, certs CertificateProvider) TemplatePr
 func (p *issuedCountTemplateProvider) load(ctx context.Context) map[string]int {
 	counts, err := p.counts.CertCountsByTemplate(ctx)
 	if err != nil {
-		log.Printf("template issued counts unavailable: %v", err)
+		logging.Warnf("template issued counts unavailable: %v", err)
 		return nil
 	}
 	return counts
@@ -70,4 +72,18 @@ func (p *issuedCountTemplateProvider) DeleteTemplate(ctx context.Context, id str
 		return errTemplateConflict
 	}
 	return p.TemplateProvider.DeleteTemplate(ctx, id)
+}
+
+// errTemplateRevisionsUnsupported marks a wrapped provider without history.
+var errTemplateRevisionsUnsupported = errors.New("template revision history not supported")
+
+// ListTemplateRevisions forwards the optional TemplateRevisionLister
+// capability: embedding only the TemplateProvider interface hid it, so every
+// /templates/{id}/revisions call answered 503 whenever the decorator was on.
+func (p *issuedCountTemplateProvider) ListTemplateRevisions(ctx context.Context, id string) ([]TemplateRevision, bool, error) {
+	lister, ok := p.TemplateProvider.(TemplateRevisionLister)
+	if !ok {
+		return nil, false, errTemplateRevisionsUnsupported
+	}
+	return lister.ListTemplateRevisions(ctx, id)
 }

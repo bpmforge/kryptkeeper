@@ -23,7 +23,7 @@ import { Badge, StateMessage } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
 import { TrustBreakdown } from "../components/TrustBreakdown";
 import { DashboardSkeleton, TableRowsSkeleton } from "../components/Skeletons";
-import { auditOutcomeDotClass } from "../lib/auditOutcome";
+import { auditOutcomeDotClass, isReadOnlyAction } from "../lib/auditOutcome";
 
 // ─── Stat Tile ───────────────────────────────────────────────────
 type StatTileProps = {
@@ -86,6 +86,7 @@ function StatTile({
     <button
       type="button"
       onClick={onClick}
+      aria-label={sub ? `${label}: ${value}, ${sub}` : `${label}: ${value}`}
       className={`group glass gradient-border rounded-2xl p-5 text-left transition-all duration-200 hover:shadow-lg ${t.glow} ${t.border} focus:outline-none focus:ring-2 focus:ring-ring/50 ${t.bg}`}
     >
       <div className="flex items-start justify-between mb-3">
@@ -111,7 +112,7 @@ function StatTile({
 }
 
 // ─── Risk Gauge ──────────────────────────────────────────────────
-function RiskGauge({
+export function RiskGauge({
   critical,
   high,
   medium,
@@ -136,43 +137,52 @@ function RiskGauge({
     (critical * 100 + high * 60 + medium * 30) / total,
   );
 
+  const riskLevel =
+    riskScore > 60 ? "high" : riskScore > 30 ? "elevated" : "low";
+
   return (
     <div className="space-y-3">
-      {/* Gauge arc */}
-      <div className="relative mx-auto w-28 h-14 overflow-hidden">
-        <svg viewBox="0 0 100 50" className="w-full">
-          <path
-            d="M 10 45 A 40 40 0 0 1 90 45"
-            fill="none"
-            stroke="#1e293b"
-            strokeWidth="10"
-            strokeLinecap="round"
-          />
-          <path
-            d="M 10 45 A 40 40 0 0 1 90 45"
-            fill="none"
-            stroke={
-              riskScore > 60
-                ? "#f87171"
-                : riskScore > 30
-                  ? "#fbbf24"
-                  : "#34d399"
-            }
-            strokeWidth="10"
-            strokeLinecap="round"
-            strokeDasharray={`${(riskScore / 100) * 126} 126`}
-          />
-        </svg>
-        <div className="absolute bottom-0 left-0 right-0 text-center">
+      {/* Gauge arc. The label sits below the clipped arc box: inside it,
+          "risk score · high" was cut off by the arc's overflow-hidden. */}
+      <div
+        role="img"
+        aria-label={`Risk gauge: risk score ${riskScore} out of 100, ${riskLevel} risk. ${critical} critical, ${high} high, ${medium} medium of ${total} certificates.`}
+        className="mx-auto w-32 text-center"
+      >
+        <div className="relative h-16 overflow-hidden">
+          <svg viewBox="0 0 100 50" className="w-full" aria-hidden="true">
+            <path
+              d="M 10 45 A 40 40 0 0 1 90 45"
+              fill="none"
+              stroke="var(--muted)"
+              strokeWidth="10"
+              strokeLinecap="round"
+            />
+            <path
+              d="M 10 45 A 40 40 0 0 1 90 45"
+              fill="none"
+              stroke={
+                riskScore > 60
+                  ? "var(--state-over)"
+                  : riskScore > 30
+                    ? "var(--state-attn)"
+                    : "var(--state-auto)"
+              }
+              strokeWidth="10"
+              strokeLinecap="round"
+              strokeDasharray={`${(riskScore / 100) * 126} 126`}
+            />
+          </svg>
           <span
-            className={`text-xl font-black ${riskScore > 60 ? "text-state-over" : riskScore > 30 ? "text-state-attn" : "text-state-auto"}`}
+            aria-hidden="true"
+            className={`absolute bottom-0 left-0 right-0 text-xl font-black ${riskScore > 60 ? "text-state-over" : riskScore > 30 ? "text-state-attn" : "text-state-auto"}`}
           >
             {riskScore}
           </span>
-          <span className="text-xs text-muted-foreground block -mt-0.5">
-            risk score
-          </span>
         </div>
+        <span aria-hidden="true" className="mt-1 block text-xs text-muted-foreground">
+          risk score · {riskLevel}
+        </span>
       </div>
 
       {/* Stacked bar */}
@@ -334,7 +344,7 @@ export default function Dashboard() {
   });
   const auditQ = useQuery({
     queryKey: ["dashboard-audit"],
-    queryFn: () => api.auditList({ limit: 8, order: "desc" }),
+    queryFn: () => api.auditList({ limit: 50, order: "desc" }),
   });
   const postureQ = useQuery({
     queryKey: ["dashboard-posture"],
@@ -343,9 +353,11 @@ export default function Dashboard() {
 
   const s = summaryQ.data?.data;
   const cas = extractList<CaRecord>(casQ.data?.data);
-  const auditRows: AuditRow[] = Array.isArray(auditQ.data?.data)
-    ? (auditQ.data.data as AuditRow[])
-    : [];
+  const auditRows: AuditRow[] = (
+    Array.isArray(auditQ.data?.data) ? (auditQ.data.data as AuditRow[]) : []
+  )
+    .filter((row) => !isReadOnlyAction(row.action))
+    .slice(0, 8);
   const posture = postureQ.data?.data;
 
   const total = s?.certificates?.total ?? 0;
@@ -356,6 +368,7 @@ export default function Dashboard() {
   const estateManaged = s?.certificates?.managed ?? 0;
   const estateExternal = s?.certificates?.external ?? 0;
   const estateUnmanaged = s?.certificates?.unmanaged ?? 0;
+  const estateUnowned = s?.certificates?.unowned ?? 0;
   const riskBreakdown = posture?.risk_breakdown ?? {
     critical: 0,
     high: 0,
@@ -449,6 +462,17 @@ export default function Dashboard() {
           onClick={() => navigate("/certificates?management_state=unmanaged")}
         >
           {estateUnmanaged} unmanaged
+        </button>
+        <button
+          type="button"
+          data-testid="unowned-card"
+          className={
+            (estateUnowned > 0 ? "text-state-attn" : "text-muted-foreground") +
+            " hover:underline"
+          }
+          onClick={() => navigate("/certificates?owner=unassigned")}
+        >
+          {estateUnowned} unowned
         </button>
       </div>
 
@@ -619,10 +643,13 @@ export default function Dashboard() {
                     {ca.display_name || ca.name || ca.id}
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    {ca.type} · {ca.active_issued_certificates ?? 0} certs
+                    {ca.type} · {ca.active_issued_certificates ?? 0}{" "}
+                    {(ca.active_issued_certificates ?? 0) === 1 ? "cert" : "certs"}
                   </p>
                 </div>
-                <Badge tone={caStatusTone(ca.status)}>{ca.status}</Badge>
+                <Badge tone={caStatusTone(ca.status)}>
+                  {(ca.status ?? "").replace(/_/g, " ")}
+                </Badge>
               </button>
             ))}
           </div>
@@ -636,7 +663,10 @@ export default function Dashboard() {
               <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                 Live Activity
               </span>
-              <span className="w-1.5 h-1.5 rounded-full bg-state-auto pulse-glow" />
+              <span
+                aria-hidden="true"
+                className="w-1.5 h-1.5 rounded-full bg-state-auto pulse-glow"
+              />
             </div>
             <button
               type="button"

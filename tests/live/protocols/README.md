@@ -22,6 +22,9 @@ material is committed — every key is generated fresh per run.
 | SCEP getcacert/enroll (RSA CA, one-time challenge) | `micromdm/scep` | PASS |
 | CMP ir/kur (PBM-protected) | `openssl cmp` | PASS |
 | Inventory (`source` = est, scep, cmp, api) | `curl` + hub API | PASS |
+| SCEP renewal (current-cert RenewalReq; unrelated key and self-signed signer refused; replay refused) | `micromdm/scep` | PENDING-RUN (W26-11) |
+| CMP rr (OCSP revoked, CRL lists serial) and ir + pollReq against an approval-required template | `openssl cmp` | PENDING-RUN (W26-11) |
+| EST label enroll, refused outside the suffix / without `protocol:est`, unknown label 404 | `github.com/globalsign/est` | PENDING-RUN (W26-11) |
 | OCSP good/revoked | `openssl ocsp` | PASS |
 | CRL | `openssl crl` | PASS |
 
@@ -31,6 +34,18 @@ and `docs/ops/WSTEP_AUTOENROLLMENT.md`.
 
 The 2026-09-10 run recorded FAILs for EST, SCEP enroll, CMP and protocol
 inventory; all have since been fixed. The findings below are kept as history.
+
+## W26-11 additions
+
+SCEP renewal, CMP `rr` and poll, and EST labels run inside the same
+`run.sh` (record in `docs/release/LIVE_RESULTS_FG2_PROTOCOLS_v0.14.md`).
+`APP_API_KEYS_JSON` now carries one named pki-admin (alice, secret generated per
+run) because the bootstrap token can never approve. CMP template selection is
+`KRYPTKEEPER_CMP_TEMPLATE`, set only for the poll step (it gates every CMP
+enrollment), so the hub is restarted once more. `openssl cmp` has no
+`-polltime`: the client sleeps the hub's 30 s `checkAfter` between polls, so the
+poll step takes about a minute. The CMP and SCEP clients write issued
+certificates to `.scep-out.*` next to the script (removed on exit).
 
 ## Why EST/SCEP/CMP use hand-built harnesses instead of a CLI
 

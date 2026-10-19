@@ -1,0 +1,211 @@
+{
+  "task": "U-17",
+  "title": "Approve a pending request (second person)",
+  "sourceStory": "STORIES.md#u-17",
+  "persona": "marcus.webb (pki-admin, second person)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/inbox"
+      },
+      "caption": "Open /inbox",
+      "slug": "inbox-all",
+      "expect": {
+        "role": "heading",
+        "name": "Approvals inbox"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-17/01-inbox-all.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Type"
+      },
+      "value": "Certificate approvals",
+      "caption": "Select \"Certificate approvals\" in **Type**",
+      "slug": "filter-certificate-approvals",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-17/02-filter-certificate-approvals.png",
+        "annotated": "docs/guide/screenshots/U-17/02-filter-certificate-approvals-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 244,
+          "y": 153,
+          "w": 205,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Type"
+      },
+      "value": "All",
+      "caption": "Select \"All\" in **Type**",
+      "slug": "Type",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-17/03-type.png",
+        "annotated": "docs/guide/screenshots/U-17/03-type-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 244,
+          "y": 153,
+          "w": 205,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Approve",
+        "within": "div.space-y-3 > div",
+        "withinText": "Production Wildcard"
+      },
+      "caption": "Click **Approve**",
+      "slug": "approve-wildcard-request",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-17/04-approve-wildcard-request.png",
+        "annotated": "docs/guide/screenshots/U-17/04-approve-wildcard-request-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1170,
+          "y": 890,
+          "w": 106,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Approve",
+        "within": "div.space-y-3 > div",
+        "withinText": "Code Signing"
+      },
+      "caption": "Click **Approve**",
+      "slug": "approve-code-signing-request",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-17/05-approve-code-signing-request.png",
+        "annotated": "docs/guide/screenshots/U-17/05-approve-code-signing-request-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1170,
+          "y": 450,
+          "w": 106,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "principal": "marcus",
+  "lastRun": {
+    "at": "2026-10-18T12:48:19.006Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-17",
+    "steps": 5,
+    "shots": 5,
+    "annotated": 4,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/inbox"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-17/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-17/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

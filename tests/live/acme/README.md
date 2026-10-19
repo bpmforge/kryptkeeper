@@ -172,3 +172,41 @@ drove the endpoint:
    — only the bare leaf. RFC 8555 §7.4.2 doesn't strictly require a chain,
    but every real client assumes Let's Encrypt's always-send-the-chain
    behavior; certbot hard-failed with "less than 2 certificates in chain".
+
+## FG2 (EAB, ARI, provisioners, dns-01) - W26-05
+
+`fg2-run.sh` is a separate harness (run.sh above is untouched and keeps its own
+pass count). It proves the W26-01/02/03 features against real certbot and lego.
+
+```
+bash tests/live/acme/fg2-run.sh
+```
+
+Env: `KK_UAT_RUN_DIR` (default `$HOME/kk-uat-acme-fg2-run`, must be under `$HOME`),
+`CHALLTEST_IMAGE` (default `ghcr.io/letsencrypt/pebble-challtestsrv:latest`; pin a
+tag or digest after the first dry run and record it here), `CERTBOT_IMAGE`,
+`LEGO_IMAGE`, `FG2_SUBNET_PREFIX` (default `10.91.26`, a /24 on its own network
+`kk-uat-acme-fg2`; change it if it collides). Podman only; nothing is written
+into the repo; the script tears everything down on exit.
+
+Topology differences from run.sh: fixed IPs on that subnet, hub started with
+`APP_ACME_EAB_REQUIRED=true` and `--dns` pointing at pebble-challtestsrv as its
+only resolver (it answers the hub's dns-01 TXT lookups, and A queries for the
+client names from mocks registered through its API). The clients keep podman
+DNS. The hub binds `0.0.0.0` (as `tests/live/ca-revoke/fixture.sh` does).
+
+| Step | Proves |
+|---|---|
+| 1 | `POST /api/v1/acme/eab-keys` returns `hmac_key` once; `GET` never does; provisioners `internal-tls` (http-01+dns-01) and `internal-dns` (dns-01 only), both allow `*.internal`. Four keys: each client/directory pair needs its own kid (one account key per kid). |
+| 2 | `certbot register` without EAB is `externalAccountRequired` on the default and the provisioner directory; audit holds `acme.eab.reject`. |
+| 3, 4 | certbot (`--eab-kid/--eab-hmac-key`) and lego (`--eab --kid --hmac`) issue, renew, revoke on `/acme/internal-tls/directory`; chain, inventory `source=acme`, OCSP `revoked` on the first request after revoke (no retry), CRL lists the serial. |
+| 5 | `example.com` on the provisioner is `rejectedIdentifier` / not permitted. |
+| 6 | dns-01 through `internal-dns` (which offers only dns-01): certbot `--manual` with `fg2-hooks/certbot-dns-auth.sh`, lego `--dns exec` with `fg2-hooks/lego-dns.sh`; hooks call challtestsrv `/set-txt`. |
+| 7 | ARI: `renewalInfo/<certID>` 200 with the window end in the future; a mangled certID and an unknown serial give byte-identical 404; after an admin-API revoke the window closes at once and an ARI-aware lego renews without `--renew-force` or `--days`. |
+
+Honest limits: the hub issues long-lived ACME certificates, so "inside the
+window" is proven through the revocation-driven renew-now window. lego renewal
+uses the `renew` subcommand when the image has one, else `run`; with `run` the
+not-yet control is skipped (it cannot be gated on ARI). lego's DNS-propagation
+skip flag is picked from `lego run --help`. Results:
+`docs/release/LIVE_RESULTS_FG2_ACME_v0.14.md`.

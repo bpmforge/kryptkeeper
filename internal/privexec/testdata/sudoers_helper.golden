@@ -1,0 +1,5 @@
+# Kryptkeeper privilege for kkscan (mode helper)
+# Install as /etc/sudoers.d/kryptkeeper-kkscan, chmod 0440, then: visudo -cf <file>
+# One rule: the account may run only the hash-pinned helper as root.
+Defaults:kkscan !requiretty
+kkscan ALL=(root) NOPASSWD: /usr/local/sbin/kryptkeeper-helper

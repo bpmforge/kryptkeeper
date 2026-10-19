@@ -52,6 +52,9 @@ type wsmanFixture struct {
 	actions       []string
 	stdout        string // the command output (pre-base64)
 	corruptStdout bool
+	// postureStdout answers the W34-12 posture script; empty = same as stdout.
+	postureOut string
+	posture    bool
 }
 
 func newWSManFixture(t *testing.T, stdout string) *wsmanFixture {
@@ -72,10 +75,15 @@ func newWSManFixture(t *testing.T, stdout string) *wsmanFixture {
 			_, _ = io.WriteString(w, `<s:Envelope xmlns:s="x"><s:Body><ResourceCreated><ReferenceParameters><SelectorSet><Selector Name="ShellId">SHELL-1</Selector></SelectorSet></ReferenceParameters></ResourceCreated></s:Body></s:Envelope>`)
 		case strings.Contains(body, "shell/Command"):
 			f.actions = append(f.actions, "command")
+			f.posture = strings.Contains(body, xmlEscape(powerShellEncode(winPostureScript)))
 			_, _ = io.WriteString(w, `<s:Envelope xmlns:s="x"><s:Body><CommandResponse><CommandId>CMD-1</CommandId></CommandResponse></s:Body></s:Envelope>`)
 		case strings.Contains(body, "shell/Receive"):
 			f.actions = append(f.actions, "receive")
-			payload := base64.StdEncoding.EncodeToString([]byte(f.stdout))
+			out := f.stdout
+			if f.posture && f.postureOut != "" {
+				out = f.postureOut
+			}
+			payload := base64.StdEncoding.EncodeToString([]byte(out))
 			if f.corruptStdout {
 				payload = "!!!not base64!!!"
 			}
@@ -111,7 +119,7 @@ func TestWinRMScanParsesCertStores(t *testing.T) {
 		t.Fatalf("store tag: %q", res.Certs[0].Source)
 	}
 	// Fingerprint matches the agent's own parser.
-	agentCerts, _ := parseCertsSkippingKeys([]byte("-----BEGIN CERTIFICATE-----\n"+base64Wrap(der)+"\n-----END CERTIFICATE-----"), "x")
+	agentCerts, _, _ := parseCertsSkippingKeys([]byte("-----BEGIN CERTIFICATE-----\n"+base64Wrap(der)+"\n-----END CERTIFICATE-----"), "x")
 	if len(agentCerts) != 1 || res.Certs[0].Fingerprint != agentCerts[0].Fingerprint {
 		t.Fatalf("fingerprint mismatch vs agent parser")
 	}

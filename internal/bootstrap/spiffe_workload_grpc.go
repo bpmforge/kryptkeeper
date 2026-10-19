@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/pem"
 	"errors"
-	"log"
 	"net"
 	"net/url"
 	"os"
@@ -24,6 +23,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
+
+	"kryptkeeper/internal/logging"
 )
 
 // W7-01: the real SPIFFE Workload API over gRPC, complementing the REST
@@ -156,7 +157,7 @@ func (s *workloadAPIServer) recordAttest(ctx context.Context, spiffeID string, o
 		ResourceID:   spiffeID,
 		Outcome:      outcome,
 	}); err != nil {
-		log.Printf("audit append failed action=spiffe.workload_attest outcome=%s: %v", outcome, err)
+		logging.Warnf("audit append failed action=spiffe.workload_attest outcome=%s: %v", outcome, err)
 	}
 }
 
@@ -190,28 +191,44 @@ func (s *workloadAPIServer) FetchX509SVID(_ *workload.X509SVIDRequest, stream gr
 	if err != nil {
 		return status.Errorf(codes.Internal, "registered SPIFFE ID %q is not a URI", spiffeID)
 	}
-	svidPEM, keyPEM, bundlePEM, err := mintWorkloadSVID(spiffeURI, s.signingCA)
-	if err != nil {
-		s.recordAttest(ctx, spiffeID, AuditOutcomeFailure)
-		return status.Errorf(codes.Internal, "mint SVID: %v", err)
+	// send mints a fresh SVID and pushes it down the stream.
+	send := func() error {
+		svidPEM, keyPEM, bundlePEM, err := mintWorkloadSVID(spiffeURI, s.signingCA)
+		if err != nil {
+			s.recordAttest(ctx, spiffeID, AuditOutcomeFailure)
+			return status.Errorf(codes.Internal, "mint SVID: %v", err)
+		}
+		if err := stream.Send(&workload.X509SVIDResponse{Svids: []*workload.X509SVID{{
+			SpiffeId:    spiffeID,
+			X509Svid:    firstPEMDER(svidPEM),
+			X509SvidKey: firstPEMDER(keyPEM),
+			Bundle:      allPEMDER(bundlePEM),
+		}}}); err != nil {
+			return err
+		}
+		s.recordAttest(ctx, spiffeID, AuditOutcomeSuccess)
+		return nil
 	}
-
-	resp := &workload.X509SVIDResponse{Svids: []*workload.X509SVID{{
-		SpiffeId:    spiffeID,
-		X509Svid:    firstPEMDER(svidPEM),
-		X509SvidKey: firstPEMDER(keyPEM),
-		Bundle:      allPEMDER(bundlePEM),
-	}}}
-	if err := stream.Send(resp); err != nil {
+	if err := send(); err != nil {
 		return err
 	}
-	s.recordAttest(ctx, spiffeID, AuditOutcomeSuccess)
 
-	// Honour the streaming contract: hold the stream open until the
-	// workload disconnects. Rotation push (re-Send before expiry) is a
-	// disclosed follow-up; a single fresh SVID is served now.
-	<-ctx.Done()
-	return status.FromContextError(ctx.Err()).Err()
+	// Rotation (W29-01): hold the stream open and push a fresh SVID at half
+	// the configured lifetime, so a streaming client (go-spiffe X509Source)
+	// always holds a certificate with at least 50% of its life left, with
+	// no restart. The loop ends when the workload disconnects.
+	for {
+		timer := time.NewTimer(spiffeSVIDTTL() / 2)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return status.FromContextError(ctx.Err()).Err()
+		case <-timer.C:
+			if err := send(); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // firstPEMDER returns the DER bytes of the first PEM block.

@@ -157,6 +157,7 @@ describe("PQC Migration page", () => {
     await screen.findByText("Customer-Facing");
     expect(screen.getByText(/owner: payments/i)).toBeInTheDocument();
     expect(screen.getByText(/1\/2 migrated \(50%\)/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete wave Customer-Facing" })).toBeInTheDocument();
   });
 
   it("shows the CNSA/NIST countdown with deadlines and a PDF download", async () => {

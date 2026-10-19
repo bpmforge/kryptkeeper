@@ -12,6 +12,15 @@ data:
   APP_NOTIFICATION_PROVIDER: {{ .Values.config.notificationProvider | quote }}
   APP_BIND_ADDR: {{ .Values.config.bindAddr | quote }}
   PORT: {{ .Values.config.port | quote }}
+  KRYPTKEEPER_READINESS_DRAIN_SECONDS: {{ .Values.config.readinessDrainSeconds | int | quote }}
+  {{- with .Values.config.db }}
+  {{- if .maxOpenConns }}
+  KRYPTKEEPER_DB_MAX_OPEN_CONNS: {{ .maxOpenConns | quote }}
+  {{- end }}
+  {{- if .maxIdleConns }}
+  KRYPTKEEPER_DB_MAX_IDLE_CONNS: {{ .maxIdleConns | quote }}
+  {{- end }}
+  {{- end }}
   {{- if .Values.config.goMemLimit }}
   GOMEMLIMIT: {{ .Values.config.goMemLimit | quote }}
   {{- end }}
@@ -22,6 +31,9 @@ data:
   # The root filesystem is read-only; the default ./data would be unwritable
   # (self-issued TLS cert, CA bundle).
   KRYPTKEEPER_DATA_DIR: {{ printf "%s/data" (.Values.persistence.mountPath | trimSuffix "/") | quote }}
+  # Templates are file-backed; the default ./var/bootstrap-templates.json is
+  # on the read-only root filesystem, so template writes returned 503 (W23-30).
+  APP_TEMPLATE_FILE: {{ printf "%s/data/templates.json" (.Values.persistence.mountPath | trimSuffix "/") | quote }}
   {{- if not .Values.tls.enabled }}
   KRYPTKEEPER_TLS_DISABLE: "true"
   {{- else if .Values.tls.existingSecret }}

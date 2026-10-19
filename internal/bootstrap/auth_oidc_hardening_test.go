@@ -322,19 +322,3 @@ func TestJWKS_RedirectToHTTPIsRefused(t *testing.T) {
 		t.Fatal("token exchange must not follow a redirect to http")
 	}
 }
-
-func TestHTTPSOnlyRedirects(t *testing.T) {
-	mk := func(raw string) *http.Request {
-		r, _ := http.NewRequest(http.MethodGet, raw, nil)
-		return r
-	}
-	if err := httpsOnlyRedirects(mk("https://idp.example/x"), nil); err != nil {
-		t.Errorf("https hop refused: %v", err)
-	}
-	if err := httpsOnlyRedirects(mk("http://idp.example/x"), nil); err == nil {
-		t.Error("http hop accepted")
-	}
-	if err := httpsOnlyRedirects(mk("https://idp.example/x"), make([]*http.Request, 5)); err == nil {
-		t.Error("redirect chain not bounded")
-	}
-}

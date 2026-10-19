@@ -1,4 +1,4 @@
-# W19-02 — SSH agentless install UAT (nginx + apache)
+# W19-02 / W27-08 — SSH agentless install UAT (nginx, apache, HAProxy, Tomcat)
 
 Proves the hub's `POST /api/v1/renewal/execute` SSH install path against a
 REAL sshd host running real nginx and real apache: renew, install over SSH,
@@ -38,7 +38,38 @@ a trap — including on failure.
   `AUTH_MODE=bootstrap`, `APP_CERTIFICATE_PROVIDER=ca`, a fresh sqlite data
   dir under `/tmp`, and `KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT=true`.
 
-## What it proves, per server type (nginx, then apache)
+## HAProxy and Tomcat roles (W27-08)
+
+The same image also carries `haproxy` (Ubuntu 2.8) and Tomcat 10.1 under
+`/opt/tomcat` (tarball pinned by version and sha512 in the Containerfile; the
+build fails on a checksum mismatch). `ROLE=haproxy|tomcat` selects them. There
+is no systemd in the container, so `systemctl-shim.sh` is installed as
+`/usr/local/bin/systemctl` and maps exactly `reload haproxy` (haproxy `-sf`
+handover) and `restart tomcat` (`catalina.sh stop 10 -force` then `startup.sh`);
+any other unit or verb exits non-zero so a wrong unit name fails visibly.
+
+- HAProxy: `haproxy-kk.cfg` binds `*:443 ssl crt /etc/ssl/kk/haproxy.pem`
+  (one file, chain then key). Target profile: cert path = key path =
+  `/etc/ssl/kk/haproxy.pem`, no reload method (installer default, systemctl).
+- Tomcat: `tomcat-server.xml` has one HTTPS connector reading the PKCS#12
+  keystore `/opt/tomcat/conf/kk.p12`. Target profile: cert path = key path =
+  that keystore; the `ssh_key` credential carries `keystore_password`.
+- The keystore password is a **fixture-only constant** (`kk-uat-fixture-pw`,
+  protecting a throwaway self-signed key). `run.sh` greps the hub log and the
+  audit log for it at the end; it must appear 0 times.
+- Both servers additionally run a **config-test failure** case: the live
+  config is broken (`invalid-directive` appended to `haproxy.cfg`; `</Server>`
+  stripped from Tomcat's `server.xml`), a renewal is executed, and the run
+  asserts `install_outcome=config_test_failed`, the old serial is still served
+  (both daemons keep their in-memory config), and the installed file's sha256
+  is byte-identical to before the attempt. The config is repaired afterwards.
+- The host-side TLS read after each install allows up to 60 s (Tomcat's JVM
+  restart is slow); the elapsed seconds after the install response are printed.
+- `run.sh` prints `checks: N passed` before `ALL PASS`.
+
+Recorded results: `docs/release/LIVE_RESULTS_SSH_INSTALL_v0.15.md`.
+
+## What it proves, per server type (nginx, apache, haproxy, tomcat)
 
 1. `ssh_key` credential (user, private key, **pinned host public key**,
    port) stored via `POST /api/v1/credentials`.

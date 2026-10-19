@@ -6,9 +6,10 @@ package bootstrap
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // registerSchedulerStatusHandler mounts the renewal-scheduler status endpoint.
@@ -39,7 +40,7 @@ func registerSchedulerStatusHandler(mux *http.ServeMux, auth *Authenticator, aud
 			HasRun bool                   `json:"has_run"`
 			Status RenewalSchedulerStatus `json:"status"`
 		}{HasRun: hasRun, Status: status}}); err != nil {
-			log.Printf("failed to encode scheduler status: %v", err)
+			logging.Warnf("failed to encode scheduler status: %v", err)
 		}
 	})
 }

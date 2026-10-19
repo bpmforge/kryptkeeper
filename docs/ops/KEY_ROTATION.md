@@ -131,6 +131,22 @@ CA's key through the raw keystore route (bypassing certificate re-issuance)
 would silently leave the CA's certificate embedding the *old* public key —
 the exact footgun `RotateCA`'s design exists to prevent.
 
+## OCSP for the rotated-out issuer (W23-19)
+
+A relying party that still holds the OLD anchor sends OCSP requests whose
+CertID names the old issuer. While the retired key (`<id>-retired-<ts>`)
+exists, the responder answers them: it recognises the old issuer by key hash,
+signs with the OLD key (the response verifies against the old certificate, as
+RFC 6960 requires) and reads status from the same revocation store under the
+re-keyed CA's id. The old certificate is stored in the `ca_key_rotations`
+ledger (`old_cert_pem`, migration 000129), so this survives restarts and works
+on every replica. Rotations recorded before that migration have no stored
+certificate and are not answered. Once `RetireRotatedKeys` destroys the
+retired key (after `KRYPTKEEPER_CA_OLD_KEY_GRACE`, default 90 days) the old
+issuer is no longer served and the responder answers `unauthorized` (RFC 6960
+section 2.3), as for any issuer it does not serve. Responses signed by a
+retired key are never cached.
+
 ## Rollback
 
 There is no "undo rotation" operation — the old key is retained on disk

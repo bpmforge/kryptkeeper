@@ -142,4 +142,30 @@ describe("Wizard", () => {
     await user.click(screen.getByRole("button", { name: "Finish" }));
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
+
+  it("Enter on a focused button runs that button, not Next (WCAG 2.1.1)", async () => {
+    const user = userEvent.setup();
+    threeStepWizard();
+
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByText("Step two content")).toBeInTheDocument();
+
+    screen.getByRole("button", { name: "Back" }).focus();
+    await user.keyboard("{Enter}");
+    // Back goes back; the old handler hijacked Enter and advanced to step three.
+    expect(screen.getByText("Step one content")).toBeInTheDocument();
+  });
+
+  it("Enter in a text field still advances the wizard", async () => {
+    const user = userEvent.setup();
+    const steps: WizardStepDef[] = [
+      { id: "one", title: "One", render: () => <input aria-label="Name" /> },
+      { id: "two", title: "Two", render: () => <div>Step two content</div> },
+    ];
+    render(<Wizard steps={steps} onComplete={vi.fn()} />);
+
+    screen.getByLabelText("Name").focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByText("Step two content")).toBeInTheDocument();
+  });
 });

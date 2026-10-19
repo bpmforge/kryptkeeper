@@ -20,6 +20,18 @@ func awsEndpoint(t *testing.T) string {
 	return ep
 }
 
+// awsConformanceStore returns the AWS store for the conformance suite, skipping
+// (naming AWS_ENDPOINT_URL) unless an emulator is configured.
+func awsConformanceStore(t *testing.T) Store {
+	t.Helper()
+	awsEndpoint(t)
+	s, err := NewCloudKMSStore("aws")
+	if err != nil {
+		t.Fatalf("NewCloudKMSStore: %v", err)
+	}
+	return s
+}
+
 func TestCloudKMSStore_AWS_GenerateAndSign(t *testing.T) {
 	awsEndpoint(t)
 

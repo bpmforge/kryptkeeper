@@ -14,6 +14,26 @@ import (
 	"kryptkeeper/internal/keystore"
 )
 
+// Wave member outcome statuses, shared by the migrate-wave executor and its
+// consumers so a status string is never retyped.
+const (
+	MemberMigrated            = "migrated"
+	MemberFailed              = "failed"
+	MemberSkipped             = "skipped"
+	MemberDeliveryUnsupported = "delivery_unsupported"
+)
+
+const (
+	readinessQuantumSafe         = "quantum_safe"
+	readinessQuantumSafeLeafOnly = "quantum_safe_leaf_only"
+)
+
+// ReadinessIsPQC reports whether a PQCReadiness label means the leaf key is
+// post-quantum (full chain or leaf-only).
+func ReadinessIsPQC(label string) bool {
+	return label == readinessQuantumSafe || label == readinessQuantumSafeLeafOnly
+}
+
 // MigratedKey is the result of generating a fresh ML-DSA or hybrid keypair
 // and CSR for a certificate being re-issued by a migration wave. The CSR
 // itself carries dnsNames/ipAddresses (see ca.CreateCertificateRequestMLDSA/

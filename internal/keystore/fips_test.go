@@ -5,9 +5,19 @@
 package keystore
 
 import (
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/fips140"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // W9-11: FIPS posture is enforced, not claimed. These tests run in both
@@ -33,7 +43,13 @@ func TestFIPSPostureReportsLiveModuleState(t *testing.T) {
 func TestCheckFIPSAlgorithm(t *testing.T) {
 	if fips140.Enabled() {
 		// In FIPS mode: approved families pass, hybrids are refused.
-		for _, algo := range []Algorithm{RSA4096, ECDSAP256, Ed25519, MLDSA65} {
+		approved := []Algorithm{RSA4096, ECDSAP256, Ed25519}
+		if !fips140.Enforced() {
+			// ML-DSA is out-of-module: allowed in "on", refused in "only"
+			// (TestFIPSOnlyRefusesMLDSA).
+			approved = append(approved, MLDSA65)
+		}
+		for _, algo := range approved {
 			if err := CheckFIPSAlgorithm(algo); err != nil {
 				t.Errorf("%s: approved family refused in FIPS mode: %v", algo, err)
 			}
@@ -59,7 +75,7 @@ func TestCheckFIPSAlgorithm(t *testing.T) {
 	}
 	// The family classification itself is testable regardless of mode.
 	for algo, want := range map[Algorithm]bool{
-		RSA2048: true, RSA4096: true, ECDSAP256: true, ECDSAP384: true,
+		RSA2048: true, RSA3072: true, RSA4096: true, ECDSAP256: true, ECDSAP384: true,
 		Ed25519: true, MLDSA44: true, MLDSA65: true, MLDSA87: true,
 		HybridECDSAP256MLDSA65: false, HybridECDSAP384MLDSA87: false,
 		Algorithm("DES"): false,
@@ -98,5 +114,78 @@ func TestRootKeyCustodyOffByDefault(t *testing.T) {
 	}
 	if err := CheckRootKeyCustody("software"); err != nil {
 		t.Fatalf("without FIPS posture the software backend must remain allowed: %v", err)
+	}
+}
+
+// W23-31: scoped fips140=only coverage. The whole keystore suite cannot run
+// under "only" (the software store's AES-GCM uses arbitrary IVs), so these
+// tests use stdlib keys and the pure policy check.
+
+func TestFIPSOnlyModeIsActiveWhenExpected(t *testing.T) {
+	// Guards the CI job against going vacuously green with GODEBUG unset.
+	if os.Getenv("KK_EXPECT_FIPS_ONLY") == "1" && !fips140.Enforced() {
+		t.Fatal("KK_EXPECT_FIPS_ONLY=1 but crypto/fips140.Enforced() is false: GODEBUG=fips140=only is not in effect")
+	}
+}
+
+func TestFIPSOnlyApprovedAlgorithms(t *testing.T) {
+	if !fips140.Enforced() {
+		t.Skip("needs GODEBUG=fips140=only")
+	}
+	cases := []struct {
+		algo Algorithm
+		gen  func() (crypto.Signer, error)
+	}{
+		{ECDSAP256, func() (crypto.Signer, error) { return ecdsa.GenerateKey(elliptic.P256(), rand.Reader) }},
+		{ECDSAP384, func() (crypto.Signer, error) { return ecdsa.GenerateKey(elliptic.P384(), rand.Reader) }},
+		{RSA2048, func() (crypto.Signer, error) { return rsa.GenerateKey(rand.Reader, 2048) }},
+		{RSA4096, func() (crypto.Signer, error) { return rsa.GenerateKey(rand.Reader, 4096) }},
+	}
+	for _, c := range cases {
+		t.Run(string(c.algo), func(t *testing.T) {
+			if err := CheckFIPSAlgorithm(c.algo); err != nil {
+				t.Fatalf("approved algorithm refused: %v", err)
+			}
+			key, err := c.gen()
+			if err != nil {
+				t.Fatalf("generate: %v", err)
+			}
+			tmpl := &x509.Certificate{
+				SerialNumber:          big.NewInt(1),
+				Subject:               pkix.Name{CommonName: "fips-only " + string(c.algo)},
+				NotBefore:             time.Now().Add(-time.Minute),
+				NotAfter:              time.Now().Add(time.Hour),
+				IsCA:                  true,
+				BasicConstraintsValid: true,
+				KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+			}
+			der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
+			if err != nil {
+				t.Fatalf("self-sign: %v", err)
+			}
+			cert, err := x509.ParseCertificate(der)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if err := cert.CheckSignatureFrom(cert); err != nil {
+				t.Fatalf("verify self-signature: %v", err)
+			}
+		})
+	}
+}
+
+func TestFIPSOnlyRefusesMLDSA(t *testing.T) {
+	if !fips140.Enforced() {
+		t.Skip("needs GODEBUG=fips140=only")
+	}
+	for _, algo := range []Algorithm{MLDSA44, MLDSA65, MLDSA87} {
+		err := CheckFIPSAlgorithm(algo)
+		if err == nil {
+			t.Errorf("%s: must be refused under fips140=only", algo)
+			continue
+		}
+		if !strings.Contains(err.Error(), "FIPS_POSTURE.md") {
+			t.Errorf("%s: refusal must name FIPS_POSTURE.md, got: %v", algo, err)
+		}
 	}
 }

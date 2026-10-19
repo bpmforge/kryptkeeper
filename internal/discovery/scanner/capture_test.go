@@ -10,9 +10,11 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -249,5 +251,81 @@ func TestModernServerRecordsNoFindings(t *testing.T) {
 	ep := captureOne(t, portOf(l))
 	if ep.Error != "" || len(ep.Findings) != 0 || len(ep.Certs) != 1 || !ep.Reachable {
 		t.Fatalf("modern TLS server: want clean capture, got %+v", ep)
+	}
+}
+
+func TestCapturedEndpointCarriesLowConfidenceFingerprint(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(11), Subject: pkix.Name{CommonName: "fp.test"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, _ := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	l := listenLocal(t)
+	serveTLS(t, l, &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}})
+	ep := captureOne(t, portOf(l))
+	if ep.Fingerprint == nil || ep.Fingerprint.Confidence != ConfidenceLow || ep.Fingerprint.Tech != TechUnknown {
+		t.Fatalf("a TLS service on an unknown port must fingerprint low/unknown, got %+v", ep.Fingerprint)
+	}
+	if ep.RecommendedInstallMode != "" {
+		t.Fatalf("low confidence must not recommend, got %q", ep.RecommendedInstallMode)
+	}
+}
+
+// negativeSerialCert returns a self-signed certificate whose serial number is
+// negative, as SQL Server's default certificate is. x509.CreateCertificate
+// refuses to make one, so a valid certificate is patched (serial sign bit set)
+// and re-signed.
+func negativeSerialCert(t *testing.T, cn string) tls.Certificate {
+	t.Helper()
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(5), Subject: pkix.Name{CommonName: cn}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outer struct {
+		TBS asn1.RawValue
+		Alg asn1.RawValue
+		Sig asn1.BitString
+	}
+	if _, err := asn1.Unmarshal(der, &outer); err != nil {
+		t.Fatal(err)
+	}
+	tbs := append([]byte(nil), outer.TBS.FullBytes...)
+	hdr := len(tbs) - len(outer.TBS.Bytes)
+	// version [0] EXPLICIT INTEGER (5 bytes), then the serial INTEGER 02 01 05.
+	if tbs[hdr+5] != 0x02 || tbs[hdr+6] != 0x01 {
+		t.Fatalf("unexpected TBS layout: % x", tbs[hdr:hdr+10])
+	}
+	tbs[hdr+7] |= 0x80
+	digest := sha256.Sum256(tbs)
+	sig, err := ecdsa.SignASN1(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched, err := asn1.Marshal(struct {
+		TBS asn1.RawValue
+		Alg asn1.RawValue
+		Sig asn1.BitString
+	}{asn1.RawValue{FullBytes: tbs}, outer.Alg, asn1.BitString{Bytes: sig, BitLength: len(sig) * 8}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{patched}, PrivateKey: key}
+}
+
+// SQL Server's default certificate has a negative serial number. The scanner
+// must still record it (W34-20: every default SQL Server failed the handshake
+// before go.mod enabled x509negativeserial).
+func TestNegativeSerialCertificateIsCaptured(t *testing.T) {
+	l := listenLocal(t)
+	serveTLS(t, l, &tls.Config{Certificates: []tls.Certificate{negativeSerialCert(t, "SSL_Self_Signed_Fallback")}})
+	ep := captureOne(t, portOf(l))
+	if ep.Error != "" || len(ep.Certs) != 1 || ep.Certs[0].CommonName != "SSL_Self_Signed_Fallback" {
+		t.Fatalf("negative-serial certificate not captured: %+v", ep)
+	}
+	if ep.Certs[0].SerialNumber != "-123" {
+		t.Fatalf("serial = %q", ep.Certs[0].SerialNumber)
+	}
+	if fp := ep.Fingerprint; fp == nil || fp.Tech != "mssql" {
+		t.Fatalf("the SQL Server default cert should fingerprint as mssql: %+v", fp)
 	}
 }

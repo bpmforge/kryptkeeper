@@ -8,8 +8,13 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
+
+	"kryptkeeper/internal/egress"
 )
+
+var auditDialPolicy = egress.Policy{AllowPrivate: true, AllowLoopback: true}
 
 // EndpointTLSConfig holds the TLS configuration details for an endpoint.
 type EndpointTLSConfig struct {
@@ -56,8 +61,12 @@ func (a *Auditor) AuditEndpoint(host string, port int) EndpointTLSConfig {
 		ScannedAt: time.Now().UTC(),
 	}
 
-	target := fmt.Sprintf("%s:%d", host, port)
-	dialer := &net.Dialer{Timeout: a.timeout}
+	target := net.JoinHostPort(host, strconv.Itoa(port))
+	// Hosts come from discovery results and are re-resolved here, so the
+	// metadata/link-local block is applied at connect time, not only when the
+	// scanner first saw the name. Private space and loopback stay auditable,
+	// matching the scanner's own dial policy.
+	dialer := &net.Dialer{Timeout: a.timeout, Control: auditDialPolicy.DialControl()}
 	conn, err := tls.DialWithDialer(dialer, "tcp", target, &tls.Config{
 		InsecureSkipVerify: true,
 	})

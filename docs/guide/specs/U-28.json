@@ -1,0 +1,506 @@
+{
+  "task": "U-28",
+  "title": "Enroll devices with SCEP, EST or CMP",
+  "sourceStory": "STORIES.md#u-28",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/enrollment"
+      },
+      "caption": "Open /enrollment",
+      "slug": "scep-not-enabled",
+      "expect": {
+        "text": "Not enabled"
+      },
+      "allow": [
+        "scep",
+        "404"
+      ],
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/01-scep-not-enabled.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "tab",
+        "name": "EST"
+      },
+      "caption": "Click **EST**",
+      "slug": "est-tab",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/02-est-tab.png",
+        "annotated": "docs/guide/screenshots/U-28/02-est-tab-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 310,
+          "y": 133,
+          "w": 51,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New user"
+      },
+      "caption": "Click **New user**",
+      "slug": "est-new-user-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "New EST user"
+      },
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/03-est-new-user-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Username",
+        "within": "[role=dialog]"
+      },
+      "value": "est-devices-2",
+      "caption": "Fill **Username** with \"est-devices-2\"",
+      "slug": "Username",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/04-username.png",
+        "annotated": "docs/guide/screenshots/U-28/04-username-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 391,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Allowed DNS suffixes",
+        "within": "[role=dialog]"
+      },
+      "value": ".acme.test",
+      "caption": "Fill **Allowed DNS suffixes** with \".acme.test\"",
+      "slug": "Allowed DNS suffixes",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/05-allowed-dns-suffixes.png",
+        "annotated": "docs/guide/screenshots/U-28/05-allowed-dns-suffixes-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 461,
+          "w": 630,
+          "h": 78
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Create user"
+      },
+      "caption": "Click **Create user**",
+      "slug": "est-user-created",
+      "redact": [
+        "code",
+        "pre",
+        "input[readonly]"
+      ],
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/06-est-user-created.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Done",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Done**",
+      "slug": "Done",
+      "capture": false,
+      "n": 7
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "tab",
+        "name": "CMP"
+      },
+      "caption": "Click **CMP**",
+      "slug": "cmp-tab",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/08-cmp-tab.png",
+        "annotated": "docs/guide/screenshots/U-28/08-cmp-tab-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 361,
+          "y": 133,
+          "w": 57,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Register trust anchor"
+      },
+      "caption": "Click **Register trust anchor**",
+      "slug": "cmp-anchor-dialog",
+      "expect": {
+        "role": "button",
+        "name": "Register anchor"
+      },
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/09-cmp-anchor-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Label",
+        "within": "[role=dialog]"
+      },
+      "value": "Partner CMP root",
+      "caption": "Fill **Label** with \"Partner CMP root\"",
+      "slug": "Label",
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/10-label.png",
+        "annotated": "docs/guide/screenshots/U-28/10-label-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 361,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Certificate",
+        "within": "[role=dialog]"
+      },
+      "value": "-----BEGIN CERTIFICATE-----\nMIICADCCAYagAwIBAgIUZR5XWhuF5nq2BqyW+9/NGsU+bJMwCgYIKoZIzj0EAwIw\nLzEYMBYGA1UEAwwPUGFydG5lciBSb290IENBMRMwEQYDVQQKDApQYXJ0bmVyIENv\nMB4XDTI2MTAxODA3MTkwN1oXDTM2MTAxNTA3MTkwN1owLzEYMBYGA1UEAwwPUGFy\ndG5lciBSb290IENBMRMwEQYDVQQKDApQYXJ0bmVyIENvMHYwEAYHKoZIzj0CAQYF\nK4EEACIDYgAEKsm1nloX9Yc8a8vUxrhpa1sO411Lhe24OgJAjV8+SCUElIcE3BeV\n7PlcdizyywzGlRYTBkd5tG/rOayPuQ8Pjkc1QpDX6SJDof8tWLeVSZxjfeVtCcTJ\n+BbkNSylAPajo2MwYTAdBgNVHQ4EFgQU79AEThn7Ukm1mv/0qbC6SrzHvPcwHwYD\nVR0jBBgwFoAU79AEThn7Ukm1mv/0qbC6SrzHvPcwDwYDVR0TAQH/BAUwAwEB/zAO\nBgNVHQ8BAf8EBAMCAQYwCgYIKoZIzj0EAwIDaAAwZQIwGg6b3O+MFQt54jA2j2CS\noO2a7WmlIOuI8X0mzZA71Ui9w3W0XcnvBlxG9gMab2tPAjEAqp+JJ1AmRM//GOUv\n6pKT12ZwZSstbdycoO7sCxprHxDwTPMNh2z9OFciv0WC1OZv\n-----END CERTIFICATE-----",
+      "caption": "Fill **Certificate** with \"-----BEGIN CERTIFICATE-----\nMIICADCCAYagAwIBAgIUZR5XWhuF5nq2BqyW+9/NGsU+bJMwCgYIKoZIzj0EAwIw\nLzEYMBYGA1UEAwwPUGFydG5lciBSb290IENBMRMwEQYDVQQKDApQYXJ0bmVyIENv\nMB4XDTI2MTAxODA3MTkwN1oXDTM2MTAxNTA3MTkwN1owLzEYMBYGA1UEAwwPUGFy\ndG5lciBSb290IENBMRMwEQYDVQQKDApQYXJ0bmVyIENvMHYwEAYHKoZIzj0CAQYF\nK4EEACIDYgAEKsm1nloX9Yc8a8vUxrhpa1sO411Lhe24OgJAjV8+SCUElIcE3BeV\n7PlcdizyywzGlRYTBkd5tG/rOayPuQ8Pjkc1QpDX6SJDof8tWLeVSZxjfeVtCcTJ\n+BbkNSylAPajo2MwYTAdBgNVHQ4EFgQU79AEThn7Ukm1mv/0qbC6SrzHvPcwHwYD\nVR0jBBgwFoAU79AEThn7Ukm1mv/0qbC6SrzHvPcwDwYDVR0TAQH/BAUwAwEB/zAO\nBgNVHQ8BAf8EBAMCAQYwCgYIKoZIzj0EAwIDaAAwZQIwGg6b3O+MFQt54jA2j2CS\noO2a7WmlIOuI8X0mzZA71Ui9w3W0XcnvBlxG9gMab2tPAjEAqp+JJ1AmRM//GOUv\n6pKT12ZwZSstbdycoO7sCxprHxDwTPMNh2z9OFciv0WC1OZv\n-----END CERTIFICATE-----\"",
+      "slug": "Certificate",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/11-certificate.png",
+        "annotated": "docs/guide/screenshots/U-28/11-certificate-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 431,
+          "w": 630,
+          "h": 138
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Register anchor"
+      },
+      "caption": "Click **Register anchor**",
+      "slug": "anchor-registered",
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/12-anchor-registered.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New PBM secret"
+      },
+      "caption": "Click **New PBM secret**",
+      "slug": "pbm-dialog",
+      "expect": {
+        "role": "button",
+        "name": "Create secret"
+      },
+      "n": 13,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/13-pbm-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Label",
+        "within": "[role=dialog]"
+      },
+      "value": "lab-switch-secret",
+      "caption": "Fill **Label** with \"lab-switch-secret\"",
+      "slug": "Label",
+      "n": 14,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/14-label.png",
+        "annotated": "docs/guide/screenshots/U-28/14-label-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 391,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Create secret"
+      },
+      "caption": "Click **Create secret**",
+      "slug": "pbm-secret-shown-once",
+      "redact": [
+        "code",
+        "pre",
+        "input[readonly]"
+      ],
+      "n": 15,
+      "capture": {
+        "file": "docs/guide/screenshots/U-28/15-pbm-secret-shown-once.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Done",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Done**",
+      "slug": "Done",
+      "capture": false,
+      "n": 16
+    }
+  ],
+  "flags": "CONFIG + LAB DEVICE (SCEP off here; device-side enrolment not captured)",
+  "lastRun": {
+    "at": "2026-10-18T12:43:42.236Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-28",
+    "steps": 16,
+    "shots": 14,
+    "annotated": 7,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/enrollment"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-28/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-28/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

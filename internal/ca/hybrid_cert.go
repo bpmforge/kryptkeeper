@@ -29,7 +29,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
-	"encoding/pem"
 	"fmt"
 	"time"
 
@@ -179,15 +178,6 @@ func HybridCertInfo(cert *x509.Certificate) (hasAltKey, hasAltSig bool, altPubBy
 		}
 	}
 	return
-}
-
-// ParseHybridCertPEM parses a PEM certificate and returns the DER bytes.
-func ParseHybridCertPEM(certPEM []byte) ([]byte, error) {
-	block, _ := pem.Decode(certPEM)
-	if block == nil || block.Type != "CERTIFICATE" {
-		return nil, fmt.Errorf("invalid PEM certificate")
-	}
-	return block.Bytes, nil
 }
 
 // suppress unused import warning

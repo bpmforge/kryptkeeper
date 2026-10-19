@@ -38,6 +38,32 @@ recipient key. The startup log says whether SCEP is live, and if not, why.
 | Withdraw | `DELETE /api/v1/scep/challenges/{id}` removes an unused challenge. A used one stays as a record. |
 | List | `GET /api/v1/scep/challenges` lists challenges without their secrets. |
 
+## Renewal (W26-30)
+
+`GetCACaps` advertises `Renewal`. A device renews by sending a `PKCSReq` (19)
+or `RenewalReq` (17) whose PKCS#7 signer is its **current** certificate rather
+than a throwaway self-signed one. No challenge is needed; a challengePassword
+in the CSR is ignored and not consumed. A request signed by a self-signed
+certificate is an initial enrollment (challenge path, unchanged), and a
+`RenewalReq` signed by a self-signed certificate is refused.
+
+All of these must hold, else the reply is a FAILURE CertRep (`badRequest`, or
+`badMessageCheck` when the signature does not verify) and nothing falls back to
+the challenge path:
+
+1. the PKCS#7 signature verifies with the signer certificate;
+2. the signer certificate was issued by this SCEP CA and carries client-auth EKU;
+3. it is inside its validity period;
+4. it is not revoked (an unknown revocation status refuses: no revocation
+   store means every renewal is refused);
+5. the template enrollment gate (`enrollment_permissions`) allows it, as for
+   enrollment.
+
+The CSR may carry the same key or a new one. The new certificate takes its
+common name and DNS names from the **old certificate**, never from the CSR; the
+CSR only proves possession of the key. The reply is encrypted to the signer
+certificate.
+
 ## Removed in W20-16
 
 - **`KRYPTKEEPER_SCEP_CHALLENGE`**, one static challenge shared by every
@@ -55,6 +81,8 @@ recipient key. The startup log says whether SCEP is live, and if not, why.
 | `scep.challenge.delete` | The withdrawal. |
 | `scep.enroll` success | The bound CN as actor; the challenge id, serial, subject and DNS names. |
 | `scep.enroll` denied | The reason: unknown, already used, expired, minted for another CA, or no challenge in the CSR. |
+| `scep.renew` success | The signer CN as actor; `old_serial`, `new_serial` and subject. |
+| `scep.renew` denied | The reason: not issued by this CA, outside validity, revoked, revocation status unavailable, enrollment gate, bad signature, or self-signed RenewalReq. |
 
 The challenge itself never appears in logs, audit rows or API listings.
 

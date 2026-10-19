@@ -39,6 +39,8 @@ func freshPostgresForTest(t *testing.T) string {
 	if !strings.Contains(strings.ToLower(name), "test") {
 		t.Fatalf("refusing to DROP SCHEMA on database %q: KRYPTKEEPER_TEST_POSTGRES_DSN must name a disposable database with \"test\" in its name", name)
 	}
+	closeSharedPostgresPools()
+	t.Cleanup(closeSharedPostgresPools)
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
 		t.Fatalf("open postgres: %v", err)

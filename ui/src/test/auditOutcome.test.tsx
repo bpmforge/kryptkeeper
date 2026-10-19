@@ -12,7 +12,7 @@ vi.mock("../lib/api", () => ({
 
 import Audit from "../pages/Audit";
 import { api } from "../lib/api";
-import { AUDIT_OUTCOMES, auditOutcomeTone } from "../lib/auditOutcome";
+import { AUDIT_OUTCOMES, auditOutcomeTone, isReadOnlyAction } from "../lib/auditOutcome";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -85,5 +85,18 @@ describe("audit outcome vocabulary", () => {
       "Pending approval",
       "Proposed",
     ]);
+  });
+});
+
+describe("isReadOnlyAction", () => {
+  it("treats page-view audit rows as reads", () => {
+    for (const a of ["ca.list", "certificate.get", "authz.check", "dashboard.summary", "report.crypto_posture", "approval.inbox.list"]) {
+      expect(isReadOnlyAction(a)).toBe(true);
+    }
+  });
+  it("keeps changes and logins", () => {
+    for (const a of ["certificate.issue", "policy.delete", "auth.login", "certificate.issue_refused", "estate.takeover"]) {
+      expect(isReadOnlyAction(a)).toBe(false);
+    }
   });
 });

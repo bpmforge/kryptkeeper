@@ -126,3 +126,31 @@ against and is unaffected by any of this.
 - `run.sh` — builds both binaries, drives the hub + container lifecycle,
   and prints PASS/FAIL per step. No real key material is committed; every
   cert/key here is generated fresh at build time.
+
+## W24-16: keystores, kubeconfig and out-of-band replacement
+
+`fixtures/` is COPYd into the image as `/opt/keystores` and
+`KRYPTKEEPER_SCAN_PATHS` gains it. `fixtures/gen-keystores.sh` regenerates the
+binaries (needs openssl 3 and keytool; it can run inside an ubuntu container):
+
+| file | content | inventory source |
+|---|---|---|
+| `store3.jks` | JKS, 3 trusted certs, password `changeit` | `jks:/opt/keystores/store3.jks` x3 |
+| `store2.p12` | PKCS#12 (leaf + CA), legacy SHA-1 MAC profile, password `changeit` | `pkcs12:/opt/keystores/store2.p12` x2 |
+| `kubeconfig` | one `client-certificate-data` user | `kubeconfig:/opt/keystores/kubeconfig` x1 |
+
+New checks (after the existing inventory-count check, 8 more checks, so 25 in
+a full run): JKS 3, PKCS#12 2, kubeconfig 1, 6 keystore-sourced rows in total;
+overwriting `/etc/ssl/certs-extra/extra1.pem` raises `CERTIFICATE_REPLACED`
+within `2 * poll interval + 10 s`, the inventory fingerprint changes, and no
+alert names a keystore source; the hub DB's `agent_*` tables hold 0 `PRIVATE KEY`
+headers.
+
+Decisions: there is no hub API listing an agent's inventory, so the checks read
+the hub's SQLite file (copied with its WAL via `podman cp`), scoped to the
+`agent_*` tables. The alert is observed in the audit trail
+(`discovery.scan_diff.certificate_replaced`), which the notifier always writes
+before fanning out, so the check does not depend on a delivering channel.
+The P12 key is imported and discarded by the generator (no key file is kept),
+so the "leaf.key appears nowhere" grep is not possible; the 0 `PRIVATE KEY`
+dump check covers the property.

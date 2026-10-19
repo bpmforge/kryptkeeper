@@ -1,7 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../lib/api", () => ({
@@ -11,6 +11,7 @@ vi.mock("../lib/api", () => ({
     templates: vi.fn(),
     issueCertificate: vi.fn(),
     downloadCertificatePem: vi.fn(),
+    teamPolicy: vi.fn(),
   },
 }));
 
@@ -24,7 +25,14 @@ function renderWizard() {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={["/certificates/issue"]}>
-        <IssueWizard />
+        <Routes>
+          <Route path="/certificates/issue" element={<IssueWizard />} />
+          <Route path="/targets/setup" element={<div>target setup stub</div>} />
+          <Route
+            path="/targets/renewal-policy"
+            element={<div>renewal policy stub</div>}
+          />
+        </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -53,6 +61,18 @@ const templates = [
   // template walked a real user four steps to a "template policy
   // violation" at Finish. It must not appear at all.
   { id: "tpl-off", name: "retired-tls", active: false },
+  {
+    id: "tpl-np",
+    name: "corp-tls",
+    active: true,
+    name_policy: { allowed_dns_suffixes: [".corp.example"] },
+  },
+  {
+    id: "tpl-ap",
+    name: "gated-tls",
+    active: true,
+    approval_roles: ["pki-approver"],
+  },
 ];
 
 beforeEach(() => {
@@ -71,6 +91,40 @@ beforeEach(() => {
     meta: { total: templates.length },
   } as never);
 });
+
+type User = ReturnType<typeof userEvent.setup>;
+const CSR =
+  "-----BEGIN CERTIFICATE REQUEST-----\nfake\n-----END CERTIFICATE REQUEST-----";
+
+async function goToSubjectStep(user: User, tpl = "tpl-1", tplName = "server-tls") {
+  await screen.findByText("Root CA");
+  await user.selectOptions(
+    screen.getByLabelText(/certificate authority/i),
+    "ca-root",
+  );
+  await user.click(screen.getByRole("button", { name: "Next" }));
+  await screen.findByText(tplName);
+  await user.selectOptions(screen.getByLabelText(/issuance template/i), tpl);
+  await user.click(screen.getByRole("button", { name: "Next" }));
+}
+
+async function submitSubject(user: User, sans: string) {
+  await user.type(
+    screen.getByLabelText(/subject common name/i),
+    "api.example.com",
+  );
+  if (sans) await user.type(screen.getByLabelText(/subject alternative names/i), sans);
+  await user.click(screen.getByRole("button", { name: "Next" }));
+}
+
+async function issueWith(user: User, tpl: string, tplName: string) {
+  await goToSubjectStep(user, tpl, tplName);
+  await submitSubject(user, "");
+  await user.click(screen.getByRole("button", { name: "I already have a CSR" }));
+  await user.type(screen.getByLabelText(/csr pem/i), CSR);
+  await user.click(screen.getByRole("button", { name: "Next" }));
+  await user.click(screen.getByRole("button", { name: "Finish" }));
+}
 
 async function goToKeyOrCsrStep(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByText("Root CA");
@@ -349,6 +403,36 @@ describe("IssueWizard (W8-05)", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/certificate issued/i)).not.toBeInTheDocument();
   });
+
+  it("shows policy name, rule and observed value on a policy refusal (W22-16)", async () => {
+    vi.mocked(api.issueCertificate).mockRejectedValue(
+      new Error(
+        'issue certificate: issuance policy "Baseline": rule min_rsa_bits: requested RSA modulus is 2048 bits, floor is 3072',
+      ),
+    );
+
+    const user = userEvent.setup();
+    renderWizard();
+    await goToKeyOrCsrStep(user);
+
+    await user.click(
+      screen.getByRole("button", { name: "I already have a CSR" }),
+    );
+    await user.type(
+      screen.getByLabelText(/csr pem/i),
+      "-----BEGIN CERTIFICATE REQUEST-----\nfake\n-----END CERTIFICATE REQUEST-----",
+    );
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("button", { name: "Finish" }));
+
+    const policy = await screen.findByText("Baseline");
+    expect(policy.tagName).toBe("DD");
+    expect(screen.getByText("min_rsa_bits").tagName).toBe("DD");
+    expect(screen.getByText(/2048 bits/).tagName).toBe("DD");
+    expect(screen.getByText("Policy:")).toBeInTheDocument();
+    expect(screen.getByText("Rule:")).toBeInTheDocument();
+    expect(screen.getByText("Observed:")).toBeInTheDocument();
+  });
 });
 
 it("does not offer inactive templates the server would refuse", async () => {
@@ -359,4 +443,126 @@ it("does not offer inactive templates the server would refuse", async () => {
   const select = await screen.findByLabelText(/template/i);
   expect(within(select).getByRole("option", { name: "server-tls" })).toBeInTheDocument();
   expect(within(select).queryByRole("option", { name: "retired-tls" })).not.toBeInTheDocument();
+});
+
+describe("IssueWizard (W26-26)", () => {
+  it("blocks an invalid SAN in the subject step", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await goToSubjectStep(user);
+    await submitSubject(user, "bad_host!");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /is not a valid DNS name or IP/,
+    );
+    expect(screen.getByLabelText(/subject common name/i)).toBeInTheDocument();
+  });
+
+  it("accepts DNS, wildcard and IP SANs", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await goToSubjectStep(user);
+    await submitSubject(user, "a.example.com, *.example.com, 10.0.0.1, 2001:db8::1");
+    await user.click(screen.getByRole("button", { name: "Generate a new key" }));
+    expect(screen.getByText(/DNS:a\.example\.com/)).toBeInTheDocument();
+    expect(screen.getByText(/IP:10\.0\.0\.1/)).toBeInTheDocument();
+  });
+
+  it("blocks a SAN outside the template name policy", async () => {
+    const user = userEvent.setup();
+    renderWizard();
+    await goToSubjectStep(user, "tpl-np", "corp-tls");
+    await submitSubject(user, "api.example.com");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /outside this template's allowed domains/,
+    );
+  });
+
+  it("pending state names the approvers", async () => {
+    vi.mocked(api.issueCertificate).mockResolvedValue({
+      status: "pending_approval",
+      approval_id: "appr-2",
+      message: "issuance requires approval",
+    } as never);
+    const user = userEvent.setup();
+    renderWizard();
+    await issueWith(user, "tpl-ap", "gated-tls");
+    expect(
+      await screen.findByText(/Waiting for approval from: pki-approver/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/cannot approve your own request/)).toBeInTheDocument();
+  });
+
+  it("pending state falls back to pki-admin without approval roles", async () => {
+    vi.mocked(api.issueCertificate).mockResolvedValue({
+      status: "pending_approval",
+      approval_id: "appr-3",
+      message: "issuance requires approval",
+    } as never);
+    const user = userEvent.setup();
+    renderWizard();
+    await issueWith(user, "tpl-1", "server-tls");
+    expect(
+      await screen.findByText(/Waiting for approval from: pki-admin/),
+    ).toBeInTheDocument();
+  });
+
+  it("issued result links to deploy and renewal", async () => {
+    vi.mocked(api.issueCertificate).mockResolvedValue({
+      data: { fingerprint_sha256: "fp-new", common_name: "api.example.com" },
+    } as never);
+    const user = userEvent.setup();
+    renderWizard();
+    await issueWith(user, "tpl-1", "server-tls");
+    await user.click(await screen.findByRole("button", { name: "Deploy to a target" }));
+    expect(await screen.findByText("target setup stub")).toBeInTheDocument();
+  });
+
+  it("links to renewal policy after issuance", async () => {
+    vi.mocked(api.issueCertificate).mockResolvedValue({
+      data: { fingerprint_sha256: "fp-new", common_name: "api.example.com" },
+    } as never);
+    const user = userEvent.setup();
+    renderWizard();
+    await issueWith(user, "tpl-1", "server-tls");
+    await user.click(await screen.findByRole("button", { name: "Set up renewal" }));
+    expect(await screen.findByText("renewal policy stub")).toBeInTheDocument();
+  });
+
+  it("shows the rule name for a template policy refusal", async () => {
+    vi.mocked(api.issueCertificate).mockRejectedValue(
+      new Error(
+        "policy violation [extended_key_usage]: EKU 3 is not allowed by template tpl-1",
+      ),
+    );
+    const user = userEvent.setup();
+    renderWizard();
+    await issueWith(user, "tpl-1", "server-tls");
+    const rule = await screen.findByText("extended_key_usage");
+    expect(rule.tagName).toBe("DD");
+    expect(screen.getByText("Rule:")).toBeInTheDocument();
+  });
+});
+
+describe("IssueWizard for a requester (W33-22)", () => {
+  it("offers only the CAs and templates the team policy allows", async () => {
+    vi.mocked(api.teamPolicy).mockResolvedValue({
+      team: "team-a", allowed_cas: ["ca-root"], allowed_templates: ["tpl-1"],
+    } as never);
+    vi.mocked(api.authzCheck).mockResolvedValue({
+      service: "kryptkeeper", authenticated: true, principal: "team-a", role: "requester", scopes: [],
+    } as never);
+    vi.mocked(api.cas).mockResolvedValue({
+      data: { items: [...cas, { id: "ca-other", name: "Other CA", type: "root" }] },
+    } as never);
+    const user = userEvent.setup();
+    renderWizard();
+    await screen.findByText("Root CA");
+    await waitFor(() => expect(screen.queryByText("Other CA")).not.toBeInTheDocument());
+    expect(screen.queryByText(/read-only access/i)).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText(/certificate authority/i), "ca-root");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    expect(await screen.findByText("server-tls")).toBeInTheDocument();
+    expect(screen.queryByText("corp-tls")).not.toBeInTheDocument();
+    expect(screen.queryByText("gated-tls")).not.toBeInTheDocument();
+  });
 });

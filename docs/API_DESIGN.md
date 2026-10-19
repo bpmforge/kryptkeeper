@@ -367,6 +367,25 @@ Legend: ✅ allowed, ❌ denied. For API-key auth path, final decision is `role_
 | `POST /api/v1/api-keys` | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `DELETE /api/v1/api-keys/{id}` own | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
+### Approvals and the `approver` role (v1 decision, 2026-10-18)
+
+Two separate queues, two separate rules:
+
+| Queue | Who may list and decide |
+|---|---|
+| Certificate issuance requests (`/api/v1/approvals`, inbox type `certificate_approval`) | `pki-admin` always; any other role named in the template's `approval_roles` (for example `approver`, `pki-operator`) on requests for that template only. The write gate still needs the `action.approve` permission, which `approver` and `pki-operator` hold. |
+| Key and CA pending actions (`/api/v1/pending-actions`, inbox type `pending_action`: key delete/export/rotate, CA import/trust-anchor/rotate, audit archive and the rest of dual control) | `pki-admin` and `pki-operator` only. `approver` gets 403 and does not see other people's actions in the inbox. |
+
+`approver` is therefore a certificate-requests role. It holds no key or CA authority.
+
+Rules that hold on both queues: proposer is not approver (the raiser, or a key minted by the same human, is
+refused with 403); the bootstrap token never approves; a request outside the caller's tenant answers 403
+(certificate) or 404 (action) under MULTI_TENANCY; every approve, reject and refusal writes an audit row
+(`approval.approve`, `approval.reject`, `action.approve`, `action.reject`, outcome `denied` for refusals).
+`GET /api/v1/approvals` and the inbox list a non-admin only what they raised plus what their role may decide,
+so the UI shows approvers exactly the items they can act on. A role named in `approval_roles` that lacks
+`action.approve` (for example `pki-viewer`) can see those requests but is refused at the write gate.
+
 ### Scope catalog (MVP)
 
 - `cas:read`, `cas:write`

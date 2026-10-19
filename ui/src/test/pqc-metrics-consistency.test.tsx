@@ -96,10 +96,10 @@ describe("PQC metrics consistency", () => {
       </QueryClientProvider>,
     );
 
-    await screen.findByText("Quantum-safe today");
-    // Tile: full-chain only (5/40), readiness in the hint.
-    expect(screen.getByText("12%")).toBeInTheDocument();
-    expect(screen.getByText(/75% PQC readiness/)).toBeInTheDocument();
+    await screen.findByText("PQC readiness");
+    // Tile: readiness is the headline; full-chain quantum-safe (5/40) is secondary.
+    expect(screen.getAllByText("75%").length).toBeGreaterThan(0);
+    expect(screen.getByText(/Quantum-safe today: 5 of 40 certificates/)).toBeInTheDocument();
 
     // Panel: same readiness number, separate leaf-only row, no 63%-style drift.
     const panel = screen.getByText("PQC Readiness").closest("[data-slot=card]") as HTMLElement;
@@ -126,6 +126,7 @@ describe("PQC metrics consistency", () => {
 
     await waitFor(() => expect(screen.getAllByText("75%")).toHaveLength(2));
     expect(screen.queryByText("63%")).not.toBeInTheDocument();
-    expect(screen.getAllByText("Leaf-only PQC")).toHaveLength(2);
+    // metric label + hint + explanation term on the migration tile row, plus the countdown card label
+    expect(screen.getAllByText("Leaf-only PQC")).toHaveLength(4);
   });
 });

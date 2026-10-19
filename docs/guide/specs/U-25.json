@@ -1,0 +1,286 @@
+{
+  "task": "U-25",
+  "title": "Run a discovery scan and read the results",
+  "sourceStory": "STORIES.md#u-25",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/discovery"
+      },
+      "caption": "Open /discovery",
+      "slug": "discovery-overview",
+      "expect": {
+        "role": "button",
+        "name": "New scan"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-25/01-discovery-overview.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New scan"
+      },
+      "caption": "Click **New scan**",
+      "slug": "new-scan-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "Queue discovery scan"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-25/02-new-scan-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "placeholder": "10.0.0.0/24 or host"
+      },
+      "value": "127.0.0.1",
+      "caption": "Fill **10.0.0.0/24 or host** with \"127.0.0.1\"",
+      "slug": "target",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-25/03-target.png",
+        "annotated": "docs/guide/screenshots/U-25/03-target-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 456,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "placeholder": "e.g. 9443, 8888"
+      },
+      "value": "18490,18491,18492,18493",
+      "caption": "Fill **e.g. 9443, 8888** with \"18490,18491,18492,18493\"",
+      "slug": "custom-ports",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-25/04-custom-ports.png",
+        "annotated": "docs/guide/screenshots/U-25/04-custom-ports-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 530,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Queue scan",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Queue scan**",
+      "slug": "scan-queued",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-25/05-scan-queued.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "wait",
+      "ms": 4000,
+      "caption": "wait",
+      "slug": "wait",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-25/06-wait.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Refresh"
+      },
+      "caption": "Click **Refresh**",
+      "slug": "scan-completed",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-25/07-scan-completed.png",
+        "annotated": "docs/guide/screenshots/U-25/07-scan-completed-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 856,
+          "w": 246,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Show risky endpoints only"
+      },
+      "value": {
+        "index": 1
+      },
+      "caption": "Select \"[object Object]\" in **Show risky endpoints only**",
+      "slug": "risky-only",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-25/08-risky-only.png",
+        "annotated": "docs/guide/screenshots/U-25/08-risky-only-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 523,
+          "y": 736,
+          "w": 246,
+          "h": 38
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:42:50.271Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-25",
+    "steps": 8,
+    "shots": 8,
+    "annotated": 4,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/discovery?risky=true"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-25/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-25/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

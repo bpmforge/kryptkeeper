@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/ca"
+	"kryptkeeper/internal/logging"
 )
 
 // W17-02: code-signing policy enforcement.
@@ -48,7 +51,7 @@ type CodeSigningPolicy struct {
 func minKeySizeFor(algorithm string, policy CodeSigningPolicy) (int, bool) {
 	a := strings.ToUpper(strings.TrimSpace(algorithm))
 	switch {
-	case strings.HasPrefix(a, "RSA"):
+	case ca.IsRSAAlgorithm(a):
 		return policy.MinRSAKeySizeBits, policy.MinRSAKeySizeBits > 0
 	case strings.HasPrefix(a, "EC"): // ECDSA, EC, ECDH
 		return policy.MinECKeySizeBits, policy.MinECKeySizeBits > 0
@@ -130,4 +133,22 @@ func summarizeCodeSigningPolicy(certs []CodeSigningCert, policy CodeSigningPolic
 		})
 	}
 	return summary
+}
+
+// codesignAlert receives one call per certificate that violates the policy.
+type codesignAlert func(event, resourceID, detail string)
+
+func defaultCodesignAlert(event, resourceID, detail string) {
+	logging.Infof("ALERT %s resource=%q %q", event, resourceID, detail)
+}
+
+// codesignAlerter is the active hook; tests replace it.
+var codesignAlerter codesignAlert = defaultCodesignAlert
+
+// alertViolations raises one alert per violating certificate so none is
+// silently folded into a count (FR-P90 policy check, W26-22).
+func alertViolations(summary CodeSigningPolicySummary) {
+	for _, f := range summary.Findings {
+		codesignAlerter("codesign.policy.violation", f.FingerprintSHA256, strings.Join(f.Violations, "; "))
+	}
 }

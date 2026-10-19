@@ -35,6 +35,13 @@ type bulkRevokeParams struct {
 // and returns a JSON result. Unknown or malformed actions return an error so the
 // action is recorded as failed, never silently dropped.
 func executePendingAction(ctx context.Context, certProvider CertificateProvider, action PendingAction) (json.RawMessage, error) {
+	// L-03: the proposal-time check can be stale (CA remapped since) or
+	// bypassed by a row written outside the handler, so re-resolve here.
+	if multiTenancyEnabled() {
+		if err := checkPendingActionTargets(ctx, certProvider, activeTenantStore, action.Tenant, action); err != nil {
+			return nil, err
+		}
+	}
 	switch action.ActionType {
 	case "revoke":
 		var p revokeParams
@@ -50,7 +57,7 @@ func executePendingAction(ctx context.Context, certProvider CertificateProvider,
 		if err != nil {
 			return nil, fmt.Errorf("revoke %s: %w", p.Fingerprint, err)
 		}
-		return json.Marshal(map[string]any{"revoked": 1, "fingerprint": res.FingerprintSHA256})
+		return json.Marshal(map[string]any{"revoked": 1, "fingerprint": res.FingerprintSHA256, "revocation_scope": res.RevocationScope})
 
 	case "bulk_revoke":
 		var p bulkRevokeParams
@@ -64,7 +71,7 @@ func executePendingAction(ctx context.Context, certProvider CertificateProvider,
 		if err != nil {
 			return nil, fmt.Errorf("bulk_revoke: list certs: %w", err)
 		}
-		revoked, failed, active := 0, 0, 0
+		revoked, failed, active, inventoryOnly := 0, 0, 0, 0
 		var firstErr string
 		for _, c := range list.Items {
 			if c.RevokedAt != nil {
@@ -77,9 +84,10 @@ func executePendingAction(ctx context.Context, certProvider CertificateProvider,
 			if active > maxBulkRevoke {
 				continue
 			}
-			if _, err := certProvider.RevokeCertificate(ctx, c.FingerprintSHA256, CertificateRevokeRequest{
+			res, err := certProvider.RevokeCertificate(ctx, c.FingerprintSHA256, CertificateRevokeRequest{
 				ReasonCode: p.ReasonCode, ReasonText: p.ReasonText,
-			}); err != nil {
+			})
+			if err != nil {
 				failed++
 				if firstErr == "" {
 					firstErr = err.Error()
@@ -87,8 +95,11 @@ func executePendingAction(ctx context.Context, certProvider CertificateProvider,
 				continue
 			}
 			revoked++
+			if res.RevocationScope == RevocationScopeInventoryOnly {
+				inventoryOnly++
+			}
 		}
-		result := map[string]any{"revoked": revoked, "failed": failed, "ca_id": p.CAID}
+		result := map[string]any{"revoked": revoked, "failed": failed, "ca_id": p.CAID, "inventory_only": inventoryOnly}
 		if active > maxBulkRevoke {
 			result["truncated_at"] = maxBulkRevoke
 			result["total_matched"] = active
@@ -203,4 +214,112 @@ func validActionType(t string) bool {
 		return true
 	}
 	return false
+}
+
+var errPendingActionTargetTenant = fmt.Errorf("action target is not in the action's tenant")
+
+// pendingActionTargetTenants resolves the tenant (DefaultTenant for unmapped)
+// of every cert / CA / template an action targets. Deny by default: a target
+// that cannot be resolved is an error. An action with no resolvable target
+// (malformed params, other types) yields an empty list.
+func pendingActionTargetTenants(ctx context.Context, certProvider CertificateProvider, store TenantStore, action PendingAction) ([]string, error) {
+	norm := func(t string) string {
+		if t == "" {
+			return DefaultTenant
+		}
+		return t
+	}
+	var out []string
+	caTenant := func(caID string) error {
+		t, err := store.CATenant(ctx, caID)
+		if err != nil {
+			return errPendingActionTargetTenant
+		}
+		out = append(out, norm(t))
+		return nil
+	}
+	switch action.ActionType {
+	case "revoke", "renew", "rotate":
+		var p renewParams
+		if err := json.Unmarshal(action.Params, &p); err != nil || p.Fingerprint == "" {
+			return nil, nil // malformed params fail in the executor with a specific message
+		}
+		item, found, err := certProvider.GetCertificate(ctx, p.Fingerprint)
+		if err != nil || !found {
+			return nil, errPendingActionTargetTenant
+		}
+		if err := caTenant(item.CAID); err != nil {
+			return nil, err
+		}
+	case "bulk_revoke":
+		var p bulkRevokeParams
+		if err := json.Unmarshal(action.Params, &p); err != nil || p.CAID == "" {
+			return nil, nil
+		}
+		if err := caTenant(p.CAID); err != nil {
+			return nil, err
+		}
+	case "issue":
+		var p issueParams
+		if err := json.Unmarshal(action.Params, &p); err != nil || p.CAID == "" {
+			return nil, nil
+		}
+		if err := caTenant(p.CAID); err != nil {
+			return nil, err
+		}
+		if p.TemplateID != "" {
+			t, err := store.TemplateTenant(ctx, p.TemplateID)
+			if err != nil {
+				return nil, errPendingActionTargetTenant
+			}
+			out = append(out, norm(t))
+		}
+	}
+	return out, nil
+}
+
+// checkPendingActionTargets refuses an action whose cert / CA / template
+// target resolves to a tenant other than `tenant` ("" means DefaultTenant).
+// Deny by default: a target that cannot be resolved is refused.
+func checkPendingActionTargets(ctx context.Context, certProvider CertificateProvider, store TenantStore, tenant string, action PendingAction) error {
+	if store == nil {
+		if multiTenancyEnabled() {
+			return errPendingActionTargetTenant // D-202: fail closed
+		}
+		return nil
+	}
+	if tenant == "" {
+		tenant = DefaultTenant
+	}
+	targets, err := pendingActionTargetTenants(ctx, certProvider, store, action)
+	if err != nil {
+		return err
+	}
+	for _, t := range targets {
+		if t != tenant {
+			return errPendingActionTargetTenant
+		}
+	}
+	return nil
+}
+
+// resolvePendingActionTenant returns the single tenant that owns an action's
+// targets, for stamping a proposal made by an unscoped super-admin (whose own
+// tenant says nothing about where the action will run). ok is false when the
+// targets cannot be resolved to exactly one tenant; the caller then keeps the
+// proposer's tenant, and the execution-time check stays the backstop.
+func resolvePendingActionTenant(ctx context.Context, certProvider CertificateProvider, store TenantStore, action PendingAction) (tenant string, ok bool) {
+	if store == nil {
+		return "", false
+	}
+	targets, err := pendingActionTargetTenants(ctx, certProvider, store, action)
+	if err != nil || len(targets) == 0 {
+		return "", false
+	}
+	for _, t := range targets[1:] {
+		if t != targets[0] {
+			return "", false
+		}
+	}
+	return targets[0], true
 }

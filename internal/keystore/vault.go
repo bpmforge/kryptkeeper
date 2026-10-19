@@ -25,21 +25,22 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"math/big"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -120,6 +121,14 @@ func (s *VaultStore) GenerateKey(id string, algo Algorithm) (KeyMetadata, error)
 	if err != nil {
 		return KeyMetadata{}, err
 	}
+	// Transit key creation is idempotent: POSTing an existing name returns 200
+	// and keeps the old key, so ErrKeyExists needs an explicit lookup. Without
+	// it two callers sharing an id would silently share one signing key.
+	if _, err := s.Metadata(id); err == nil {
+		return KeyMetadata{}, ErrKeyExists
+	} else if !errors.Is(err, ErrKeyNotFound) {
+		return KeyMetadata{}, fmt.Errorf("vault create key: existence check: %w", err)
+	}
 	body, _ := json.Marshal(map[string]any{"type": vaultType, "exportable": false})
 	resp, err := s.vaultRequest(context.Background(), http.MethodPost,
 		"/v1/"+s.mount+"/keys/"+vaultKeyName(id), body)
@@ -169,24 +178,40 @@ func (s *VaultStore) PublicKey(id string) (crypto.PublicKey, error) {
 		return nil, fmt.Errorf("decode vault key response: %w", err)
 	}
 
-	// Use latest version (highest map key).
-	var latestPEM string
-	for _, v := range result.Data.Keys {
-		latestPEM = v.PublicKey
+	// Versions are JSON object keys ("1", "2", ...); map order is random, so
+	// pick the numerically highest.
+	latest := 0
+	for ver := range result.Data.Keys {
+		if n, err := strconv.Atoi(ver); err == nil && n > latest {
+			latest = n
+		}
 	}
-	if latestPEM == "" {
+	pk := result.Data.Keys[strconv.Itoa(latest)].PublicKey
+	if latest == 0 || pk == "" {
 		return nil, fmt.Errorf("vault returned no public key for %s", id)
 	}
-
-	block, _ := pem.Decode([]byte(latestPEM))
-	if block == nil {
-		return nil, fmt.Errorf("vault: invalid PEM for key %s", id)
-	}
-	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	pub, err := parseVaultPublicKey(pk)
 	if err != nil {
-		return nil, fmt.Errorf("vault: parse public key: %w", err)
+		return nil, fmt.Errorf("vault: key %s: %w", id, err)
 	}
 	return pub, nil
+}
+
+// parseVaultPublicKey accepts what transit returns: PEM (PKIX) for ECDSA and
+// RSA, but base64 of the raw 32-byte key for Ed25519 (observed on Vault 1.17).
+func parseVaultPublicKey(s string) (crypto.PublicKey, error) {
+	if block, _ := pem.Decode([]byte(s)); block != nil {
+		pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse public key: %w", err)
+		}
+		return pub, nil
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(s))
+	if err != nil || len(raw) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("public key is neither PEM nor a base64 Ed25519 key")
+	}
+	return ed25519.PublicKey(raw), nil
 }
 
 func (s *VaultStore) Metadata(id string) (KeyMetadata, error) {
@@ -251,10 +276,24 @@ func (s *VaultStore) List() ([]KeyMetadata, error) {
 }
 
 func (s *VaultStore) Delete(id string) error {
-	// Vault requires deleting all key versions first, then the key itself.
-	body, _ := json.Marshal(map[string]bool{"force": true})
+	// Transit refuses DELETE (HTTP 400) until the key's deletion_allowed config
+	// is true; it is false by default and is the operator's guard, which an
+	// explicit Delete call overrides for this one key.
+	cfg, _ := json.Marshal(map[string]bool{"deletion_allowed": true})
+	cresp, err := s.vaultRequest(context.Background(), http.MethodPost,
+		"/v1/"+s.mount+"/keys/"+vaultKeyName(id)+"/config", cfg)
+	if err != nil {
+		return err
+	}
+	cresp.Body.Close()
+	if cresp.StatusCode == http.StatusNotFound {
+		return ErrKeyNotFound
+	}
+	if cresp.StatusCode >= 300 {
+		return fmt.Errorf("vault allow key deletion: HTTP %d", cresp.StatusCode)
+	}
 	resp, err := s.vaultRequest(context.Background(), http.MethodDelete,
-		"/v1/"+s.mount+"/keys/"+vaultKeyName(id), body)
+		"/v1/"+s.mount+"/keys/"+vaultKeyName(id), nil)
 	if err != nil {
 		return err
 	}
@@ -314,12 +353,18 @@ func (v *vaultSigner) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) (
 	// for ed25519-style pass the raw message (not supported here — always prehash).
 	input := base64.StdEncoding.EncodeToString(digest)
 
-	body, _ := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"input":               input,
 		"signature_algorithm": algo,
 		"hash_algorithm":      hashAlgo,
 		"prehashed":           true,
-	})
+	}
+	if _, isEd := v.pub.(ed25519.PublicKey); isEd {
+		// Ed25519 signs the message itself; transit rejects prehashed input for
+		// it (Ed25519ph is Enterprise-only), so send only the raw message.
+		payload = map[string]any{"input": input}
+	}
+	body, _ := json.Marshal(payload)
 
 	resp, err := v.store.vaultRequest(context.Background(), http.MethodPost,
 		"/v1/"+v.store.mount+"/sign/"+vaultKeyName(v.id), body)
@@ -376,6 +421,8 @@ func algoToVaultType(algo Algorithm) (string, error) {
 	switch algo {
 	case RSA2048:
 		return "rsa-2048", nil
+	case RSA3072:
+		return "rsa-3072", nil
 	case RSA4096:
 		return "rsa-4096", nil
 	case ECDSAP256:
@@ -393,6 +440,8 @@ func vaultTypeToAlgo(t string) Algorithm {
 	switch t {
 	case "rsa-2048":
 		return RSA2048
+	case "rsa-3072":
+		return RSA3072
 	case "rsa-4096":
 		return RSA4096
 	case "ecdsa-p256":
@@ -439,24 +488,6 @@ func vaultKeyName(id string) string {
 }
 
 func vaultKeyNameToID(name string) string { return name }
-
-// hashForOpts computes the digest of data using the hash from opts.
-// Used in tests and callers that need to pre-hash before calling Sign.
-func hashForOpts(data []byte, opts crypto.SignerOpts) ([]byte, error) {
-	var h hash.Hash
-	switch opts.HashFunc() {
-	case crypto.SHA256:
-		h = sha256.New()
-	case crypto.SHA384:
-		h = sha512.New384()
-	case crypto.SHA512:
-		h = sha512.New()
-	default:
-		return nil, fmt.Errorf("unsupported hash function: %v", opts.HashFunc())
-	}
-	h.Write(data)
-	return h.Sum(nil), nil
-}
 
 // Compile-time checks.
 var (

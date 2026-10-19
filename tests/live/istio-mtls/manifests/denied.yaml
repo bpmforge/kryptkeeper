@@ -1,0 +1,17 @@
+# UID 2003 is not registered: the Workload API must refuse it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: svid-denied
+  namespace: uat
+spec:
+  restartPolicy: Never
+  containers:
+    - name: svidclient
+      image: __CLIENT_IMAGE__
+      imagePullPolicy: Never
+      args: ["denycheck"]
+      securityContext: {runAsUser: 2003, runAsNonRoot: true, allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+      volumeMounts: [{name: sock, mountPath: /run/kk-spiffe}]
+  volumes:
+    - {name: sock, hostPath: {path: /run/kk-spiffe, type: Directory}}

@@ -1,0 +1,152 @@
+{
+  "task": "U-44b",
+  "title": "Issue SPIFFE SVIDs for workloads: configured hub (SPIFFE_SIGNING_CA_ID set)",
+  "sourceStory": "STORIES.md#u-44b",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/spiffe"
+      },
+      "caption": "Open /spiffe",
+      "slug": "spiffe-configured",
+      "expect": {
+        "role": "button",
+        "name": "Mint SVID"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-44b/01-spiffe-configured.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "placeholder": "ns/prod/sa/checkout"
+      },
+      "value": "ns/prod/sa/checkout",
+      "caption": "Fill **ns/prod/sa/checkout** with \"ns/prod/sa/checkout\"",
+      "slug": "workload-path",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-44b/02-workload-path.png",
+        "annotated": "docs/guide/screenshots/U-44b/02-workload-path-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 539,
+          "w": 1009,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Mint SVID",
+        "exact": true
+      },
+      "caption": "Click **Mint SVID**",
+      "slug": "svid-minted",
+      "redact": [
+        "pre",
+        "textarea",
+        "code"
+      ],
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-44b/03-svid-minted.png",
+        "annotated": "docs/guide/screenshots/U-44b/03-svid-minted-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1282,
+          "y": 533,
+          "w": 113,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "flags": "CONFIG (workload attestation is not captured; the SVID is minted from the admin form)",
+  "principal": "cfgada",
+  "lastRun": {
+    "at": "2026-10-18T12:53:13.071Z",
+    "base": "http://127.0.0.1:14182",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-44b",
+    "steps": 3,
+    "shots": 3,
+    "annotated": 2,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/spiffe"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-44b/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-44b/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

@@ -1,0 +1,1 @@
+{"certificates": [{"pemCertificate": "{{PEM_3}}", "revocationDetails": {"revocationState": "KEY_COMPROMISE"}}]}

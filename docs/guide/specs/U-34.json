@@ -1,0 +1,111 @@
+{
+  "task": "U-34",
+  "title": "Install a delivery plugin (WASM)",
+  "sourceStory": "STORIES.md#u-34",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/delivery-plugins"
+      },
+      "caption": "Open /delivery-plugins",
+      "slug": "empty-state",
+      "expect": {
+        "role": "button",
+        "name": "Install plugin"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-34/01-empty-state.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Install plugin"
+      },
+      "caption": "Click **Install plugin**",
+      "slug": "install-dialog",
+      "expect": {
+        "text": "manifest.json"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-34/02-install-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "flags": "EXTERNAL ARTIFACT (a signed WASM bundle is needed to complete the install)",
+  "lastRun": {
+    "at": "2026-10-18T12:44:36.395Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-34",
+    "steps": 2,
+    "shots": 2,
+    "annotated": 0,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/delivery-plugins"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-34/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-34/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

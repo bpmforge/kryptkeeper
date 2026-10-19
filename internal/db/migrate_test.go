@@ -391,8 +391,10 @@ func TestRunMigrations_CertificatesDropsNonAuthoritativeFKs(t *testing.T) {
 	// computed at issuance and never stored, so DB-backed reads returned ""
 	// and the posture report claimed 0 vulnerable for a vulnerable estate.
 	// 000077 adds trust_class + is_ca (discovered-chain classification).
+	// 000092 adds ownership_source (W22-24); 000126 adds template_revision (W23-44);
+	// 000341 adds issuer_class (W34-06).
 	assertSameColumnSet(t, "000042 up",
-		append(append([]string{}, colsBeforeUp...), "origin", "management_state", "renewal_connector_id", "pqc_readiness", "trust_class", "is_ca"),
+		append(append([]string{}, colsBeforeUp...), "origin", "management_state", "renewal_connector_id", "pqc_readiness", "trust_class", "is_ca", "ownership_source", "template_revision", "issuer_class"),
 		tableColumnNames(t, db, "certificates"))
 
 	if fkColumnExists(t, db, "certificates", "template_id") {

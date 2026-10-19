@@ -300,3 +300,44 @@ func TestDeliveryChannelsFromEnv_SMTPPortDefaultsTo587(t *testing.T) {
 		}
 	}
 }
+
+func TestConfiguredChannelReportsConfigured(t *testing.T) {
+	t.Setenv("KRYPTKEEPER_DATA_DIR", t.TempDir())
+	t.Setenv("APP_CREDENTIAL_STORE_PASSPHRASE", "test-passphrase-for-main-test")
+	for _, k := range []string{"SMTP_HOST", "SMTP_FROM", "SLACK_WEBHOOK_URL", "PAGERDUTY_ROUTING_KEY", "WEBHOOK_URL"} {
+		t.Setenv(k, "")
+	}
+	store := bootstrap.NewConfigStoreFromEnv()
+	if store == nil {
+		t.Fatal("expected a real config store")
+	}
+	channels := deliveryChannelsFromEnv(store)
+	ctx := context.Background()
+	for _, ch := range channels {
+		c, ok := ch.(delivery.Configurable)
+		if !ok {
+			t.Fatalf("%s does not implement Configurable", ch.Name())
+		}
+		if c.Configured(ctx) {
+			t.Errorf("%s configured with empty config", ch.Name())
+		}
+	}
+	if err := store.Set(ctx, "notifications.slack_webhook_url", "https://hooks.example.com/x", "t"); err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range channels {
+		got := ch.(delivery.Configurable).Configured(ctx)
+		if want := ch.Name() == "slack"; got != want {
+			t.Errorf("%s Configured = %v, want %v", ch.Name(), got, want)
+		}
+	}
+}
+
+func TestEscalationResolverNilStoreAndHotReload(t *testing.T) {
+	t.Setenv("KRYPTKEEPER_NOTIFY_ESCALATION_CHANNEL", "email")
+	t.Setenv("KRYPTKEEPER_NOTIFY_ESCALATION_TARGET", "env@example.com")
+	ch, tg := escalationResolver(nil)(context.Background())
+	if ch != "email" || tg != "env@example.com" {
+		t.Fatalf("nil store fallback: %q %q", ch, tg)
+	}
+}

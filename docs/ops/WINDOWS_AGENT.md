@@ -62,13 +62,25 @@ A failed renewal is retried with back-off (1 minute doubling to 1 hour, with
 jitter), never concurrently, and its error is recorded in the hub's task
 history.
 
+## What the agent inventories
+- **Certificate stores:** `LocalMachine\My`, `Root`, `CA` and `TrustedPublisher`
+  (opened read-only; certificates only, never keys). Hub source labels are
+  `windows-store:MY`, `windows-store:ROOT`, and so on.
+- **Files:** PEM/CRT/CER and PKCS#12 (`.pfx`/`.p12`, default passwords
+  `changeit` and empty) under the scan paths. Default scan paths on Windows:
+  `%ProgramData%\win-acme`, `%ProgramData%\ssl`, `C:\nginx\conf`,
+  `C:\Apache24\conf`, `C:\xampp\apache\conf` (missing ones are skipped).
+  Set `KRYPTKEEPER_SCAN_PATHS` in `agent.env` to a comma-separated list to
+  replace the defaults, e.g. `KRYPTKEEPER_SCAN_PATHS=C:\certs,D:\iis-certs`,
+  then `Restart-Service KryptkeeperAgent`.
+
 ## Known limits
-- **No install step on the Windows agent in v0.9.** A task that carries install
+- **No install step on the Windows agent.** A task that carries install
   hints (a cert path for nginx/apache/haproxy) is refused with "install targets
-  not supported on Windows agent in v0.9; use agentless WinRM/IIS", and the
-  refusal is reported to the hub. Installing into the Windows certificate store
-  or an IIS binding from the agent is planned for v0.10; until then use the
-  agentless WinRM/IIS path for that.
+  are not supported on the Windows agent; use agentless WinRM/IIS", and the
+  refusal is reported to the hub (`outcome failed`). Installing into the
+  Windows certificate store or an IIS binding is done by the agentless
+  WinRM/IIS path. The agent is discovery-only on Windows.
 - Runs as LocalSystem (the MSI default). Install-mode "agent" certificate
   installs into the machine store need that; a least-privilege account is a
   follow-up.

@@ -1,10 +1,14 @@
+import { Link } from "react-router-dom";
 import { useState } from "react";
+import { scrollableProps } from "../lib/scrollable";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api";
-import { Badge, Input, Panel, Select, StateMessage } from "../components/ui";
+import { Badge, Input, Panel, Select, StateMessage, formatDateTime } from "../components/ui";
+import { summarizeChange } from "../lib/changeSummary";
+import { useTemplateNames } from "../lib/useResourceNames";
 import { PageHeader } from "../components/PageHeader";
 import { ReportSkeleton } from "../components/Skeletons";
-import { auditOutcomeTone } from "../lib/auditOutcome";
+import { auditOutcomeLabel, auditOutcomeTone } from "../lib/auditOutcome";
 
 type AuditEvent = {
   timestamp: string;
@@ -28,7 +32,7 @@ type ChangeAuditData = {
 };
 
 function outcomeBadge(o: string) {
-  return <Badge tone={auditOutcomeTone(o)}>{o}</Badge>;
+  return <Badge tone={auditOutcomeTone(o)}>{auditOutcomeLabel(o)}</Badge>;
 }
 
 const ACTION_LABELS: Record<string, string> = {
@@ -52,6 +56,7 @@ export default function ChangeAudit() {
     queryKey: ["report-change-audit", days, fp],
     queryFn: () => api.changeAudit({ days, fingerprint: fp || undefined }),
   });
+  const { names: templateNames } = useTemplateNames();
   const report = q.data?.data as ChangeAuditData | undefined;
 
   return (
@@ -61,10 +66,10 @@ export default function ChangeAudit() {
         title="Change Audit"
         description="Full mutation history with actor, IP, and change details."
         actions={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Input
               placeholder="Filter by fingerprint (Enter to apply)…"
-              className="w-56 text-xs"
+              className="w-full text-xs sm:w-56"
               value={fpDraft}
               onChange={(e) => setFpDraft(e.target.value)}
               onBlur={() => setFp(fpDraft.trim())}
@@ -73,6 +78,7 @@ export default function ChangeAudit() {
               }}
             />
             <Select
+              aria-label="Time range"
               className="w-36"
               value={days}
               onChange={(e) => setDays(Number(e.target.value))}
@@ -147,7 +153,7 @@ export default function ChangeAudit() {
               />
             )}
             {report.events.length > 0 && (
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto" {...scrollableProps}>
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border text-left">
@@ -176,16 +182,37 @@ export default function ChangeAudit() {
                         className="hover:bg-foreground/[0.02] transition align-top"
                       >
                         <td className="py-2.5 pr-3 text-xs text-muted-foreground whitespace-nowrap">
-                          {new Date(e.timestamp).toLocaleString()}
+                          {formatDateTime(e.timestamp)}
                         </td>
                         <td className="py-2.5 pr-3 text-xs text-primary whitespace-nowrap">
-                          {ACTION_LABELS[e.action] ?? e.action}
+                          {e.resource_id ? (
+                            (ACTION_LABELS[e.action] ?? e.action)
+                          ) : (
+                            <Link
+                              to={`/audit?action=${encodeURIComponent(e.action)}`}
+                              className="hover:underline"
+                            >
+                              {ACTION_LABELS[e.action] ?? e.action}
+                            </Link>
+                          )}
                         </td>
                         <td className="py-2.5 pr-3 text-xs text-foreground whitespace-nowrap">
                           {e.actor_id}
                         </td>
                         <td className="py-2.5 pr-3 font-mono text-xs text-muted-foreground max-w-[120px] truncate">
-                          {e.resource_id}
+                          {e.resource_id ? (
+                            <Link
+                              to={`/audit?resource_id=${encodeURIComponent(e.resource_id)}`}
+                              className="hover:text-primary hover:underline"
+                              title={e.resource_id}
+                            >
+                              {/^[0-9a-f]{64}$/i.test(e.resource_id)
+                                ? e.resource_id.slice(0, 12)
+                                : e.resource_id}
+                            </Link>
+                          ) : (
+                            "—"
+                          )}
                         </td>
                         <td className="py-2.5 pr-3 text-xs text-muted-foreground">
                           {e.source_ip || "—"}
@@ -194,10 +221,10 @@ export default function ChangeAudit() {
                           {outcomeBadge(e.outcome)}
                         </td>
                         <td
-                          className="py-2.5 text-xs text-muted-foreground max-w-[160px] truncate"
-                          title={e.change_summary}
+                          className="py-2.5 text-xs text-muted-foreground max-w-[240px] truncate"
+                          title={summarizeChange(e.change_summary, templateNames)}
                         >
-                          {e.change_summary || "—"}
+                          {summarizeChange(e.change_summary, templateNames) || "—"}
                         </td>
                       </tr>
                     ))}

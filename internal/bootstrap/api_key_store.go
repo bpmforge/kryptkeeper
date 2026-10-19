@@ -10,9 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // apiKeyLastUsedInterval bounds last_used_at writes to one per key per
@@ -26,6 +27,10 @@ const apiKeyDBTimeout = 5 * time.Second
 // DB. The key is not handed out: a token that would stop working at the next
 // restart is worse than a failed request.
 var errAPIKeyPersist = errors.New("api key could not be persisted")
+
+// errAPIKeyMintingOff: no APP_API_KEY_PEPPER, so no key can be minted. Callers
+// previously saw this as a generic 400 "invalid request body".
+var errAPIKeyMintingOff = errors.New("api key minting is off: APP_API_KEY_PEPPER is not set")
 
 // apiKeyStore persists keys minted through POST /api/v1/api-keys. Keys from
 // APP_API_KEYS_JSON never pass through it. Only the HMAC secret_verifier is
@@ -126,14 +131,14 @@ func (a *Authenticator) SetAPIKeyStore(ctx context.Context, store apiKeyStore) e
 	for _, rec := range records {
 		kid := strings.TrimSpace(rec.Kid)
 		if _, exists := a.config.apiKeys[kid]; exists {
-			log.Printf("warning: persisted api key %q shadowed by an APP_API_KEYS_JSON key with the same kid; the configured key wins", kid)
+			logging.Warnf("persisted api key %q shadowed by an APP_API_KEYS_JSON key with the same kid; the configured key wins", kid)
 			continue
 		}
 		a.config.apiKeys[kid] = rec
 		a.persistedKids[kid] = true
 		loaded++
 	}
-	log.Printf("api keys: loaded %d persisted minted key(s) from the core database", loaded)
+	logging.Infof("api keys: loaded %d persisted minted key(s) from the core database", loaded)
 	return nil
 }
 
@@ -144,11 +149,15 @@ func (a *Authenticator) APIKeyMintingAvailable() bool {
 	return a.config.apiKeyAuthEnabled && strings.TrimSpace(a.config.apiKeyPepper) != ""
 }
 
-// touchAPIKey records last_used_at for a persisted key, at most once per
-// apiKeyLastUsedInterval. A failed write is logged, never fails the request.
+// touchAPIKey stamps last_used_at for any known key, at most once per
+// apiKeyLastUsedInterval. Config-loaded keys (APP_API_KEYS_JSON) and storeless
+// setups are stamped in memory only -- they lose the value on restart by
+// design; persisted keys also write through to the store. A failed write is
+// logged, never fails the request.
 func (a *Authenticator) touchAPIKey(kid string, now time.Time) {
 	a.apiKeyMu.Lock()
-	if a.apiKeyStore == nil || !a.persistedKids[kid] {
+	rec, known := a.config.apiKeys[kid]
+	if !known {
 		a.apiKeyMu.Unlock()
 		return
 	}
@@ -160,16 +169,19 @@ func (a *Authenticator) touchAPIKey(kid string, now time.Time) {
 		a.lastTouch = map[string]time.Time{}
 	}
 	a.lastTouch[kid] = now
-	if rec, ok := a.config.apiKeys[kid]; ok {
-		rec.LastUsedAt = now.UTC().Format(time.RFC3339)
-		a.config.apiKeys[kid] = rec
-	}
-	store := a.apiKeyStore
+	rec.LastUsedAt = now.UTC().Format(time.RFC3339)
+	a.config.apiKeys[kid] = rec
+	store, persisted := a.apiKeyStore, a.persistedKids[kid]
 	a.apiKeyMu.Unlock()
+	// The DB write happens outside the lock so a stalled core DB cannot block
+	// other authentications.
+	if store == nil || !persisted {
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), apiKeyDBTimeout)
 	defer cancel()
 	if err := store.TouchLastUsed(ctx, kid, now); err != nil {
-		log.Printf("warning: api key last_used_at update failed: %v", err)
+		logging.Warnf("api key last_used_at update failed: %v", err)
 	}
 }

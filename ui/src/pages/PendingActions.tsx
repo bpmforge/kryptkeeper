@@ -1,20 +1,35 @@
 import { useState } from "react";
+import { scrollableProps } from "../lib/scrollable";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, X, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "../lib/api";
-import { useAuthz } from "../lib/auth";
+import { canDecidePendingActions, useAuthz } from "../lib/auth";
 import type { PendingAction } from "../lib/models";
 import { Badge, Button, Panel, Select, StateMessage } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
 import { CapabilityList } from "../components/PluginCapabilities";
 import { tierLabel, tierTone } from "../lib/plugins";
+import {
+  BlastRadiusImpact,
+  approveEnabled,
+  impactForPendingAction,
+  type ImpactState,
+} from "../components/BlastRadiusImpact";
 
 // PluginEnableReview shows an approver exactly what enabling this plugin
 // version allows, in the same fixed wording the installer saw (W20-21).
 function PluginEnableReview({ params }: { params: unknown }) {
-  const p = (params ?? {}) as { plugin_id?: string; version?: string; sha256?: string };
-  const q = useQuery({ queryKey: ["delivery-plugins"], queryFn: api.deliveryPlugins, retry: false });
+  const p = (params ?? {}) as {
+    plugin_id?: string;
+    version?: string;
+    sha256?: string;
+  };
+  const q = useQuery({
+    queryKey: ["delivery-plugins"],
+    queryFn: api.deliveryPlugins,
+    retry: false,
+  });
   const version = q.data?.data
     ?.find((x) => x.id === p.plugin_id)
     ?.versions.find((v) => v.version === p.version);
@@ -37,7 +52,9 @@ function PluginEnableReview({ params }: { params: unknown }) {
         <CapabilityList manifest={version.manifest} />
       ) : (
         <p className="text-xs text-muted-foreground">
-          {q.isLoading ? "Loading the plugin's capabilities…" : "The plugin version could not be shown; check Delivery Plugins."}
+          {q.isLoading
+            ? "Loading the plugin's capabilities…"
+            : "The plugin version could not be shown; check Delivery Plugins."}
         </p>
       )}
     </div>
@@ -61,6 +78,8 @@ function statusTone(
 
 export default function PendingActions() {
   const authz = useAuthz();
+  const role = authz.data?.role;
+  const mayDecide = canDecidePendingActions(role);
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState("");
   const { data, isLoading, error, refetch, isFetching } = useQuery({
@@ -72,6 +91,9 @@ export default function PendingActions() {
 
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [reason, setReason] = useState("");
+  const [impactState, setImpactState] = useState<Record<string, ImpactState>>(
+    {},
+  );
 
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["pending-actions"] });
@@ -163,90 +185,124 @@ export default function PendingActions() {
           </p>
         ) : (
           <div className="space-y-3">
-            {actions.map((a) => (
-              <div
-                key={a.id}
-                className="rounded-xl border border-border bg-card/40 p-3"
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Badge tone="info">{a.action_type}</Badge>
-                    <Badge tone={statusTone(a.status)}>{a.status}</Badge>
-                    <span className="text-xs text-muted-foreground">
-                      by {a.proposed_by}
-                    </span>
-                  </div>
-                  {a.status === "pending" ? (
+            {actions.map((a) => {
+              const imp =
+                a.status === "pending" ? impactForPendingAction(a) : null;
+              const gated = !approveEnabled(imp !== null, impactState[a.id]);
+              const selfApprove = authz.data?.principal === a.proposed_by;
+              return (
+                <div
+                  key={a.id}
+                  className="rounded-xl border border-border bg-card/40 p-3"
+                >
+                  <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
-                      <span
-                        title={
-                          authz.data?.principal === a.proposed_by
-                            ? "You proposed this action — a second person must approve it."
-                            : undefined
-                        }
-                      >
-                        <Button
-                          tone="primary"
-                          onClick={() => approveMutation.mutate(a)}
-                          disabled={
-                            approveMutation.isPending ||
-                            authz.data?.principal === a.proposed_by
+                      <Badge tone="info">{a.action_type}</Badge>
+                      <Badge tone={statusTone(a.status)}>{a.status}</Badge>
+                      <span className="text-xs text-muted-foreground">
+                        by {a.proposed_by}
+                      </span>
+                    </div>
+                    {a.status === "pending" ? (
+                      <div className="flex items-center gap-2">
+                        <span
+                          title={
+                            !mayDecide
+                              ? `Your role (${role}) cannot approve or reject pending actions; that needs pki-admin or pki-operator.`
+                              : selfApprove
+                              ? "You proposed this action — a second person must approve it."
+                              : gated
+                                ? "Waiting for the blast-radius preview"
+                                : undefined
                           }
                         >
-                          <Check size={13} aria-hidden="true" />
-                          Approve
-                        </Button>
-                      </span>
+                          <Button
+                            tone="primary"
+                            onClick={() => approveMutation.mutate(a)}
+                            disabled={
+                              approveMutation.isPending || selfApprove || gated || !mayDecide
+                            }
+                          >
+                            <Check size={13} aria-hidden="true" />
+                            Approve
+                          </Button>
+                        </span>
+                        <span
+                          title={
+                            mayDecide
+                              ? undefined
+                              : `Your role (${role}) cannot approve or reject pending actions.`
+                          }
+                        >
+                          <Button
+                            tone="danger"
+                            onClick={() => setRejecting(a.id)}
+                            disabled={rejectMutation.isPending || !mayDecide}
+                          >
+                            <X size={13} aria-hidden="true" />
+                            Reject
+                          </Button>
+                        </span>
+                      </div>
+                    ) : null}
+                  </div>
+                  {a.rationale ? (
+                    <p className="mt-2 text-sm text-foreground">
+                      {a.rationale}
+                    </p>
+                  ) : null}
+                  {a.action_type === "delivery_plugin.enable" ? (
+                    <PluginEnableReview params={a.params} />
+                  ) : null}
+                  {imp ? (
+                    <div className="mt-2">
+                      <BlastRadiusImpact
+                        {...imp}
+                        onStateChange={(s) =>
+                          setImpactState((m) =>
+                            m[a.id] === s ? m : { ...m, [a.id]: s },
+                          )
+                        }
+                      />
+                    </div>
+                  ) : null}
+                  <pre className="mt-2 overflow-x-auto rounded-lg bg-background/60 p-2 text-xs text-muted-foreground" {...scrollableProps}>
+                    {JSON.stringify(a.params, null, 2)}
+                  </pre>
+                  {a.result ? (
+                    <div className="mt-1 text-xs text-state-auto">
+                      Result: {JSON.stringify(a.result)}
+                    </div>
+                  ) : null}
+
+                  {rejecting === a.id ? (
+                    <div className="mt-2 flex items-center gap-2">
+                      <input
+                        className="flex-1 rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-foreground"
+                        placeholder="Reason for rejection"
+                        value={reason}
+                        onChange={(e) => setReason(e.target.value)}
+                      />
                       <Button
                         tone="danger"
-                        onClick={() => setRejecting(a.id)}
+                        onClick={() =>
+                          rejectMutation.mutate({ id: a.id, r: reason })
+                        }
                         disabled={rejectMutation.isPending}
                       >
-                        <X size={13} aria-hidden="true" />
-                        Reject
+                        Confirm reject
+                      </Button>
+                      <Button
+                        tone="secondary"
+                        onClick={() => setRejecting(null)}
+                      >
+                        Cancel
                       </Button>
                     </div>
                   ) : null}
                 </div>
-                {a.rationale ? (
-                  <p className="mt-2 text-sm text-foreground">{a.rationale}</p>
-                ) : null}
-                {a.action_type === "delivery_plugin.enable" ? (
-                  <PluginEnableReview params={a.params} />
-                ) : null}
-                <pre className="mt-2 overflow-x-auto rounded-lg bg-background/60 p-2 text-xs text-muted-foreground">
-                  {JSON.stringify(a.params, null, 2)}
-                </pre>
-                {a.result ? (
-                  <div className="mt-1 text-xs text-state-auto">
-                    Result: {JSON.stringify(a.result)}
-                  </div>
-                ) : null}
-
-                {rejecting === a.id ? (
-                  <div className="mt-2 flex items-center gap-2">
-                    <input
-                      className="flex-1 rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-foreground"
-                      placeholder="Reason for rejection"
-                      value={reason}
-                      onChange={(e) => setReason(e.target.value)}
-                    />
-                    <Button
-                      tone="danger"
-                      onClick={() =>
-                        rejectMutation.mutate({ id: a.id, r: reason })
-                      }
-                      disabled={rejectMutation.isPending}
-                    >
-                      Confirm reject
-                    </Button>
-                    <Button tone="secondary" onClick={() => setRejecting(null)}>
-                      Cancel
-                    </Button>
-                  </div>
-                ) : null}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Panel>

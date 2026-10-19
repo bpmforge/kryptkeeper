@@ -6,15 +6,17 @@ package bootstrap
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 func registerProtectedCertsSummaryHandler(auth *Authenticator, certSummaryProvider CertSummaryProvider, auditProvider AuditProvider) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now().UTC()
-		principal, err := auth.AuthenticatePrincipal(r, now)
+		pd, err := auth.AuthenticatePrincipalDetails(r, now)
+		principal := pd.ID
 		if err != nil {
 			emitAuditEvent(r, auditProvider, "", "protected.certs.summary.read", "protected_resource", "certs_summary", AuditOutcomeDenied)
 			writeUnauthorized(w)
@@ -25,10 +27,17 @@ func registerProtectedCertsSummaryHandler(auth *Authenticator, certSummaryProvid
 			return
 		}
 
+		// L-21: the snapshot is fleet-wide with no per-tenant breakdown; a
+		// tenant-scoped caller would read other tenants' certificate counts.
+		if denyAggregateReportForTenantScoped(w, pd) {
+			emitAuditEvent(r, auditProvider, principal, "protected.certs.summary.read", "protected_resource", "certs_summary", AuditOutcomeDenied)
+			return
+		}
+
 		summary, err := certSummaryProvider.LoadSummary(r.Context())
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal, "protected.certs.summary.read", "protected_resource", "certs_summary", AuditOutcomeFailure)
-			log.Printf("cert summary unavailable: %v", err)
+			logging.Warnf("cert summary unavailable: %v", err)
 			writeServiceUnavailable(w, "certificate summary unavailable")
 			return
 		}
@@ -58,7 +67,7 @@ func registerProtectedCertsSummaryHandler(auth *Authenticator, certSummaryProvid
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/protected/certs/summary response: %v", err)
+			logging.Warnf("failed to encode /api/v1/protected/certs/summary response: %v", err)
 		}
 	}
 }

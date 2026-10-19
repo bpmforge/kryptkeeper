@@ -5,6 +5,8 @@
 package ca
 
 import (
+	"crypto"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
@@ -18,6 +20,10 @@ import (
 // the new key is generated with the same algorithm as the CA's current key.
 type RotateCAOptions struct {
 	Algorithm keystore.Algorithm
+
+	// afterProbe runs inside the probe-verify step, so a failure rolls the
+	// rotation back (CrossSignRotate builds and checks its bridge here).
+	afterProbe func(rotated *CA, retiredKeyID string) error
 }
 
 // RotateCAResult describes the outcome of a RotateCA call. CA is non-nil as
@@ -68,75 +74,165 @@ var ErrCARotationInconsistent = errors.New("ca rotation left the CA store and ke
 // out-of-band; this is inherent to re-key-without-cross-sign; see the
 // ticket notes for why this scope was chosen over blocking on W6-07.
 func (e *Engine) RotateCA(caID string, opts RotateCAOptions) (RotateCAResult, error) {
+	res, notify, err := e.rotateCA(caID, opts)
+	if notify {
+		// After unlock: callbacks may call back into the engine.
+		e.fireOnRotate(caID)
+	}
+	return res, err
+}
+
+// rotateCA does the work under e.mu. notify is true when CRL/OCSP signer
+// caches must be dropped: the rotation took effect, or it was rolled back
+// after a window in which the new key was live.
+func (e *Engine) rotateCA(caID string, opts RotateCAOptions) (res RotateCAResult, notify bool, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	target, ok := e.get(caID)
 	if !ok {
-		return RotateCAResult{}, ErrCANotFound
+		return RotateCAResult{}, false, ErrCANotFound
 	}
 	if target.Status != "active" {
-		return RotateCAResult{}, fmt.Errorf("CA %s is not active (status=%s)", caID, target.Status)
+		return RotateCAResult{}, false, fmt.Errorf("CA %s is not active (status=%s)", caID, target.Status)
 	}
 	if target.Certificate == nil {
-		return RotateCAResult{}, fmt.Errorf("CA %s has no certificate on record", caID)
+		return RotateCAResult{}, false, fmt.Errorf("CA %s has no certificate on record", caID)
 	}
 
 	algo := opts.Algorithm
 	if algo == "" {
 		meta, err := e.keys.Metadata(target.KeyID)
 		if err != nil {
-			return RotateCAResult{}, fmt.Errorf("look up current key algorithm: %w", err)
+			return RotateCAResult{}, false, fmt.Errorf("look up current key algorithm: %w", err)
 		}
 		algo = meta.Algorithm
 	}
 
+	// Snapshot the outgoing key so any later failure can restore it. The
+	// blob never leaves this function and the passphrase is random and
+	// in-memory only. A backend that refuses export (HSM/KMS) yields no
+	// snapshot, and failures then stay ErrCARotationInconsistent.
+	oldRec := *target
+	pass := make([]byte, 32)
+	if _, rerr := rand.Read(pass); rerr != nil {
+		return RotateCAResult{}, false, fmt.Errorf("rotation snapshot: %w", rerr)
+	}
+	blob, exportErr := e.keys.ExportEncryptedKey(target.KeyID, pass)
+	if exportErr != nil {
+		blob = nil
+	}
+	defer func() {
+		for i := range pass {
+			pass[i] = 0
+		}
+	}()
+
+	if herr := e.faultAt(StepGenerate); herr != nil {
+		return RotateCAResult{}, true, &RotationRolledBackError{CAID: caID, Step: StepGenerate, Cause: herr}
+	}
 	// keystore.RotateKey itself refuses hybrid algorithms today ("hybrid key
 	// rotation not yet supported") -- that error surfaces here unmodified
-	// rather than being duplicated.
+	// rather than being duplicated. It mutates nothing when it fails.
 	rotateResult, err := e.keys.RotateKey(target.KeyID, algo)
 	if err != nil {
-		return RotateCAResult{}, fmt.Errorf("rotate key: %w", err)
+		return RotateCAResult{}, false, &RotationRolledBackError{CAID: caID, Step: StepGenerate, Cause: fmt.Errorf("rotate key: %w", err)}
 	}
 
-	// From here on, keys.RotateKey has ALREADY mutated the keystore
-	// irreversibly -- see ErrCARotationInconsistent's doc comment. Every
-	// error return between here and the CA record being saved goes
-	// through inconsistent() so the caller is told loudly, rather than
-	// bare, that this CA may now need DR recovery instead of a retry.
-	inconsistent := func(step string, err error) error {
-		return fmt.Errorf(
-			"%w: CA %s key was rotated (new key live under %s, old key retained on disk as %s) but %s failed: %w -- "+
-				"do NOT retry this rotation (it would generate ANOTHER new key on top of an already-inconsistent CA); "+
-				"inspect CA %s directly and, if its certificate no longer matches its keystore key, recover it from a "+
-				"pre-rotation backup via the DR procedure (docs/ops/DR_RUNBOOK.md) rather than rotating again",
-			ErrCARotationInconsistent, caID, target.KeyID, rotateResult.PreviousID, step, err, caID)
+	// From here on, keys.RotateKey has ALREADY mutated the keystore. Every
+	// failure restores the old key (rollback) or, when it cannot, reports
+	// ErrCARotationInconsistent so the operator goes to the DR runbook
+	// instead of retrying.
+	storeUpdated := false
+	fail := func(step RotateStep, what string, cause error) (RotateCAResult, bool, error) {
+		if blob == nil {
+			return RotateCAResult{}, true, e.inconsistentRotation(caID, target.KeyID, rotateResult.PreviousID, what, cause)
+		}
+		if rerr := e.rollbackRotation(&oldRec, rotateResult.PreviousID, blob, pass, storeUpdated); rerr != nil {
+			return RotateCAResult{}, true, e.inconsistentRotation(caID, target.KeyID, rotateResult.PreviousID, what,
+				fmt.Errorf("%w (rollback also failed: %v)", cause, rerr))
+		}
+		return RotateCAResult{}, true, &RotationRolledBackError{CAID: caID, Step: step, Cause: cause}
 	}
 
+	if herr := e.faultAt(StepCertWrite); herr != nil {
+		return fail(StepCertWrite, "writing the re-issued certificate", herr)
+	}
 	newSigner, err := e.keys.Signer(target.KeyID)
 	if err != nil {
-		return RotateCAResult{}, inconsistent("loading the signer for the rotated key", err)
+		return fail(StepCertWrite, "loading the signer for the rotated key", err)
+	}
+	cert, certPEM, err := e.buildRotatedCert(target, algo, newSigner)
+	if err != nil {
+		return fail(StepCertWrite, "re-issuing the CA certificate", err)
 	}
 
+	updated := *target
+	updated.Certificate = cert
+	updated.CertPEM = certPEM
+	if err := e.saveCA(&updated); err != nil {
+		return fail(StepCertWrite, "persisting the re-issued CA record", err)
+	}
+	storeUpdated = true
+
+	if herr := e.faultAt(StepProbeVerify); herr != nil {
+		return fail(StepProbeVerify, "verifying a probe leaf under the new key", herr)
+	}
+	if err := e.verifyProbeLocked(&updated); err != nil {
+		return fail(StepProbeVerify, "verifying a probe leaf under the new key", err)
+	}
+	if opts.afterProbe != nil {
+		if err := opts.afterProbe(&updated, rotateResult.PreviousID); err != nil {
+			return fail(StepProbeVerify, "verifying the rollover chains", err)
+		}
+	}
+
+	if herr := e.faultAt(StepSignerSwap); herr != nil {
+		return fail(StepSignerSwap, "swapping the CRL/OCSP signers", herr)
+	}
+
+	// The ledger is append-only, so it is written only once nothing can
+	// still be rolled back.
+	rotation := KeyRotation{
+		ID:        newCAID(),
+		CAID:      target.ID,
+		OldKeyID:  rotateResult.PreviousID,
+		NewKeyID:  target.KeyID,
+		NewCertSN: cert.SerialNumber.String(),
+		Method:    "rekey_reissue",
+		RotatedAt: time.Now().UTC(),
+		// The outgoing certificate, kept so OCSP can still answer for leaves
+		// it issued while the retired key exists (W23-19).
+		OldCertPEM: oldRec.CertPEM,
+	}
+	res = RotateCAResult{CA: &updated, OldKeyID: rotateResult.PreviousID, NewKeyID: target.KeyID, Rotation: rotation}
+	if err := e.store.RecordKeyRotation(rotation); err != nil {
+		// The key rotation and cert re-issuance already succeeded and are
+		// persisted -- a ledger-write failure must not be reported as if
+		// the rotation itself failed (the caller would retry a rotation
+		// that already happened, generating ANOTHER new key unnecessarily).
+		// Surface it as a distinct, clearly-labeled partial-failure error.
+		return res, true, fmt.Errorf("CA %s rotated successfully but the rotation ledger entry failed to persist: %w", caID, err)
+	}
+	return res, true, nil
+}
+
+// buildRotatedCert issues the CA's own certificate under the key currently
+// held for it: self-signed for a root, parent-signed for an intermediate.
+// Must be called with e.mu held. Re-key preserves the CA's ORIGINAL validity
+// window LENGTH (not the original NotAfter): the new key gets a fresh full
+// term starting now (a deliberate, disclosed choice).
+func (e *Engine) buildRotatedCert(target *CA, algo keystore.Algorithm, newSigner crypto.Signer) (*x509.Certificate, []byte, error) {
 	serialNumber, err := generateSerialNumber()
 	if err != nil {
-		return RotateCAResult{}, inconsistent("generating a serial number for the re-issued certificate", err)
+		return nil, nil, fmt.Errorf("generating a serial number: %w", err)
 	}
-
 	ski, err := computeSKIAny(newSigner.Public(), algo)
 	if err != nil {
-		return RotateCAResult{}, inconsistent("computing the subject key identifier", err)
+		return nil, nil, fmt.Errorf("computing the subject key identifier: %w", err)
 	}
-
-	// Re-key preserves the CA's ORIGINAL validity window LENGTH (not the
-	// original NotAfter): the new key gets a fresh full term starting now,
-	// matching normal re-key practice (a re-key is typically performed to
-	// replace an aging/compromised key with a fresh one, not to inherit
-	// however little of the original term happened to remain). This is a
-	// deliberate, disclosed choice -- see ticket notes.
 	validityWindow := target.Certificate.NotAfter.Sub(target.Certificate.NotBefore)
 	now := time.Now().UTC()
-
 	template := &x509.Certificate{
 		SerialNumber:          serialNumber,
 		Subject:               target.Certificate.Subject,
@@ -154,23 +250,23 @@ func (e *Engine) RotateCA(caID string, opts RotateCAOptions) (RotateCAResult, er
 		template.MaxPathLenZero = target.Certificate.MaxPathLenZero
 		certDER, err = createCertDER(template, template, algo, newSigner.Public(), newSigner)
 		if err != nil {
-			return RotateCAResult{}, inconsistent("re-issuing the root certificate", err)
+			return nil, nil, fmt.Errorf("re-issuing the root certificate: %w", err)
 		}
 	} else {
 		parent, ok := e.get(target.ParentCAID)
 		if !ok {
-			return RotateCAResult{}, inconsistent("re-issuing the intermediate certificate", fmt.Errorf("parent CA %s not found", target.ParentCAID))
+			return nil, nil, fmt.Errorf("parent CA %s not found", target.ParentCAID)
 		}
 		if parent.Status != "active" {
-			return RotateCAResult{}, inconsistent("re-issuing the intermediate certificate", fmt.Errorf("parent CA %s is not active", parent.ID))
+			return nil, nil, fmt.Errorf("parent CA %s is not active", parent.ID)
 		}
 		parentSigner, err := e.keys.Signer(parent.KeyID)
 		if err != nil {
-			return RotateCAResult{}, inconsistent("loading the parent CA's signer", err)
+			return nil, nil, fmt.Errorf("loading the parent CA's signer: %w", err)
 		}
 		parentMeta, err := e.keys.Metadata(parent.KeyID)
 		if err != nil {
-			return RotateCAResult{}, inconsistent("loading the parent CA's key metadata", err)
+			return nil, nil, fmt.Errorf("loading the parent CA's key metadata: %w", err)
 		}
 		if template.NotAfter.After(parent.Certificate.NotAfter) {
 			template.NotAfter = parent.Certificate.NotAfter
@@ -180,43 +276,73 @@ func (e *Engine) RotateCA(caID string, opts RotateCAOptions) (RotateCAResult, er
 		template.MaxPathLenZero = target.Certificate.MaxPathLenZero
 		certDER, err = createCertDER(template, parent.Certificate, parentMeta.Algorithm, newSigner.Public(), parentSigner)
 		if err != nil {
-			return RotateCAResult{}, inconsistent("re-issuing the intermediate certificate", err)
+			return nil, nil, fmt.Errorf("re-issuing the intermediate certificate: %w", err)
 		}
 	}
-
 	cert, err := x509.ParseCertificate(certDER)
 	if err != nil {
-		return RotateCAResult{}, inconsistent("parsing the re-issued certificate", err)
+		return nil, nil, fmt.Errorf("parsing the re-issued certificate: %w", err)
 	}
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	return cert, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER}), nil
+}
 
-	updated := *target
-	updated.Certificate = cert
-	updated.CertPEM = certPEM
-	if err := e.saveCA(&updated); err != nil {
-		return RotateCAResult{}, inconsistent("persisting the re-issued CA record", err)
+// verifyProbeLocked proves the rotated CA signs a leaf that chains to its new
+// certificate. Must be called with e.mu held and the new record saved.
+func (e *Engine) verifyProbeLocked(ca *CA) error {
+	probe, err := e.issueProbeLeafLocked(ca)
+	if err != nil {
+		return fmt.Errorf("issue probe leaf: %w", err)
 	}
+	meta, err := e.keys.Metadata(ca.KeyID)
+	if err != nil {
+		return err
+	}
+	if keystore.IsMLDSA(meta.Algorithm) {
+		// The standard library does not verify ML-DSA certificate
+		// signatures, so check the probe's signature against the CA key.
+		pub, err := e.keys.PublicKey(ca.KeyID)
+		if err != nil {
+			return err
+		}
+		mp, ok := pub.(keystore.MLDSAPublicKey)
+		if !ok || !verifyMLDSA(meta.Algorithm, mp, probe.RawTBSCertificate, probe.Signature) {
+			return errors.New("probe leaf signature does not verify under the new CA key")
+		}
+		return nil
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(ca.Certificate)
+	if _, err := probe.Verify(x509.VerifyOptions{Roots: roots}); err != nil {
+		return fmt.Errorf("probe leaf does not chain to the new CA certificate: %w", err)
+	}
+	return nil
+}
 
-	rotation := KeyRotation{
-		ID:        newCAID(),
-		CAID:      target.ID,
-		OldKeyID:  rotateResult.PreviousID,
-		NewKeyID:  target.KeyID,
-		NewCertSN: cert.SerialNumber.String(),
-		Method:    "rekey_reissue",
-		RotatedAt: now,
+// rollbackRotation restores the pre-rotation key (and CA record, if the new
+// one was persisted) and discards the unreferenced new key and retired copy.
+func (e *Engine) rollbackRotation(oldRec *CA, retiredID string, blob, pass []byte, storeUpdated bool) error {
+	if err := e.keys.Delete(oldRec.KeyID); err != nil {
+		return fmt.Errorf("remove new key: %w", err)
 	}
-	if err := e.store.RecordKeyRotation(rotation); err != nil {
-		// The key rotation and cert re-issuance already succeeded and are
-		// persisted -- a ledger-write failure must not be reported as if
-		// the rotation itself failed (the caller would retry a rotation
-		// that already happened, generating ANOTHER new key unnecessarily).
-		// Surface it as a distinct, clearly-labeled partial-failure error.
-		return RotateCAResult{CA: &updated, OldKeyID: rotateResult.PreviousID, NewKeyID: target.KeyID, Rotation: rotation},
-			fmt.Errorf("CA %s rotated successfully but the rotation ledger entry failed to persist: %w", caID, err)
+	if err := e.keys.ImportEncryptedKey(oldRec.KeyID, blob, pass); err != nil {
+		return fmt.Errorf("restore old key: %w", err)
 	}
+	if storeUpdated {
+		if err := e.saveCA(oldRec); err != nil {
+			return fmt.Errorf("restore CA record: %w", err)
+		}
+	}
+	_ = e.keys.Delete(retiredID) // best effort: the restored key supersedes the retired copy
+	return nil
+}
 
-	return RotateCAResult{CA: &updated, OldKeyID: rotateResult.PreviousID, NewKeyID: target.KeyID, Rotation: rotation}, nil
+func (e *Engine) inconsistentRotation(caID, keyID, retiredID, step string, err error) error {
+	return fmt.Errorf(
+		"%w: CA %s key was rotated (new key live under %s, old key retained on disk as %s) but %s failed: %w -- "+
+			"do NOT retry this rotation (it would generate ANOTHER new key on top of an already-inconsistent CA); "+
+			"inspect CA %s directly and, if its certificate no longer matches its keystore key, recover it from a "+
+			"pre-rotation backup via the DR procedure (docs/ops/DR_RUNBOOK.md) rather than rotating again",
+		ErrCARotationInconsistent, caID, keyID, retiredID, step, err, caID)
 }
 
 // KeyInUseByCA reports whether keyID currently backs any CA in caStore, and

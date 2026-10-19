@@ -1,0 +1,74 @@
+# W33-09: prove that a tag builds byte-identically twice (FR-P63). `rebuild`
+# clones the commit into two different absolute paths, builds the four
+# linux/amd64 binaries with goreleaser in each and compares SHA-256s.
+# `sbom` renders the CycloneDX SBOMs in snapshot mode and fails if any module
+# linked into the shipped commands is missing. The Windows agent and the MSI
+# are non-reproducible and out of scope. No secrets beyond the read-only
+# GITHUB_TOKEN.
+name: Reproducible build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rebuild:
+    name: Double rebuild (linux/amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          distribution: goreleaser
+          version: 'v2.18.3'
+          install-only: true
+
+      - name: Build twice and compare SHA-256
+        run: bash scripts/repro-check.sh rebuild
+
+  sbom:
+    name: SBOM completeness
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install Syft (SBOM)
+        uses: anchore/sbom-action/download-syft@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+
+      # Same wixl install as release.yml: the snapshot still builds the MSI.
+      - name: Install msitools + wixl (Windows agent MSI)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends msitools wixl
+          wixl --version
+
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          distribution: goreleaser
+          version: 'v2.18.3'
+          args: release --snapshot --clean --skip=publish,sign,docker,nfpm,announce,validate
+
+      - name: Every linked module is in the SBOMs
+        run: bash scripts/repro-check.sh sbom dist

@@ -41,7 +41,6 @@ func (p *flakyUserProvider) ListUsers(ctx context.Context) ([]UserRecord, error)
 }
 
 type recordingAuditProvider struct {
-	stubAuditProvider
 	mu      sync.Mutex
 	entries []AuditEntry
 }
@@ -271,6 +270,7 @@ func TestAuthMiddleware_BearerTokensFailOpenOnStoreErrorButHonourDeactivation(t 
 	auth, store, _ := newFailClosedAuth(t)
 	auth.config.mode = "jwt"
 	auth.config.jwtHS256Secret = "bearer-secret"
+	auth.config.unmappedRole = "read-only" // the test is about store outages, not role mapping
 	req := func(sub string) *http.Request {
 		tok, err := mintHS256JWT(sub, "", "bearer-secret", "", "", time.Now().Add(time.Hour))
 		if err != nil {

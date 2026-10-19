@@ -1,0 +1,24 @@
+# W24-11: sshd host holding PEM certs for nginx and apache plus a Java
+# keystore, for the agentless SSH discovery harness. nginx/apache are
+# installed so the layout is real but never started: discovery reads files.
+FROM docker.io/library/ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        openssh-server nginx apache2 openssl ca-certificates openjdk-17-jre-headless \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /var/run/sshd /root/.ssh \
+    && chmod 700 /root/.ssh \
+    && useradd -m -s /bin/bash scanner && usermod -p '*' scanner \
+    && mkdir -p /home/scanner/.ssh && chmod 700 /home/scanner/.ssh \
+    && chown scanner:scanner /home/scanner/.ssh \
+    && sed -i \
+        -e 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' \
+        -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' \
+        /etc/ssh/sshd_config
+COPY plant-certs.sh /plant-certs.sh
+RUN sh /plant-certs.sh && rm /plant-certs.sh
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+# Host keys are generated at container START so containers A and B differ.
+EXPOSE 22
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,230 @@
+{
+  "task": "U-40",
+  "title": "Run a periodic access review",
+  "sourceStory": "STORIES.md#u-40",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/access-review"
+      },
+      "caption": "Open /access-review",
+      "slug": "access-review-list",
+      "expect": {
+        "role": "button",
+        "name": "Open campaign"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-40/01-access-review-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Open campaign"
+      },
+      "caption": "Click **Open campaign**",
+      "slug": "open-campaign-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "Open campaign"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-40/02-open-campaign-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Campaign name",
+        "within": "[role=dialog]"
+      },
+      "value": "Q1 access review",
+      "caption": "Fill **Campaign name** with \"Q1 access review\"",
+      "slug": "Campaign name",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-40/03-campaign-name.png",
+        "annotated": "docs/guide/screenshots/U-40/03-campaign-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 517,
+          "y": 457,
+          "w": 406,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Start review"
+      },
+      "caption": "Click **Start review**",
+      "slug": "campaign-started",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-40/04-campaign-started.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Decision for priya.nair@acme.test"
+      },
+      "value": "keep",
+      "caption": "Select \"keep\" in **Decision for priya.nair@acme.test**",
+      "slug": "decision-keep",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-40/05-decision-keep.png",
+        "annotated": "docs/guide/screenshots/U-40/05-decision-keep-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1165,
+          "y": 323,
+          "w": 102,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Save decision for priya.nair@acme.test"
+      },
+      "caption": "Click **Save decision for priya.nair@acme.test**",
+      "slug": "decision-saved",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-40/06-decision-saved.png",
+        "annotated": "docs/guide/screenshots/U-40/06-decision-saved-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1275,
+          "y": 323,
+          "w": 120,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:45:19.147Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-40",
+    "steps": 6,
+    "shots": 6,
+    "annotated": 3,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/access-review"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-40/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-40/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

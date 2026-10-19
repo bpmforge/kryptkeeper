@@ -1,3 +1,4 @@
+{{- include "kryptkeeper.validate" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -20,6 +21,10 @@ spec:
       labels:
         {{- include "kryptkeeper.selectorLabels" . | nindent 8 }}
     spec:
+      {{- if lt (int .Values.terminationGracePeriodSeconds) (add (int .Values.config.readinessDrainSeconds) 15) }}
+      {{- fail "terminationGracePeriodSeconds must be at least config.readinessDrainSeconds + 15 (drain + 10s http shutdown timeout + margin)" }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds | int }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

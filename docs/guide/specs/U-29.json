@@ -1,0 +1,264 @@
+{
+  "task": "U-29",
+  "title": "Enroll a satellite agent",
+  "sourceStory": "STORIES.md#u-29",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/targets/setup"
+      },
+      "caption": "Open /targets/setup",
+      "slug": "target-setup-agent-card",
+      "expect": {
+        "role": "button",
+        "name": "Generate token"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-29/01-target-setup-agent-card.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Agent name"
+      },
+      "value": "web-02.acme.test",
+      "caption": "Fill **Agent name** with \"web-02.acme.test\"",
+      "slug": "Agent name",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-29/02-agent-name.png",
+        "annotated": "docs/guide/screenshots/U-29/02-agent-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 383,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Host type"
+      },
+      "value": "Linux",
+      "caption": "Select \"Linux\" in **Host type**",
+      "slug": "Host type",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-29/03-host-type.png",
+        "annotated": "docs/guide/screenshots/U-29/03-host-type-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 453,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Generate token"
+      },
+      "caption": "Click **Generate token**",
+      "slug": "token-generated-once",
+      "redact": [
+        "code",
+        "pre",
+        "input[readonly]"
+      ],
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-29/04-token-generated-once.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "role": "button",
+        "name": "Revoke token datacenter-a"
+      },
+      "caption": "Locate **Revoke token datacenter-a**",
+      "slug": "unused-tokens",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-29/05-unused-tokens.png",
+        "annotated": "docs/guide/screenshots/U-29/05-unused-tokens-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1317,
+          "y": 799,
+          "w": 78,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/agents"
+      },
+      "caption": "Open /agents",
+      "slug": "agents-list",
+      "expect": {
+        "role": "heading",
+        "name": "Satellite Agents"
+      },
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-29/06-agents-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "text": "Install an Agent"
+      },
+      "caption": "Locate **Install an Agent**",
+      "slug": "agent-install-quickstart",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-29/07-agent-install-quickstart.png",
+        "annotated": "docs/guide/screenshots/U-29/07-agent-install-quickstart-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 549,
+          "w": 1130,
+          "h": 20
+        }
+      }
+    }
+  ],
+  "flags": "LAB (running kryptkeeper-agent on a host is not captured)",
+  "lastRun": {
+    "at": "2026-10-18T12:43:52.302Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-29",
+    "steps": 7,
+    "shots": 7,
+    "annotated": 4,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/agents"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-29/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-29/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

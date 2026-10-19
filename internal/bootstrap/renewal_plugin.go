@@ -10,18 +10,18 @@ package bootstrap
 
 import (
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net"
 	"net/http"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/bpmforge/kryptkeeper/sdk/delivery-go/abi"
 	"kryptkeeper/internal/agentinstall"
 	"kryptkeeper/internal/plugins/delivery"
 )
@@ -130,11 +130,18 @@ func (e *RenewalExecutor) preparePlugin(ctx context.Context, target ManagedTarge
 // reaches the plugin only if its schema names the field.
 const credentialFieldTLSCA = "tls_ca_pem"
 
-// pluginHTTPClient is base (or a default client) trusting the system roots
-// plus caPEM, when given. The plugin cannot change TLS trust itself.
+// pluginHTTPClient is base (or the guarded push client) trusting the system
+// roots plus caPEM, when given. The plugin cannot change TLS trust itself.
+// The tls_ca_pem path builds from the egress client too: a fresh stdlib
+// client would take proxies from the environment and skip the dial-time
+// address check, letting a granted hostname that resolves to link-local or
+// metadata space through.
 func pluginHTTPClient(base *http.Client, caPEM string) (*http.Client, error) {
 	if strings.TrimSpace(caPEM) == "" {
-		return base, nil
+		if base != nil {
+			return base, nil
+		}
+		return pushDeviceHTTPClient(nil), nil
 	}
 	pool, err := x509.SystemCertPool()
 	if err != nil || pool == nil {
@@ -143,11 +150,13 @@ func pluginHTTPClient(base *http.Client, caPEM string) (*http.Client, error) {
 	if !pool.AppendCertsFromPEM([]byte(caPEM)) {
 		return nil, errors.New("tls_ca_pem holds no PEM certificate")
 	}
-	return &http.Client{Transport: &http.Transport{
-		Proxy:           http.ProxyFromEnvironment,
-		TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
-	}}, nil
+	return pushDeviceHTTPClient(pool), nil
 }
+
+// maxPluginVerifyWindow is the longest verify propagation window a plugin
+// manifest may declare (W27-37). Execution budgets that wrap a plugin push
+// add it so a declared window is never cut short by the caller's context.
+const maxPluginVerifyWindow = time.Duration(abi.MaxVerifyPropagationSeconds) * time.Second
 
 // pushViaPlugin delivers already-renewed material through the target's
 // plugin. The result's Verified and RolledBack are the hub's findings.
@@ -164,11 +173,18 @@ func (e *RenewalExecutor) pushViaPlugin(ctx context.Context, target ManagedTarge
 			e.appendPluginAudit(ctx, "delivery_plugin.refused", target.PluginID, AuditOutcomeDenied,
 				fmt.Sprintf("target=%s version=%s %s", target.ID, run.version.Version, ev.Detail))
 		case "log":
-			log.Printf("delivery plugin %s (target %s): %s", target.PluginID, target.ID, ev.Detail)
+			logging.Infof("delivery plugin %s (target %s): %s", target.PluginID, target.ID, ev.Detail)
 		}
 	}
+	// A read-back plugin (secret store: nothing to dial) is verified by the
+	// hub fingerprinting the PEM the store returns; an operator-set
+	// verify_host_port always forces the stronger TLS dial instead.
+	readback := run.version.Manifest.Verification == abi.VerificationReadback && profile.VerifyHostPort == ""
+	verification := abi.VerificationTLS
 	verifyHostPort := profile.VerifyHostPort
-	if verifyHostPort == "" {
+	if readback {
+		verification, verifyHostPort = abi.VerificationReadback, ""
+	} else if verifyHostPort == "" {
 		verifyHostPort = net.JoinHostPort(target.Host, "443")
 	}
 	verify := e.verifier
@@ -177,15 +193,15 @@ func (e *RenewalExecutor) pushViaPlugin(ctx context.Context, target ManagedTarge
 	}
 	res := run.plugin.Deliver(ctx, run.env, delivery.DeliverRequest{
 		Name: pushObjectName(target.Name), CertPEM: chainPEM, KeyPEM: keyPEM,
-		VerifyHostPort: verifyHostPort, ExpectedFingerprint: leafFP,
+		VerifyHostPort: verifyHostPort, ExpectedFingerprint: leafFP, ReadbackVerify: readback,
 	}, verify)
 	outcome := AuditOutcomeSuccess
 	if !res.Verified && res.Outcome != agentinstall.OutcomeInstalled {
 		outcome = AuditOutcomeFailure
 	}
 	e.appendPluginAudit(ctx, "delivery_plugin.push", target.PluginID, outcome,
-		fmt.Sprintf("target=%s version=%s sha256=%s outcome=%s verified=%t rolled_back=%t refused_calls=%d",
-			target.ID, run.version.Version, run.version.SHA256, res.Outcome, res.Verified, res.RolledBack, refused))
+		fmt.Sprintf("target=%s version=%s sha256=%s verification=%s verify_window=%ds outcome=%s verified=%t rolled_back=%t refused_calls=%d",
+			target.ID, run.version.Version, run.version.SHA256, verification, run.version.Manifest.VerifyPropagationSeconds, res.Outcome, res.Verified, res.RolledBack, refused))
 	var pushErr error
 	if outcome == AuditOutcomeFailure {
 		pushErr = fmt.Errorf("delivery plugin %s: %s: %s", target.PluginID, res.Outcome, res.Detail)
@@ -201,6 +217,6 @@ func (e *RenewalExecutor) appendPluginAudit(ctx context.Context, action, pluginI
 		Timestamp: time.Now().UTC().Format(time.RFC3339), Action: action, ActorType: "system", ActorID: "renewal",
 		ResourceType: "delivery_plugin", ResourceID: pluginID, Outcome: outcome, ChangeSummary: detail,
 	}); err != nil {
-		log.Printf("audit append failed action=%s: %v", action, err)
+		logging.Warnf("audit append failed action=%s: %v", action, err)
 	}
 }

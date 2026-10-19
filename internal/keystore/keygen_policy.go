@@ -6,10 +6,11 @@ package keystore
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"strings"
+
+	"kryptkeeper/internal/logging"
 )
 
 // W9-05 (G-42/D-083): the key-generation policy. Before this, the keys API
@@ -31,6 +32,8 @@ func rsaBits(algo Algorithm) (int, bool) {
 	switch algo {
 	case RSA2048:
 		return 2048, true
+	case RSA3072:
+		return 3072, true
 	case RSA4096:
 		return 4096, true
 	default:
@@ -40,7 +43,7 @@ func rsaBits(algo Algorithm) (int, bool) {
 
 // supportedAlgorithms is the full set the platform defines.
 var supportedAlgorithms = map[Algorithm]bool{
-	RSA2048: true, RSA4096: true,
+	RSA2048: true, RSA3072: true, RSA4096: true,
 	ECDSAP256: true, ECDSAP384: true, Ed25519: true,
 	MLDSA44: true, MLDSA65: true, MLDSA87: true,
 	HybridECDSAP256MLDSA65: true, HybridECDSAP384MLDSA87: true,
@@ -88,7 +91,7 @@ func KeygenPolicyFromEnv() KeygenPolicy {
 				continue
 			}
 			if !supportedAlgorithms[algo] {
-				log.Printf("keygen policy: KRYPTKEEPER_KEYGEN_ALLOWED_ALGOS names unknown algorithm %q; ignoring that entry", algo)
+				logging.Infof("keygen policy: KRYPTKEEPER_KEYGEN_ALLOWED_ALGOS names unknown algorithm %q; ignoring that entry", algo)
 				continue
 			}
 			allowed[algo] = true
@@ -96,7 +99,7 @@ func KeygenPolicyFromEnv() KeygenPolicy {
 		if len(allowed) > 0 {
 			policy.Allowed = allowed
 		} else {
-			log.Print("keygen policy: KRYPTKEEPER_KEYGEN_ALLOWED_ALGOS parsed to an empty set; keeping the default allow-all")
+			logging.Info("keygen policy: KRYPTKEEPER_KEYGEN_ALLOWED_ALGOS parsed to an empty set; keeping the default allow-all")
 		}
 	}
 
@@ -107,7 +110,7 @@ func KeygenPolicyFromEnv() KeygenPolicy {
 		}
 		n, err := strconv.Atoi(raw)
 		if err != nil || n <= 0 {
-			log.Printf("keygen policy: invalid %s=%q; keeping the default floor", env, raw)
+			logging.Infof("keygen policy: invalid %s=%q; keeping the default floor", env, raw)
 			return
 		}
 		rules := policy.Rules[purpose]

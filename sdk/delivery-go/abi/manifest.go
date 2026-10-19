@@ -28,7 +28,26 @@ type Manifest struct {
 	Capabilities     Capabilities     `json:"capabilities"`
 	CredentialSchema map[string]Field `json:"credential_schema,omitempty"`
 	TargetSchema     map[string]Field `json:"target_schema,omitempty"`
+	// Verification says how the hub proves a push landed: "" or "tls" dials
+	// the target and fingerprints what it serves; "readback" (secret stores,
+	// which serve nothing) asks the plugin for the stored PEM via OpVerify
+	// and fingerprints that. Either way the hub decides, never the plugin.
+	Verification string `json:"verification,omitempty"`
+	// VerifyPropagationSeconds is how long after the quick verify attempts the
+	// hub keeps polling for the pushed certificate (CDN edges and custom-cert
+	// bindings take minutes to propagate). 0 keeps the quick attempts only.
+	// The comparison is unchanged; only the time allowed for it to succeed.
+	VerifyPropagationSeconds int `json:"verify_propagation_seconds,omitempty"`
 }
+
+// MaxVerifyPropagationSeconds bounds VerifyPropagationSeconds.
+const MaxVerifyPropagationSeconds = 1800
+
+// Verification modes a manifest may declare.
+const (
+	VerificationTLS      = "tls"
+	VerificationReadback = "readback"
+)
 
 // Artifact pins the WebAssembly module.
 type Artifact struct {
@@ -102,6 +121,10 @@ func (m Manifest) Validate() error {
 		return errors.New("manifest: artifact.file must be a bare file name")
 	case !hexPattern.MatchString(m.Artifact.SHA256):
 		return errors.New("manifest: artifact.sha256 must be 64 lowercase hex characters")
+	case m.Verification != "" && m.Verification != VerificationTLS && m.Verification != VerificationReadback:
+		return fmt.Errorf("manifest: verification %q is not supported (want %q or %q)", m.Verification, VerificationTLS, VerificationReadback)
+	case m.VerifyPropagationSeconds < 0 || m.VerifyPropagationSeconds > MaxVerifyPropagationSeconds:
+		return fmt.Errorf("manifest: verify_propagation_seconds %d out of range (0..%d)", m.VerifyPropagationSeconds, MaxVerifyPropagationSeconds)
 	}
 	if n := m.Capabilities.Network; n != nil {
 		if n.HostsFromCredential == "" && len(n.Hosts) == 0 {

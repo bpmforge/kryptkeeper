@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -34,6 +35,10 @@ const (
 const (
 	FindingExceptionTargetCertificate = "certificate"
 	FindingExceptionTargetCA          = "ca"
+	// FindingExceptionTargetFile files an exception against one discovered
+	// file (install posture findings such as SERVICE_RUNS_AS_ROOT); target_id
+	// is discovered_files.id and finding_code the bare code.
+	FindingExceptionTargetFile = "target_file"
 )
 
 // FindingException is an accepted-risk exception: a human decision that a
@@ -52,6 +57,10 @@ type FindingException struct {
 	CreatedBy         string `json:"created_by"`
 	CreatedAt         string `json:"created_at"`
 	ExpiresAt         string `json:"expires_at"`
+	// Tenant is the creating tenant, filled by activeFindingExceptions from
+	// the finding_exception_tenants stamp (not a column of this row; "" = the
+	// default tenant). Tenant-aware funnels match on it (W22-28/29).
+	Tenant string `json:"-"`
 }
 
 // IsActive reports whether the exception is still in effect at now — the
@@ -113,7 +122,7 @@ const findingExceptionSchema = `
 CREATE TABLE IF NOT EXISTS finding_exceptions (
     id                  TEXT PRIMARY KEY,
     target_type         TEXT NOT NULL
-                          CHECK (target_type IN ('certificate', 'ca')),
+                          CHECK (target_type IN ('certificate', 'ca', 'target_file')),
     target_id           TEXT NOT NULL,
     finding_code        TEXT NOT NULL,
     justification_code  TEXT NOT NULL
@@ -334,4 +343,252 @@ func newFindingExceptionStoreFromEnv() (FindingExceptionStore, error) {
 		return nil, err
 	}
 	return state.store, nil
+}
+
+// --- tenant stamp (W22-28) ---
+//
+// An exception is created by one tenant's principal and must stay hidden from
+// every other tenant. The stamp lives in a side table so the exception row
+// itself (and every query above) is unchanged; a row with no stamp predates
+// tenancy and belongs to DefaultTenant. Migration 000095 declares the table;
+// EnsureTenantSchema self-heals it like every other store here (G-33).
+
+const findingExceptionTenantSchema = `
+CREATE TABLE IF NOT EXISTS finding_exception_tenants (
+    exception_id TEXT PRIMARY KEY,
+    tenant_id    TEXT NOT NULL
+);`
+
+// findingExceptionTenantStore is the optional tenant-stamping surface of a
+// FindingExceptionStore. The exceptions API refuses to run against a store
+// that lacks it, because an unstamped exception could not be tenant-scoped.
+type findingExceptionTenantStore interface {
+	EnsureTenantSchema(ctx context.Context) error
+	// CreateWithTenant inserts the exception and its tenant stamp atomically.
+	CreateWithTenant(ctx context.Context, exc FindingException, tenant string) error
+	// TenantsByID returns exception id -> tenant for every stamped exception.
+	TenantsByID(ctx context.Context) (map[string]string, error)
+	// ForgetTenant removes an exception's stamp (after the exception is deleted).
+	ForgetTenant(ctx context.Context, id string) error
+}
+
+func (s *sqliteFindingExceptionStore) EnsureTenantSchema(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, findingExceptionTenantSchema)
+	return err
+}
+
+func (s *sqliteFindingExceptionStore) CreateWithTenant(ctx context.Context, exc FindingException, tenant string) error {
+	return createFindingExceptionWithTenant(ctx, s.db, exc, tenant,
+		`INSERT INTO finding_exceptions
+		  (id, target_type, target_id, finding_code, justification_code, justification_note, created_by, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO finding_exception_tenants (exception_id, tenant_id) VALUES (?, ?)`)
+}
+
+func (s *sqliteFindingExceptionStore) TenantsByID(ctx context.Context) (map[string]string, error) {
+	return findingExceptionTenants(ctx, s.db)
+}
+
+func (s *sqliteFindingExceptionStore) ForgetTenant(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM finding_exception_tenants WHERE exception_id = ?`, id)
+	return err
+}
+
+func (s *postgresFindingExceptionStore) EnsureTenantSchema(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, findingExceptionTenantSchema)
+	return err
+}
+
+func (s *postgresFindingExceptionStore) CreateWithTenant(ctx context.Context, exc FindingException, tenant string) error {
+	return createFindingExceptionWithTenant(ctx, s.db, exc, tenant,
+		`INSERT INTO finding_exceptions
+		  (id, target_type, target_id, finding_code, justification_code, justification_note, created_by, created_at, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		`INSERT INTO finding_exception_tenants (exception_id, tenant_id) VALUES ($1, $2)`)
+}
+
+func (s *postgresFindingExceptionStore) TenantsByID(ctx context.Context) (map[string]string, error) {
+	return findingExceptionTenants(ctx, s.db)
+}
+
+func (s *postgresFindingExceptionStore) ForgetTenant(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM finding_exception_tenants WHERE exception_id = $1`, id)
+	return err
+}
+
+func createFindingExceptionWithTenant(ctx context.Context, db *sql.DB, exc FindingException, tenant, insertExc, insertTenant string) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+	if _, err := tx.ExecContext(ctx, insertExc,
+		exc.ID, exc.TargetType, exc.TargetID, exc.FindingCode, exc.JustificationCode,
+		nullString(exc.JustificationNote), exc.CreatedBy, exc.CreatedAt, exc.ExpiresAt); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, insertTenant, exc.ID, tenant); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func findingExceptionTenants(ctx context.Context, db *sql.DB) (map[string]string, error) {
+	rows, err := db.QueryContext(ctx, `SELECT exception_id, tenant_id FROM finding_exception_tenants`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, tenant string
+		if err := rows.Scan(&id, &tenant); err != nil {
+			return nil, err
+		}
+		out[id] = tenant
+	}
+	return out, rows.Err()
+}
+
+// --- lifecycle events (W22-31) ---
+//
+// The expiry scanner must warn once and audit a lapse once, across restarts
+// and replicas, so each (exception, kind) is claimed by an insert that only
+// the first caller wins. Migration 000096 declares the table; the claim path
+// self-heals it (G-33).
+
+const findingExceptionEventSchema = `
+CREATE TABLE IF NOT EXISTS finding_exception_events (
+    exception_id TEXT NOT NULL,
+    kind         TEXT NOT NULL CHECK (kind IN ('expiring', 'expired')),
+    at           TEXT NOT NULL,
+    PRIMARY KEY (exception_id, kind)
+);`
+
+func (s *sqliteFindingExceptionStore) EnsureLifecycleSchema(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, findingExceptionEventSchema)
+	return err
+}
+
+// ListAll returns every exception including lapsed ones (ListActive hides
+// them); the evidence trail and the expiry scanner both need the lapsed rows.
+func (s *sqliteFindingExceptionStore) ListAll(ctx context.Context) ([]FindingException, error) {
+	return listAllFindingExceptions(ctx, s.db)
+}
+
+func (s *sqliteFindingExceptionStore) ClaimEvent(ctx context.Context, exceptionID, kind string, at time.Time) (bool, error) {
+	return claimFindingExceptionEvent(ctx, s.db,
+		`INSERT INTO finding_exception_events (exception_id, kind, at) VALUES (?, ?, ?)
+		 ON CONFLICT (exception_id, kind) DO NOTHING`, exceptionID, kind, at)
+}
+
+func (s *postgresFindingExceptionStore) EnsureLifecycleSchema(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, findingExceptionEventSchema)
+	return err
+}
+
+func (s *postgresFindingExceptionStore) ListAll(ctx context.Context) ([]FindingException, error) {
+	return listAllFindingExceptions(ctx, s.db)
+}
+
+func (s *postgresFindingExceptionStore) ClaimEvent(ctx context.Context, exceptionID, kind string, at time.Time) (bool, error) {
+	return claimFindingExceptionEvent(ctx, s.db,
+		`INSERT INTO finding_exception_events (exception_id, kind, at) VALUES ($1, $2, $3)
+		 ON CONFLICT (exception_id, kind) DO NOTHING`, exceptionID, kind, at)
+}
+
+func listAllFindingExceptions(ctx context.Context, db *sql.DB) ([]FindingException, error) {
+	rows, err := db.QueryContext(ctx, `
+		SELECT id, target_type, target_id, finding_code, justification_code, justification_note, created_by, created_at, expires_at
+		FROM finding_exceptions
+		ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	return scanFindingExceptionRows(rows)
+}
+
+func claimFindingExceptionEvent(ctx context.Context, db *sql.DB, query, exceptionID, kind string, at time.Time) (bool, error) {
+	res, err := db.ExecContext(ctx, query, exceptionID, kind, at.UTC().Format(time.RFC3339))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+// exceptionTenantKey folds the default tenant to "" so exception stamps
+// ("default") and discovery endpoint tenants ("" = default) compare equal.
+func exceptionTenantKey(t string) string {
+	if t == DefaultTenant {
+		return ""
+	}
+	return t
+}
+
+// findingExceptionIndexForTenant is findingExceptionIndex restricted to the
+// exceptions created in tenant, so one tenant's exception never suppresses
+// another tenant's finding on the same fingerprint.
+func findingExceptionIndexForTenant(active []FindingException, tenant string) map[string]bool {
+	want := exceptionTenantKey(tenant)
+	idx := make(map[string]bool)
+	for _, e := range active {
+		if exceptionTenantKey(e.Tenant) == want {
+			idx[findingExceptionKey(e.TargetType, e.TargetID, e.FindingCode)] = true
+		}
+	}
+	return idx
+}
+
+// DiscoveredFileRef is what an exception needs to know about its target file:
+// who owns it (tenant), how to name it, and which certificates live in it.
+type DiscoveredFileRef struct {
+	ID, Tenant, Host, Path string
+	Fingerprints           []string
+}
+
+// discoveredFileLookup resolves a discovered_files row for exception handling.
+// found=false covers both "no such row" and "this database has no posture
+// tables": either way there is nothing to file an exception against.
+type discoveredFileLookup interface {
+	LookupDiscoveredFile(ctx context.Context, id string) (ref DiscoveredFileRef, found bool, err error)
+}
+
+func lookupDiscoveredFile(ctx context.Context, db *sql.DB, postgres bool, id string) (DiscoveredFileRef, bool, error) {
+	ref := DiscoveredFileRef{ID: id}
+	err := db.QueryRowContext(ctx, dialectQuery(postgres, `SELECT tenant, host, path FROM discovered_files WHERE id = ?`), id).
+		Scan(&ref.Tenant, &ref.Host, &ref.Path)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DiscoveredFileRef{}, false, nil
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "no such table") || strings.Contains(err.Error(), "does not exist") {
+			return DiscoveredFileRef{}, false, nil
+		}
+		return DiscoveredFileRef{}, false, err
+	}
+	rows, err := db.QueryContext(ctx, dialectQuery(postgres, `SELECT certificate_fingerprint FROM certificate_files WHERE file_id = ?`), id)
+	if err != nil {
+		return DiscoveredFileRef{}, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var fp string
+		if err := rows.Scan(&fp); err != nil {
+			return DiscoveredFileRef{}, false, err
+		}
+		ref.Fingerprints = append(ref.Fingerprints, fp)
+	}
+	return ref, true, rows.Err()
+}
+
+func (s *sqliteFindingExceptionStore) LookupDiscoveredFile(ctx context.Context, id string) (DiscoveredFileRef, bool, error) {
+	return lookupDiscoveredFile(ctx, s.db, false, id)
+}
+
+func (s *postgresFindingExceptionStore) LookupDiscoveredFile(ctx context.Context, id string) (DiscoveredFileRef, bool, error) {
+	return lookupDiscoveredFile(ctx, s.db, true, id)
 }

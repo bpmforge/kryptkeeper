@@ -6,16 +6,18 @@ Install paths for a Kryptkeeper release, all produced by
 | Format | Built by | Artifact |
 |---|---|---|
 | deb / rpm | `packaging/nfpm/` (nfpm) | `dist/*.deb`, `dist/*.rpm` on the GitHub Release |
-| Homebrew | `packaging/homebrew/` | `kryptkeeper.rb` on the GitHub Release (arm64 only, no tap) |
+| Homebrew | `packaging/homebrew/` | signed `kryptkeeper.rb` formula on the GitHub Release (arm64 + amd64, no tap) |
 | Windows agent | `.goreleaser.yaml` + `packaging/windows/` | `.zip` and `.msi` on the GitHub Release |
 | Helm repo | `charts/kryptkeeper*` published two ways | see below |
-| One-command installer | `packaging/install.sh` | run directly from this path in git, not a release asset |
+| One-command installer | `packaging/install.sh` | `install.sh` release asset, listed in the cosign-signed `checksums.txt` |
 
 Container-image signing (cosign, keyed vs. keyless) is covered separately in
 [`SIGNING.md`](./SIGNING.md) — that's the other half of this ticket's
 acceptance criteria (D-101).
 
 ## deb / rpm
+
+apt/yum repo at https://pkg.kryptkeeper.io: see packaging/repo/README.md
 
 `packaging/nfpm/nfpm.yaml` packages the **Hub** binary only (not the agent —
 see "Scope" below). Built in CI by the `package-linux` job in
@@ -61,23 +63,35 @@ in `release.yml` produces it after goreleaser finishes: it downloads and
 cosign-verifies the release's `checksums.txt`, and
 `packaging/homebrew/render-formula.sh` fills
 `packaging/homebrew/kryptkeeper.rb.tmpl` with the signed sha256 of
-`kryptkeeper_<version>_darwin_arm64.tar.gz`. (goreleaser's own `brews` pipe
+`kryptkeeper_<version>_darwin_arm64.tar.gz` and `..._darwin_amd64.tar.gz`. (goreleaser's own `brews` pipe
 is deprecated and runs after checksumming, so it cannot do this.)
 
-**Apple Silicon only.** Releases build `darwin/arm64`; there is no
-`darwin/amd64` binary, so the formula has `depends_on arch: :arm64` and
-Intel Macs are unsupported.
+**Apple Silicon and Intel.** Releases build `darwin/arm64` and `darwin/amd64`;
+the formula selects the matching archive and sha256 with `on_arm` / `on_intel`.
 
-Homebrew 7 refuses to install a formula file that is not in a tap, so create
-a throwaway local tap:
+Verify the formula before installing it. It is signed on its own (keyless
+cosign), and its archive sha256 values come from the signed `checksums.txt`:
 
 ```bash
 TAG=v0.9.4   # set to the release you are installing
-gh release download "$TAG" --repo bpmforge/kryptkeeper --pattern kryptkeeper.rb
+gh release download "$TAG" --repo bpmforge/kryptkeeper \
+  --pattern kryptkeeper.rb --pattern kryptkeeper.rb.sig --pattern kryptkeeper.rb.pem
+cosign verify-blob \
+  --certificate kryptkeeper.rb.pem --signature kryptkeeper.rb.sig \
+  --certificate-identity-regexp '^https://github\.com/bpmforge/kryptkeeper/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  kryptkeeper.rb
+brew install --formula ./kryptkeeper.rb
+brew test kryptkeeper     # runs `kryptkeeper --version`
+```
+
+If your Homebrew refuses a formula file outside a tap, install it from a
+throwaway local tap instead:
+
+```bash
 brew tap-new local/kryptkeeper
 cp kryptkeeper.rb "$(brew --repository local/kryptkeeper)/Formula/"
 brew install local/kryptkeeper/kryptkeeper
-brew test local/kryptkeeper/kryptkeeper     # runs `kryptkeeper --version`
 
 # remove
 brew uninstall kryptkeeper && brew untap local/kryptkeeper
@@ -154,22 +168,106 @@ OCI loop packages every chart under `charts/*/`).
 ## One-command installer
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kryptkeeper/kryptkeeper/main/packaging/install.sh | bash
+curl -fsSL https://github.com/bpmforge/kryptkeeper/releases/latest/download/install.sh | bash
 ```
 
-Downloads the Hub binary (or the agent, via `KRYPTKEEPER_COMPONENT=agent`)
-for the host's OS/arch, verifies it against the release's `SHA256SUMS.txt`,
-and installs it — **fails closed** on any checksum mismatch (nothing is
-installed; see `install_test.go`'s
-`TestInstallSh_FailsClosedOnChecksumMismatch`, which reproduces a tampered
-checksum against the real script and asserts both the non-zero exit and
-that no binary is left behind). Env var overrides are documented in the
-script's header comment; `install_test.go` uses
-`KRYPTKEEPER_INSTALL_BASE_URL` to point the script at a local `httptest`
-fixture instead of GitHub, so the test suite needs no live network.
+`install.sh` is a release asset. Its sha256 is a line of the cosign-signed
+`checksums.txt`, so the signed `checksums.txt` is its signature (no separate
+`install.sh.sig`). To check it before running:
 
-Linux and macOS (amd64/arm64) only — Windows installs are documented
+```bash
+TAG=v0.9.4
+gh release download "$TAG" --repo bpmforge/kryptkeeper \
+  --pattern install.sh --pattern checksums.txt --pattern checksums.txt.sig --pattern checksums.txt.pem
+cosign verify-blob \
+  --certificate checksums.txt.pem --signature checksums.txt.sig \
+  --certificate-identity-regexp '^https://github\.com/bpmforge/kryptkeeper/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+grep '  install.sh$' checksums.txt | sha256sum -c -     # shasum -a 256 -c - on macOS
+```
+
+The script downloads the Hub archive (or the agent, via
+`KRYPTKEEPER_COMPONENT=agent`) for the host's OS/arch plus `checksums.txt`,
+`.sig` and `.pem`, then verifies in order: the cosign signature of
+`checksums.txt` against the release workflow identity, then the archive's
+sha256 against its line in that file. It **fails closed**: a cosign failure, a
+missing cosign (unless `KRYPTKEEPER_INSTALL_SKIP_COSIGN=1`, which prints a
+WARNING and leaves only the unauthenticated checksum), a missing checksum
+entry or a checksum mismatch installs nothing (see `install_test.go`). Env var
+overrides are documented in the script's header comment; `install_test.go`
+uses `KRYPTKEEPER_INSTALL_BASE_URL` and a fake cosign
+(`KRYPTKEEPER_INSTALL_COSIGN`), so the suite needs no live network.
+
+Linux and macOS (amd64/arm64) only; Windows installs are documented
 separately in `docs/deployment.md`.
+
+## Upgrading the agent
+
+There is no agent self-update: FR-063 is descoped from v1.0 (D-128). Upgrade
+the agent the way it was installed, one canary first.
+
+**Preflight (every path).** Note the running version with
+`kryptkeeper-agent --version` and on the Hub's Agents page. Download the new
+release, verify the cosign signature on `checksums.txt`, then check the
+artifact's SHA-256 against it.
+
+### Linux binary (systemd)
+
+The agent is a single binary at `/usr/local/bin/kryptkeeper-agent` with a unit
+from `kryptkeeper-agent --generate-systemd`; there is no agent deb/rpm yet.
+
+```bash
+sudo systemctl stop kryptkeeper-agent
+sudo cp /usr/local/bin/kryptkeeper-agent /usr/local/bin/kryptkeeper-agent.prev
+sudo install -m 0755 kryptkeeper-agent /usr/local/bin/kryptkeeper-agent
+sudo systemctl start kryptkeeper-agent
+kryptkeeper-agent --version
+```
+
+**Rollback:** `sudo systemctl stop kryptkeeper-agent`, then
+`sudo mv /usr/local/bin/kryptkeeper-agent.prev /usr/local/bin/kryptkeeper-agent`,
+then `sudo systemctl start kryptkeeper-agent`.
+
+### Windows MSI
+
+The MSI has `MajorUpgrade` on, so a newer MSI upgrades in place; it refuses a
+downgrade. The service configuration in `%ProgramData%\Kryptkeeper\agent.env`
+is not part of the MSI and is kept.
+
+```powershell
+msiexec /i kryptkeeper-agent_<new>_windows_amd64.msi /qn
+```
+
+The MSI stops the `KryptkeeperAgent` service for the upgrade; if it reports
+files in use, run `Stop-Service KryptkeeperAgent` first and retry.
+
+**Rollback:** `msiexec /x kryptkeeper-agent_<new>_windows_amd64.msi /qn`, then
+`msiexec /i kryptkeeper-agent_<old>_windows_amd64.msi /qn`, then
+`Start-Service KryptkeeperAgent`.
+
+### macOS (launchd)
+
+The agent runs from `packaging/macos/com.kryptkeeper.agent.plist`. Replace the
+binary the plist points at the same way as on Linux (keep a `.prev` copy) and
+reload the job as described in [MACOS_AGENT.md](../docs/ops/MACOS_AGENT.md).
+
+**Rollback:** restore the `.prev` binary and reload the job.
+
+### Container (`Dockerfile.agent`)
+
+The container agent does discovery and reporting only (no autopilot install).
+Pull the new tag and recreate the container with the same environment, pinning
+the tag explicitly (never `latest`).
+
+**Rollback:** recreate the container with the previous tag.
+
+### Fleets
+
+Roll out with your config management in batches, canary first. Air-gapped
+hubs serve the release from a local package mirror. The Hub shows the new
+agent version after the agent's next heartbeat or re-enrolment; a batch is
+done when every agent in it reports the new version.
 
 ## Scope notes
 

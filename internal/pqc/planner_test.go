@@ -24,6 +24,9 @@ func TestGenerateRoadmapEmpty(t *testing.T) {
 	if rm.TotalCerts != 0 {
 		t.Errorf("expected 0 total, got %d", rm.TotalCerts)
 	}
+	if rm.Items == nil {
+		t.Error("Items must be an empty slice, not nil: it encodes as JSON null and the UI reads items.length")
+	}
 }
 
 func TestGenerateRoadmapClassifiesCritical(t *testing.T) {
@@ -273,5 +276,66 @@ func TestGenerateRoadmapFlagsSANSprawl(t *testing.T) {
 	}
 	if !strings.Contains(roadmap.Items[0].Reason, "SAN exposure") {
 		t.Errorf("expected SAN sprawl note, got %q", roadmap.Items[0].Reason)
+	}
+}
+
+func TestBuildTimelineQuarterBucketing(t *testing.T) {
+	deadline := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := NewPlanner(deadline)
+	now := time.Date(2029, 5, 17, 12, 0, 0, 0, time.UTC) // 2029-Q2
+	at := func(y int, m time.Month, d int) time.Time { return time.Date(y, m, d, 0, 0, 0, 0, time.UTC) }
+	certs := []CertRecord{
+		{PQCReadiness: ReadinessVulnerable, ValidUntil: at(2029, 6, 30).Add(23 * time.Hour)},  // Q2 last day
+		{PQCReadiness: ReadinessMigrReady, ValidUntil: at(2029, 7, 1)},                        // Q3 first instant
+		{PQCReadiness: ReadinessQuantumSafe, ValidUntil: at(2029, 7, 1)},                      // Q3 migrated
+		{PQCReadiness: ReadinessVulnerable, ValidUntil: at(2029, 12, 31).Add(23 * time.Hour)}, // Q4, before 2030
+		{PQCReadiness: ReadinessVulnerable, ValidUntil: deadline},                             // 2030-Q1, after (boundary)
+		{PQCReadiness: ReadinessVulnerable, ValidUntil: at(2031, 1, 1)},                       // beyond range, after
+		{PQCReadiness: ReadinessVulnerable, ValidUntil: at(2029, 1, 1)},                       // expired: before only
+		{PQCReadiness: ReadinessLeafOnly, ValidUntil: at(2029, 8, 1)},                         // neither
+		{PQCReadiness: "not_applicable", ValidUntil: at(2029, 8, 1)},                          // neither
+		{PQCReadiness: ReadinessVulnerable},                                                   // no expiry: skipped
+	}
+	tl := p.buildTimeline(certs, now)
+	want := []QuarterBucket{
+		{"2029-Q2", 1, 0}, {"2029-Q3", 1, 1}, {"2029-Q4", 1, 0}, {"2030-Q1", 1, 0},
+	}
+	if len(tl.Quarters) != len(want) {
+		t.Fatalf("quarters = %+v", tl.Quarters)
+	}
+	for i, w := range want {
+		if tl.Quarters[i] != w {
+			t.Errorf("quarter %d = %+v, want %+v", i, tl.Quarters[i], w)
+		}
+	}
+	if tl.ExpireBefore2030 != 4 || tl.ExpireAfter2030 != 2 {
+		t.Errorf("before/after = %d/%d, want 4/2", tl.ExpireBefore2030, tl.ExpireAfter2030)
+	}
+}
+
+func TestBuildTimelineEmptyInventory(t *testing.T) {
+	p := NewPlanner(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	tl := p.buildTimeline(nil, time.Date(2029, 11, 1, 0, 0, 0, 0, time.UTC))
+	if len(tl.Quarters) != 2 || tl.Quarters[0].Quarter != "2029-Q4" || tl.Quarters[1].Quarter != "2030-Q1" {
+		t.Fatalf("quarters = %+v", tl.Quarters)
+	}
+	if tl.ExpireBefore2030 != 0 || tl.ExpireAfter2030 != 0 {
+		t.Errorf("expected zero split, got %+v", tl)
+	}
+}
+
+func TestBuildTimelineAfterDeadlineIsEmptyNotNil(t *testing.T) {
+	p := NewPlanner(time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC))
+	tl := p.buildTimeline(nil, time.Date(2031, 1, 1, 0, 0, 0, 0, time.UTC))
+	if tl.Quarters == nil || len(tl.Quarters) != 0 {
+		t.Errorf("want empty non-nil quarters, got %#v", tl.Quarters)
+	}
+}
+
+func TestGenerateRoadmapIncludesTimeline(t *testing.T) {
+	p := NewPlanner(time.Time{})
+	rm := p.GenerateRoadmap(nil)
+	if rm.Timeline.Quarters == nil {
+		t.Error("timeline quarters must be non-nil for JSON []")
 	}
 }

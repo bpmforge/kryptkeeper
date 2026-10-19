@@ -31,7 +31,14 @@ func (p *fileUserProvider) ListUsers(_ context.Context) ([]UserRecord, error) {
 	return out, nil
 }
 
-func (p *fileUserProvider) InviteUser(_ context.Context, email string, role string) (UserRecord, error) {
+func (p *fileUserProvider) InviteUser(ctx context.Context, email string, role string) (UserRecord, error) {
+	return p.InviteUserInTenant(ctx, email, role, "")
+}
+
+func (p *fileUserProvider) InviteUserInTenant(_ context.Context, email, role, tenant string) (UserRecord, error) {
+	if tenant == DefaultTenant {
+		tenant = ""
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if len(p.users) == 0 {
@@ -44,6 +51,7 @@ func (p *fileUserProvider) InviteUser(_ context.Context, email string, role stri
 		Role:      role,
 		Status:    "invited",
 		CreatedAt: now.Format(time.RFC3339),
+		Tenant:    tenant,
 	}
 	p.users = append(p.users, u)
 	return u, nil

@@ -11,6 +11,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"kryptkeeper/internal/logging"
+	"os"
 	"time"
 
 	"kryptkeeper/internal/keystore"
@@ -26,6 +28,15 @@ const (
 	CeremonyPending   = "pending"
 	CeremonyCompleted = "completed"
 	CeremonyAborted   = "aborted"
+	// CeremonyExpired is terminal: the ceremony sat pending past its TTL and
+	// was auto-aborted. The parked CA is deliberately left pending_ceremony.
+	CeremonyExpired = "expired"
+
+	// DefaultCeremonyTTL is how long a ceremony may stay pending, measured
+	// from created_at (absolute, not last activity).
+	DefaultCeremonyTTL = 72 * time.Hour
+	// ceremonyReminderLead is how long before expiry approvers are reminded.
+	ceremonyReminderLead = 24 * time.Hour
 
 	// CAStatusPendingCeremony is the parked state: the key exists but
 	// lookupActiveCA refuses it everywhere.
@@ -53,6 +64,38 @@ type Ceremony struct {
 	Approvals    []string  `json:"approvals"`
 	Status       string    `json:"status"`
 	CreatedAt    time.Time `json:"created_at"`
+	// ExpiresAt is CreatedAt + the manager's TTL; derived, not stored.
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// CeremonyNotifier delivers a message to one designated approver. Approver
+// identities are principal ids; mapping them to a contact channel is a
+// follow-up (UC-A03 / I01), so the default only logs.
+type CeremonyNotifier interface {
+	NotifyApprover(approver, subject, body string) error
+}
+
+// LogCeremonyNotifier is the log-only default notifier.
+type LogCeremonyNotifier struct{}
+
+func (LogCeremonyNotifier) NotifyApprover(approver, subject, body string) error {
+	logging.Infof("ceremony notification to approver %q: %s", approver, subject)
+	return nil
+}
+
+// CeremonyTTLFromEnv reads KRYPTKEEPER_CEREMONY_TTL (a Go duration). Unset,
+// unparsable or non-positive values fall back to 72h.
+func CeremonyTTLFromEnv() time.Duration {
+	raw := os.Getenv("KRYPTKEEPER_CEREMONY_TTL")
+	if raw == "" {
+		return DefaultCeremonyTTL
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		logging.Infof("KRYPTKEEPER_CEREMONY_TTL=%q is invalid; using %s", raw, DefaultCeremonyTTL)
+		return DefaultCeremonyTTL
+	}
+	return d
 }
 
 // RootCACeremonyParams starts a ceremony.
@@ -73,6 +116,8 @@ type CeremonyManager struct {
 	postgres bool
 	engine   CeremonyEngine
 	now      func() time.Time
+	ttl      time.Duration
+	notifier CeremonyNotifier
 }
 
 func NewCeremonyManager(db *sql.DB, postgres bool, engine CeremonyEngine) (*CeremonyManager, error) {
@@ -82,11 +127,25 @@ func NewCeremonyManager(db *sql.DB, postgres bool, engine CeremonyEngine) (*Cere
 	if engine == nil {
 		return nil, fmt.Errorf("ceremony manager requires a CA engine")
 	}
-	return &CeremonyManager{db: db, postgres: postgres, engine: engine, now: time.Now}, nil
+	return &CeremonyManager{db: db, postgres: postgres, engine: engine, now: time.Now, ttl: CeremonyTTLFromEnv()}, nil
 }
 
 // SetClock overrides the clock for tests.
 func (m *CeremonyManager) SetClock(now func() time.Time) { m.now = now }
+
+// SetNotifier installs the approver notifier; nil disables notifications.
+func (m *CeremonyManager) SetNotifier(n CeremonyNotifier) { m.notifier = n }
+
+func (m *CeremonyManager) notifyAll(c Ceremony, subject, body string) {
+	if m.notifier == nil {
+		return
+	}
+	for _, a := range c.Approvers {
+		if err := m.notifier.NotifyApprover(a, subject, body); err != nil {
+			logging.Warnf("ceremony %s: notify approver %q failed: %v", c.ID, a, err)
+		}
+	}
+}
 
 func (m *CeremonyManager) rebind(q string) string {
 	if !m.postgres {
@@ -158,7 +217,8 @@ func (m *CeremonyManager) StartRootCACeremony(p RootCACeremonyParams) (Ceremony,
 	if err != nil {
 		return Ceremony{}, fmt.Errorf("ceremony: approvers marshal: %w", err)
 	}
-	now := m.now().UTC()
+	// Persisted as RFC3339; truncate so the response equals a later Get.
+	now := m.now().UTC().Truncate(time.Second)
 	c := Ceremony{
 		ID:           newCeremonyID(),
 		CAID:         caObj.ID,
@@ -172,6 +232,7 @@ func (m *CeremonyManager) StartRootCACeremony(p RootCACeremonyParams) (Ceremony,
 		Approvals:    []string{},
 		Status:       CeremonyPending,
 		CreatedAt:    now,
+		ExpiresAt:    now.Add(m.ttl),
 	}
 	_, err = m.db.Exec(m.rebind(`
 		INSERT INTO key_ceremonies (id, ca_id, ca_name, common_name, algorithm, validity_days,
@@ -183,6 +244,9 @@ func (m *CeremonyManager) StartRootCACeremony(p RootCACeremonyParams) (Ceremony,
 	if err != nil {
 		return Ceremony{}, fmt.Errorf("ceremony: persist (CA %s stays pending_ceremony): %w", caObj.ID, err)
 	}
+	m.notifyAll(c, fmt.Sprintf("Ceremony %s needs your approval", c.ID),
+		fmt.Sprintf("Root CA %q (%s) needs %d of %d approvals before %s.",
+			c.CAName, c.CAID, c.Quorum, len(c.Approvers), c.ExpiresAt.Format(time.RFC3339)))
 	return c, nil
 }
 
@@ -199,6 +263,7 @@ func (m *CeremonyManager) Get(id string) (Ceremony, bool, error) {
 	if err != nil {
 		return Ceremony{}, false, err
 	}
+	c.ExpiresAt = c.CreatedAt.Add(m.ttl)
 	return c, true, nil
 }
 
@@ -218,9 +283,97 @@ func (m *CeremonyManager) List() ([]Ceremony, error) {
 		if err != nil {
 			return nil, err
 		}
+		c.ExpiresAt = c.CreatedAt.Add(m.ttl)
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// expire flips one pending ceremony to expired (CAS) and reports whether
+// this call did it. The CA stays pending_ceremony: destroying its parked key
+// is a second-human action (A07), out of scope here.
+func (m *CeremonyManager) expire(id string) (bool, error) {
+	res, err := m.db.Exec(m.rebind(
+		`UPDATE key_ceremonies SET status = 'expired', updated_at = ? WHERE id = ? AND status = 'pending'`),
+		m.now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return false, fmt.Errorf("ceremony %s: persist expiry: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// ExpireDue expires every pending ceremony whose TTL has elapsed and
+// returns the ones this call flipped.
+func (m *CeremonyManager) ExpireDue() ([]Ceremony, error) {
+	all, err := m.List()
+	if err != nil {
+		return nil, err
+	}
+	now := m.now()
+	var out []Ceremony
+	for _, c := range all {
+		if c.Status != CeremonyPending || now.Before(c.ExpiresAt) {
+			continue
+		}
+		flipped, err := m.expire(c.ID)
+		if err != nil {
+			return out, err
+		}
+		if flipped {
+			c.Status = CeremonyExpired
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// SendDueReminders notifies every designated approver of each pending
+// ceremony that is within 24h of expiry (once; reminder_sent_at persists the
+// fact) and returns how many ceremonies were reminded.
+func (m *CeremonyManager) SendDueReminders() (int, error) {
+	rows, err := m.db.Query(`SELECT id FROM key_ceremonies WHERE status = 'pending' AND reminder_sent_at IS NULL`)
+	if err != nil {
+		return 0, fmt.Errorf("ceremony: reminder scan: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	now := m.now()
+	reminded := 0
+	for _, id := range ids {
+		c, found, err := m.Get(id)
+		if err != nil {
+			return reminded, err
+		}
+		if !found || c.Status != CeremonyPending || now.Before(c.ExpiresAt.Add(-ceremonyReminderLead)) || !now.Before(c.ExpiresAt) {
+			continue
+		}
+		res, err := m.db.Exec(m.rebind(
+			`UPDATE key_ceremonies SET reminder_sent_at = ? WHERE id = ? AND status = 'pending' AND reminder_sent_at IS NULL`),
+			now.UTC().Format(time.RFC3339), id)
+		if err != nil {
+			return reminded, fmt.Errorf("ceremony %s: persist reminder: %w", id, err)
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			continue
+		}
+		m.notifyAll(c, fmt.Sprintf("Ceremony %s expires within 24h", c.ID),
+			fmt.Sprintf("Root CA %q (%s) still needs %d of %d approvals; the ceremony expires at %s.",
+				c.CAName, c.CAID, c.Quorum-len(c.Approvals), len(c.Approvers), c.ExpiresAt.Format(time.RFC3339)))
+		reminded++
+	}
+	return reminded, nil
 }
 
 type rowScanner interface{ Scan(dest ...any) error }
@@ -264,6 +417,12 @@ func (m *CeremonyManager) Approve(id, approver string) (Ceremony, error) {
 	}
 	if c.Status != CeremonyPending {
 		return Ceremony{}, fmt.Errorf("ceremony %s is %s — no further approvals accepted", id, c.Status)
+	}
+	if !m.now().Before(c.ExpiresAt) {
+		if _, err := m.expire(id); err != nil {
+			return Ceremony{}, err
+		}
+		return Ceremony{}, fmt.Errorf("ceremony %s expired", id)
 	}
 	eligible := false
 	for _, a := range c.Approvers {

@@ -1,0 +1,36 @@
+# Label set for the repository (W32-19). Nothing syncs this file automatically:
+# create or update the labels in the GitHub/the self-hosted forge UI to match. A label-sync
+# workflow is a possible follow-up.
+- name: bug
+  color: d73a4a
+  description: Something is broken
+- name: enhancement
+  color: a2eeef
+  description: New feature or request
+- name: triage
+  color: fbca04
+  description: Needs first response (5 business days)
+- name: good first issue
+  color: 7057ff
+  description: Scoped to one package, with a test to copy
+- name: help wanted
+  color: "008672"
+  description: Maintainers welcome a PR
+- name: security
+  color: b60205
+  description: Handle via SECURITY.md, not public discussion
+- name: docs
+  color: 0075ca
+  description: Documentation only
+- name: ui
+  color: c5def5
+  description: Frontend (ui/)
+- name: agent
+  color: bfd4f2
+  description: Endpoint agent
+- name: plugins
+  color: 5319e7
+  description: Delivery plugins and SDK
+- name: blocked
+  color: e99695
+  description: Waiting on something external

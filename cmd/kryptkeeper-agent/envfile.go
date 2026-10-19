@@ -84,3 +84,40 @@ func writeCredentialsFile(path, agentID, token string) error {
 	}
 	return os.Rename(tmp, path)
 }
+
+// scrubEnrollToken removes the KRYPTKEEPER_ENROLL_TOKEN line from an env file
+// (rewritten atomically, mode and every other line preserved). A file with no
+// such line is left untouched; a missing file is an error.
+func scrubEnrollToken(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.SplitAfter(string(data), "\n")
+	kept := lines[:0]
+	removed := false
+	for _, l := range lines {
+		k, _, ok := strings.Cut(strings.TrimSpace(l), "=")
+		if ok && strings.TrimSpace(k) == "KRYPTKEEPER_ENROLL_TOKEN" {
+			removed = true
+			continue
+		}
+		kept = append(kept, l)
+	}
+	if !removed {
+		return nil
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(strings.Join(kept, "")), info.Mode().Perm()); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, info.Mode().Perm()); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
+}

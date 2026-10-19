@@ -76,20 +76,43 @@ Keychain install, and no shipped macOS agent artifact** (F1/W18-07). A
 partner with a Mac fleet will find the picker promises more than the product
 does.
 
-## F4. The renewal *sweep* is SSH-only; the *push machinery* is not
+## F4. The renewal sweep runs seven install modes, each with its own precondition
 
-Distinguish these or you will mis-set expectations both ways.
+The scheduled sweep executes a target when `auto_renew` is on, it was armed by
+a principal holding `certificate.renew` (`auto_renew_set_by` non-empty), it has
+a `credential_ref`, and its `install_mode` is one of the seven below
+(`autoRenewSkipReason` in `internal/bootstrap/renewal_scheduler.go`; the
+executor switch is `RenewalExecutor.Execute` in `renewal_executor.go`).
 
-- The renewal **executor** can push to `f5`, `citrix`, `k8s` and `iis`
-  (`internal/bootstrap/renewal_executor.go:150,523-575`).
-- The scheduled **sweep** only *executes* a target that is
-  `AutoRenew && InstallMode == "ssh" && CredentialRef != ""` with a complete
-  install profile (`internal/bootstrap/renewal_scheduler.go:521`). Everything
-  else — including every Windows/IIS target — is **notify-only**.
+| install_mode | extra precondition | proven live |
+|---|---|---|
+| `ssh` | `install_server_type`, `install_cert_path`, `install_key_path` all set | yes, nginx and apache (`tests/live/autopilot`, `tests/live/ssh-install`) |
+| `keychain` | none beyond credential | unit tests only |
+| `f5` | none beyond credential (device details live in the credential) | no real device |
+| `citrix` | none beyond credential | no real device |
+| `k8s` | none beyond credential | kind, run through the API (UAT_PLAN L28), not the scheduler |
+| `iis` | none beyond credential | Windows 11 host 2026-09-10, run through the API, not the scheduler |
+| `plugin` | `plugin_id` set and the plugin enabled | mock device only (`tests/live/plugins`) |
 
-The wizard states this in the UI (`ui/src/pages/TargetSetup.tsx:713`) and the
-API contract states it on the `auto_renew` field. Net effect for a pilot:
-**unattended renewal is a Linux/SSH story today.**
+A target in any other mode (for example `agent`) is not renewed by the sweep;
+agent targets renew through agent tasks. Such a target, and any opted-in
+target that fails a precondition above, is logged with the reason and the
+owner still gets the expiry reminder.
+
+Rollback after a failed install is proven for `ssh` and agent installs; the
+push modes (`f5`, `citrix`, `k8s`, `iis`, `plugin`) have no live rollback proof
+yet (tracked by W27-06).
+
+Certificates are matched to targets through explicit cert-to-target bindings
+(W27-02, v0.15.0). On upgrade, the first sweep backfills a binding for every
+existing CN/SAN-equals-`target.host` match, so live auto-renewals continue;
+after that, a certificate that matches a host but has no binding is not
+renewed, the skip is logged, and the owner gets the reminder. Bind it with
+`POST /api/v1/targets/{id}/bindings`.
+
+Net effect for a pilot: **unattended renewal is proven for Linux/SSH today; the
+other six modes are implemented but only proven through the API, not
+unattended.**
 
 ## F5. Documentation drift you will hit on day one
 
@@ -217,9 +240,23 @@ PDB, NetworkPolicy, ServiceMonitor, ExternalSecret) and was rewritten against
 its real values schema under W10-05. But it pulls the image from H1, `Chart.yaml`
 declares **no bundled Postgres** (BYO), and `replicaCount` stays `1` by chart
 default. Board item W6-01 (HA / scheduler leases) is **done**, so the older
-"unsafe until W6-01" premise is stale — raise-replicas still needs a real
-multi-node soak before a partner trusts it. *(Premise refresh: E1 dry-run
-2026-09-09.)*
+"unsafe until W6-01" premise is stale. **Measured 2026-10-15 (W23-30,
+`tests/live/helm-kind/run.sh`, kind on podman, single node, BYO Postgres 16):**
+install at `replicaCount=1` with create-root, `helm upgrade --set
+replicaCount=2`; both pods Ready, 20/20 leaves issued (201) through the
+Service, each replica independently issued leaves (per-pod
+`kryptkeeper_cert_issue_total`), Service kept answering `/readyz` while a
+replica was deleted and it returned to 2 Ready. **Not proven:** multi-node
+(the keys PVC is RWO and only works because kind is one node; HA needs RWX or
+cloud KMS/PKCS#11), Service load balancing (a port-forward pins one pod),
+signed image (H1). Gaps found: templates are file-backed and the default
+`APP_TEMPLATE_FILE` was on the read-only rootfs, so template create failed
+with 503 (fixed: the chart now sets it to `<persistence.mountPath>/data/templates.json`,
+re-run green 2026-10-16), and Postgres
+`max_connections=100` was exhausted ("too many clients") with 2 replicas plus
+a rolling-update surge, which made one upgrade run time out — size it up
+(harness uses 300). Chart default stays `replicaCount: 1`. *(Premise refresh:
+E1 dry-run 2026-09-09.)*
 
 **Confirm/refute:** `helm install` against a real cluster with a resolvable
 image and an external Postgres. Out of scope for a single-operator pilot;

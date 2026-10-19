@@ -38,8 +38,18 @@ func NewACMConnector(ctx context.Context) (*ACMConnector, error) {
 	if region == "" {
 		region = "us-east-1"
 	}
+	return NewACMConnectorForScope(ctx, Scope{Provider: ProviderAWSACM, Region: region})
+}
 
-	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+// NewACMConnectorForScope connects to one account (shared-config profile) and
+// region; an empty profile uses the default credential chain.
+func NewACMConnectorForScope(ctx context.Context, sc Scope) (*ACMConnector, error) {
+	region := sc.Region
+	opts := []func(*config.LoadOptions) error{config.WithRegion(region)}
+	if sc.Profile != "" {
+		opts = append(opts, config.WithSharedConfigProfile(sc.Profile))
+	}
+	cfg, err := config.LoadDefaultConfig(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("aws acm: load config: %w", err)
 	}

@@ -66,6 +66,11 @@ func TestCrossSignRotateBothChainsValidate(t *testing.T) {
 	if err := cross.CheckSignatureFrom(oldCert); err != nil {
 		t.Fatalf("bridge must be signed by the OLD certificate's key: %v", err)
 	}
+	// Same subject and issuer DN: without an AKI naming the old key, OpenSSL
+	// treats the bridge as self-signed and the old-anchor path never builds.
+	if len(cross.AuthorityKeyId) == 0 || !bytes.Equal(cross.AuthorityKeyId, oldCert.SubjectKeyId) {
+		t.Fatalf("bridge AKI %x must equal the old certificate's SKI %x", cross.AuthorityKeyId, oldCert.SubjectKeyId)
+	}
 	// And it must not outlive its issuer's certificate.
 	if cross.NotAfter.After(oldCert.NotAfter) {
 		t.Fatalf("bridge NotAfter %v exceeds the old cert's %v", cross.NotAfter, oldCert.NotAfter)

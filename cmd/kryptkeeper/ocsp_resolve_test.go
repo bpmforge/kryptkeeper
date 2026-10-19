@@ -81,3 +81,46 @@ func TestOCSPResolveCAID(t *testing.T) {
 		t.Fatalf("nil issuer: err = %v", err)
 	}
 }
+
+// W23-35: an issuer under a revoked CA (itself or an ancestor) reads revoked,
+// with the revocation time the revoke recorded.
+func TestOCSPIssuerStatusWalksAncestors(t *testing.T) {
+	engine, root := newOCSPResolveEngine(t)
+	inter, err := engine.CreateIntermediateCA("OCSP Resolve Inter", pkix.Name{CommonName: "OCSP Resolve Inter"}, keystore.ECDSAP256, root.ID, 12*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := ca.NewMemRevocationStore()
+	status := ocspIssuerStatus(engine, rs)
+
+	if revoked, _, _, err := status(inter.Certificate); err != nil || revoked {
+		t.Fatalf("active chain: revoked=%v err=%v", revoked, err)
+	}
+	when := time.Now().Add(-time.Minute).UTC().Truncate(time.Second)
+	if _, err := ca.RevokeCA(engine, rs, inter.ID, when); err != nil {
+		t.Fatal(err)
+	}
+	revoked, at, reason, err := status(inter.Certificate)
+	if err != nil || !revoked || !at.Equal(when) || reason != 2 {
+		t.Fatalf("revoked intermediate: revoked=%v at=%v reason=%d err=%v", revoked, at, reason, err)
+	}
+	// The root is untouched.
+	if revoked, _, _, _ := status(root.Certificate); revoked {
+		t.Fatal("root must not read revoked")
+	}
+}
+
+func TestOCSPIssuerStatusRevokedRootCoversDescendants(t *testing.T) {
+	engine, root := newOCSPResolveEngine(t)
+	inter, err := engine.CreateIntermediateCA("OCSP Resolve Inter2", pkix.Name{CommonName: "OCSP Resolve Inter2"}, keystore.ECDSAP256, root.ID, 12*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := ca.NewMemRevocationStore()
+	if _, err := ca.RevokeCA(engine, rs, root.ID, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if revoked, _, _, err := ocspIssuerStatus(engine, rs)(inter.Certificate); err != nil || !revoked {
+		t.Fatalf("child of revoked root: revoked=%v err=%v", revoked, err)
+	}
+}

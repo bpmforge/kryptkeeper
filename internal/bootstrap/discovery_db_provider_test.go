@@ -102,6 +102,7 @@ func setupDiscoveryTestDB(t *testing.T) *sql.DB {
 			chain_complete       INTEGER NOT NULL DEFAULT 0,
 			chain_trusted        INTEGER NOT NULL DEFAULT 0,
 			trust_class          TEXT,
+			issuer_class         TEXT,
 			is_ca                INTEGER NOT NULL DEFAULT 0,
 			updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		)`,
@@ -113,6 +114,7 @@ func setupDiscoveryTestDB(t *testing.T) *sql.DB {
 			status TEXT NOT NULL DEFAULT 'queued',
 			error_message TEXT,
 			results_summary TEXT,
+			tenant TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		)`,
 		`CREATE TABLE endpoints (
@@ -128,11 +130,17 @@ func setupDiscoveryTestDB(t *testing.T) *sql.DB {
 			ssh_banner TEXT,
 			ssh_host_key_algorithms TEXT,
 			crypto_posture TEXT,
+			tech TEXT,
+			tech_confidence TEXT,
+			platform TEXT,
+			tls_stack TEXT,
+			tech_evidence TEXT,
+			tenant TEXT NOT NULL DEFAULT '',
 			last_scanned TEXT,
 			created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
 			updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 		)`,
-		`CREATE UNIQUE INDEX idx_endpoint_unique_identity ON endpoints(ip_address, port, sni_name)`,
+		`CREATE UNIQUE INDEX idx_endpoint_unique_identity_tenant ON endpoints(tenant, ip_address, port, sni_name)`,
 		`CREATE TABLE certificate_endpoints (
 			certificate_fingerprint TEXT NOT NULL,
 			endpoint_id TEXT NOT NULL,
@@ -143,6 +151,7 @@ func setupDiscoveryTestDB(t *testing.T) *sql.DB {
 			endpoint_risk_score INTEGER NOT NULL DEFAULT 0,
 			chain_complete INTEGER,
 			chain_trusted INTEGER,
+			source_path TEXT,
 			PRIMARY KEY (certificate_fingerprint, endpoint_id)
 		)`,
 	} {
@@ -1163,10 +1172,122 @@ func TestDiscoveryProtocolOrDefault(t *testing.T) {
 		"linkerd-mesh":   "linkerd-mesh",
 		"ssh":            "other",
 		"saas-api":       "other",
+		"mssql":          "mssql",
+		"kafka":          "kafka",
 	}
 	for in, want := range cases {
 		if got := discoveryProtocolOrDefault(in); got != want {
 			t.Errorf("discoveryProtocolOrDefault(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// W34-01: the fingerprint columns round-trip through the real migrated schema,
+// including a protocol only 000340's widened CHECK admits.
+func TestUpsertPersistsFingerprintAndKeepsServerTech(t *testing.T) {
+	runFingerprintPersistenceCase(t, newMigratedDiscoveryStore(t))
+}
+
+func TestPostgresUpsertPersistsFingerprintAndKeepsServerTech(t *testing.T) {
+	dsn := freshPostgresForTest(t)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := kkdb.RunMigrations(db, "postgres"); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	store := &postgresDiscoveryStore{db: db}
+	if err := store.EnsureSchema(context.Background()); err != nil {
+		t.Fatalf("EnsureSchema on migrated db: %v", err)
+	}
+	runFingerprintPersistenceCase(t, store)
+}
+
+type fingerprintTestStore interface {
+	upsertScanResults(context.Context, []scanner.DiscoveredEndpoint) (upsertOutcome, error)
+	ListEndpoints(context.Context, DiscoveryEndpointQuery) (DiscoveryEndpointResult, error)
+}
+
+func runFingerprintPersistenceCase(t *testing.T, s fingerprintTestStore) {
+	t.Helper()
+	stubEndpointAudit(t)
+	ctx := context.Background()
+	fp := scanner.Resolve([]scanner.Evidence{
+		scanner.NewEvidence(scanner.SignalHTTPHeader, "Server: Apache-Coyote/1.1", "tomcat"),
+		scanner.NewEvidence(scanner.SignalHTTPHeader, "Set-Cookie: JSESSIONID", "tomcat"),
+	})
+	_, err := s.upsertScanResults(ctx, []scanner.DiscoveredEndpoint{
+		{Host: "app.example.com", Port: 8443, Protocol: "https-alt", Reachable: true, ServerTech: "tomcat", Fingerprint: &fp,
+			Certs: []scanner.DiscoveredCert{{Fingerprint: "aa", CommonName: "app", ValidFrom: time.Now().Add(-time.Hour), ValidUntil: time.Now().Add(time.Hour), PublicKeyAlgorithm: "RSA-2048", SignatureAlgorithm: "SHA256-RSA", Served: true}}},
+		{Host: "db.example.com", Port: 1433, Protocol: "mssql", Reachable: true, Fingerprint: &scanner.Fingerprint{Tech: "mssql", Confidence: "low", Platform: "unknown", TLSStack: "unknown"}},
+		{Host: "legacy.example.com", Port: 22, Protocol: "ssh", Banner: "SSH-2.0-OpenSSH_9.6"},
+	})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	res, err := s.ListEndpoints(ctx, DiscoveryEndpointQuery{Limit: 10})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	byPort := map[int]DiscoveryEndpoint{}
+	for _, e := range res.Endpoints {
+		byPort[e.Port] = e
+	}
+	app := byPort[8443]
+	if app.Tech != "tomcat" || app.TechConfidence != "high" || app.Platform != "java" || app.ServerTech != "tomcat" {
+		t.Fatalf("web endpoint fingerprint = %+v", app)
+	}
+	if len(app.TechEvidence) != 2 || app.TechEvidence[0].Signal != scanner.SignalHTTPHeader {
+		t.Fatalf("evidence not round-tripped: %+v", app.TechEvidence)
+	}
+	if db := byPort[1433]; db.Protocol != "mssql" || db.Tech != "mssql" || db.TechConfidence != "low" {
+		t.Fatalf("db endpoint = %+v", db)
+	}
+	if ssh := byPort[22]; ssh.Tech != "" || ssh.TechConfidence != "" || len(ssh.TechEvidence) != 0 {
+		t.Fatalf("an unfingerprinted endpoint must read empty, got %+v", ssh)
+	}
+}
+
+// W34-05: database endpoints keep their protocol through the widened CHECK, and
+// a database that offers no TLS is a risky endpoint on its own.
+func TestUpsertPersistsDatabaseEndpointsAndTheirTLSFindings(t *testing.T) {
+	s := newMigratedDiscoveryStore(t)
+	ctx := context.Background()
+	if _, err := s.upsertScanResults(ctx, []scanner.DiscoveredEndpoint{
+		{Host: "sql.example.com", Port: 1433, Protocol: "mssql", Reachable: true,
+			Error:    "server does not offer TLS (ENCRYPT_NOT_SUP)",
+			Findings: []string{scanner.FindingMSSQLTLSDisabled + ": server answered ENCRYPT_NOT_SUP"}},
+		{Host: "my.example.com", Port: 3306, Protocol: "mysql", Reachable: true,
+			Error:    "server does not offer TLS (no SSL capability)",
+			Findings: []string{scanner.FindingMySQLTLSDisabled + ": greeting lacks the SSL capability"}},
+		{Host: "kafka.example.com", Port: 9093, Protocol: "kafka", Reachable: true,
+			Error: "tls handshake: EOF", Findings: []string{scanner.FindingTLSHandshakeFailed + ": EOF"}},
+		{Host: "es.example.com", Port: 9200, Protocol: "elasticsearch", Reachable: true,
+			Error: "tls handshake: EOF", Findings: []string{scanner.FindingTLSHandshakeFailed + ": EOF"}},
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	res, err := s.ListEndpoints(ctx, DiscoveryEndpointQuery{Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int]string{1433: "mssql", 3306: "mysql", 9093: "kafka", 9200: "other"}
+	for _, e := range res.Endpoints {
+		if want[e.Port] != e.Protocol {
+			t.Errorf("port %d stored as %q, want %q", e.Port, e.Protocol, want[e.Port])
+		}
+		if !e.Risky {
+			t.Errorf("port %d (%v) must be risky", e.Port, e.Issues)
+		}
+		delete(want, e.Port)
+	}
+	if len(want) != 0 {
+		t.Errorf("endpoints not persisted: %v", want)
+	}
+	risky, err := s.ListEndpoints(ctx, DiscoveryEndpointQuery{RiskyOnly: true, Limit: 20})
+	if err != nil || len(risky.Endpoints) != 4 {
+		t.Errorf("risky_only returned %d (err %v), want 4", len(risky.Endpoints), err)
 	}
 }

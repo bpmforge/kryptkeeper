@@ -28,7 +28,6 @@ func (c *Counter) Load() int64 { return c.v.Load() }
 // Histogram tracks a distribution of float64 observations using fixed buckets.
 // It stores count, sum, and per-bucket counts (le="upper bound").
 type Histogram struct {
-	mu     sync.Mutex
 	bounds []float64      // sorted upper bounds
 	counts []atomic.Int64 // len == len(bounds)+1 (last bucket is +Inf)
 	sum    atomic.Int64   // sum * 1e6 (fixed-point, avoids float atomics)
@@ -63,8 +62,16 @@ type Registry struct {
 	mu         sync.RWMutex
 	counters   map[string]*Counter
 	histograms map[string]*Histogram
+	gauges     map[string]func() []LabeledValue
 	help       map[string]string
-	mtype      map[string]string // "counter" or "histogram"
+	mtype      map[string]string // "counter", "histogram" or "gauge"
+}
+
+// LabeledValue is one gauge sample. Labels is pre-rendered
+// (`slo="renewal-success-rate",window="1h"`); "" means no labels.
+type LabeledValue struct {
+	Labels string
+	Value  float64
 }
 
 var Default = &Registry{
@@ -100,6 +107,20 @@ func (r *Registry) Histogram(name, helpText string, bounds []float64) *Histogram
 	r.help[name] = helpText
 	r.mtype[name] = "histogram"
 	return h
+}
+
+// GaugeFunc registers (or replaces) a gauge family whose samples are computed at
+// scrape time. fn runs under the registry read lock, so it must not call back
+// into the registry.
+func (r *Registry) GaugeFunc(name, helpText string, fn func() []LabeledValue) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.gauges == nil {
+		r.gauges = make(map[string]func() []LabeledValue)
+	}
+	r.gauges[name] = fn
+	r.help[name] = helpText
+	r.mtype[name] = "gauge"
 }
 
 // WritePrometheus writes all metrics in Prometheus text exposition format (v0.0.4).
@@ -139,6 +160,26 @@ func (r *Registry) WritePrometheus(w io.Writer) {
 		fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", name, cumulative)
 		fmt.Fprintf(w, "%s_sum %s\n", name, formatFloat(float64(h.sum.Load())/1e6))
 		fmt.Fprintf(w, "%s_count %d\n", name, h.totalN.Load())
+	}
+
+	// Gauges
+	gnames := make([]string, 0, len(r.gauges))
+	for n := range r.gauges {
+		gnames = append(gnames, n)
+	}
+	sort.Strings(gnames)
+	for _, name := range gnames {
+		fmt.Fprintf(w, "# HELP %s %s\n", name, r.help[name])
+		fmt.Fprintf(w, "# TYPE %s gauge\n", name)
+		vals := r.gauges[name]()
+		sort.SliceStable(vals, func(i, j int) bool { return vals[i].Labels < vals[j].Labels })
+		for _, v := range vals {
+			if v.Labels == "" {
+				fmt.Fprintf(w, "%s %s\n", name, formatFloat(v.Value))
+			} else {
+				fmt.Fprintf(w, "%s{%s} %s\n", name, v.Labels, formatFloat(v.Value))
+			}
+		}
 	}
 }
 

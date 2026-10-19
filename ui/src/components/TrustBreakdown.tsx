@@ -1,6 +1,8 @@
 import { useNavigate } from "react-router-dom";
+import { AlertTriangle } from "lucide-react";
 import {
   TRUST_CLASSES,
+  TRUST_CLASS_CUE,
   TRUST_CLASS_LABEL,
   type TrustClass,
   type TrustClassCounts,
@@ -27,6 +29,8 @@ export function TrustBreakdown({ counts }: { counts: TrustClassCounts }) {
   return (
     <div
       data-testid="trust-strip"
+      role="group"
+      aria-label="Certificates seen on the network by issuer"
       className="flex flex-wrap items-center gap-4 rounded-xl border border-border bg-background/60 px-4 py-3 text-sm"
     >
       <span className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
@@ -45,6 +49,16 @@ export function TrustBreakdown({ counts }: { counts: TrustClassCounts }) {
             }
           >
             {n} {TRUST_CLASS_LABEL[cls]}
+            {n > 0 && TRUST_CLASS_CUE[cls].icon === "alert" && (
+              <>
+                <AlertTriangle
+                  size={12}
+                  className="ml-1 inline align-[-1px]"
+                  aria-hidden="true"
+                />
+                <span className="sr-only"> {TRUST_CLASS_CUE[cls].text}</span>
+              </>
+            )}
           </button>
         );
       })}

@@ -57,7 +57,10 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
+	"regexp"
 	"software.sslmate.com/src/go-pkcs12"
+	"strconv"
 	"strings"
 )
 
@@ -155,6 +158,9 @@ func (in *IISInstaller) WithTempDir(dir string) *IISInstaller {
 func (in *IISInstaller) Install(ctx context.Context, req IISInstallRequest) (InstallResult, error) {
 	if req.IPPort == "" || len(req.CertPEM) == 0 || len(req.KeyPEM) == 0 {
 		return InstallResult{}, fmt.Errorf("iis install: ipport, cert PEM, and key PEM are required")
+	}
+	if err := validateIISRequestFields(req); err != nil {
+		return InstallResult{}, err
 	}
 	store := req.StoreName
 	if store == "" {
@@ -272,7 +278,27 @@ func (in *IISInstaller) showBinding(ctx context.Context, ipPort string) (sslBind
 		}
 	}
 	b.existed = b.certHash != "" && b.appID != ""
+	if err := validatePriorBinding(b); err != nil {
+		return sslBinding{}, fmt.Errorf("existing binding at %s: %w", ipPort, err)
+	}
 	return b, nil
+}
+
+// validatePriorBinding pins the values read back from the host to the shapes
+// netsh prints, because they are reused as netsh arguments (the inherited
+// appid, and the restore on rollback) and must meet the same bar as
+// validateIISRequestFields. Checked before anything on the host is changed.
+func validatePriorBinding(b sslBinding) error {
+	if b.certHash != "" && !iisCertHashPattern.MatchString(b.certHash) {
+		return fmt.Errorf("certificate hash is not hex")
+	}
+	if b.appID != "" && !iisAppIDPattern.MatchString(b.appID) {
+		return fmt.Errorf("application id is not a GUID")
+	}
+	if b.storeName != "" && !iisStoreNamePattern.MatchString(b.storeName) {
+		return fmt.Errorf("certificate store name is not alphanumeric")
+	}
+	return nil
 }
 
 // splitBindingLine splits a "Label    : value" line from netsh's output.
@@ -601,4 +627,31 @@ func (in *IISInstaller) rollback(ctx context.Context, ipPort, store string, prio
 	// it taking effect — it does not change what was restored.
 	_, _ = in.exec.Run(ctx, "iisreset", "/noforce") //nolint:errcheck // see above: outcome does not depend on it
 	return true, detail
+}
+
+var (
+	iisAppIDPattern     = regexp.MustCompile(`^\{?[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}?$`)
+	iisStoreNamePattern = regexp.MustCompile(`^[A-Za-z0-9]{1,64}$`)
+	iisCertHashPattern  = regexp.MustCompile(`^[0-9A-Fa-f]{40,64}$`)
+)
+
+// validateIISRequestFields pins the request fields that become netsh and
+// certutil arguments to their documented shapes. They come from the target's
+// credential payload and travel to the host as a cmd.exe command line over
+// WinRM, where a value like "0.0.0.0:443&calc" would run a second command.
+func validateIISRequestFields(req IISInstallRequest) error {
+	host, port, err := net.SplitHostPort(req.IPPort)
+	if err != nil || net.ParseIP(host) == nil {
+		return fmt.Errorf("iis install: ipport %q must be IP:port", req.IPPort)
+	}
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("iis install: ipport %q has an invalid port", req.IPPort)
+	}
+	if req.AppID != "" && !iisAppIDPattern.MatchString(req.AppID) {
+		return fmt.Errorf("iis install: appid must be a GUID")
+	}
+	if req.StoreName != "" && !iisStoreNamePattern.MatchString(req.StoreName) {
+		return fmt.Errorf("iis install: store name must be alphanumeric")
+	}
+	return nil
 }

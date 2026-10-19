@@ -23,13 +23,26 @@
 //     run the reload command unprivileged) for install to succeed. Found
 //     live proving W19-02: a non-root, sudo-only account does NOT work
 //     against this executor as written; the fixture uses root over SSH.
+//
+// The two-phase API (Stage/Flip/Discard/Restore/Commit, W27-14) needs
+// `cp`, `mv` and `rm` through Run, so it works only with NewSSHExecutor;
+// NewSudoExecutor's narrow allowlist rejects those commands by design, and
+// Install/installHAProxy remain the agent-local path. Staged files sit beside
+// the live ones as `<live>.kk-staged`; a wildcard `include` of the cert
+// directory may therefore pick them up while a stage is pending.
 package agentinstall
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
+	"sync"
 	"time"
+
+	"kryptkeeper/internal/privexec"
 )
 
 // verifyRetryAttempts/verifyRetryDelay bound the retry-until-match loop in
@@ -60,7 +73,7 @@ type Executor interface {
 
 // InstallRequest describes one cert/key to install for a discovered endpoint.
 type InstallRequest struct {
-	ServerType string // "nginx" | "apache" | "haproxy"
+	ServerType string // "nginx" | "apache" | "haproxy" | "tomcat"
 	CertPath   string
 	KeyPath    string
 	CertPEM    []byte
@@ -71,6 +84,15 @@ type InstallRequest struct {
 	// (W5-02); empty = /etc/haproxy/haproxy.cfg. HAProxy installs write
 	// ONE combined chain+key file at CertPath and ignore KeyPath.
 	HAProxyConfigPath string
+
+	// Tomcat keystore install (W27-07). CertPath is the keystore file;
+	// KeyPath is ignored. KeystorePassword comes from the credential store
+	// and must never be logged, so do not print an InstallRequest with %+v.
+	KeystoreFormat   string // "pkcs12" (default) | "pkcs12-legacy" | "jks"
+	KeystorePassword string
+	KeystoreAlias    string // default "tomcat"
+	TomcatHome       string // default "/opt/tomcat"; config test is <home>/bin/catalina.sh configtest
+	ServiceName      string // default "tomcat"; reload = systemctl restart <ServiceName>
 
 	// Verify-after-install (v1.3 W2). When VerifyHostPort and ExpectedFingerprint
 	// are set, the installer TLS-dials the endpoint after reload and confirms the
@@ -87,6 +109,7 @@ type InstallResult struct {
 	Reloaded          bool
 	Verified          bool
 	RolledBack        bool
+	RollbackFailed    bool
 	ServedFingerprint string
 	Outcome           string // see outcome constants
 	Detail            string
@@ -100,6 +123,10 @@ const (
 	OutcomeReloadFailed      = "reload_failed"
 	OutcomeVerifyFailed      = "verify_failed"
 	OutcomeWriteFailed       = "write_failed"
+	// OutcomeRollbackFailed means the install failed AND putting the previous
+	// files back failed too: the host may hold a half-installed state, so the
+	// caller must stop retrying and flag the target for an operator.
+	OutcomeRollbackFailed = "rollback_failed"
 )
 
 // Installer writes renewed certs, validates, reloads, and verifies — with rollback.
@@ -120,22 +147,89 @@ func (in *Installer) WithVerifier(v Verifier) *Installer {
 	return in
 }
 
-// fileBackup holds the prior contents of a file so it can be restored.
+// fileBackup holds what is needed to put a file back: its contents, or, when
+// the executor can keep the copy on the host (helper mode), only a marker so
+// the hub never reads a private key just for rollback. meta is the prior owner,
+// group and mode, re-applied on write and restore so a privileged push never
+// flips tomcat:tomcat to root:root.
 type fileBackup struct {
 	path    string
 	content []byte
 	existed bool
+	onHost  bool
 	mode    os.FileMode
+	meta    *privexec.FileMeta
+	err     error
+}
+
+type rollbackKey struct{}
+
+// rollbackLog collects what Install needs to report after its inner flow:
+// restore failures and which host-side copies still exist.
+type rollbackLog struct {
+	mu       sync.Mutex
+	err      error
+	hostCopy map[string]bool // path -> copy still on host
+}
+
+func rollbackFrom(ctx context.Context) *rollbackLog {
+	rl, _ := ctx.Value(rollbackKey{}).(*rollbackLog)
+	return rl
+}
+
+func (rl *rollbackLog) note(path string, onHost bool) {
+	if rl == nil {
+		return
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if rl.hostCopy == nil {
+		rl.hostCopy = map[string]bool{}
+	}
+	rl.hostCopy[path] = onHost
+}
+
+func (rl *rollbackLog) fail(err error) {
+	if rl == nil {
+		return
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.err = errors.Join(rl.err, err)
 }
 
 // Install backs up the current cert/key, writes the renewed pair, validates the
 // server config, and reloads. On any failure after writing, it restores the
 // backups and reloads again (best effort), returning RolledBack=true.
 func (in *Installer) Install(ctx context.Context, req InstallRequest) (InstallResult, error) {
+	rl := &rollbackLog{}
+	res, err := in.install(context.WithValue(ctx, rollbackKey{}, rl), req)
+	if rl.err != nil && res.RolledBack {
+		res.Outcome = OutcomeRollbackFailed
+		res.RollbackFailed = true
+		res.Detail = strings.TrimSpace(res.Detail + "; rollback failed: " + rl.err.Error())
+		err = fmt.Errorf("%w (rollback failed: %v)", err, rl.err)
+	}
+	// A host-side copy that was not consumed by a restore holds a superseded
+	// private key: drop it.
+	if hb, ok := in.exec.(privexec.HostBackuper); ok {
+		for p, left := range rl.hostCopy {
+			if left {
+				_ = hb.DropBackup(context.WithoutCancel(ctx), p) // best-effort: nothing more to do if it fails
+			}
+		}
+	}
+	return res, err
+}
+
+func (in *Installer) install(ctx context.Context, req InstallRequest) (InstallResult, error) {
 	// W5-02: HAProxy has its own flow — combined single file, mandatory
 	// `haproxy -c`, no blind fall-through into the generic reload.
 	if req.ServerType == "haproxy" {
 		return in.installHAProxy(ctx, req)
+	}
+	if req.ServerType == "tomcat" {
+		return in.installTomcat(ctx, req)
 	}
 	if req.CertPath == "" || len(req.CertPEM) == 0 {
 		return InstallResult{}, fmt.Errorf("install: cert path and PEM are required")
@@ -143,18 +237,21 @@ func (in *Installer) Install(ctx context.Context, req InstallRequest) (InstallRe
 
 	// 1. Snapshot current files for rollback.
 	backups := []fileBackup{
-		in.snapshot(req.CertPath, 0o644),
+		in.snapshot(ctx, req.CertPath, 0o644),
 	}
 	if req.KeyPath != "" {
-		backups = append(backups, in.snapshot(req.KeyPath, 0o600))
+		backups = append(backups, in.snapshot(ctx, req.KeyPath, 0o600))
+	}
+	if err := snapshotError(backups); err != nil {
+		return InstallResult{Outcome: OutcomeWriteFailed, Detail: err.Error()}, err
 	}
 
 	// 2. Write the renewed cert (and key) into place.
-	if err := in.exec.WriteFile(req.CertPath, req.CertPEM, 0o644); err != nil {
+	if err := in.place(req.CertPath, req.CertPEM, 0o644, backups[0]); err != nil {
 		return InstallResult{}, fmt.Errorf("install: write cert: %w", err)
 	}
 	if req.KeyPath != "" && len(req.KeyPEM) > 0 {
-		if err := in.exec.WriteFile(req.KeyPath, req.KeyPEM, 0o600); err != nil {
+		if err := in.place(req.KeyPath, req.KeyPEM, 0o600, backups[1]); err != nil {
 			in.rollback(ctx, backups, req)
 			return InstallResult{RolledBack: true, Outcome: OutcomeWriteFailed}, fmt.Errorf("install: write key: %w", err)
 		}
@@ -232,25 +329,83 @@ func (in *Installer) verifyUntilMatchOrExhausted(ctx context.Context, hostPort, 
 	return served, err
 }
 
-// snapshot reads the current contents of path (if any) for later rollback.
-func (in *Installer) snapshot(path string, mode os.FileMode) fileBackup {
+// snapshot records what rollback needs for path. With a privileged executor it
+// also captures the prior owner, group and mode; in helper mode the copy stays
+// on the host. A host-side backup that fails is a snapshot error: continuing
+// would mean destroying a key that cannot be put back.
+func (in *Installer) snapshot(ctx context.Context, path string, mode os.FileMode) fileBackup {
 	b := fileBackup{path: path, mode: mode}
-	if in.exec.Exists(path) {
-		if content, err := in.exec.ReadFile(path); err == nil {
-			b.content = content
-			b.existed = true
+	if !in.exec.Exists(path) {
+		return b
+	}
+	if st, ok := in.exec.(privexec.Statter); ok {
+		if m, err := st.StatMeta(ctx, path); err == nil {
+			b.meta = &m
+			b.mode = m.Mode
 		}
+	}
+	if hb, ok := in.exec.(privexec.HostBackuper); ok {
+		supported, err := hb.BackupFile(ctx, path)
+		if supported {
+			if err != nil {
+				b.err = fmt.Errorf("back up %s on the host: %w", path, err)
+				return b
+			}
+			b.existed, b.onHost = true, true
+			rollbackFrom(ctx).note(path, true)
+			return b
+		}
+	}
+	if content, err := in.exec.ReadFile(path); err == nil {
+		b.content = content
+		b.existed = true
 	}
 	return b
 }
 
+func snapshotError(backups []fileBackup) error {
+	for _, b := range backups {
+		if b.err != nil {
+			return b.err
+		}
+	}
+	return nil
+}
+
+// place writes content, re-applying the prior owner, group and mode when the
+// executor can and the file existed.
+func (in *Installer) place(path string, content []byte, mode os.FileMode, b fileBackup) error {
+	if b.meta != nil {
+		if ow, ok := in.exec.(privexec.OwnedWriter); ok {
+			return ow.WriteFileOwned(path, content, b.meta.Mode, b.meta.Owner, b.meta.Group)
+		}
+	}
+	return in.exec.WriteFile(path, content, mode)
+}
+
 // rollback restores backed-up files. Only files that existed before are
 // restored; newly-created files are left as-is (removing them is risky without
-// a delete primitive — restoring prior content is the safe, reversible action).
+// a delete primitive -- restoring prior content is the safe, reversible
+// action). A failed restore is recorded so Install reports rollback_failed.
 func (in *Installer) rollback(ctx context.Context, backups []fileBackup, _ InstallRequest) {
+	rl := rollbackFrom(ctx)
 	for _, b := range backups {
-		if b.existed {
-			_ = in.exec.WriteFile(b.path, b.content, b.mode) // best-effort rollback reload; primary error already returned
+		if !b.existed {
+			continue
+		}
+		var err error
+		if b.onHost {
+			if hb, ok := in.exec.(privexec.HostBackuper); ok {
+				err = hb.RestoreFile(context.WithoutCancel(ctx), b.path)
+				if err == nil {
+					rl.note(b.path, false)
+				}
+			}
+		} else {
+			err = in.place(b.path, b.content, b.mode, b)
+		}
+		if err != nil {
+			rl.fail(fmt.Errorf("restore %s: %w", b.path, err))
 		}
 	}
 }
@@ -286,4 +441,266 @@ func reloadCommand(serverType, method string) (name string, args []string) {
 	}
 	// default / "systemctl"
 	return "systemctl", []string{"reload", service}
+}
+
+// --- Two-phase (stage-then-flip) install, W27-14 / D09-1 ---
+
+const (
+	stagedSuffix = ".kk-staged"
+	prevSuffix   = ".kk-prev"
+
+	// OutcomeStaged is the InstallResult.Outcome of a successful Stage: the
+	// new material sits beside the live files and nothing was reloaded.
+	OutcomeStaged = "staged"
+)
+
+type stagedFile struct {
+	live, staged string
+	mode         os.FileMode
+}
+
+// StagedInstall records paths and verify parameters only -- never PEM bytes.
+type StagedInstall struct {
+	serverType, reloadMethod, haproxyConfig string
+	files                                   []stagedFile
+	verifyHostPort, expectedFingerprint     string
+}
+
+type flippedFile struct {
+	live, prev string
+	hadPrior   bool
+}
+
+// FlippedInstall is a successful Flip awaiting Commit (drop the predecessor
+// copies) or Restore (cluster rollback). The predecessor key copy lives only on
+// the target host, never on the hub.
+type FlippedInstall struct {
+	st    *StagedInstall
+	files []flippedFile
+}
+
+// Stage writes the new material beside the live files, proves the bytes landed
+// intact and that the CURRENT config still passes its test. Live files are
+// untouched and nothing reloads. It cannot prove the new cert itself loads;
+// that is Flip's post-rename config test + reload + verify.
+func (in *Installer) Stage(ctx context.Context, req InstallRequest) (*StagedInstall, InstallResult, error) {
+	st := &StagedInstall{
+		serverType: req.ServerType, reloadMethod: req.ReloadMethod,
+		verifyHostPort: req.VerifyHostPort, expectedFingerprint: req.ExpectedFingerprint,
+	}
+	contents := map[string][]byte{}
+	add := func(live string, content []byte, mode os.FileMode) {
+		st.files = append(st.files, stagedFile{live: live, staged: live + stagedSuffix, mode: mode})
+		contents[live] = content
+	}
+	switch req.ServerType {
+	case "haproxy":
+		cfg, err := haproxyStageFiles(req, add)
+		if err != nil {
+			return nil, InstallResult{}, err
+		}
+		st.haproxyConfig = cfg
+	case "nginx", "apache":
+		if req.CertPath == "" || len(req.CertPEM) == 0 {
+			return nil, InstallResult{}, fmt.Errorf("stage: cert path and PEM are required")
+		}
+		add(req.CertPath, req.CertPEM, 0o644)
+		if req.KeyPath != "" && len(req.KeyPEM) > 0 {
+			add(req.KeyPath, req.KeyPEM, 0o600)
+		}
+	default:
+		return nil, InstallResult{}, fmt.Errorf("stage: server type %q does not support staged install", req.ServerType)
+	}
+
+	for _, f := range st.files {
+		if err := in.exec.WriteFile(f.staged, contents[f.live], f.mode); err != nil {
+			_ = in.Discard(ctx, st) // best-effort: the write error is the one reported
+			return nil, InstallResult{Outcome: OutcomeWriteFailed}, fmt.Errorf("stage: write %s: %w", f.staged, err)
+		}
+		back, err := in.exec.ReadFile(f.staged)
+		if err != nil || !bytes.Equal(back, contents[f.live]) {
+			_ = in.Discard(ctx, st) // best-effort: the read-back failure is the one reported
+			return nil, InstallResult{Outcome: OutcomeWriteFailed, Detail: "staged file read-back mismatch"},
+				fmt.Errorf("stage: staged file %s did not read back intact", f.staged)
+		}
+	}
+	if name, args, ok := st.configTest(); ok {
+		if out, err := in.exec.Run(ctx, name, args...); err != nil {
+			_ = in.Discard(ctx, st) // best-effort: the config-test error is the one reported
+			return nil, InstallResult{Outcome: OutcomeConfigTestFailed, Detail: string(out)},
+				fmt.Errorf("stage: config test failed, staged files discarded: %w", err)
+		}
+	}
+	return st, InstallResult{Outcome: OutcomeStaged}, nil
+}
+
+func (st *StagedInstall) configTest() (name string, args []string, ok bool) {
+	if st.serverType == "haproxy" {
+		return "haproxy", []string{"-c", "-f", st.haproxyConfig}, true
+	}
+	return configTestCommand(st.serverType)
+}
+
+func (st *StagedInstall) reload() (name string, args []string) {
+	if st.serverType == "haproxy" {
+		return "systemctl", []string{"reload", "haproxy"}
+	}
+	return reloadCommand(st.serverType, st.reloadMethod)
+}
+
+func (in *Installer) rm(ctx context.Context, paths ...string) error {
+	var first error
+	for _, p := range paths {
+		if _, err := in.exec.Run(ctx, "rm", "-f", "--", p); err != nil && first == nil {
+			first = fmt.Errorf("rm %s: %w", p, err)
+		}
+	}
+	return first
+}
+
+// restoreFlipped puts predecessors back (or removes first-install files),
+// attempting every file and returning the first error.
+func (in *Installer) restoreFlipped(ctx context.Context, files []flippedFile) error {
+	var first error
+	for _, f := range files {
+		var err error
+		if f.hadPrior {
+			_, err = in.exec.Run(ctx, "mv", "-f", "--", f.prev, f.live)
+		} else {
+			_, err = in.exec.Run(ctx, "rm", "-f", "--", f.live)
+		}
+		if err != nil && first == nil {
+			first = fmt.Errorf("restore %s: %w", f.live, err)
+		}
+	}
+	return first
+}
+
+// Flip renames the staged files over the live ones (keeping a `.kk-prev` copy
+// of each predecessor on the host), then runs config test, reload and the
+// optional verify. Any failure restores the snapshot. On success the caller
+// must Commit or Restore.
+func (in *Installer) Flip(ctx context.Context, st *StagedInstall) (*FlippedInstall, InstallResult, error) {
+	fl := &FlippedInstall{st: st}
+	for _, f := range st.files {
+		ff := flippedFile{live: f.live, prev: f.live + prevSuffix, hadPrior: in.exec.Exists(f.live)}
+		if ff.hadPrior {
+			if _, err := in.exec.Run(ctx, "cp", "-p", "--", ff.live, ff.prev); err != nil {
+				return nil, in.abortFlip(ctx, st, fl.files, ff, 0, "snapshot"), fmt.Errorf("flip: snapshot %s: %w", f.live, err)
+			}
+		}
+		fl.files = append(fl.files, ff)
+	}
+	for i, f := range st.files {
+		if _, err := in.exec.Run(ctx, "mv", "-f", "--", f.staged, f.live); err != nil {
+			return nil, in.abortFlip(ctx, st, fl.files, flippedFile{}, i, "rename"), fmt.Errorf("flip: rename %s: %w", f.staged, err)
+		}
+	}
+
+	rbName, rbArgs := st.reload()
+	// fail restores the snapshot; the reload after it is best-effort so the
+	// host keeps serving the predecessor.
+	fail := func(res InstallResult, reloadAfter bool, err error) (*FlippedInstall, InstallResult, error) {
+		res.RolledBack = true
+		if rerr := in.restoreFlipped(ctx, fl.files); rerr != nil {
+			res.Detail = strings.TrimSpace(res.Detail + "; " + rerr.Error())
+			err = fmt.Errorf("%w (restore failed: %v)", err, rerr)
+		}
+		if reloadAfter {
+			_, _ = in.exec.Run(ctx, rbName, rbArgs...) // best-effort rollback reload; primary error already returned
+		}
+		return nil, res, err
+	}
+
+	if name, args, ok := st.configTest(); ok {
+		if out, err := in.exec.Run(ctx, name, args...); err != nil {
+			return fail(InstallResult{Outcome: OutcomeConfigTestFailed, Detail: string(out)}, false,
+				fmt.Errorf("flip: config test failed, rolled back: %w", err))
+		}
+	}
+	if out, err := in.exec.Run(ctx, rbName, rbArgs...); err != nil {
+		return fail(InstallResult{Installed: true, Outcome: OutcomeReloadFailed, Detail: string(out)}, true,
+			fmt.Errorf("flip: reload failed, rolled back: %w", err))
+	}
+	if st.verifyHostPort != "" && st.expectedFingerprint != "" {
+		served, err := in.verifyUntilMatchOrExhausted(ctx, st.verifyHostPort, st.expectedFingerprint)
+		if err != nil {
+			return fail(InstallResult{Installed: true, Reloaded: true, Outcome: OutcomeVerifyFailed, Detail: err.Error()}, true,
+				fmt.Errorf("flip: verify failed, rolled back: %w", err))
+		}
+		if normalizeFingerprint(served) != normalizeFingerprint(st.expectedFingerprint) {
+			return fail(InstallResult{
+				Installed: true, Reloaded: true, ServedFingerprint: served, Outcome: OutcomeVerifyFailed,
+				Detail: "served fingerprint does not match renewed cert",
+			}, true, fmt.Errorf("flip: verify mismatch (served %s, want %s), rolled back", served, st.expectedFingerprint))
+		}
+		return fl, InstallResult{Installed: true, Reloaded: true, Verified: true, ServedFingerprint: served, Outcome: OutcomeInstalledVerified}, nil
+	}
+	return fl, InstallResult{Installed: true, Reloaded: true, Outcome: OutcomeInstalled}, nil
+}
+
+// abortFlip unwinds a Flip that failed before any reload: files[0:renamed] were
+// renamed over live, everything else is still staged. cur is a file whose
+// snapshot copy may be partial (snapshot failure) and is cleaned too.
+func (in *Installer) abortFlip(ctx context.Context, st *StagedInstall, snap []flippedFile, cur flippedFile, renamed int, phase string) InstallResult {
+	res := InstallResult{Outcome: OutcomeWriteFailed, RolledBack: true}
+	var errs []string
+	if phase == "rename" {
+		if err := in.restoreFlipped(ctx, snap[:renamed]); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	var drop []string
+	for _, f := range st.files {
+		drop = append(drop, f.staged)
+	}
+	for i, f := range snap {
+		if phase == "snapshot" || i >= renamed {
+			if f.hadPrior {
+				drop = append(drop, f.prev)
+			}
+		}
+	}
+	if cur.live != "" {
+		drop = append(drop, cur.prev)
+	}
+	if err := in.rm(ctx, drop...); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if len(errs) > 0 {
+		res.Detail = strings.Join(errs, "; ")
+	}
+	return res
+}
+
+// Discard removes the staged files; live files are never touched. Idempotent.
+func (in *Installer) Discard(ctx context.Context, st *StagedInstall) error {
+	paths := make([]string, 0, len(st.files))
+	for _, f := range st.files {
+		paths = append(paths, f.staged)
+	}
+	return in.rm(ctx, paths...)
+}
+
+// Restore undoes a SUCCESSFUL Flip (cluster rollback): predecessors return,
+// first-install files are removed, then the server reloads.
+func (in *Installer) Restore(ctx context.Context, fl *FlippedInstall) error {
+	err := in.restoreFlipped(ctx, fl.files)
+	name, args := fl.st.reload()
+	if _, rerr := in.exec.Run(ctx, name, args...); rerr != nil && err == nil {
+		err = fmt.Errorf("restore reload: %w", rerr)
+	}
+	return err
+}
+
+// Commit deletes the predecessor copies, so no superseded private key remains
+// on the host. Idempotent.
+func (in *Installer) Commit(ctx context.Context, fl *FlippedInstall) error {
+	var paths []string
+	for _, f := range fl.files {
+		if f.hadPrior {
+			paths = append(paths, f.prev)
+		}
+	}
+	return in.rm(ctx, paths...)
 }

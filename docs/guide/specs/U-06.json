@@ -1,0 +1,239 @@
+{
+  "task": "U-06",
+  "title": "Import an external root CA (trust anchor)",
+  "sourceStory": "STORIES.md#u-06",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/cas"
+      },
+      "caption": "Open /cas",
+      "slug": "cas-list",
+      "expect": {
+        "role": "button",
+        "name": "Import external root"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-06/01-cas-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Import external root"
+      },
+      "caption": "Click **Import external root**",
+      "slug": "import-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "Import external root"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-06/02-import-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Name",
+        "within": "[role=dialog]"
+      },
+      "value": "Partner Root",
+      "caption": "Fill **Name** with \"Partner Root\"",
+      "slug": "Name",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-06/03-name.png",
+        "annotated": "docs/guide/screenshots/U-06/03-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 363,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Certificate PEM"
+      },
+      "value": "-----BEGIN CERTIFICATE-----\nMIICADCCAYagAwIBAgIUZR5XWhuF5nq2BqyW+9/NGsU+bJMwCgYIKoZIzj0EAwIw\nLzEYMBYGA1UEAwwPUGFydG5lciBSb290IENBMRMwEQYDVQQKDApQYXJ0bmVyIENv\nMB4XDTI2MTAxODA3MTkwN1oXDTM2MTAxNTA3MTkwN1owLzEYMBYGA1UEAwwPUGFy\ndG5lciBSb290IENBMRMwEQYDVQQKDApQYXJ0bmVyIENvMHYwEAYHKoZIzj0CAQYF\nK4EEACIDYgAEKsm1nloX9Yc8a8vUxrhpa1sO411Lhe24OgJAjV8+SCUElIcE3BeV\n7PlcdizyywzGlRYTBkd5tG/rOayPuQ8Pjkc1QpDX6SJDof8tWLeVSZxjfeVtCcTJ\n+BbkNSylAPajo2MwYTAdBgNVHQ4EFgQU79AEThn7Ukm1mv/0qbC6SrzHvPcwHwYD\nVR0jBBgwFoAU79AEThn7Ukm1mv/0qbC6SrzHvPcwDwYDVR0TAQH/BAUwAwEB/zAO\nBgNVHQ8BAf8EBAMCAQYwCgYIKoZIzj0EAwIDaAAwZQIwGg6b3O+MFQt54jA2j2CS\noO2a7WmlIOuI8X0mzZA71Ui9w3W0XcnvBlxG9gMab2tPAjEAqp+JJ1AmRM//GOUv\n6pKT12ZwZSstbdycoO7sCxprHxDwTPMNh2z9OFciv0WC1OZv\n-----END CERTIFICATE-----",
+      "caption": "Fill **Certificate PEM** with \"-----BEGIN CERTIFICATE-----\nMIICADCCAYagAwIBAgIUZR5XWhuF5nq2BqyW+9/NGsU+bJMwCgYIKoZIzj0EAwIw\nLzEYMBYGA1UEAwwPUGFydG5lciBSb290IENBMRMwEQYDVQQKDApQYXJ0bmVyIENv\nMB4XDTI2MTAxODA3MTkwN1oXDTM2MTAxNTA3MTkwN1owLzEYMBYGA1UEAwwPUGFy\ndG5lciBSb290IENBMRMwEQYDVQQKDApQYXJ0bmVyIENvMHYwEAYHKoZIzj0CAQYF\nK4EEACIDYgAEKsm1nloX9Yc8a8vUxrhpa1sO411Lhe24OgJAjV8+SCUElIcE3BeV\n7PlcdizyywzGlRYTBkd5tG/rOayPuQ8Pjkc1QpDX6SJDof8tWLeVSZxjfeVtCcTJ\n+BbkNSylAPajo2MwYTAdBgNVHQ4EFgQU79AEThn7Ukm1mv/0qbC6SrzHvPcwHwYD\nVR0jBBgwFoAU79AEThn7Ukm1mv/0qbC6SrzHvPcwDwYDVR0TAQH/BAUwAwEB/zAO\nBgNVHQ8BAf8EBAMCAQYwCgYIKoZIzj0EAwIDaAAwZQIwGg6b3O+MFQt54jA2j2CS\noO2a7WmlIOuI8X0mzZA71Ui9w3W0XcnvBlxG9gMab2tPAjEAqp+JJ1AmRM//GOUv\n6pKT12ZwZSstbdycoO7sCxprHxDwTPMNh2z9OFciv0WC1OZv\n-----END CERTIFICATE-----\"",
+      "slug": "pem-pasted",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-06/04-pem-pasted.png",
+        "annotated": "docs/guide/screenshots/U-06/04-pem-pasted-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 433,
+          "w": 630,
+          "h": 146
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Import root"
+      },
+      "caption": "Click **Import root**",
+      "slug": "waiting-for-second-approver",
+      "expect": {
+        "text": "Waiting for a second approver"
+      },
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-06/05-waiting-for-second-approver.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "approveAs",
+      "as": "marcus",
+      "match": "ca_import",
+      "capture": false,
+      "caption": "approveAs",
+      "slug": "approveAs",
+      "n": 6
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Redeem approved action"
+      },
+      "caption": "Click **Redeem approved action**",
+      "slug": "redeemed-root-imported",
+      "expect": {
+        "text": "Partner Root"
+      },
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-06/07-redeemed-root-imported.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:39:16.300Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-06",
+    "steps": 7,
+    "shots": 6,
+    "annotated": 2,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/cas"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-06/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-06/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

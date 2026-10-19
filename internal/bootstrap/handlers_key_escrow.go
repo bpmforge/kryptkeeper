@@ -38,6 +38,9 @@ func registerKeyEscrowHandlers(mux *http.ServeMux, auth *Authenticator, store ke
 			writeForbidden(w, "admin role required for key escrow")
 			return AuthPrincipal{}, false
 		}
+		if denyTenantPrincipalKeyOp(w, r, auditProvider, principalDetails, action, "key", "-") {
+			return AuthPrincipal{}, false
+		}
 		return principalDetails, true
 	}
 
@@ -64,6 +67,7 @@ func registerKeyEscrowHandlers(mux *http.ServeMux, auth *Authenticator, store ke
 			return
 		}
 		if dualControl.Enabled() && strings.TrimSpace(req.KeyID) == "" {
+			emitAuditEvent(r, auditProvider, principal, "key.escrow", "key", "-", AuditOutcomeFailure)
 			writeBadRequest(w, "key_id is required")
 			return
 		}

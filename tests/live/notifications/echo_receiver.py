@@ -21,8 +21,30 @@ import os
 import sys
 import time
 
-LOG_PATH = sys.argv[1] if len(sys.argv) > 1 else "echo-requests.jsonl"
-PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 9094
+# Positional args stay backward compatible: [log_path] [port]. Optional flags
+# (W32-09): --bind <ip> (default 127.0.0.1) and --fail-path <path>, which makes
+# requests to that exact path answer 500 (still recorded) so retry/failure
+# behaviour can be observed against a real failing receiver.
+_args = sys.argv[1:]
+BIND = "127.0.0.1"
+FAIL_PATH = None
+_pos = []
+_i = 0
+while _i < len(_args):
+    if _args[_i] == "--bind":
+        BIND = _args[_i + 1]
+        _i += 2
+    elif _args[_i] == "--fail-path":
+        FAIL_PATH = _args[_i + 1]
+        _i += 2
+    else:
+        _pos.append(_args[_i])
+        _i += 1
+LOG_PATH = _pos[0] if len(_pos) > 0 else "echo-requests.jsonl"
+PORT = int(_pos[1]) if len(_pos) > 1 else 9094
+# W30-19 callers pass the bind address as a third positional argument.
+if len(_pos) > 2:
+    BIND = _pos[2]
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -40,6 +62,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             f.write(json.dumps(record) + "\n")
             f.flush()
             os.fsync(f.fileno())
+        if FAIL_PATH is not None and self.path.split("?")[0] == FAIL_PATH:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":false}')
+            return
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -56,5 +84,5 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = http.server.ThreadingHTTPServer((BIND, PORT), Handler)
     server.serve_forever()

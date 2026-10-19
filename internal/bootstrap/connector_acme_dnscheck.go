@@ -17,12 +17,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 const (
@@ -185,7 +186,7 @@ func (c *acmeIssuerConnector) waitPropagation(ctx context.Context, p dnsPropagat
 		last := i == len(order)-1
 		err := methods[name].poll(ctx, interval, p.mode == dnsCheckAuto && !last)
 		if errors.Is(err, errMethodUnreachable) {
-			log.Printf("acme connector %s: dns-01 %s check got no DNS answer; falling back", c.id, name)
+			logging.Infof("acme connector %s: dns-01 %s check got no DNS answer; falling back", c.id, name)
 			continue
 		}
 		if err == nil {
@@ -198,7 +199,7 @@ func (c *acmeIssuerConnector) waitPropagation(ctx context.Context, p dnsPropagat
 
 func (c *acmeIssuerConnector) noteDNSMethod(st *dnsCheckState, name string) {
 	if st.method != name {
-		log.Printf("acme connector %s: dns-01 propagation checked via %s", c.id, name)
+		logging.Infof("acme connector %s: dns-01 propagation checked via %s", c.id, name)
 		st.method = name
 	}
 }

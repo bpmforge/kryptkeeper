@@ -7,10 +7,11 @@ package bootstrap
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"kryptkeeper/internal/ca"
 	"kryptkeeper/internal/discovery/scanner"
+	"kryptkeeper/internal/keystore"
 )
 
 const (
@@ -74,12 +76,13 @@ func truncateForLog(s string) string {
 // a newline in any of them would let a caller forge a second, fully-formed
 // denial line attributing a fabricated event to another principal.
 func denyCertificateAccess(w http.ResponseWriter, r *http.Request, auditProvider AuditProvider, principal, action, resourceID, field, value, reason, message string) {
-	log.Printf("certificate %s denied: principal=%q field=%q value=%q reason=%s", action, principal, field, truncateForLog(value), reason)
+	logging.Warnf("certificate %s denied: principal=%q field=%q value=%q reason=%s", action, principal, field, truncateForLog(value), reason)
 	emitAuditEventDetail(r, auditProvider, principal, action, "certificate", resourceID, AuditOutcomeDenied, fmt.Sprintf("field=%s reason=%s", field, reason))
-	writeForbidden(w, message)
+	writeForbiddenCode(w, reason, message)
 }
 
 func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provider CertificateProvider, auditProvider AuditProvider, approvalStore ApprovalStore) {
+	registerQuotaHandler(mux, auth, auditProvider) // W33-21
 	mux.HandleFunc("/api/v1/certificates", func(w http.ResponseWriter, r *http.Request) {
 		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
 		if err != nil {
@@ -127,21 +130,59 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 				return
 			}
 
-			issued, err := provider.IssueCertificate(r.Context(), req)
+			// W31-06: FIPS posture refusal before any engine work, audited as a
+			// refusal rather than a generic issue failure.
+			if reason, msg := refusePQCIssue(req.CSRPEM); reason != "" {
+				emitPQCIssueRefusal(r, auditProvider, pd.ID, reason, pqcCSRAlgorithm(req.CSRPEM))
+				writeErrorEnvelope(w, http.StatusUnprocessableEntity, "unprocessable_entity", msg)
+				return
+			}
+
+			// W33-21: team policy and monthly quota, before any issuance work.
+			// A reserved slot is returned on every failure except a parked
+			// approval, which keeps it (released below if it dedupes).
+			_, releaseQuota, allowed := enforceTeamPolicyAtIssue(w, r, auditProvider, pd, req)
+			if !allowed {
+				return
+			}
+
+			// The wizard issues through this same endpoint (api.issueCertificate),
+			// so this one stamp-and-map covers API and wizard (W23-42).
+			issued, err := provider.IssueCertificate(ca.WithCallerRole(r.Context(), pd.Role), req)
 			if err != nil {
+				if !errors.Is(err, errApprovalRequired) {
+					releaseQuota(r.Context())
+				}
+				if errors.Is(err, ca.ErrEnrollmentDenied) {
+					emitAuditEventDetail(r, auditProvider, pd.ID, "issuance.denied_template_role", "template", req.TemplateID, AuditOutcomeDenied,
+						fmt.Sprintf(`{"role":%q,"template_id":%q}`, pd.Role, req.TemplateID))
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = w.Write([]byte(`{"error":"forbidden","message":"your role may not enroll from this template"}`))
+					return
+				}
 				if errors.Is(err, errApprovalRequired) {
 					// No certificate exists yet, so the row keeps the collection
 					// name as resource_id; the approval ID goes in the change
 					// summary so the pending request is traceable from the log.
 					if approvalStore == nil {
+						releaseQuota(r.Context())
 						emitAuditEvent(r, auditProvider, pd.ID, "certificate.issue", "certificate", "certificates", AuditOutcomePendingApproval)
 						writeServiceUnavailable(w, "approval store not configured")
 						return
 					}
+					if existing, ok := findPendingApproval(r.Context(), approvalStore, req, pd.ID); ok {
+						releaseQuota(r.Context()) // a duplicate files no new request
+						emitAuditEventDetail(r, auditProvider, pd.ID, "certificate.issue", "certificate", "certificates", AuditOutcomePendingApproval,
+							fmt.Sprintf(`{"approval_id":%q,"template_id":%q,"ca_id":%q,"reused":true}`, existing.ID, req.TemplateID, req.CAID))
+						writePendingApproval(w, existing.ID)
+						return
+					}
 					approvalID, aerr := newApprovalID()
 					if aerr != nil {
+						releaseQuota(r.Context())
 						emitAuditEvent(r, auditProvider, pd.ID, "certificate.issue", "certificate", "certificates", AuditOutcomePendingApproval)
-						log.Printf("approval ID generation failed: %v", aerr)
+						logging.Warnf("approval ID generation failed: %v", aerr)
 						writeServiceUnavailable(w, "approval request failed")
 						return
 					}
@@ -157,15 +198,12 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 						RequestedAt: time.Now().UTC().Format(time.RFC3339),
 					}
 					if aerr := approvalStore.Create(r.Context(), apr); aerr != nil {
-						log.Printf("approval request creation failed: %v", aerr)
+						releaseQuota(r.Context())
+						logging.Warnf("approval request creation failed: %v", aerr)
 						writeServiceUnavailable(w, "approval request failed")
 						return
 					}
-					w.Header().Set("Content-Type", "application/json")
-					w.Header().Set("Location", "/api/v1/approvals/"+approvalID)
-					w.WriteHeader(http.StatusAccepted)
-					body := fmt.Sprintf(`{"status":"pending_approval","approval_id":%q,"message":"issuance requires approval — check /api/v1/approvals/%s"}`, approvalID, approvalID)
-					_, _ = w.Write([]byte(body))
+					writePendingApproval(w, approvalID)
 					return
 				}
 				if errors.Is(err, errCertificateConflict) {
@@ -186,8 +224,14 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 					_, _ = w.Write([]byte(`{"error":"bad_request","message":"invalid request body"}`))
 					return
 				}
+				if errors.Is(err, keystore.ErrPQCHSMUnsupported) {
+					emitPQCIssueRefusal(r, auditProvider, pd.ID, "hsm_pqc", pqcCSRAlgorithm(req.CSRPEM))
+					writeErrorEnvelope(w, http.StatusUnprocessableEntity, "unprocessable_entity",
+						fmt.Sprintf("%s -- PQC keys are software-keystore-only; see docs/ADR_PQC_KEYS_SOFTWARE_ONLY.md", err.Error()))
+					return
+				}
 				if errors.Is(err, ca.ErrPolicyViolation) {
-					emitAuditEvent(r, auditProvider, pd.ID, "certificate.issue", "certificate", "certificates", AuditOutcomeFailure)
+					emitPQCIssueRefusal(r, auditProvider, pd.ID, "allow_list", pqcCSRAlgorithm(req.CSRPEM))
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusUnprocessableEntity)
 					body := fmt.Sprintf(`{"error":"policy_violation","message":%q}`, err.Error())
@@ -195,7 +239,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.issue", "certificate", "certificates", AuditOutcomeFailure)
-				log.Printf("certificate issue unavailable: %v", err)
+				logging.Warnf("certificate issue unavailable: %v", err)
 				writeServiceUnavailable(w, "certificate unavailable")
 				return
 			}
@@ -207,15 +251,22 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 				issueSummary = fmt.Sprintf(`{"cn":%q,"template_id":"","ca_id":%q,"algorithm":%q,"name_policy":"none (no template)"}`,
 					issued.CommonName, issued.CAID, issued.PublicKeyAlgorithm)
 			}
+			status := http.StatusCreated
+			if issued.Reused {
+				releaseQuota(r.Context()) // no new certificate consumed a slot
+				// W26-32: same key + template: the existing certificate, 200.
+				status = http.StatusOK
+				issueSummary = fmt.Sprintf(`{"reused":true,"serial":%q}`, issued.SerialNumber)
+			}
 			emitAuditEventDetail(r, auditProvider, pd.ID, "certificate.issue", "certificate", issued.FingerprintSHA256, AuditOutcomeSuccess, issueSummary)
 			resp := struct {
 				Data CertificateIssueResult `json:"data"`
 			}{Data: issued}
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Location", "/api/v1/certificates/"+issued.FingerprintSHA256)
-			w.WriteHeader(http.StatusCreated)
+			w.WriteHeader(status)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/certificates issue response: %v", err)
+				logging.Warnf("failed to encode /api/v1/certificates issue response: %v", err)
 			}
 			return
 		}
@@ -234,12 +285,24 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 			Origin:          strings.TrimSpace(r.URL.Query().Get("origin")),
 			ManagementState: strings.TrimSpace(r.URL.Query().Get("management_state")),
 			TrustClass:      strings.TrimSpace(r.URL.Query().Get("trust_class")),
+			Owner:           strings.TrimSpace(r.URL.Query().Get("owner")),
+			SunsetGroup:     strings.TrimSpace(r.URL.Query().Get("sunset_group")),
 			Status:          strings.TrimSpace(r.URL.Query().Get("status")),
 			Grades:          strings.Split(strings.TrimSpace(r.URL.Query().Get("grade")), ","),
 			Order:           strings.TrimSpace(r.URL.Query().Get("order")),
 		}
 		if query.TrustClass != "" && !scanner.IsTrustClass(query.TrustClass) {
 			writeBadRequest(w, "trust_class must be one of managed, public, private_other, self_signed, unknown")
+			return
+		}
+		if query.SunsetGroup != "" {
+			if _, ok := sunsetRuleByID(query.SunsetGroup); !ok {
+				writeBadRequest(w, "sunset_group must be an id from GET /reports/algorithm-sunset groups")
+				return
+			}
+		}
+		if query.Owner != "" && query.Owner != ownerFilterUnassigned {
+			writeBadRequest(w, "owner must be 'unassigned'")
 			return
 		}
 		if err := authorizeCertificateListQuery(&query, pd); err != nil {
@@ -256,13 +319,14 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 		// pages and "2 of 5000" displays). Latent until S-36 let a
 		// tenant-scoped pki-admin skip the team_id confinement that used to
 		// mask this branch.
-		tenantScoped := activeTenantStore != nil && !tenantBypass(pd)
+		// A nil store still takes the filtered path, which fails closed (D-202).
+		tenantScoped := !tenantBypass(pd)
 		var result CertificateListResult
 		if tenantScoped {
 			visible, err := listCertificatesTenantFiltered(r.Context(), provider, activeTenantStore, pd, query)
 			if err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.list", "certificate", "certificates", AuditOutcomeFailure)
-				log.Printf("certificate list unavailable: %v", err)
+				logging.Warnf("certificate list unavailable: %v", err)
 				writeServiceUnavailable(w, "certificate list unavailable")
 				return
 			}
@@ -290,7 +354,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 			result, err = provider.ListCertificates(r.Context(), query)
 			if err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.list", "certificate", "certificates", AuditOutcomeFailure)
-				log.Printf("certificate list unavailable: %v", err)
+				logging.Warnf("certificate list unavailable: %v", err)
 				writeServiceUnavailable(w, "certificate list unavailable")
 				return
 			}
@@ -325,7 +389,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/certificates response: %v", err)
+			logging.Warnf("failed to encode /api/v1/certificates response: %v", err)
 		}
 	})
 
@@ -394,7 +458,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.import", "certificate", "import", AuditOutcomeFailure)
-				log.Printf("certificate import unavailable: %v", err)
+				logging.Warnf("certificate import unavailable: %v", err)
 				writeServiceUnavailable(w, "certificate unavailable")
 				return
 			}
@@ -407,7 +471,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 			w.Header().Set("Location", "/api/v1/certificates/"+imported.FingerprintSHA256)
 			w.WriteHeader(http.StatusCreated)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/certificates/import response: %v", err)
+				logging.Warnf("failed to encode /api/v1/certificates/import response: %v", err)
 			}
 			return
 		}
@@ -445,7 +509,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.chain", "certificate", fp, AuditOutcomeFailure)
-				log.Printf("certificate chain unavailable: %v", err)
+				logging.Warnf("certificate chain unavailable: %v", err)
 				writeServiceUnavailable(w, "certificate chain unavailable")
 				return
 			}
@@ -453,7 +517,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 			chain, found, err := provider.GetCertificateChain(r.Context(), fp)
 			if err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.chain", "certificate", fp, AuditOutcomeFailure)
-				log.Printf("certificate chain unavailable: %v", err)
+				logging.Warnf("certificate chain unavailable: %v", err)
 				writeServiceUnavailable(w, "certificate chain unavailable")
 				return
 			}
@@ -470,7 +534,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/certificates/{fingerprint}/chain response: %v", err)
+				logging.Warnf("failed to encode /api/v1/certificates/{fingerprint}/chain response: %v", err)
 			}
 			return
 		}
@@ -502,7 +566,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.revoke", "certificate", fp, AuditOutcomeFailure)
-				log.Printf("certificate revoke unavailable: %v", err)
+				logging.Warnf("certificate revoke unavailable: %v", err)
 				writeServiceUnavailable(w, "certificate unavailable")
 				return
 			}
@@ -543,12 +607,12 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.revoke", "certificate", fp, AuditOutcomeFailure)
-				log.Printf("certificate revoke unavailable: %v", err)
+				logging.Warnf("certificate revoke unavailable: %v", err)
 				writeServiceUnavailable(w, "certificate unavailable")
 				return
 			}
 
-			revokeSummary := fmt.Sprintf(`{"fingerprint":%q,"reason":%d}`, fp, req.ReasonCode)
+			revokeSummary := fmt.Sprintf(`{"fingerprint":%q,"reason":%d,"revocation_scope":%q}`, fp, req.ReasonCode, revoked.RevocationScope)
 			emitAuditEventDetail(r, auditProvider, pd.ID, "certificate.revoke", "certificate", fp, AuditOutcomeSuccess, revokeSummary)
 			resp := struct {
 				Data CertificateRevokeResult `json:"data"`
@@ -556,7 +620,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/certificates/{fingerprint}/revoke response: %v", err)
+				logging.Warnf("failed to encode /api/v1/certificates/{fingerprint}/revoke response: %v", err)
 			}
 			return
 		}
@@ -588,7 +652,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.renew", "certificate", fp, AuditOutcomeFailure)
-				log.Printf("certificate renew unavailable: %v", err)
+				logging.Warnf("certificate renew unavailable: %v", err)
 				writeServiceUnavailable(w, "certificate unavailable")
 				return
 			}
@@ -641,7 +705,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.renew", "certificate", fp, AuditOutcomeFailure)
-				log.Printf("certificate renew unavailable: %v", err)
+				logging.Warnf("certificate renew unavailable: %v", err)
 				writeServiceUnavailable(w, "certificate unavailable")
 				return
 			}
@@ -654,7 +718,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 			w.Header().Set("Location", "/api/v1/certificates/"+renewed.FingerprintSHA256)
 			w.WriteHeader(http.StatusCreated)
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
-				log.Printf("failed to encode /api/v1/certificates/{fingerprint}/renew response: %v", err)
+				logging.Warnf("failed to encode /api/v1/certificates/{fingerprint}/renew response: %v", err)
 			}
 			return
 		}
@@ -711,8 +775,8 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 				writeServiceUnavailable(w, "certificate unavailable")
 				return
 			}
-			ownerSummary := fmt.Sprintf(`{"owner_email":%q,"owner_team":%q,"service_name":%q}`,
-				req.OwnerEmail, req.OwnerTeam, req.ServiceName)
+			ownerSummary := fmt.Sprintf(`{"owner_email":%q,"owner_team":%q,"service_name":%q,"ownership_source":%q}`,
+				req.OwnerEmail, req.OwnerTeam, req.ServiceName, updated.OwnershipSource)
 			emitAuditEventDetail(r, auditProvider, pd.ID, "certificate.ownership_update", "certificate", fp, AuditOutcomeSuccess, ownerSummary)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -749,7 +813,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.download", "certificate", fp, AuditOutcomeFailure)
-				log.Printf("certificate download unavailable: %v", err)
+				logging.Warnf("certificate download unavailable: %v", err)
 				writeServiceUnavailable(w, "certificate unavailable")
 				return
 			}
@@ -770,7 +834,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.download", "certificate", fp, AuditOutcomeFailure)
-				log.Printf("certificate download unavailable: %v", err)
+				logging.Warnf("certificate download unavailable: %v", err)
 				writeServiceUnavailable(w, "certificate unavailable")
 				return
 			}
@@ -797,7 +861,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 		item, found, err := provider.GetCertificate(r.Context(), fingerprint)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, pd.ID, "certificate.get", "certificate", fingerprint, AuditOutcomeFailure)
-			log.Printf("certificate get unavailable: %v", err)
+			logging.Warnf("certificate get unavailable: %v", err)
 			writeServiceUnavailable(w, "certificate unavailable")
 			return
 		}
@@ -832,9 +896,18 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 		w.Header().Set("ETag", etag)
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/certificates/{fingerprint} response: %v", err)
+			logging.Warnf("failed to encode /api/v1/certificates/{fingerprint} response: %v", err)
 		}
 	})
+}
+
+// writePendingApproval is the 202 body for a queued (or already queued) issuance.
+func writePendingApproval(w http.ResponseWriter, approvalID string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Location", "/api/v1/approvals/"+approvalID)
+	w.WriteHeader(http.StatusAccepted)
+	body := fmt.Sprintf(`{"status":"pending_approval","approval_id":%q,"message":"issuance requires approval — check /api/v1/approvals/%s"}`, approvalID, approvalID)
+	_, _ = w.Write([]byte(body))
 }
 
 func parseCertificateRevokeRequest(body io.Reader) (CertificateRevokeRequest, error) {
@@ -972,7 +1045,7 @@ func writeCSRorCAStateError(w http.ResponseWriter, err error) bool {
 	case errors.Is(err, ca.ErrCANotActive):
 		status, code, msg = http.StatusConflict, "conflict", "issuing CA is not active"
 	case errors.Is(err, ca.ErrCANoSigningKey):
-		status, code, msg = http.StatusConflict, "conflict", "issuing CA has no signing key (imported without private key)"
+		status, code, msg = http.StatusUnprocessableEntity, "unprocessable_entity", "no signing key available: issuing CA was imported without a private key"
 	default:
 		return false
 	}
@@ -980,4 +1053,50 @@ func writeCSRorCAStateError(w http.ResponseWriter, err error) bool {
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(fmt.Sprintf(`{"error":%q,"message":%q}`, code, msg)))
 	return true
+}
+
+// pqcCSRAlgorithm returns the PQC algorithm a CSR declares, or "" for a
+// classical or unparseable one (the provider reports parse errors itself).
+func pqcCSRAlgorithm(csrPEM string) keystore.Algorithm {
+	block, _ := pem.Decode([]byte(csrPEM))
+	if block == nil {
+		return ""
+	}
+	switch block.Type {
+	case "HYBRID CERTIFICATE REQUEST":
+		if req, err := ca.ParseCertificateRequestHybrid(block.Bytes); err == nil {
+			return req.Algorithm
+		}
+	case "ML-DSA CERTIFICATE REQUEST", "CERTIFICATE REQUEST":
+		if ca.IsMLDSACSR(block.Bytes) {
+			if req, err := ca.ParseCertificateRequestMLDSA(block.Bytes); err == nil {
+				return req.Algorithm
+			}
+		}
+	}
+	return ""
+}
+
+// refusePQCIssue applies the FIPS posture to the CSR's PQC algorithm. The
+// allow-list and HSM refusals come from the engine and are mapped by the
+// caller. Keeps CheckFIPSAlgorithm's semantics (hybrid refused whenever FIPS
+// is enabled, ML-DSA only under fips140=only).
+func refusePQCIssue(csrPEM string) (reason, message string) {
+	algo := pqcCSRAlgorithm(csrPEM)
+	if algo == "" {
+		return "", ""
+	}
+	if err := keystore.CheckFIPSAlgorithm(algo); err != nil {
+		return "fips", err.Error()
+	}
+	return "", ""
+}
+
+func emitPQCIssueRefusal(r *http.Request, auditProvider AuditProvider, principal, reason string, algo keystore.Algorithm) {
+	name := string(algo)
+	if name == "" {
+		name = "unknown"
+	}
+	emitAuditEventDetail(r, auditProvider, principal, "certificate.issue_refused", "certificate", "certificates", AuditOutcomeDenied,
+		"reason="+reason+" algorithm="+name)
 }

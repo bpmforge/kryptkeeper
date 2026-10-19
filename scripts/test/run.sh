@@ -16,11 +16,12 @@ declare -a suites=()
 usage() {
   cat <<'USAGE'
 Usage:
-  scripts/test/run.sh [--suite <protocol|integration|smoke>]...
+  scripts/test/run.sh [--suite <protocol|integration|smoke|tenant-idor>]...
 
 Examples:
   scripts/test/run.sh
   scripts/test/run.sh --suite protocol --suite smoke
+  scripts/test/run.sh --suite tenant-idor   # opt-in; not in the default set
 USAGE
 }
 
@@ -55,10 +56,13 @@ fi
 failures=0
 
 for suite in "${suites[@]}"; do
-  suite_script="$ROOT_DIR/tests/$suite/run.sh"
+  case "$suite" in
+    tenant-idor) suite_script="$ROOT_DIR/tests/integration/tenant_idor/run.sh" ;;
+    *) suite_script="$ROOT_DIR/tests/$suite/run.sh" ;;
+  esac
 
   if [[ ! -f "$suite_script" ]]; then
-    echo "[test-harness] FAIL suite '$suite' missing at tests/$suite/run.sh" >&2
+    echo "[test-harness] FAIL suite '$suite' missing at ${suite_script#"$ROOT_DIR"/}" >&2
     failures=$((failures + 1))
     continue
   fi

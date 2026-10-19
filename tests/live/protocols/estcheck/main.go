@@ -27,14 +27,24 @@ import (
 
 func main() {
 	host := os.Getenv("EST_HOST") // host:port, no scheme
+	// W26-11: EST_LABEL enrolls on /.well-known/est/<label>/ (W26-06);
+	// EST_CN overrides the requested name; EST_EXPECT=refuse makes a refused
+	// enroll the passing outcome; EST_REENROLL=0 stops after enroll.
+	label := os.Getenv("EST_LABEL")
+	cn := os.Getenv("EST_CN")
+	if cn == "" {
+		cn = "uat-est-leaf.est.uat.example"
+	}
+	expectRefuse := os.Getenv("EST_EXPECT") == "refuse"
 	if host == "" {
 		host = "host.containers.internal:8096"
 	}
 
 	fmt.Println("== bootstrap: cacerts over an unverified connection ==")
 	bootstrapClient := &est.Client{
-		Host:               host,
-		InsecureSkipVerify: true, // only acceptable here: this response IS the trust anchor
+		Host:                  host,
+		InsecureSkipVerify:    true, // only acceptable here: this response IS the trust anchor
+		AdditionalPathSegment: label,
 	}
 	bootstrapCerts, err := bootstrapClient.CACerts(context.Background())
 	if err != nil {
@@ -60,6 +70,8 @@ func main() {
 		ExplicitAnchor: anchors, // real chain verification from here on, no bypass
 		Username:       os.Getenv("EST_USER"),
 		Password:       os.Getenv("EST_PASS"),
+
+		AdditionalPathSegment: label,
 	}
 
 	fmt.Println("== cacerts (verified) ==")
@@ -75,7 +87,7 @@ func main() {
 
 	fmt.Println("== enroll ==")
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	tmpl := &x509.CertificateRequest{Subject: pkix.Name{CommonName: "uat-est-leaf.est.uat.example"}}
+	tmpl := &x509.CertificateRequest{Subject: pkix.Name{CommonName: cn}}
 	csrDER, err := x509.CreateCertificateRequest(rand.Reader, tmpl, key)
 	if err != nil {
 		fmt.Printf("FAIL build CSR: %v\n", err)
@@ -87,15 +99,26 @@ func main() {
 		os.Exit(1)
 	}
 	cert, err := client.Enroll(context.Background(), csr)
+	if expectRefuse {
+		if err != nil {
+			fmt.Printf("PASS refused: enroll for %s was refused: %v\n", cn, err)
+			os.Exit(0)
+		}
+		fmt.Printf("FAIL enroll for %s was expected to be refused but issued serial=%s\n", cn, cert.SerialNumber)
+		os.Exit(1)
+	}
 	if err != nil {
 		fmt.Printf("FAIL enroll: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("PASS enroll: got cert subject=%s serial=%s\n", cert.Subject, cert.SerialNumber)
+	if os.Getenv("EST_REENROLL") == "0" {
+		return
+	}
 
 	fmt.Println("== reenroll ==")
 	renewKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	renewTmpl := &x509.CertificateRequest{Subject: pkix.Name{CommonName: "uat-est-leaf.est.uat.example"}}
+	renewTmpl := &x509.CertificateRequest{Subject: pkix.Name{CommonName: cn}}
 	renewCSRDER, err := x509.CreateCertificateRequest(rand.Reader, renewTmpl, renewKey)
 	if err != nil {
 		fmt.Printf("FAIL build renewal CSR: %v\n", err)
@@ -111,6 +134,8 @@ func main() {
 		ExplicitAnchor: anchors,
 		Certificates:   []*x509.Certificate{cert},
 		PrivateKey:     key,
+
+		AdditionalPathSegment: label,
 	}
 	renewedCert, err := holder.Reenroll(context.Background(), renewCSR)
 	if err != nil {

@@ -9,6 +9,7 @@ vi.mock("../lib/api", () => ({
     pendingActions: vi.fn(),
     approvePendingAction: vi.fn(),
     rejectPendingAction: vi.fn(),
+    blastRadius: vi.fn(),
   },
 }));
 
@@ -40,6 +41,16 @@ const proposed = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(api.blastRadius).mockResolvedValue({
+    data: {
+      action: "retire_ca",
+      target: "ca-7",
+      total_affected: 0,
+      severity: "low",
+      affected_by_kind: {},
+      graph_size: "1 nodes",
+    },
+  } as unknown as never);
 });
 
 describe("Pending Actions page", () => {

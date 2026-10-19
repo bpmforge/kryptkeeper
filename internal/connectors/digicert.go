@@ -130,7 +130,9 @@ func (c *DigiCertConnector) do(ctx context.Context, method, path string, payload
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20)) // error surfaces via status below
 	if resp.StatusCode == http.StatusTooManyRequests {
-		return resp.StatusCode, raw, fmt.Errorf("digicert %s: rate limited (HTTP 429)", path)
+		return resp.StatusCode, raw, &RateLimitError{ConnectorID: c.id, Reason: "upstream_429",
+			RetryAfter: ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+			Err:        fmt.Errorf("digicert %s: rate limited (HTTP 429)", path)}
 	}
 	if resp.StatusCode >= 400 {
 		return resp.StatusCode, raw, fmt.Errorf("digicert %s: HTTP %d: %s", path, resp.StatusCode, truncate(raw))

@@ -9,6 +9,7 @@ import {
   Panel,
   StateMessage,
 } from "../components/ops-ui";
+import { formatDateTime } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
 import { useDebouncedValue } from "../lib/useDebouncedValue";
 import type { SearchResult } from "../lib/models";
@@ -22,6 +23,12 @@ const tonemap: Record<
   endpoint: "warning",
   template: "neutral",
 };
+
+// The server composes descriptions as free text ("Issued: 2026-04-07T..Z");
+// render any embedded RFC 3339 instant with the app's date formatter.
+const ISO_INSTANT = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})/g;
+// eslint-disable-next-line react-refresh/only-export-components -- tested helper
+export const humanizeDescription = (text: string) => text.replace(ISO_INSTANT, formatDateTime);
 
 export default function Search() {
   const navigate = useNavigate();
@@ -97,7 +104,7 @@ export default function Search() {
                     </div>
                     {result.description ? (
                       <div className="mt-1 text-sm text-muted-foreground">
-                        {result.description}
+                        {humanizeDescription(result.description)}
                       </div>
                     ) : null}
                   </div>

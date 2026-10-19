@@ -4,3 +4,11 @@ Every client then arrives from the ingress controller's address and shares ONE
 rate-limit bucket (about 9 failed logins per minute locks out all users).
 Set config.trustedProxyCIDRs to the CIDR of your ingress controller pods only.
 {{- end }}
+{{- if gt (int .Values.replicaCount) 1 }}
+HA NOTE: replicaCount={{ .Values.replicaCount }}. Every replica mounts the SAME keys volume
+(persistence.accessMode={{ .Values.persistence.accessMode }}). ReadWriteOnce only works when all pods share one node;
+on multi-node clusters use an RWX volume or cloudKMS.provider/pkcs11. Use
+config.dbMode=postgres, create the root CA once (do not set
+KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT on more than one replica), and size
+Postgres max_connections for every replica. Proof: tests/live/helm-kind.
+{{- end }}

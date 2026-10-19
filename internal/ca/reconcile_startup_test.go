@@ -39,7 +39,7 @@ func TestStartupKeyDecision_MovedKeystoreDirIsFatalByDefault(t *testing.T) {
 		t.Fatalf("expected one Missing finding, got %+v", findings)
 	}
 
-	err = StartupKeyDecision(findings, false)
+	err = StartupKeyCheckDecision(findings, nil, false)
 	if err == nil {
 		t.Fatal("a missing CA key must be fatal by default")
 	}
@@ -48,7 +48,7 @@ func TestStartupKeyDecision_MovedKeystoreDirIsFatalByDefault(t *testing.T) {
 			t.Errorf("error should mention %q, got:\n%v", want, err)
 		}
 	}
-	if err := StartupKeyDecision(findings, true); err != nil {
+	if err := StartupKeyCheckDecision(findings, nil, true); err != nil {
 		t.Fatalf("explicit opt-out must allow the start: %v", err)
 	}
 }
@@ -69,13 +69,13 @@ func TestStartupKeyDecision(t *testing.T) {
 		{"missing among mismatches", []KeyConsistencyFinding{mismatch, missing}, false, true},
 	}
 	for _, c := range cases {
-		err := StartupKeyDecision(c.findings, c.allow)
+		err := StartupKeyCheckDecision(c.findings, nil, c.allow)
 		if (err != nil) != c.wantErr {
 			t.Errorf("%s: err=%v wantErr=%v", c.name, err, c.wantErr)
 		}
 	}
 	// Only the missing CA is named, not the mismatching one.
-	err := StartupKeyDecision([]KeyConsistencyFinding{mismatch, missing}, false)
+	err := StartupKeyCheckDecision([]KeyConsistencyFinding{mismatch, missing}, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "ca-1") || strings.Contains(err.Error(), "ca-2") {
 		t.Fatalf("error must name only the missing-key CA: %v", err)
 	}

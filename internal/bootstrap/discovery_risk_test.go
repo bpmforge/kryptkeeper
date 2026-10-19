@@ -9,6 +9,7 @@ import (
 	"slices"
 	"testing"
 
+	"kryptkeeper/internal/agentdiscovery"
 	"kryptkeeper/internal/discovery/scanner"
 )
 
@@ -52,6 +53,13 @@ func seedRiskCases(t *testing.T, s *sqliteDiscoveryStore) map[string]bool {
 		{"incomplete.test", scanner.DiscoveredEndpoint{Certs: []scanner.DiscoveredCert{flaggedCert("fp-ic", 25, "INCOMPLETE_CHAIN")}}, false},
 		{"hsfail.test", scanner.DiscoveredEndpoint{Reachable: true, Error: "tls handshake: EOF", Findings: []string{"TLS_HANDSHAKE_FAILED: EOF"}}, true},
 		{"pgplain.test", scanner.DiscoveredEndpoint{Reachable: true, Error: "server does not offer TLS", Findings: []string{"POSTGRES_TLS_DISABLED: x"}}, true},
+		// W34-08 install posture: root service and a readable key are high; a
+		// privileged path is medium unless the hub marked renewal as blocked.
+		{"rootsvc.test", scanner.DiscoveredEndpoint{Reachable: true, Findings: []string{"SERVICE_RUNS_AS_ROOT: path=/opt/a.jks service=java uid=0"}}, true},
+		{"keyperm.test", scanner.DiscoveredEndpoint{Reachable: true, Findings: []string{"KEY_WORLD_READABLE: path=/etc/k.key mode=644"}}, true},
+		{"privmed.test", scanner.DiscoveredEndpoint{Reachable: true, Findings: []string{"PRIVILEGED_INSTALL_PATH: path=/opt/a.jks owner=root"}}, false},
+		{"privhigh.test", scanner.DiscoveredEndpoint{Reachable: true, Findings: []string{scanner.MarkPrivilegedPathHigh("PRIVILEGED_INSTALL_PATH: path=/opt/a.jks owner=root")}}, true},
+		{"homedir.test", scanner.DiscoveredEndpoint{Reachable: true, Findings: []string{"HOME_DIR_KEYSTORE: path=/home/b/k.jks service=java"}}, false},
 	}
 	want := map[string]bool{}
 	var results []scanner.DiscoveredEndpoint
@@ -121,17 +129,18 @@ func TestFindingsFunnelCountsCertificateFlags(t *testing.T) {
 	// 5 high-severity cert flags + HOSTNAME_MISMATCH x2 + EXPIRING_30_DAYS +
 	// INCOMPLETE_CHAIN = 9 flag findings (PQC_VULNERABLE is informational and
 	// never counted), plus NOT_TLS, DEPRECATED_TLS_VERSION and
-	// TLS_HANDSHAKE_FAILED and POSTGRES_TLS_DISABLED.
-	if funnel.Raw != 13 || funnel.Effective != 13 {
-		t.Fatalf("funnel = %+v, want raw=13: the widget read 0 while flags existed", funnel)
+	// TLS_HANDSHAKE_FAILED and POSTGRES_TLS_DISABLED, plus the five W34-08
+	// posture findings (every severity counts).
+	if funnel.Raw != 18 || funnel.Effective != 18 {
+		t.Fatalf("funnel = %+v, want raw=18: the widget read 0 while flags existed", funnel)
 	}
 
 	// An accepted-risk exception on the certificate for that flag suppresses it.
 	suppressed := computeDiscoveryFindingFunnel(findings, []FindingException{
 		{TargetType: FindingExceptionTargetCertificate, TargetID: "fp-ss", FindingCode: "SELF_SIGNED"},
 	})
-	if suppressed.Raw != 13 || suppressed.Suppressed != 1 || suppressed.Effective != 12 {
-		t.Fatalf("suppressed funnel = %+v, want raw=13 suppressed=1 effective=12", suppressed)
+	if suppressed.Raw != 18 || suppressed.Suppressed != 1 || suppressed.Effective != 17 {
+		t.Fatalf("suppressed funnel = %+v, want raw=18 suppressed=1 effective=17", suppressed)
 	}
 }
 
@@ -167,6 +176,11 @@ func TestEndpointIsRiskyRule(t *testing.T) {
 		"handshake failed":        {DiscoveryEndpoint{Issues: []string{"TLS_HANDSHAKE_FAILED: EOF"}}, true},
 		"postgres tls disabled":   {DiscoveryEndpoint{Issues: []string{"POSTGRES_TLS_DISABLED: x"}}, true},
 		"cipheraudit text":        {DiscoveryEndpoint{Issues: []string{"Weak cipher: RC4"}}, false},
+		"service runs as root":    {DiscoveryEndpoint{Issues: []string{"SERVICE_RUNS_AS_ROOT: path=/a"}}, true},
+		"key world readable":      {DiscoveryEndpoint{Issues: []string{"KEY_WORLD_READABLE: path=/a"}}, true},
+		"privileged path medium":  {DiscoveryEndpoint{Issues: []string{"PRIVILEGED_INSTALL_PATH: path=/a"}}, false},
+		"privileged path high":    {DiscoveryEndpoint{Issues: []string{"PRIVILEGED_INSTALL_PATH: severity=high; path=/a"}}, true},
+		"home dir keystore":       {DiscoveryEndpoint{Issues: []string{"HOME_DIR_KEYSTORE: path=/home/a"}}, false},
 	}
 	for name, c := range cases {
 		if got := endpointIsRisky(c.ep); got != c.want {
@@ -188,6 +202,31 @@ func TestOpenPortFindingsScoreNonZero(t *testing.T) {
 			if ep.RiskScore != scanner.EndpointFindingScore || !ep.Risky {
 				t.Errorf("%s: risk_score=%d risky=%v, want %d/true", ep.Hostname, ep.RiskScore, ep.Risky, scanner.EndpointFindingScore)
 			}
+		}
+	}
+}
+
+func TestMarkPrivilegedPathHighOnlyTouchesThatCode(t *testing.T) {
+	if got := scanner.MarkPrivilegedPathHigh("PRIVILEGED_INSTALL_PATH: path=/a"); got != "PRIVILEGED_INSTALL_PATH: severity=high; path=/a" {
+		t.Fatalf("got %q", got)
+	}
+	if got := scanner.MarkPrivilegedPathHigh("HOME_DIR_KEYSTORE: path=/a"); got != "HOME_DIR_KEYSTORE: path=/a" {
+		t.Fatalf("other codes must be unchanged: %q", got)
+	}
+	if scanner.FindingCode(scanner.MarkPrivilegedPathHigh("PRIVILEGED_INSTALL_PATH: path=/a")) != scanner.FindingPrivilegedInstallPath {
+		t.Fatal("the code must survive the severity marker")
+	}
+}
+
+func TestPostureFindingCodesMatchAgentDiscovery(t *testing.T) {
+	for scannerCode, agentCode := range map[string]string{
+		scanner.FindingPrivilegedInstallPath: agentdiscovery.FindingPrivilegedInstallPath,
+		scanner.FindingServiceRunsAsRoot:     agentdiscovery.FindingServiceRunsAsRoot,
+		scanner.FindingKeyWorldReadable:      agentdiscovery.FindingKeyWorldReadable,
+		scanner.FindingHomeDirKeystore:       agentdiscovery.FindingHomeDirKeystore,
+	} {
+		if scannerCode != agentCode {
+			t.Errorf("%s != %s", scannerCode, agentCode)
 		}
 	}
 }

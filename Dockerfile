@@ -161,6 +161,8 @@ COPY --from=builder /out/kryptkeeper-mcp /kryptkeeper-mcp
 COPY --from=builder /out/healthcheck /healthcheck
 
 ENV HEALTHCHECK_URL=${HEALTHCHECK_URL}
+# Keep serving 5s after SIGTERM with /readyz 503 so endpoint removal propagates; 0 disables.
+ENV KRYPTKEEPER_READINESS_DRAIN_SECONDS=5
 
 EXPOSE 8080
 

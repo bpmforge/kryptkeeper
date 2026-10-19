@@ -199,3 +199,50 @@ bootstrap, not the destination.
 For **domain-joined** hosts, do none of this — use WSTEP autoenrollment
 (`internal/wstep`). The machine pulls its own certificate, no inbound port is
 opened, and no credential is stored. See the access matrix.
+
+## Repeatable lab recipe and store recall report
+
+Use this after Steps 1-6 to measure how many certificates Kryptkeeper's
+WinRM discovery finds against what the host actually holds. Record the result
+in `docs/release/DISCOVERY_RATES_v0.12.md` (section "Windows store recall").
+
+1. **Prerequisites.** A Windows 11 host with Steps 1-6 done and reachable from
+   the machine running the tests. Export (no real values in this document; take
+   the password from your secret store):
+
+   ```bash
+   export KK_LIVE_WINRM=1
+   export KK_WINRM_URL=https://192.0.2.10:5986/wsman
+   export KK_WINRM_USER=<local-user>
+   export KK_WINRM_PASS=<from your secret store>
+   ```
+
+2. **Ground truth on the host**, per store, in PowerShell:
+
+   ```powershell
+   (Get-ChildItem Cert:\LocalMachine\My).Count
+   (Get-ChildItem Cert:\LocalMachine\Root).Count
+   (Get-ChildItem Cert:\LocalMachine\CA).Count
+   ```
+
+3. **Run both live tests** (each is skipped unless `KK_LIVE_WINRM=1`) and note
+   the logged certificate count and the job status (`completed`):
+
+   ```bash
+   go test ./internal/agentdiscovery -run TestLiveWinRM -v
+   go test ./internal/bootstrap -run TestLiveWinRMDiscoveryThroughStores -v
+   ```
+
+4. **Inventory count.** `GET /api/v1/discovery/endpoints` for the WinRM
+   endpoint and take `len(mapped_certs)`, or use the per-store counts in the
+   test log. Fill `ground truth | inventory | delta` for `My`, `Root` and `CA`
+   in the recall table of `DISCOVERY_RATES_v0.12.md`.
+
+5. **Pass rule.** Delta 0 for `My`. `Root` and `CA` may be lower only by
+   certificates `crypto/x509` rejects, which the scanner logs as warnings;
+   state the logged number next to the table. Any other delta is a defect, not
+   a rounding difference.
+
+6. **Kerberos.** Kerberos WinRM authentication is deliberately not supported
+   until a pilot demands it (UC-C04 decision). Use HTTPS with a local account
+   (or the sealed-HTTP fallback above).

@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-18T06:16:37Z",
+  "hub_version": "89ab4c45",
+  "openssl": "OpenSSL 3.6.5 29 Sep 2026 (Library: OpenSSL 3.6.5 29 Sep 2026)",
+  "mode": "compose",
+  "algorithms": [
+    {
+      "alg": "ECDSA-P256",
+      "ok": true
+    },
+    {
+      "alg": "ECDSA-P384",
+      "ok": true
+    },
+    {
+      "alg": "RSA-2048",
+      "ok": true
+    },
+    {
+      "alg": "RSA-3072",
+      "ok": true
+    },
+    {
+      "alg": "RSA-4096",
+      "ok": true
+    },
+    {
+      "alg": "Ed25519",
+      "ok": true
+    },
+    {
+      "alg": "ML-DSA-44",
+      "ok": true
+    },
+    {
+      "alg": "ML-DSA-65",
+      "ok": true
+    },
+    {
+      "alg": "ML-DSA-87",
+      "ok": true
+    }
+  ],
+  "elapsed_s": 5,
+  "budget_s": 900,
+  "machine": "Darwin arm64, Apple M4 Max, 64 GiB RAM"
+}

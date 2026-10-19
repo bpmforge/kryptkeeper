@@ -55,6 +55,9 @@ func registerADSyncHandlers(mux *http.ServeMux, auth *Authenticator, creds Outbo
 			writeForbidden(w, "approver role required to write certificate templates into Active Directory")
 			return
 		}
+		if denyNonSuperAdminGlobal(w, r, auditProvider, pd, "adsync.templates", "directory", "-") {
+			return
+		}
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w, http.MethodPost)
 			return
@@ -62,18 +65,22 @@ func registerADSyncHandlers(mux *http.ServeMux, auth *Authenticator, creds Outbo
 
 		var req adsyncRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256*1024)).Decode(&req); err != nil {
+			emitAuditEvent(r, auditProvider, pd.ID, "adsync.templates", "directory", "-", AuditOutcomeFailure)
 			writeBadRequest(w, "invalid request body")
 			return
 		}
 		if strings.TrimSpace(req.LDAPURL) == "" || strings.TrimSpace(req.ConfigDN) == "" || req.CredentialRef == "" {
+			emitAuditEvent(r, auditProvider, pd.ID, "adsync.templates", "directory", "-", AuditOutcomeFailure)
 			writeBadRequest(w, "ldap_url, config_dn and credential_ref are required")
 			return
 		}
 		if len(req.Templates) == 0 {
+			emitAuditEvent(r, auditProvider, pd.ID, "adsync.templates", "directory", "-", AuditOutcomeFailure)
 			writeBadRequest(w, "at least one template is required")
 			return
 		}
 		if creds == nil {
+			emitAuditEvent(r, auditProvider, pd.ID, "adsync.templates", "directory", "-", AuditOutcomeFailure)
 			writeServiceUnavailable(w, "outbound credential store not configured")
 			return
 		}

@@ -19,7 +19,7 @@ export function EmptyState({
   return (
     <div
       role="status"
-      className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-white/[0.1] bg-[var(--surface-1)] px-6 py-12 text-center"
+      className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border bg-[var(--surface-1)] px-6 py-12 text-center"
     >
       {icon ? <div className="text-muted-foreground">{icon}</div> : null}
       <div>

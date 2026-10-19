@@ -7,9 +7,8 @@ package main
 import (
 	"crypto/x509/pkix"
 	"database/sql"
-	"errors"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"strings"
 	"time"
 
@@ -35,19 +34,22 @@ func attachPolicyEngine(engine *ca.Engine, db *sql.DB, postgres bool, getenv fun
 	pe, err := ca.NewPolicyEngine(db, postgres)
 	if err != nil {
 		if envTrue(getenv, "KRYPTKEEPER_ALLOW_NO_POLICY") {
-			log.Printf("WARNING: issuance policy gate DISABLED (%v) -- KRYPTKEEPER_ALLOW_NO_POLICY=true; certificates will be issued without policy evaluation", err)
+			logging.Warnf("issuance policy gate DISABLED (%v) -- KRYPTKEEPER_ALLOW_NO_POLICY=true; certificates will be issued without policy evaluation", err)
 			return nil
 		}
 		return fmt.Errorf("issuance policy engine: %w (set KRYPTKEEPER_ALLOW_NO_POLICY=true to start without the policy gate)", err)
 	}
 	engine.SetPolicyEngine(pe)
-	log.Print("issuance policy engine: enabled (issuance_policies table)")
+	logging.Info("issuance policy engine: enabled (issuance_policies table)")
 	return nil
 }
 
 // resolveDefaultCA returns the default CA id: the explicit
 // KRYPTKEEPER_DEFAULT_CA_ID, else the first stored CA, else (only when
-// KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT is true) a freshly minted root. The
+// KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT is true) a freshly minted root, else ""
+// with a nil error: first-run mode, where the hub starts with zero CAs so the
+// onboarding wizard can create the first root. Protocol servers then resolve
+// the default lazily per request (ca.ResolveCAID). The
 // ListCAs error is checked BEFORE the emptiness test: treating a transient
 // read failure as "no CAs" while bootstrap is enabled would mint a second
 // root next to the real one. For the same reason the flag is safe to leave
@@ -64,7 +66,8 @@ func resolveDefaultCA(svc ca.Service, getenv func(string) string) (string, error
 		return cas[0].ID, nil
 	}
 	if !envTrue(getenv, "KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT") {
-		return "", errors.New("no CA configured — set KRYPTKEEPER_DEFAULT_CA_ID to an existing CA, or on a fresh install let the hub create its first root: add KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT=true to your .env (docker compose) or environment, then restart")
+		logging.Info("[FIRST-RUN] no CA exists yet -- starting in first-run mode: create the first root CA in the UI onboarding wizard, or set KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT=true and restart; ACME/EST/CMP/WSTEP answer 503 until a CA exists (SCEP/XCEP need a restart after the root is created)")
+		return "", nil
 	}
 	caName := getenv("KRYPTKEEPER_CA_NAME")
 	if caName == "" {
@@ -81,6 +84,6 @@ func resolveDefaultCA(svc ca.Service, getenv func(string) string) (string, error
 	if err != nil {
 		return "", fmt.Errorf("bootstrap root CA: %w", err)
 	}
-	log.Printf("[BOOTSTRAP] created root CA %q (id: %s) (KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT only acts when no CA exists, so it is safe to leave set)", caName, rootCA.ID)
+	logging.Infof("[BOOTSTRAP] created root CA %q (id: %s) (KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT only acts when no CA exists, so it is safe to leave set)", caName, rootCA.ID)
 	return rootCA.ID, nil
 }

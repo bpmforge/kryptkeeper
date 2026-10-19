@@ -294,3 +294,102 @@ func TestIsTrustClass(t *testing.T) {
 		t.Error("unexpected valid class")
 	}
 }
+
+// W34-06: issuer_class refines trust_class with the operator's declaration.
+func TestClassifyIssuer(t *testing.T) {
+	now := time.Now()
+	hubRoot := issue(t, nil, nodeOpts{cn: "Hub Root", ca: true})
+	hubLeaf := issue(t, hubRoot, nodeOpts{cn: "hub.example"})
+	extRoot := issue(t, nil, nodeOpts{cn: "Corp Legacy Root", ca: true})
+	extInt := issue(t, extRoot, nodeOpts{cn: "Corp Issuing CA", ca: true})
+	extLeaf := issue(t, extInt, nodeOpts{cn: "legacy.example"})
+	otherRoot := issue(t, nil, nodeOpts{cn: "Random Private Root", ca: true})
+	otherLeaf := issue(t, otherRoot, nodeOpts{cn: "stranger.example"})
+	self := issue(t, nil, nodeOpts{cn: "self.example"})
+
+	base := TrustAnchors{Hub: []*x509.Certificate{hubRoot.cert}, IssuerClassKnown: true}
+	withCA := base
+	withCA.Authorized = []*x509.Certificate{extRoot.cert}
+	withInt := base
+	withInt.Authorized = []*x509.Certificate{extInt.cert}
+	withDN := base
+	withDN.IssuerRules = []IssuerRule{{IssuerRuleDN, "cn=corp issuing ca"}}
+	withSPKI := base
+	withSPKI.IssuerRules = []IssuerRule{{IssuerRuleSPKI, SPKIHash(extInt.cert)}}
+	wrongRules := base
+	wrongRules.IssuerRules = []IssuerRule{{IssuerRuleDN, "CN=Somebody Else"}, {IssuerRuleSPKI, SPKIHash(otherRoot.cert)}}
+
+	cases := []struct {
+		name   string
+		served []*x509.Certificate
+		trust  string
+		a      TrustAnchors
+		want   string
+	}{
+		{"hub", chainOf(hubLeaf), TrustManaged, base, IssuerHub},
+		{"self signed", chainOf(self), TrustSelfSigned, base, IssuerSelfSigned},
+		{"public stays public with no rule", chainOf(extLeaf), TrustPublic, base, IssuerPublic},
+		{"private stays private_unknown", chainOf(otherLeaf), TrustPrivateOther, base, IssuerPrivateUnknown},
+		{"unknown trust is unknown", chainOf(otherLeaf), TrustUnknown, base, IssuerUnknown},
+		{"authorized by CA cert, full chain", chainOf(extLeaf, extInt), TrustPrivateOther, withCA, IssuerAuthorized},
+		{"authorized by issuing CA cert, lone leaf", chainOf(extLeaf), TrustPrivateOther, withInt, IssuerAuthorized},
+		{"authorized root cannot vouch for a lone leaf under an unseen intermediate", chainOf(extLeaf), TrustPrivateOther, withCA, IssuerPrivateUnknown},
+		{"authorized outranks public (a declared public CA is sanctioned)", chainOf(extLeaf), TrustPublic, withDN, IssuerAuthorized},
+		{"authorized by issuer DN, lone leaf", chainOf(extLeaf), TrustPrivateOther, withDN, IssuerAuthorized},
+		{"authorized by SPKI needs the issuer served", chainOf(extLeaf, extInt), TrustPrivateOther, withSPKI, IssuerAuthorized},
+		{"SPKI cannot match a lone leaf", chainOf(extLeaf), TrustPrivateOther, withSPKI, IssuerPrivateUnknown},
+		{"unrelated rules do not authorize", chainOf(extLeaf), TrustPrivateOther, wrongRules, IssuerPrivateUnknown},
+		{"hub outranks a rule that also matches", chainOf(hubLeaf), TrustManaged, withDN, IssuerHub},
+		{"unserved file cert issued by a hub CA", chainOf(hubLeaf), "", base, IssuerHub},
+		{"unserved self-signed", chainOf(self), "", base, IssuerSelfSigned},
+		{"unserved authorized by DN", chainOf(extLeaf), "", withDN, IssuerAuthorized},
+		{"unserved unrelated is unknown", chainOf(otherLeaf), "", base, IssuerUnknown},
+	}
+	for _, c := range cases {
+		if got := ClassifyIssuer(c.served, c.trust, c.a, now); got != c.want {
+			t.Errorf("%s: got %s want %s", c.name, got, c.want)
+		}
+	}
+	if ClassifyIssuer(nil, "", base, now) != IssuerUnknown {
+		t.Error("empty chain is unknown")
+	}
+}
+
+func TestNormalizeDN(t *testing.T) {
+	if NormalizeDN("CN=Corp Issuing CA, O=Corp, C=US") != NormalizeDN("cn=corp issuing ca,o=corp,c=us") {
+		t.Error("DN comparison must ignore case and spacing after separators")
+	}
+}
+
+func TestApplyTrustSetsIssuerClassOnlyWhenKnown(t *testing.T) {
+	root := issue(t, nil, nodeOpts{cn: "Corp Root", ca: true})
+	leaf := issue(t, root, nodeOpts{cn: "svc.example"})
+	mk := func() *DiscoveredEndpoint {
+		return &DiscoveredEndpoint{Certs: []DiscoveredCert{{Raw: leaf.cert.Raw, Served: true}}}
+	}
+	ep := mk()
+	ApplyTrust(ep, TrustAnchors{}, time.Now())
+	if ep.Certs[0].IssuerClass != "" {
+		t.Fatalf("issuer class must stay empty when the declared set was not read, got %q", ep.Certs[0].IssuerClass)
+	}
+	ep = mk()
+	ApplyTrust(ep, TrustAnchors{Authorized: []*x509.Certificate{root.cert}, IssuerClassKnown: true}, time.Now())
+	if ep.Certs[0].IssuerClass != IssuerAuthorized || ep.Certs[0].TrustClass != TrustPrivateOther {
+		t.Fatalf("issuer=%q trust=%q: trust_class must be untouched by authorization", ep.Certs[0].IssuerClass, ep.Certs[0].TrustClass)
+	}
+}
+
+func TestApplyIssuerClassForUnservedCerts(t *testing.T) {
+	root := issue(t, nil, nodeOpts{cn: "Corp Root", ca: true})
+	leaf := issue(t, root, nodeOpts{cn: "file.example"})
+	ep := &DiscoveredEndpoint{Certs: []DiscoveredCert{{Raw: leaf.cert.Raw}, {Raw: []byte("junk")}, {Raw: leaf.cert.Raw, Served: true}}}
+	ApplyIssuerClass(ep, TrustAnchors{IssuerRules: []IssuerRule{{IssuerRuleDN, root.cert.Subject.String()}}, IssuerClassKnown: true}, time.Now())
+	if ep.Certs[0].IssuerClass != IssuerAuthorized || ep.Certs[1].IssuerClass != IssuerUnknown || ep.Certs[2].IssuerClass != "" {
+		t.Fatalf("classes = %q %q %q", ep.Certs[0].IssuerClass, ep.Certs[1].IssuerClass, ep.Certs[2].IssuerClass)
+	}
+	ep2 := &DiscoveredEndpoint{Certs: []DiscoveredCert{{Raw: leaf.cert.Raw}}}
+	ApplyIssuerClass(ep2, TrustAnchors{}, time.Now())
+	if ep2.Certs[0].IssuerClass != "" {
+		t.Fatal("not known => untouched")
+	}
+}

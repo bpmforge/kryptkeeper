@@ -1,0 +1,230 @@
+{
+  "task": "U-38",
+  "title": "Invite a user and assign a role",
+  "sourceStory": "STORIES.md#u-38",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/users"
+      },
+      "caption": "Open /users",
+      "slug": "users-list",
+      "expect": {
+        "role": "button",
+        "name": "Invite user"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-38/01-users-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Invite user"
+      },
+      "caption": "Click **Invite user**",
+      "slug": "invite-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "Invite user"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-38/02-invite-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Email address",
+        "within": "[role=dialog]"
+      },
+      "value": "new.engineer@acme.test",
+      "caption": "Fill **Email address** with \"new.engineer@acme.test\"",
+      "slug": "Email address",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-38/03-email-address.png",
+        "annotated": "docs/guide/screenshots/U-38/03-email-address-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 419,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Role",
+        "within": "[role=dialog]"
+      },
+      "value": "pki-operator",
+      "caption": "Select \"pki-operator\" in **Role**",
+      "slug": "Role",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-38/04-role.png",
+        "annotated": "docs/guide/screenshots/U-38/04-role-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 493,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Send invitation"
+      },
+      "caption": "Click **Send invitation**",
+      "slug": "invited",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-38/05-invited.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Change role",
+        "nth": 0
+      },
+      "caption": "Click **Change role**",
+      "slug": "change-role-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "Change role"
+      },
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-38/06-change-role-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:44:53.603Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-38",
+    "steps": 6,
+    "shots": 6,
+    "annotated": 2,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/users"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-38/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-38/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

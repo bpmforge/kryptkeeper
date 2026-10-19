@@ -9,9 +9,12 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
-	"log"
+	"sync"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // HACoordinator arbitrates which hub replica may run a given scheduler tick,
@@ -32,6 +35,11 @@ type HACoordinator struct {
 	replicaID string
 	// now is overridden in tests for deterministic lease-expiry checks.
 	now func() time.Time
+
+	// Readiness state (W23-27): guarded by mu.
+	mu          sync.Mutex
+	unready     bool
+	outageStart time.Time
 }
 
 // minHALeaseDuration floors TryAcquire's leaseDuration argument — see the
@@ -47,12 +55,27 @@ CREATE TABLE IF NOT EXISTS ha_scheduler_locks (
     lease_expires_at TEXT NOT NULL
 );`
 
+var (
+	processReplicaOnce sync.Once
+	processReplicaID   string
+	processReplicaErr  error
+)
+
+// newHACoordinatorID returns this PROCESS's replica identity, generated once
+// and shared by every coordinator in the process (W30-27). Each scheduler
+// builds its own coordinator but they all lock different names, so sharing is
+// safe, and it makes "previous holder" mean one hub rather than one scheduler,
+// which lets a hub's death be reported as one failover episode.
 func newHACoordinatorID() (string, error) {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return "replica-" + hex.EncodeToString(b), nil
+	processReplicaOnce.Do(func() {
+		b := make([]byte, 8)
+		if _, err := rand.Read(b); err != nil {
+			processReplicaErr = err
+			return
+		}
+		processReplicaID = "replica-" + hex.EncodeToString(b)
+	})
+	return processReplicaID, processReplicaErr
 }
 
 func newHACoordinator(db *sql.DB, ph func(int) string) (*HACoordinator, error) {
@@ -98,6 +121,13 @@ func (c *HACoordinator) TryAcquire(ctx context.Context, lockName string, leaseDu
 		leaseDuration = minHALeaseDuration
 	}
 	now := c.now()
+	// W30-27: remember who held the lock so a win over a different holder can
+	// be reported as a failover. Only read when an observer is installed.
+	obs := currentHAFailoverObserver()
+	var prev *haLeaseRow
+	if obs != nil {
+		prev = c.readLease(ctx, lockName)
+	}
 	nowStr := now.Format(time.RFC3339)
 	leaseStr := now.Add(leaseDuration).Format(time.RFC3339)
 
@@ -119,6 +149,12 @@ WHERE ha_scheduler_locks.holder_id = excluded.holder_id
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, err
+	}
+	if n > 0 && prev != nil && prev.holder != c.replicaID {
+		obs(ctx, HAFailover{
+			LockName: lockName, PreviousHolder: prev.holder, NewHolder: c.replicaID,
+			PreviousAcquiredAt: prev.acquiredAt, PreviousLeaseExpiresAt: prev.expiresAt, At: now,
+		})
 	}
 	return n > 0, nil
 }
@@ -159,7 +195,7 @@ func newHACoordinatorFromEnv() (*HACoordinator, error) {
 		func(db *sql.DB) *HACoordinator {
 			c, err := newHACoordinator(db, sqlitePlaceholder)
 			if err != nil {
-				log.Printf("ha coordinator: id generation failed: %v", err)
+				logging.Warnf("ha coordinator: id generation failed: %v", err)
 				return nil
 			}
 			return c
@@ -167,7 +203,7 @@ func newHACoordinatorFromEnv() (*HACoordinator, error) {
 		func(db *sql.DB) *HACoordinator {
 			c, err := newHACoordinator(db, postgresPlaceholder)
 			if err != nil {
-				log.Printf("ha coordinator: id generation failed: %v", err)
+				logging.Warnf("ha coordinator: id generation failed: %v", err)
 				return nil
 			}
 			return c
@@ -190,8 +226,80 @@ func newHACoordinatorFromEnv() (*HACoordinator, error) {
 func newHACoordinatorFromEnvLogged() *HACoordinator {
 	c, err := newHACoordinatorFromEnv()
 	if err != nil {
-		log.Printf("ha coordinator: unavailable, schedulers will run unconditionally (single-replica behavior): %v", err)
+		logging.Warnf("ha coordinator: unavailable, schedulers will run unconditionally (single-replica behavior): %v", err)
 		return nil
 	}
 	return c
+}
+
+// NewHACoordinatorFromEnvLogged exposes the soft-fail constructor so main can
+// hang the readiness probe off a coordinator of its own. nil means no shared
+// HA DB (single replica), in which case no probe should be installed. The CT
+// monitor's leader lock (W24-20) uses it too.
+func NewHACoordinatorFromEnvLogged() *HACoordinator { return newHACoordinatorFromEnvLogged() }
+
+// haReplicaNotReadyAction is the alert/audit name for a replica that lost the
+// shared DB (W23-27).
+const haReplicaNotReadyAction = "ha.replica_not_ready"
+
+// haReadinessTimeout stays below readinessTimeout so the probe, not the
+// /readyz deadline, reports the failure.
+const haReadinessTimeout = 1500 * time.Millisecond
+
+// ReadinessProbe returns a probe that fails while the shared DB is
+// unreachable. The first failure of an outage logs the ALERT line (the
+// real-time alert); the audit row is written on recovery because the audit
+// store lives in the same DB and cannot take writes during the outage.
+func (c *HACoordinator) ReadinessProbe(audit AuditProvider) ReadinessProbe {
+	return func(ctx context.Context) error {
+		err := c.checkDB(ctx)
+		c.mu.Lock()
+		if err != nil {
+			first := !c.unready
+			if first {
+				c.unready = true
+				c.outageStart = c.now()
+			}
+			c.mu.Unlock()
+			if first {
+				logging.Infof("ALERT %s: %v", haReplicaNotReadyAction, err)
+			}
+			return fmt.Errorf("shared database unreachable: %w", err)
+		}
+		wasUnready, started := c.unready, c.outageStart
+		c.unready = false
+		c.mu.Unlock()
+		if wasUnready && audit != nil {
+			now := c.now()
+			entry := AuditEntry{
+				Timestamp:    now.Format(time.RFC3339),
+				Action:       haReplicaNotReadyAction,
+				ActorType:    "system",
+				ActorID:      c.replicaID,
+				ResourceType: "replica",
+				ResourceID:   c.replicaID,
+				Outcome:      AuditOutcomeFailure,
+				ChangeSummary: fmt.Sprintf(`{"outage_started":%q,"outage_seconds":%d}`,
+					started.Format(time.RFC3339), int(now.Sub(started).Seconds())),
+			}
+			if aerr := audit.AppendEntry(context.WithoutCancel(ctx), entry); aerr != nil {
+				logging.Warnf("ha readiness: audit append failed: %v", aerr)
+			}
+		}
+		return nil
+	}
+}
+
+func (c *HACoordinator) checkDB(ctx context.Context) error {
+	ctx2, cancel := context.WithTimeout(ctx, haReadinessTimeout)
+	defer cancel()
+	if err := c.db.PingContext(ctx2); err != nil {
+		return err
+	}
+	var lease string
+	err := c.db.QueryRowContext(ctx2, `SELECT lease_expires_at FROM ha_scheduler_locks LIMIT 1`).Scan(&lease)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	return nil
 }

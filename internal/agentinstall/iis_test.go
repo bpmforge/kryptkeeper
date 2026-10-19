@@ -850,7 +850,7 @@ const (
 
 func TestNonAdminFailsAtCertImportNotBinding(t *testing.T) {
 	f := newIISExecutor()
-	f.outputs[showSSLCertCmdPrefix+"0.0.0.0:443"] = existingBindingOutput("OLDHASH", "{app-id}", "My")
+	f.outputs[showSSLCertCmdPrefix+"0.0.0.0:443"] = existingBindingOutput("1111111111111111111111111111111111111111", "{22222222-2222-2222-2222-222222222222}", "My")
 	f.errCmd["certutil"] = errors.New(realCertutilElevationErr)
 
 	res, err := NewIISInstaller(f).Install(context.Background(), iisReq(t))
@@ -880,7 +880,7 @@ func TestNonAdminFailsAtCertImportNotBinding(t *testing.T) {
 // serving nothing". It said the endpoint was broken when nothing had happened.
 func TestNonAdminBindingFailureDoesNotClaimAPhantomRollback(t *testing.T) {
 	f := newIISExecutor()
-	f.outputs[showSSLCertCmdPrefix+"0.0.0.0:443"] = existingBindingOutput("OLDHASH", "{app-id}", "My")
+	f.outputs[showSSLCertCmdPrefix+"0.0.0.0:443"] = existingBindingOutput("1111111111111111111111111111111111111111", "{22222222-2222-2222-2222-222222222222}", "My")
 	elevErr := errors.New(realNetshElevationErr)
 	f.errCmd["netsh http add sslcert"] = elevErr
 	f.errCmd["netsh http delete sslcert"] = elevErr
@@ -921,5 +921,31 @@ func TestElevationDetectedByNumericCodeNotEnglishProse(t *testing.T) {
 	}
 	if elevationRequired(nil) {
 		t.Error("nil is not an elevation failure")
+	}
+}
+
+// Values read back from the host become netsh arguments (the inherited appid,
+// the rollback restore), so a malformed one is refused before anything on the
+// host changes, like a malformed request field.
+func TestIISInstallRefusesMalformedPriorBinding(t *testing.T) {
+	cases := map[string][]byte{
+		"appid": existingBindingOutput("1111111111111111111111111111111111111111", `{x}" & calc & "`, "My"),
+		"hash":  existingBindingOutput("abc&calc", "{22222222-2222-2222-2222-222222222222}", "My"),
+		"store": existingBindingOutput("1111111111111111111111111111111111111111", "{22222222-2222-2222-2222-222222222222}", "My&calc"),
+	}
+	for name, out := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newIISExecutor()
+			f.outputs[showSSLCertCmdPrefix+"0.0.0.0:443"] = out
+			_, err := NewIISInstaller(f).Install(context.Background(), iisReq(t))
+			if err == nil || !strings.Contains(err.Error(), "existing binding at 0.0.0.0:443") {
+				t.Fatalf("Install = %v, want a refusal naming the existing binding", err)
+			}
+			for _, c := range f.ran {
+				if !strings.HasPrefix(c, showSSLCertCmdPrefix) {
+					t.Fatalf("ran %q after a malformed prior binding; only the show may run", c)
+				}
+			}
+		})
 	}
 }

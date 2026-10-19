@@ -79,7 +79,7 @@ func TestNTLMRefusesWeakOrMalformedChallenges(t *testing.T) {
 	}
 }
 
-// Server-direction messages built with testServerSealer and independently
+// Server-direction messages sealed per MS-NLMP and independently
 // verified by ntlm-auth's unwrap (which checks signature and sequence).
 const (
 	vecServer1 = "01000000a244354485684d6700000000356d6fc134c83d9a49bd54f74b32"

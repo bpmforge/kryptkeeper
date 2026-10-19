@@ -7,6 +7,8 @@ package bootstrap
 import (
 	"context"
 	"crypto"
+	"crypto/fips140"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -129,3 +131,44 @@ func (failingKeystore) ImportEncryptedKey(string, []byte, []byte) error {
 }
 
 var _ keystore.Store = failingKeystore{}
+
+func TestMeta_ReportsLiveFIPSPosture(t *testing.T) {
+	mux := http.NewServeMux()
+	registerMetaHandlers(mux, nil)
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/meta", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var body struct {
+		FIPS *keystore.FIPSPostureInfo `json:"fips"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.FIPS == nil {
+		t.Fatal("/api/v1/meta must carry a fips object")
+	}
+	if body.FIPS.Mode140_3 != fips140.Enabled() {
+		t.Fatalf("fips.mode_140_3 = %v, want live fips140.Enabled() %v", body.FIPS.Mode140_3, fips140.Enabled())
+	}
+	if body.FIPS.Enforced != fips140.Enforced() {
+		t.Fatalf("fips.enforced = %v, want live fips140.Enforced() %v", body.FIPS.Enforced, fips140.Enforced())
+	}
+}
+
+func TestUnmountedAPIPathIsJSON404(t *testing.T) {
+	mux := http.NewServeMux()
+	registerMetaHandlers(mux, nil)
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(method, "/api/v1/scep/challenges", nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404", method, rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+			t.Errorf("%s: Content-Type = %q, want JSON", method, ct)
+		}
+	}
+}

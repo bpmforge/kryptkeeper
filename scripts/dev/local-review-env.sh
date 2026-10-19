@@ -54,7 +54,7 @@ start)
   APP_AUTH_LOGIN_SIGNING_SECRET="${KK_DEV_SIGNING_SECRET:-dev-signing-secret-local-review-0123456789ab}" \
   nohup ./dist/kryptkeeper > /tmp/kk-dev-server.log 2>&1 &
   sleep 3
-  printf 'api :%s -> %s\n' "$PORT" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/v1/health")"
+  printf 'api :%s -> %s\n' "$PORT" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/healthz")"
   echo "log: /tmp/kk-dev-server.log"
   ;;
 token)

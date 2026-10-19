@@ -10,8 +10,11 @@ import {
   Panel,
   Select,
   StateMessage,
+  formatDateTime,
 } from "../components/ui";
+import ItsmConnection from "./ItsmConnection";
 import { PageHeader } from "../components/PageHeader";
+import { rolesApi, type RolePreview } from "../lib/rolesApi";
 import { canManageNotifications, canManageUsers, useAuthz } from "../lib/auth";
 
 // Human labels for the registered runtime-config keys (W8-03,
@@ -25,18 +28,53 @@ const CONFIG_LABELS: Record<string, string> = {
   "notifications.smtp_password": "SMTP password",
   "notifications.smtp_from": "SMTP from address",
   "notifications.pagerduty_routing_key": "PagerDuty routing key",
+  "notifications.webhook_url": "Webhook URL",
+  "notifications.escalation_channel": "Escalation channel",
+  "notifications.escalation_target": "Escalation target",
+  "notifications.webhook_secret": "Webhook signing secret",
+  "notifications.webhook_secret_previous":
+    "Previous webhook signing secret (rotation, kept 24 h)",
   "sso.oidc_issuer": "OIDC issuer",
   "sso.oidc_audience": "OIDC audience",
   "sso.oidc_discovery_url": "OIDC discovery URL",
   "sso.oidc_jwks_json": "OIDC JWKS (static, JSON)",
+  "saml.sp_entity_id": "SAML SP entity ID",
+  "saml.idp_sso_url": "SAML IdP SSO URL",
+  "saml.idp_issuer": "SAML IdP issuer",
+  "saml.idp_certificate": "SAML IdP certificate (PEM)",
+  "scim.enabled": "SCIM enabled (true/false)",
+  "scim.token": "SCIM bearer token",
+  "key_backend.kind": "Key backend kind",
+  "key_backend.pkcs11_module": "PKCS#11 module path",
+  "notifications.slack_bot_token": "Slack bot token",
+  "notifications.slack_team_channels": "Slack team channels (JSON: team to channel id)",
+  "notifications.teams_app_id": "Teams app ID",
+  "notifications.teams_app_password": "Teams app password",
+  "notifications.teams_team_channels": "Teams team channels (JSON: team to conversation)",
+  "renewal_policy.threshold_days": "Renewal threshold (days before expiry)",
+  "renewal_policy.poll_hours": "Renewal scan interval (hours)",
+  "renewal_policy.alert_cooldown_hours": "Renewal alert cooldown (hours)",
+  "renewal_policy.retry_base_minutes": "Renewal retry base delay (minutes)",
+  "renewal_policy.retry_cap_hours": "Renewal retry cap (hours)",
+  "discovery.provider": "Discovery provider",
+  "ct.domains": "Certificate Transparency watch domains",
+  "discovery.kube_clusters": "Kubernetes clusters to scan",
+  "discovery.mesh_leaf_retention_days": "Service-mesh leaf retention (days)",
+  "discovery.saas_endpoints": "SaaS endpoints to scan",
+  "discovery.cloud_scopes": "Cloud scopes to scan",
+  "slo.renewal_success_objective": "Renewal success objective",
+  "slo.issuance_success_objective": "Issuance success objective",
+  "slo.issuance_latency_p95_seconds": "Issuance latency p95 objective (seconds)",
+  "metrics.bearer_token": "Metrics bearer token",
+  "agentless.default_privilege_mode":
+    "Default sudo mode for SSH credentials",
 };
 
 function sourceBadge(setting: EffectiveSetting) {
-  if (setting.source === "database")
-    return <Badge tone="success">Database override</Badge>;
-  if (setting.source === "env_default")
-    return <Badge tone="info">Environment default</Badge>;
-  return <Badge tone="neutral">Not set</Badge>;
+  if (!setting.configured) return <Badge tone="neutral">Not set</Badge>;
+  if (setting.effective_source === "override")
+    return <Badge tone="success">Override</Badge>;
+  return <Badge tone="info">Env</Badge>;
 }
 
 // Deterministic, local checks only -- no network call. A secret's saved
@@ -73,6 +111,12 @@ function validateForKey(
       return { ok: false, message: "Not a valid absolute URL." };
     }
   }
+  if (key === "saml.idp_sso_url" && !value.trim().startsWith("https://")) {
+    return { ok: false, message: "IdP SSO URL must be an https:// URL" };
+  }
+  if (key === "scim.enabled" && value.trim() !== "true" && value.trim() !== "false") {
+    return { ok: false, message: "Must be true or false." };
+  }
   return null;
 }
 
@@ -95,7 +139,7 @@ function ConfigField({
     setting.secret ? "" : (setting.value ?? ""),
   );
   const label = CONFIG_LABELS[setting.key] ?? setting.key;
-  const canReset = setting.source === "database";
+  const canReset = setting.effective_source === "override";
   const saveDisabled =
     !canWrite || savePending || (setting.secret && draft.trim() === "");
   const check = validateForKey(setting.key, draft);
@@ -112,10 +156,16 @@ function ConfigField({
         {sourceBadge(setting)}
       </div>
 
+      {setting.restart_required ? (
+        <p className="text-xs text-muted-foreground">
+          Takes effect after the hub restarts.
+        </p>
+      ) : null}
+
       {setting.secret ? (
         <p className="text-xs text-muted-foreground">
           {setting.configured
-            ? `Configured (${setting.source === "database" ? "database override" : "environment default"}) — the value is write-only and never displayed here.`
+            ? `Configured (${setting.effective_source === "override" ? "override" : "environment"}) — the value is write-only and never displayed here.`
             : "Not configured."}
         </p>
       ) : null}
@@ -313,15 +363,101 @@ function ChannelTestPanel({ canTest }: { canTest: boolean }) {
         ) : null}
 
         <p className="text-xs text-muted-foreground">
-          This tests delivery to the target you enter above; it exercises the
-          channel itself, not necessarily the saved config below — the running
-          server still binds SMTP/Slack/PagerDuty credentials from startup
-          environment variables until those consumers are rewired to read the
-          config store. Webhook has no saved config at all: the
-          runtime-config store has no generic webhook key, so a webhook target
-          can only be tested here, never persisted.
+          This tests delivery to the target you enter above. Changes to SMTP,
+          Slack, PagerDuty and webhook settings apply on the next send; no
+          restart is needed. Webhook URL and signing secret are saved in the
+          Notifications panel above.
         </p>
       </div>
+    </Panel>
+  );
+}
+
+function DcvValidationsPanel() {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["dcv-validations"],
+    queryFn: api.dcvValidations,
+    staleTime: 30_000,
+  });
+  const rows = [...(data?.data ?? [])].sort((a, b) => a.days_remaining - b.days_remaining);
+
+  return (
+    <Panel
+      title="Domain validation (DCV)"
+      subtitle="How long each domain's validation can still be reused, from the CA/Browser Forum schedule"
+    >
+      {isLoading ? (
+        <StateMessage title="Loading" message="Reading domain validations…" />
+      ) : error || !data ? (
+        <StateMessage
+          tone="error"
+          title="Unavailable"
+          message="Domain validations could not be loaded."
+        />
+      ) : rows.length === 0 ? (
+        <StateMessage
+          title="No validations yet"
+          message="Domains appear here after an ACME order succeeds."
+        />
+      ) : (
+        <div className="space-y-6">
+          <table className="w-full text-sm" aria-label="Domain validations">
+            <caption className="sr-only">Domain validations and days remaining</caption>
+            <thead>
+              <tr className="text-left text-xs text-muted-foreground">
+                <th scope="col" className="py-2">Domain</th>
+                <th scope="col">Connector</th>
+                <th scope="col">Validated</th>
+                <th scope="col">Expires</th>
+                <th scope="col">Days remaining</th>
+                <th scope="col">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr
+                  key={`${r.connector_id}:${r.domain}`}
+                  className="border-t border-border"
+                  data-warn={r.warn ? "true" : undefined}
+                >
+                  <td className="py-2 font-medium text-foreground">{r.domain}</td>
+                  <td>{r.connector_id}</td>
+                  <td>{formatDateTime(r.validated_at)}</td>
+                  <td>{formatDateTime(r.expires_at)}</td>
+                  <td>{r.days_remaining}</td>
+                  <td>
+                    {r.warn ? (
+                      <Badge tone="warning">Under 20% left</Badge>
+                    ) : (
+                      <Badge tone="success">OK</Badge>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <table className="w-full text-sm" aria-label="Reuse period schedule">
+            <caption className="sr-only">CA/Browser Forum validation reuse schedule</caption>
+            <thead>
+              <tr className="text-left text-xs text-muted-foreground">
+                <th scope="col" className="py-2">Effective from</th>
+                <th scope="col">Reuse period (days)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.schedule.map((s) => (
+                <tr key={s.effective} className="border-t border-border">
+                  <td className="py-2">{s.effective}</td>
+                  <td>
+                    {s.days}{" "}
+                    {s.days === data.current_reuse_days ? <Badge tone="info">Current</Badge> : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </Panel>
   );
 }
@@ -380,6 +516,81 @@ function SsoServerStatusPanel() {
   );
 }
 
+function RoleMapPreviewPanel() {
+  const [groups, setGroups] = useState("");
+  const [result, setResult] = useState<RolePreview | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const preview = useMutation({
+    mutationFn: (list: string[]) => rolesApi.preview(list),
+    onSuccess: (res) => {
+      setMessage(null);
+      setResult(res.data);
+    },
+    onError: (err: Error & { status?: number }) => {
+      setResult(null);
+      setMessage(
+        err.status === 403
+          ? "Role mapping preview needs an administrator."
+          : "Could not preview the role mapping.",
+      );
+    },
+  });
+
+  return (
+    <Panel
+      title="Role mapping preview"
+      subtitle="Which Kryptkeeper role an SSO login with these IdP groups would receive"
+    >
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="min-w-[260px] flex-1 text-xs text-muted-foreground">
+          IdP groups (comma separated)
+          <Input value={groups} onChange={(e) => setGroups(e.target.value)} placeholder="kk-ops, kk-admins" />
+        </label>
+        <Button
+          tone="secondary"
+          disabled={preview.isPending}
+          onClick={() =>
+            preview.mutate(
+              groups
+                .split(",")
+                .map((g) => g.trim())
+                .filter(Boolean),
+            )
+          }
+        >
+          Preview
+        </Button>
+      </div>
+      {message ? (
+        <p role="status" className="mt-3 text-sm text-muted-foreground">
+          {message}
+        </p>
+      ) : null}
+      {result ? (
+        <div className="mt-3 space-y-1 text-sm" aria-live="polite">
+          <div>
+            <span className="text-muted-foreground">Effective role</span>{" "}
+            <span className="font-medium text-foreground">{result.effective_role || "none"}</span>
+          </div>
+          <div>
+            {result.would_login ? (
+              <Badge tone="success">Login allowed</Badge>
+            ) : (
+              <Badge tone="danger">Would be denied (403)</Badge>
+            )}
+          </div>
+          <div className="text-muted-foreground">
+            {result.mapped
+              ? `Matched claim value: ${result.matched_claim_value}`
+              : "No mapping matches"}
+          </div>
+        </div>
+      ) : null}
+    </Panel>
+  );
+}
+
 export default function Integrations() {
   const authz = useAuthz();
   const role = authz.data?.role;
@@ -399,6 +610,12 @@ export default function Integrations() {
     (s) => s.category === "notifications",
   );
   const ssoSettings = settings.filter((s) => s.category === "sso");
+  const samlSettings = settings.filter((s) => s.category === "saml");
+  const scimSettings = settings.filter((s) => s.category === "scim");
+  const keyBackendSettings = settings.filter(
+    (s) => s.category === "key_backend",
+  );
+  const agentlessSettings = settings.filter((s) => s.category === "agentless");
 
   return (
     <div className="space-y-6 p-6">
@@ -435,13 +652,40 @@ export default function Integrations() {
             canWrite={canWrite}
           />
           <ChannelTestPanel canTest={canTest} />
+          <ItsmConnection canWrite={canWrite} />
           <ConfigCategoryPanel
             title="SSO / OIDC"
             subtitle="Issuer, audience, discovery URL and static JWKS for OIDC login"
             settings={ssoSettings}
             canWrite={canWrite}
           />
+          <ConfigCategoryPanel
+            title="SAML"
+            subtitle="Service-provider entity ID and IdP details for SAML login"
+            settings={samlSettings}
+            canWrite={canWrite}
+          />
+          <ConfigCategoryPanel
+            title="SCIM"
+            subtitle="Provisioning token (write-only) and enable switch"
+            settings={scimSettings}
+            canWrite={canWrite}
+          />
+          <ConfigCategoryPanel
+            title="Key backend"
+            subtitle="Key store kind and PKCS#11 module"
+            settings={keyBackendSettings}
+            canWrite={canWrite}
+          />
+          <ConfigCategoryPanel
+            title="Agentless privilege"
+            subtitle="The sudo mode preselected when creating an SSH credential; any mode stays selectable per credential"
+            settings={agentlessSettings}
+            canWrite={canWrite}
+          />
           <SsoServerStatusPanel />
+          <DcvValidationsPanel />
+          {canWrite ? <RoleMapPreviewPanel /> : null}
         </>
       )}
     </div>

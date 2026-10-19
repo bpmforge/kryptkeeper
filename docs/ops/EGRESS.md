@@ -27,6 +27,16 @@ every redirect hop:
 three features. Use it when the hub talks only to public SaaS. A webhook to an
 internal host then fails with "destination blocked" in the delivery error.
 
+## Why a test to 127.0.0.1 fails
+
+Loopback (and link-local/metadata) is refused for every operator-configured
+destination, and there is no allowlist or knob to permit it: the guard is not
+relaxed for convenience. A delivery whose destination was refused shows the
+reason on its row in Alerts (`failure_reason` in `GET /notifications/deliveries`),
+and the SIEM test returns the same text. To test against a local sink, bind it
+to a LAN address of the machine (private ranges are allowed unless
+`KRYPTKEEPER_EGRESS_DENY_PRIVATE=true`).
+
 ## Discovery scans (OWASP-A10-003, A04-005)
 
 `POST /api/v1/discovery/scans` returns 400 when the target is a literal IP or
@@ -40,3 +50,16 @@ CIDR inside the deny list, or when it expands to more than the cap
 
 Hostnames are not resolved at creation time, so a name pointing into a denied
 range is not caught by the deny list.
+
+## Air-gap offline behaviour
+
+With no route to the public internet (see [AIRGAP_INSTALL.md](AIRGAP_INSTALL.md)):
+
+| Feature | Offline behaviour |
+|---|---|
+| Certificate Transparency monitor | Off unless `KRYPTKEEPER_CT_DOMAINS` is set; when set it queries crt.sh, so leave it unset in the gap |
+| ACME upstream connector | Needs the configured upstream CA to be reachable from the hub; point it at an internal CA or do not enable it |
+| Notification webhooks / inventory sources | Fail with a delivery error for public hosts; internal RFC1918 targets still work |
+| Update checks | No update-check call was found in `internal/` or `cmd/`; upgrades happen only by importing a new bundle |
+| Bundle signature verification | Offline by design (`--insecure-ignore-tlog=true`); no transparency-log lookup |
+| OCSP / CRL | Served by the hub from its own CA state; no external lookup is configured here (verify against your deployed config) |

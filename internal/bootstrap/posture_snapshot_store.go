@@ -56,6 +56,16 @@ type PostureSnapshotStore interface {
 	Save(ctx context.Context, s PostureSnapshot) error
 	List(ctx context.Context, since string, limit int) ([]PostureSnapshot, error)
 	Latest(ctx context.Context) (PostureSnapshot, bool, error)
+	// Prune deletes rows with captured_at < before (RFC3339 UTC text, so
+	// string order is chronological) and reports what it removed.
+	Prune(ctx context.Context, before string) (PruneResult, error)
+}
+
+// PruneResult describes the rows a Prune removed; Oldest/Newest are their
+// captured_at values (RFC3339).
+type PruneResult struct {
+	Deleted        int
+	Oldest, Newest string
 }
 
 func newPostureSnapshotID() (string, error) {
@@ -164,6 +174,29 @@ func (s *dbPostureSnapshotStore) Latest(ctx context.Context) (PostureSnapshot, b
 		return PostureSnapshot{}, false, err
 	}
 	return snap, true, nil
+}
+
+func (s *dbPostureSnapshotStore) Prune(ctx context.Context, before string) (PruneResult, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PruneResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var res PruneResult
+	sel := fmt.Sprintf(`SELECT COUNT(*), COALESCE(MIN(captured_at),''), COALESCE(MAX(captured_at),'')
+		FROM posture_snapshots WHERE captured_at < %s`, s.ph(1))
+	if err := tx.QueryRowContext(ctx, sel, before).Scan(&res.Deleted, &res.Oldest, &res.Newest); err != nil {
+		return PruneResult{}, err
+	}
+	if res.Deleted > 0 {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM posture_snapshots WHERE captured_at < %s`, s.ph(1)), before); err != nil {
+			return PruneResult{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return PruneResult{}, err
+	}
+	return res, nil
 }
 
 // rowScanner unifies *sql.Row and *sql.Rows for the shared scan helper.

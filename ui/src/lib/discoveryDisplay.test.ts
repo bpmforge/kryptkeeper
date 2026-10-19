@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  findingLabel,
   observedProtocol,
   primaryTrustClass,
   topFindingChips,
@@ -16,6 +17,12 @@ describe("observedProtocol", () => {
         issues: ["POSTGRES_TLS_DISABLED: declined"],
       }),
     ).toBe("postgres (TLS off)");
+    expect(
+      observedProtocol({ protocol: "mssql", issues: ["MSSQL_TLS_DISABLED: x"] }),
+    ).toBe("mssql (TLS off)");
+    expect(
+      observedProtocol({ protocol: "mysql", issues: ["MYSQL_TLS_DISABLED: x"] }),
+    ).toBe("mysql (TLS off)");
     expect(
       observedProtocol({
         protocol: "https",
@@ -46,7 +53,7 @@ describe("topFindingChips", () => {
     });
     expect(chips.shown.map((c) => c.code)).toEqual(["EXPIRED", "SELF_SIGNED"]);
     expect(chips.more).toBe(1);
-    expect(chips.shown[0].label).toBe("expired");
+    expect(chips.shown[0].label).toBe("Expired");
   });
 
   it("leads with the endpoint's own finding and ignores served CA certs", () => {
@@ -83,5 +90,16 @@ describe("primaryTrustClass", () => {
         ],
       }),
     ).toBe("managed");
+  });
+});
+
+describe("findingLabel INSUFFICIENT_PRIVILEGE (W34-10)", () => {
+  it("summarises the mode and the count, keeping the fix out of the row", () => {
+    const f =
+      "INSUFFICIENT_PRIVILEGE: uid=1001; user=kkscan; mode=none; unreadable=3; paths=/a, /b, /c; fix=Install the helper.";
+    expect(findingLabel(f)).toBe("Scan ran unprivileged; 3 paths unreadable");
+    expect(findingLabel(f.replace("mode=none", "mode=helper").replace("unreadable=3", "unreadable=1"))).toBe(
+      "Scan ran with helper privilege; 1 path unreadable",
+    );
   });
 });

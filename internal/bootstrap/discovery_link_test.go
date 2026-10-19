@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"kryptkeeper/internal/agentdiscovery"
 	kkdb "kryptkeeper/internal/db"
 	"kryptkeeper/internal/discovery/scanner"
 )
@@ -263,5 +264,134 @@ func TestEndpointFlagSplit(t *testing.T) {
 	// the certificate-level view.
 	if got := mergeLinkFlags([]string{"EXPIRED", "HOSTNAME_MISMATCH"}, nil); !slices.Equal(got, []string{"EXPIRED"}) {
 		t.Fatalf("legacy endpoint flag leaked: %v", got)
+	}
+}
+
+// linkTestStore is the slice of a discovery store the host-observation tests
+// drive; both dialects satisfy it.
+type linkTestStore interface {
+	upsertScanResults(context.Context, []scanner.DiscoveredEndpoint) (upsertOutcome, error)
+	ListEndpoints(context.Context, DiscoveryEndpointQuery) (DiscoveryEndpointResult, error)
+}
+
+// migratedLinkStore returns a store on a fully migrated database of the
+// dialect plus its handle; the Postgres variant skips without a DSN.
+func migratedLinkStore(t *testing.T, postgres bool) (linkTestStore, *sql.DB) {
+	t.Helper()
+	if !postgres {
+		s := newMigratedDiscoveryStore(t)
+		return s, s.db
+	}
+	stubEndpointAudit(t)
+	db, err := sql.Open("pgx", freshPostgresForTest(t))
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := kkdb.RunMigrations(db, "postgres"); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	s := &postgresDiscoveryStore{db: db}
+	if err := s.EnsureSchema(context.Background()); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+	return s, db
+}
+
+func endpointByPort(t *testing.T, s linkTestStore, port int) DiscoveryEndpoint {
+	t.Helper()
+	res, err := s.ListEndpoints(context.Background(), DiscoveryEndpointQuery{Limit: 50})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, e := range res.Endpoints {
+		if e.Port == port {
+			return e
+		}
+	}
+	t.Fatalf("no endpoint on port %d", port)
+	return DiscoveryEndpoint{}
+}
+
+func TestListenerCorrelationSQLite(t *testing.T)   { runListenerCorrelationCase(t, false) }
+func TestListenerCorrelationPostgres(t *testing.T) { runListenerCorrelationCase(t, true) }
+
+// A Tomcat JKS behind an https-alt port: the wire says only "Apache-Coyote"
+// once, the host says java+catalina holds the port, and the join makes it high.
+func runListenerCorrelationCase(t *testing.T, postgres bool) {
+	s, db := migratedLinkStore(t, postgres)
+	ctx := context.Background()
+	netScan := func() []scanner.DiscoveredEndpoint {
+		web := scanner.Resolve([]scanner.Evidence{scanner.NewEvidence(scanner.SignalHTTPHeader, "Server: Apache-Coyote/1.1", "tomcat")})
+		return []scanner.DiscoveredEndpoint{
+			{Host: "app.example.com", Port: 8443, Protocol: "https-alt", Reachable: true, Fingerprint: &web},
+			{Host: "app.example.com", Port: 1433, Protocol: "mssql", Reachable: true,
+				Fingerprint: &scanner.Fingerprint{Tech: "unknown", Confidence: "low", Platform: "unknown", TLSStack: "unknown"}},
+			{Host: "other.example.com", Port: 3306, Protocol: "mysql", Reachable: true,
+				Fingerprint: &scanner.Fingerprint{Tech: "unknown", Confidence: "low", Platform: "unknown", TLSStack: "unknown"}},
+		}
+	}
+	if _, err := s.upsertScanResults(ctx, netScan()); err != nil {
+		t.Fatal(err)
+	}
+	if e := endpointByPort(t, s, 8443); e.TechConfidence != "medium" {
+		t.Fatalf("before the join: %+v", e)
+	}
+
+	obs := &scanner.HostObservations{TargetID: "t1", ListenersScanned: true, Listeners: listenerPortEvidence([]agentdiscovery.Listener{
+		{Port: 8443, PID: 300, UID: 1001, Comm: "java", Exe: "/usr/bin/java", Tech: "tomcat"},
+		{Port: 1433, PID: 0, UID: agentdiscovery.UnknownID, Comm: "sqlservr", Tech: "mssql"},
+		{Port: 3306, PID: 4, UID: 27, Comm: "mysqld", Tech: "mysql"},
+	})}
+	if err := applyListenerEvidence(ctx, db, postgres, "", "app.example.com", obs); err != nil {
+		t.Fatal(err)
+	}
+	if e := endpointByPort(t, s, 8443); e.Tech != "tomcat" || e.TechConfidence != "high" || e.ServerTech != "tomcat" {
+		t.Fatalf("tomcat behind https-alt must resolve high: %+v", e)
+	}
+	if e := endpointByPort(t, s, 1433); e.Tech != "mssql" || e.TechConfidence != "medium" {
+		t.Fatalf("a hidden uid is a weight-60 row, medium at best: %+v", e)
+	}
+	if e := endpointByPort(t, s, 3306); e.Tech == "mysql" {
+		t.Fatal("a listener on app.example.com must not touch another host's endpoint")
+	}
+
+	// A later network rescan has no listener rows of its own; the carry keeps them.
+	if _, err := s.upsertScanResults(ctx, netScan()); err != nil {
+		t.Fatal(err)
+	}
+	if e := endpointByPort(t, s, 8443); e.TechConfidence != "high" {
+		t.Fatalf("network rescan demoted listener evidence: %+v", e)
+	}
+
+	// The next host sweep no longer sees the port: its listener row goes.
+	if err := applyListenerEvidence(ctx, db, postgres, "", "app.example.com", &scanner.HostObservations{ListenersScanned: true}); err != nil {
+		t.Fatal(err)
+	}
+	if e := endpointByPort(t, s, 8443); e.TechConfidence != "medium" {
+		t.Fatalf("stale listener row kept: %+v", e)
+	}
+	// A sweep that did not run changes nothing.
+	if err := applyListenerEvidence(ctx, db, postgres, "", "app.example.com", &scanner.HostObservations{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestListenerPortEvidenceDedupesAndHidesUID(t *testing.T) {
+	rows := listenerPortEvidence([]agentdiscovery.Listener{
+		{Port: 80, PID: 1, UID: 0, Comm: "nginx", Tech: "nginx"},
+		{Port: 80, PID: 2, UID: 33, Comm: "nginx", Tech: "nginx"},
+		{Port: 9000, PID: 3, UID: 5, Comm: "java"},
+		{Port: 22, PID: 4, UID: 0, Comm: "sshd"},
+		{Port: 25, PID: 5, UID: agentdiscovery.UnknownID, Comm: "master", Tech: "postfix"},
+	})
+	if len(rows) != 3 {
+		t.Fatalf("want nginx once, java platform vote, postfix: %+v", rows)
+	}
+	if rows[0].Evidence.Weight != 100 || rows[2].Evidence.Weight != 60 {
+		t.Fatalf("weights: %+v", rows)
+	}
+	if rows[1].Evidence.Tech != "" || rows[1].Evidence.Platform != scanner.PlatformJava {
+		t.Fatalf("plain java should vote platform only: %+v", rows[1])
 	}
 }

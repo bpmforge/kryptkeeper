@@ -1,18 +1,21 @@
 # Tenancy — Current Enforcement Posture
 
-**Date:** 2026-10-09. **Status:** multi-tenancy is **EXPERIMENTAL in v0.9**. Tenant isolation is
-**not a security boundary** in this release: a tenant admin can act across tenants. The gaps
-below are scheduled for **v0.10**. Owner decision 2026-10-09, following the A01 audit
-(`docs/security/final-report.md`, `OWASP_A01_FINDINGS_2026-10-09.md`,
-`OWASP_A01_SUPPLEMENT_2026-10-09.md`).
+**Date:** 2026-10-16. **Status:** tenant isolation is **enforced, verified by the tenant-idor
+suite** (`bash scripts/test/run.sh --suite tenant-idor`, 0 cross-tenant leaks on SQLite and
+PostgreSQL). The 21 leaks found in the v0.9.3 live validation are closed in v0.10 (W21-01..03,
+W22-01, W22-02). The experimental start-up gate was lifted by owner decision on 2026-10-16
+(`docs/release/MULTI_TENANCY_GATE_DECISION.md`).
 
 ## Operating it
 
 `MULTI_TENANCY` is off by default; when off, every principal is super-admin in the `default`
-tenant and nothing below applies. With `MULTI_TENANCY` on, the hub **refuses to start** unless
-`KRYPTKEEPER_MULTI_TENANCY_EXPERIMENTAL=accept-risk` is also set (exact, case-sensitive). When
-acknowledged it logs a WARNING at startup. The UI shows an "Experimental" label on the Tenants
-page and the tenant switcher. Do not use it to host mutually untrusted tenants.
+tenant and nothing below applies. With `MULTI_TENANCY` on, the hub starts normally and logs a
+NOTICE pointing at this document. `KRYPTKEEPER_MULTI_TENANCY_GATE=enforce` restores the v0.9
+refusal (rollback): the hub then refuses to start unless
+`KRYPTKEEPER_MULTI_TENANCY_EXPERIMENTAL=accept-risk` is also set (exact, case-sensitive).
+Instance-wide settings (runtime config, delivery plugins, ceremonies, SCEP challenges, AD sync,
+SoD constraints, global custom roles, keystore operations on unmapped keys) are platform
+super-admin only while multi-tenancy is on.
 
 ## What IS enforced today
 
@@ -31,35 +34,25 @@ Verified against the code (`internal/bootstrap`):
   take it from the claim named by `APP_AUTH_TENANT_CLAIM`. A principal without one resolves to
   `default`.
 - **`X-Tenant` is a view-as selector only for the bootstrap/root super-admin.**
-- **Audit events carry a tenant field** (`auditRequestTenant`, `audit_events.go`), derived from
-  the request header, not the caller's identity (OWASP-002, see gaps).
+- **Audit events carry the resolved principal's tenant** (`audit_events.go`); `GET /audit`
+  returns only the caller's tenant for non-super-admins.
 
-## KNOWN GAPS (scheduled for v0.10)
+## Closed in v0.10 and remaining limits
 
-| Finding | Gap |
-|---|---|
-| A01-001 | A tenant admin can mint `pki-admin` API keys in any tenant. |
-| A01S-3 | A tenant admin can export another tenant's CA private key. |
-| A01-002 | Approval actions can be run against other tenants' certificates. |
-| A01-004 / A01-005 | Audit, search, CBOM and SSH-certificate lists are not tenant-filtered. Since FG-3 `GET /api/v1/audit` needs the `audit.read` permission (`handlers_audit.go`, `authz_grant.go`), but a holder in one tenant (a tenant `pki-admin` or `auditor`) reads every tenant's rows. |
-| A01-006 | A tenant admin can rewrite global configuration, credentials and plugins. |
-| A01S-6 | The user directory is shared: a tenant admin can list and delete other tenants' users. |
-| A01-007 | Tenant-filtered lists still return the unfiltered `meta.total`. |
-| OWASP-002 | Audit rows take their tenant from the raw `X-Tenant` header, not the caller's identity, so a request can file audit rows under another tenant. |
-| New (2026-10-15) | `POST /certificates/bulk-revoke` ignores tenant: a tenant admin can revoke another tenant's certificates in bulk (single revoke correctly returns 403). |
-| New (2026-10-15) | `POST /cas` accepts a `parent_ca_id` from another tenant (or the default tenant), so a tenant can chain a sub-CA under someone else's root. |
-| New (2026-10-15) | Notification rules, connectors, inventory sources, custom roles and discovery are cross-tenant readable and/or writable; `GET /keys` and the key-custody report list every tenant's keys. |
+Every gap listed for v0.9 (A01-001, A01-002, A01-004..007, A01S-3, A01S-6, OWASP-002) and every
+leak L-01..L-21 in `docs/release/TENANT_ISOLATION_VALIDATION_v0.9.3.md` is fixed and covered by
+a `TestLeakL*` regression test in `internal/bootstrap` plus the tenant-idor suite. Audit rows take
+their tenant from the resolved principal, never from `X-Tenant`.
 
-The single-tenant fixes merged since the audit (FG-2 dual control, FG-3 grant checks, FG-4 SSH policy, FG-5
-bearer roles, FG-7 sessions) do not add tenant isolation: FG-3 bounds the roles a caller may grant by the
-permissions it holds, not by tenant, and the SSH CA key is still one global key. Until FG-6a/6b land in v0.10,
-treat every tenant admin as a platform admin.
+Remaining limits, by design or tracked:
 
-The live validation of 2026-10-15 on v0.9.3 (`docs/release/TENANT_ISOLATION_VALIDATION_v0.9.3.md`) found 21
-cross-tenant leaks (14 state-changing, 3 critical: full cross-tenant takeover). It confirms every gap above,
-records which are partially fixed (A01-004, A01-007, A01S-3), and ranks the v0.10 fixes. What does hold:
-single-resource reads and writes, `X-Tenant` spoofing (refused), escalation to global admin (refused), and
-the dashboard and aggregate reports.
+- One SSH CA key for the whole hub (L-22, design).
+- The tenant-idor suite cannot see a write that changes instance-global state without naming
+  another tenant's data; the super-admin gate on global settings (L-08) is proven by unit tests.
+- Keystore keys not backing a CA, SCIM/OIDC-provisioned users (land in `default`) and legacy
+  tenant-less credentials (belong to `default`) are documented behaviours, not leaks.
+- Agent-reported endpoints (`agent_endpoints`) carry no tenant; they are reachable only through
+  a tenant-authorized target.
 
 ## History
 

@@ -21,20 +21,6 @@ const testOIDCIssuer = "https://idp.example.com/"
 const testOIDCClientID = "test-client-id"
 const testOIDCKID = "test-kid-1"
 
-// newTestOIDCTokenEndpoint returns a fake IdP token endpoint that always
-// succeeds, signing an ID token with the given claims (issuer/audience/sub
-// left to the caller so individual tests can make them wrong on purpose).
-func newTestOIDCTokenEndpoint(t *testing.T, idToken string) *httptest.Server {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		resp := oidcTokenResponse{IDToken: idToken, TokenType: "Bearer", ExpiresIn: 3600}
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	t.Cleanup(server.Close)
-	return server
-}
-
 func newTestOIDCLoginAuthenticator(t *testing.T, tokenEndpointURL string, jwksJSON string) *Authenticator {
 	t.Helper()
 	return &Authenticator{
@@ -657,23 +643,23 @@ func TestOIDCLoginStateStore_SweepsExpiredAndBoundsTotalSize(t *testing.T) {
 	ttl := 5 * time.Minute
 
 	for i := 0; i < maxPendingOIDCLogins; i++ {
-		if !store.put(fmt.Sprintf("state-%d", i), "verifier", now, now.Add(ttl)) {
+		if !store.putFlow(fmt.Sprintf("state-%d", i), oidcLoginState{codeVerifier: "verifier", expiresAt: now.Add(ttl)}, now) {
 			t.Fatalf("put %d: refused below the cap of %d", i, maxPendingOIDCLogins)
 		}
 	}
-	if store.put("state-over-cap", "verifier", now, now.Add(ttl)) {
+	if store.putFlow("state-over-cap", oidcLoginState{codeVerifier: "verifier", expiresAt: now.Add(ttl)}, now) {
 		t.Fatalf("expected put to be refused at the cap of %d entries", maxPendingOIDCLogins)
 	}
 
 	// Refused, not evicted: an earlier in-flight login must survive, or one
 	// caller filling the store could cancel another operator's SSO login.
-	if _, ok := store.take("state-0", now); !ok {
+	if _, ok := store.takeFlow("state-0", now); !ok {
 		t.Fatal("a pending login was evicted to make room; put must refuse instead")
 	}
 
 	// Once entries expire, the store must recover without a background sweeper.
 	later := now.Add(ttl).Add(time.Second)
-	if !store.put("state-after-expiry", "verifier", later, later.Add(ttl)) {
+	if !store.putFlow("state-after-expiry", oidcLoginState{codeVerifier: "verifier", expiresAt: later.Add(ttl)}, later) {
 		t.Fatal("expected put to succeed after expired entries were swept")
 	}
 	store.mu.Lock()

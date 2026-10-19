@@ -3,8 +3,11 @@
 .github
 .claude
 
-# Documentation and planning artifacts
-docs
+# Documentation and planning artifacts. openapi.yaml stays: the dashboard
+# image's prebuild step (openapi-typescript) reads it.
+docs/*
+!docs/openapi.yaml
+!docs/embed.go
 
 # Common local/build artifacts
 bin
@@ -15,6 +18,8 @@ coverage
 
 # Frontend artifacts
 node_modules
+**/node_modules
+ui/dist
 web/node_modules
 web/dist
 web/.next

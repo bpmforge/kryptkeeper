@@ -1,0 +1,141 @@
+{
+  "comment": "Ground truth for the W34-20 corpus: the technology each service really is, written from what the compose file starts, never from the scanner. 'name' is the compose service; run.sh skips every entry of a service that did not come up.",
+  "entries": [
+    {
+      "name": "nginx",
+      "host": "nginx",
+      "port": 443,
+      "tech": "nginx",
+      "tier": "full",
+      "tls_stack": "openssl"
+    },
+    {
+      "name": "apache",
+      "host": "apache",
+      "port": 443,
+      "tech": "apache",
+      "tier": "full",
+      "tls_stack": "openssl"
+    },
+    {
+      "name": "tomcat",
+      "host": "tomcat",
+      "port": 8443,
+      "tech": "tomcat",
+      "tier": "full",
+      "note": "JKS keystore; Tomcat 10 sends no Server header",
+      "tls_stack": "jsse"
+    },
+    {
+      "name": "openldap",
+      "host": "openldap",
+      "port": 389,
+      "tech": "ldap-openldap",
+      "tier": "full",
+      "note": "StartTLS + rootDSE"
+    },
+    {
+      "name": "openldap",
+      "host": "openldap",
+      "port": 636,
+      "tech": "ldap-openldap",
+      "tier": "full",
+      "note": "LDAPS + rootDSE",
+      "tls_stack": "openssl"
+    },
+    {
+      "name": "postfix",
+      "host": "postfix",
+      "port": 25,
+      "tech": "postfix",
+      "tier": "full"
+    },
+    {
+      "name": "dovecot",
+      "host": "dovecot",
+      "port": 143,
+      "tech": "dovecot",
+      "tier": "full"
+    },
+    {
+      "name": "dovecot",
+      "host": "dovecot",
+      "port": 993,
+      "tech": "dovecot",
+      "tier": "full",
+      "tls_stack": "openssl"
+    },
+    {
+      "name": "dovecot",
+      "host": "dovecot",
+      "port": 110,
+      "tech": "dovecot",
+      "tier": "full"
+    },
+    {
+      "name": "dovecot",
+      "host": "dovecot",
+      "port": 995,
+      "tech": "dovecot",
+      "tier": "full",
+      "tls_stack": "openssl"
+    },
+    {
+      "name": "mysql",
+      "host": "mysql",
+      "port": 3306,
+      "tech": "mysql",
+      "tier": "full"
+    },
+    {
+      "name": "mssql",
+      "host": "mssql",
+      "port": 1433,
+      "tech": "mssql",
+      "tier": "full",
+      "note": "skipped when the runner cannot pull or run the amd64 image"
+    },
+    {
+      "name": "postgres",
+      "host": "postgres",
+      "port": 5432,
+      "tech": "postgres",
+      "tier": "full"
+    },
+    {
+      "name": "redis",
+      "host": "redis",
+      "port": 6380,
+      "tech": "redis",
+      "tier": "full",
+      "note": "TLS-only listener",
+      "tls_stack": "openssl"
+    },
+    {
+      "name": "vault",
+      "host": "vault",
+      "port": 8200,
+      "tech": "vault",
+      "tier": "full",
+      "tls_stack": "go"
+    },
+    {
+      "name": "k8s",
+      "host": "k8s",
+      "port": 6443,
+      "tech": "kubernetes-api",
+      "tier": "full",
+      "note": "stand-in: serves the anonymous Status response of kube-apiserver",
+      "tls_stack": "go"
+    },
+    {
+      "name": "winrm",
+      "host": "winrm",
+      "port": 5986,
+      "tech": "winrm",
+      "tier": "full",
+      "note": "stand-in: serves the 401 Negotiate + Microsoft-HTTPAPI response of http.sys",
+      "tls_stack": "go"
+    }
+  ]
+}

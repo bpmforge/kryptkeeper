@@ -1,0 +1,9 @@
+# W24-01 fixture: the corpusd listener farm (43 TLS/plain endpoints) on one
+# container with many addresses of a private /24. corpusd is built by run.sh.
+FROM docker.io/library/alpine:3.20
+RUN apk add --no-cache iproute2
+COPY corpusd/corpusd /usr/local/bin/corpusd
+COPY ground-truth.json /ground-truth.json
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/corpusd && mkdir -p /out
+ENTRYPOINT ["/entrypoint.sh"]

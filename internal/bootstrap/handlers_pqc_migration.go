@@ -6,7 +6,7 @@ package bootstrap
 
 import (
 	"encoding/json"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"strings"
 	"time"
@@ -78,7 +78,14 @@ func registerPQCMigrationHandler(mux *http.ServeMux, auth *Authenticator, certPr
 		if err := json.NewEncoder(w).Encode(struct {
 			Data pqc.MigrationRoadmap `json:"data"`
 		}{Data: roadmap}); err != nil {
-			log.Printf("failed to encode pqc migration roadmap: %v", err)
+			logging.Warnf("failed to encode pqc migration roadmap: %v", err)
 		}
 	})
+}
+
+// publishMigrateWaveEvent is the migrate producer for wave execution
+// (pqc_wave_execute.go). op_id is the wave id; progress is nil because a wave
+// reports only its terminal tally.
+func publishMigrateWaveEvent(tenant, waveID, status, message string) {
+	publishOperationEvent(tenant, EventKindMigrate, waveID, status, nil, message)
 }

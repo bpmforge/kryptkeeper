@@ -5,14 +5,23 @@
 package acme
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	kkdb "kryptkeeper/internal/db"
 )
 
 // testJWK is a fixed, syntactically-valid EC JWK used by the direct
@@ -269,5 +278,226 @@ func TestACMENewAccountEABOptionalByDefault(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 when EAB is not required, got %d", resp.StatusCode)
+	}
+}
+
+// --- W26-01: admin-minted keys, reject audit, alerts, reuse ---
+
+type eabAuditRec struct {
+	mu     sync.Mutex
+	events []AuditEvent
+}
+
+func (a *eabAuditRec) fn(_ context.Context, ev AuditEvent) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.events = append(a.events, ev)
+}
+
+func (a *eabAuditRec) rejects() []AuditEvent {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]AuditEvent(nil), a.events...)
+}
+
+// eabAdminServer is a test ACME server with a minted (or revoked) admin key.
+func eabAdminServer(t *testing.T, revoke bool) (srv *Server, ts *httptest.Server, rec *eabAuditRec, mac []byte, admin *MemEABAdmin) {
+	t.Helper()
+	srv, ts = newTestACMEServer(t)
+	t.Cleanup(ts.Close)
+	admin = NewMemEABAdmin()
+	mac = []byte("admin-minted-mac-key-32-bytes!!!")
+	if err := admin.Create(context.Background(), EABAdminKey{KID: "kk-eab-1", CreatedAt: time.Now().UTC()}, string(mac)); err != nil {
+		t.Fatal(err)
+	}
+	if revoke {
+		if err := admin.Revoke(context.Background(), "kk-eab-1", time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec = &eabAuditRec{}
+	srv.WithEABAdmin(admin).WithAuditFunc(rec.fn)
+	return srv, ts, rec, mac, admin
+}
+
+func postNewAccountEAB(t *testing.T, srv *Server, ts *httptest.Server, c *acmeTestClient, kid string, mac []byte) *http.Response {
+	t.Helper()
+	eab := buildEAB(t, kid, mac, srv.baseURL+"/acme/new-account", c.jwk)
+	payload, _ := json.Marshal(map[string]any{"termsOfServiceAgreed": true, "externalAccountBinding": eab})
+	return c.postJWS(t, ts, ts.URL+"/acme/new-account", payload)
+}
+
+func TestNewAccountRevokedKeyIs401AndAudited(t *testing.T) {
+	srv, ts, rec, mac, _ := eabAdminServer(t, true)
+	resp := postNewAccountEAB(t, srv, ts, newACMETestClient(t), "kk-eab-1", mac)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked key: got %d, want 401", resp.StatusCode)
+	}
+	ev := rec.rejects()
+	if len(ev) != 1 || ev[0].Action != "acme.eab.reject" || ev[0].Outcome != "denied" || ev[0].Actor != "kk-eab-1" {
+		t.Fatalf("audit = %+v", ev)
+	}
+}
+
+func TestNewAccountWrongHMACIs401AndAudited(t *testing.T) {
+	srv, ts, rec, mac, _ := eabAdminServer(t, false)
+	resp := postNewAccountEAB(t, srv, ts, newACMETestClient(t), "kk-eab-1", append([]byte("x"), mac...))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong hmac: got %d, want 401", resp.StatusCode)
+	}
+	ev := rec.rejects()
+	if len(ev) != 1 || ev[0].Action != "acme.eab.reject" {
+		t.Fatalf("audit = %+v", ev)
+	}
+	if strings.Contains(ev[0].Detail, string(mac)) {
+		t.Fatal("audit detail leaks key material")
+	}
+}
+
+func TestNewAccountMissingBindingAudited(t *testing.T) {
+	t.Setenv("APP_ACME_EAB_REQUIRED", "true")
+	srv, ts, rec, _, _ := eabAdminServer(t, false)
+	_ = srv
+	payload, _ := json.Marshal(map[string]any{"termsOfServiceAgreed": true})
+	resp := newACMETestClient(t).postJWS(t, ts, ts.URL+"/acme/new-account", payload)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("got %d, want 401", resp.StatusCode)
+	}
+	if ev := rec.rejects(); len(ev) != 1 || ev[0].Detail != "missing binding" {
+		t.Fatalf("audit = %+v", ev)
+	}
+}
+
+func TestEABFailuresAlertAfterTen(t *testing.T) {
+	rt := newEABRuntime()
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	rt.now = func() time.Time { return now }
+
+	alerts := func(src string, n int) (fired int) {
+		for i := 0; i < n; i++ {
+			if _, fire := rt.recordFailure(src); fire {
+				fired++
+			}
+		}
+		return fired
+	}
+	if got := alerts("10.0.0.1", 10); got != 0 {
+		t.Fatalf("10 failures alerted %d times", got)
+	}
+	if got := alerts("10.0.0.1", 5); got != 1 {
+		t.Fatalf("11th+ failures alerted %d times, want exactly 1", got)
+	}
+	if got := alerts("10.0.0.2", 10); got != 0 {
+		t.Fatal("second source must count independently")
+	}
+	now = now.Add(eabFailureWindow)
+	if got := alerts("10.0.0.1", 11); got != 1 {
+		t.Fatalf("window rollover re-arm: alerted %d times, want 1", got)
+	}
+}
+
+func TestEABFailureAlertEndToEnd(t *testing.T) {
+	srv, ts, _, mac, _ := eabAdminServer(t, false)
+	var alerts []map[string]string
+	srv.WithAlertFunc(func(_ context.Context, kind string, d map[string]string) {
+		if kind != "acme.eab.failures" {
+			t.Errorf("kind = %s", kind)
+		}
+		alerts = append(alerts, d)
+	})
+	for i := 0; i < 11; i++ {
+		resp := postNewAccountEAB(t, srv, ts, newACMETestClient(t), "kk-eab-1", []byte("wrong-"+string(mac)))
+		resp.Body.Close()
+	}
+	if len(alerts) != 1 || alerts[0]["count"] != "11" || alerts[0]["source"] == "" {
+		t.Fatalf("alerts = %v", alerts)
+	}
+}
+
+func TestSeedKeysStillLoad(t *testing.T) {
+	macKey := []byte("seed-mac-key-material-32-bytes!!")
+	t.Setenv("APP_ACME_EAB_KEYS_JSON", `{"seed-1":"`+base64.RawURLEncoding.EncodeToString(macKey)+`"}`)
+	srv, ts, _, _, admin := eabAdminServer(t, false)
+	c := newACMETestClient(t)
+	resp := postNewAccountEAB(t, srv, ts, c, "seed-1", macKey)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("seed key: got %d, want 201", resp.StatusCode)
+	}
+	list, _ := admin.List(context.Background())
+	for _, k := range list {
+		if k.KID == "seed-1" {
+			t.Fatal("seed keys must not be listable")
+		}
+	}
+}
+
+func TestEABKeyReusedBySecondAccountKeyRefused(t *testing.T) {
+	srv, ts, rec, mac, _ := eabAdminServer(t, false)
+	first, second := newACMETestClient(t), newACMETestClient(t)
+	for i, c := range []*acmeTestClient{first, second, first} {
+		resp := postNewAccountEAB(t, srv, ts, c, "kk-eab-1", mac)
+		resp.Body.Close()
+		want := http.StatusCreated
+		if i == 1 {
+			want = http.StatusUnauthorized
+		}
+		if resp.StatusCode != want {
+			t.Fatalf("attempt %d: got %d, want %d", i, resp.StatusCode, want)
+		}
+	}
+	ev := rec.rejects()
+	if len(ev) != 1 || ev[0].Detail != "kid already bound to another account key" {
+		t.Fatalf("audit = %+v", ev)
+	}
+}
+
+func TestDBEABAdminRealNewAccountSetsLastUsed(t *testing.T) {
+	srv, ts := newTestACMEServer(t)
+	defer ts.Close()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "eab.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := kkdb.RunMigrations(db, "sqlite"); err != nil {
+		t.Fatal(err)
+	}
+	store := NewDBEABAdmin(db, false, func(s string) ([]byte, error) { return []byte(s), nil })
+	mac := []byte("db-minted-mac-key-32-bytes-long!")
+	if err := store.Create(context.Background(), EABAdminKey{KID: "kk-eab-db", Label: "ci", CreatedBy: "u1", CreatedAt: time.Now().UTC()}, string(mac)); err != nil {
+		t.Fatal(err)
+	}
+	srv.WithEABAdmin(store)
+
+	before, _ := store.List(context.Background())
+	if len(before) != 1 || before[0].LastUsedAt != nil || before[0].Uses != 0 {
+		t.Fatalf("before = %+v", before)
+	}
+	resp := postNewAccountEAB(t, srv, ts, newACMETestClient(t), "kk-eab-db", mac)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("newAccount: %d", resp.StatusCode)
+	}
+	after, _ := store.List(context.Background())
+	if after[0].LastUsedAt == nil || after[0].Uses != 1 {
+		t.Fatalf("after = %+v", after)
+	}
+	if err := store.Revoke(context.Background(), "kk-eab-db", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Revoke(context.Background(), "kk-eab-db", time.Now()); !errors.Is(err, ErrEABAlreadyRevoked) {
+		t.Fatalf("second revoke = %v", err)
+	}
+	if err := store.Revoke(context.Background(), "nope", time.Now()); !errors.Is(err, ErrEABNotFound) {
+		t.Fatalf("unknown revoke = %v", err)
+	}
+	resp = postNewAccountEAB(t, srv, ts, newACMETestClient(t), "kk-eab-db", mac)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("after revoke: %d", resp.StatusCode)
 	}
 }

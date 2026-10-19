@@ -24,7 +24,8 @@ type CloudCertificate struct {
 	NotAfter     time.Time `json:"not_after,omitempty"`
 	Status       string    `json:"status"` // ISSUED, PENDING_VALIDATION, EXPIRED, etc.
 	KeyAlgorithm string    `json:"key_algorithm"`
-	InUse        bool      `json:"in_use"` // attached to a load balancer / CDN / etc.
+	InUse        bool      `json:"in_use"`          // attached to a load balancer / CDN / etc.
+	Scope        string    `json:"scope,omitempty"` // Scope.Key() of the source that produced it (W24-17)
 }
 
 func truncate(s string, n int) string {

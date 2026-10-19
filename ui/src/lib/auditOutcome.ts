@@ -39,3 +39,12 @@ const DOT_CLASS: Record<BadgeTone, string> = {
 export function auditOutcomeDotClass(outcome: string): string {
   return DOT_CLASS[auditOutcomeTone(outcome)];
 }
+
+// Every page view writes audit rows (ca.list, authz.check, report.*), so an
+// unfiltered feed showed the viewer's own browsing. "Live activity" means
+// things that changed; the full log stays one click away.
+const READ_ONLY_ACTION =
+  /(^report\.|^dashboard\.|^authz\.|\.(list|get|check|summary|view|search|read)$)/;
+export function isReadOnlyAction(action?: string): boolean {
+  return READ_ONLY_ACTION.test(action ?? "");
+}

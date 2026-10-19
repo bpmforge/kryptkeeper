@@ -6,11 +6,12 @@ package bootstrap
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // PostureTrendResponse is the response body for
@@ -50,7 +51,7 @@ func registerPostureTrendHandler(mux *http.ServeMux, auth *Authenticator, store 
 		limit := 365
 		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 			if n, err := strconv.Atoi(raw); err == nil && n > 0 {
-				limit = n
+				limit = min(n, maxPostureTrendLimit)
 			}
 		}
 
@@ -59,7 +60,7 @@ func registerPostureTrendHandler(mux *http.ServeMux, auth *Authenticator, store 
 			snapshots, err = store.List(r.Context(), since, limit)
 			if err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "report.crypto_posture_trend", "report", "crypto-posture-trend", AuditOutcomeFailure)
-				log.Printf("crypto posture trend: list snapshots: %v", err)
+				logging.Infof("crypto posture trend: list snapshots: %v", err)
 				writeServiceUnavailable(w, "trend unavailable")
 				return
 			}
@@ -71,7 +72,11 @@ func registerPostureTrendHandler(mux *http.ServeMux, auth *Authenticator, store 
 		if err := json.NewEncoder(w).Encode(struct {
 			Data PostureTrendResponse `json:"data"`
 		}{Data: PostureTrendResponse{Snapshots: snapshots}}); err != nil {
-			log.Printf("failed to encode crypto posture trend: %v", err)
+			logging.Warnf("failed to encode crypto posture trend: %v", err)
 		}
 	})
 }
+
+// maxPostureTrendLimit caps one trend read at ten years of daily snapshots so
+// a caller cannot ask the store for an unbounded result set.
+const maxPostureTrendLimit = 3650

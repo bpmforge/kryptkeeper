@@ -30,7 +30,8 @@ cp env.example .env
 # (compose refuses to start without either; they must be different values).
 # Generate each with: openssl rand -hex 32
 # env.example already sets KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT=true so the first
-# boot creates the hub's default root CA.
+# boot creates the hub's default root CA. Remove that line to start with zero
+# CAs and create the first root in the UI onboarding wizard instead.
 docker compose up -d
 ```
 
@@ -60,9 +61,15 @@ story.
 On first start the hub creates a default root CA, "Kryptkeeper Root CA"
 (`KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT=true` is set in `env.example`; it only acts
 when no CA exists, so it is safe to leave set). The hub needs a CA at boot to
-issue its own TLS listener certificate — without one it exits with `no CA
-configured`. Set `KRYPTKEEPER_CA_NAME` in `.env` before the first start to
-rename that root.
+issue its own TLS listener certificate. Two ways to get the first root:
+leave `KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT=true` (a hub-held root, created
+automatically), or unset it and the hub starts in first-run mode with zero CAs
+(logs `[FIRST-RUN]`, `/readyz` is OK) so the UI onboarding wizard can create the
+root. In first-run mode the listener serves an ephemeral self-signed certificate (no CA to
+self-issue from), ACME/EST/CMP/WSTEP answer 503 `no CA configured yet; create a
+root CA`, and SCEP/XCEP need a restart after the root exists. Set
+`KRYPTKEEPER_CA_NAME` in `.env` before the first start to rename the bootstrap
+root.
 
 Use the `APP_BOOTSTRAP_TOKEN` value from `.env` as the bearer token. Nothing
 generates or logs one for you; after SSO/login is configured you can turn it
@@ -156,6 +163,7 @@ port (default `8080`) — they are joined to form the listen address.
 | `KRYPTKEEPER_RENEWAL_RULE_SEND_CAP` | No | Most notification-rule alerts one renewal scan processes (default 500); the rest roll to the next scan |
 | `APP_USER_PROVIDER` | No | `db` (default) or `file`/`memory` — in-memory, lists nothing and does not persist; tests and offline dev only |
 | `KRYPTKEEPER_DB_MODE` | No | `sqlite` (default) or `postgres` |
+| `KRYPTKEEPER_DB_MAX_OPEN_CONNS` / `KRYPTKEEPER_DB_MAX_IDLE_CONNS` | No | PostgreSQL pool size per store (defaults `3` / `1`); see [deployment.md](docs/deployment.md) |
 | `KRYPTKEEPER_DB_DSN` / `DATABASE_URL` | If postgres | PostgreSQL connection string |
 | `KRYPTKEEPER_KEY_BACKEND` | No | `software` (default, PKCS#8), `pkcs11`, `cloudkms` (with `KRYPTKEEPER_KMS_PROVIDER=aws\|gcp\|azure`), `vault` — see [Key Storage](#key-storage) for maturity |
 | `KRYPTKEEPER_KEYSTORE_PASSPHRASE` | **Yes** (software keystore) | Encrypts CA private keys at rest; required by Compose and must differ from `APP_BOOTSTRAP_TOKEN` |
@@ -428,6 +436,8 @@ For `AUTH_MODE=jwt`, also set `APP_JWT_HS256_SECRET` (at least 32 bytes).
 - Audit log records every action with actor, resource, outcome, and trace ID
 - Fail-closed startup: unknown auth mode, missing secrets, or invalid config causes immediate exit
 
+**FIPS posture.** Kryptkeeper uses the Go FIPS 140-3 module (CMVP status: see [docs/release/CMVP_STATUS.md](docs/release/CMVP_STATUS.md)). It is not itself a validated product. The FIPS image variant and the algorithm boundary are described in [docs/design/FIPS_POSTURE.md](docs/design/FIPS_POSTURE.md).
+
 Report security issues to the project maintainers privately before public disclosure.
 
 ---
@@ -443,7 +453,8 @@ multi-tenancy), then pivoted to an estate-management direction — see
 [`docs/DECISIONS.md`](docs/DECISIONS.md) D-106 and
 [`docs/sdlc/phase-0-ideation/VISION_V5.md`](docs/sdlc/phase-0-ideation/VISION_V5.md)
 for the full strategy. For where that work stands today, see
-[`docs/ROADMAP.md`](docs/ROADMAP.md) for the current wave plan and
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for what is planned after 1.0.0,
+[`docs/HARDENING_ROADMAP.md`](docs/HARDENING_ROADMAP.md) for the hardening wave plan and
 [`docs/NEXT_HORIZON.md`](docs/NEXT_HORIZON.md) for what comes after it.
 [`CHANGELOG.md`](CHANGELOG.md) is the log of what has
 actually shipped.
@@ -481,25 +492,27 @@ Upgrade test: full matrix on rc.5, spot-check on rc.7 (schema 76); see
   readiness; renewal autopilot, rollout groups and PQC waves; SAML/OIDC/SCIM (tested against
   in-process IdPs); CT monitoring; cloud inventory; ADCS sync; Terraform provider; air-gap bundle;
   MCP server; Helm chart.
-- **Experimental:** multi-tenancy (see below); HashiCorp Vault and GCP Cloud KMS keystores.
-- **Not in v0.9:** agentless SSH certificate discovery (the scanner exists but nothing calls it yet); finding exceptions/risk acceptance (v0.10); issuer connectors other than
+- **Experimental:** HashiCorp Vault and GCP Cloud KMS keystores.
+- **Not in v0.9:** agentless SSH certificate discovery (the scanner exists but nothing calls it yet); issuer connectors other than
   `internal` and ACME (DigiCert, EST, SCEP and WSTEP upstream connectors).
 - **Plugins:** the F5 and Citrix delivery plugins are verified against mock APIs only, not real
   appliances.
 
 ---
 
-## Multi-tenancy (experimental)
+## Multi-tenancy
 
-Multi-tenancy (`MULTI_TENANCY=on`) is **experimental in v0.9**: tenant isolation is not a
-security boundary, and a tenant admin can act across tenants. The hub refuses to start with it
-on unless `KRYPTKEEPER_MULTI_TENANCY_EXPERIMENTAL=accept-risk` is set. Known gaps and the v0.10
-plan: [docs/design/TENANCY_POSTURE.md](docs/design/TENANCY_POSTURE.md).
+Multi-tenancy (`MULTI_TENANCY=on`) enforces tenant isolation as of v0.10: every API route is
+checked by the tenant IDOR suite (`bash scripts/test/run.sh --suite tenant-idor`, 0 cross-tenant
+leaks on SQLite and PostgreSQL). Instance-wide settings stay platform super-admin only while it
+is on. The v0.9 start-up acknowledgement is no longer required;
+`KRYPTKEEPER_MULTI_TENANCY_GATE=enforce` restores it as a rollback. Enforced boundary and
+remaining limits: [docs/design/TENANCY_POSTURE.md](docs/design/TENANCY_POSTURE.md).
 
 ---
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE).
+Apache 2.0 — see [LICENSE](LICENSE). Licensing, dependency-licence policy and support: [docs/LICENSING_AND_SUPPORT.md](docs/LICENSING_AND_SUPPORT.md).
 
 The core CA engine, all protocol servers, certificate discovery, and the management dashboard are free and open-source under Apache 2.0.

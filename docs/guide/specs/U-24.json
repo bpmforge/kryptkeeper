@@ -1,0 +1,138 @@
+{
+  "task": "U-24",
+  "title": "Export the certificate inventory as CSV",
+  "sourceStory": "STORIES.md#u-24",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/certificates"
+      },
+      "caption": "Open /certificates",
+      "slug": "certificates-list",
+      "expect": {
+        "role": "button",
+        "name": "Export CSV"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-24/01-certificates-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Select all visible"
+      },
+      "caption": "Click **Select all visible**",
+      "slug": "all-selected",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-24/02-all-selected.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Export CSV"
+      },
+      "caption": "Click **Export CSV** to download the selected rows",
+      "slug": "export-csv",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-24/03-export-csv.png",
+        "annotated": "docs/guide/screenshots/U-24/03-export-csv-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 402,
+          "y": 598,
+          "w": 105,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:42:34.059Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-24",
+    "steps": 3,
+    "shots": 3,
+    "annotated": 1,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/certificates"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-24/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-24/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

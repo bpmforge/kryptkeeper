@@ -11,10 +11,12 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // agentStoreSchema is the idempotent DDL the DB store ensures at construction,
@@ -27,7 +29,7 @@ import (
 const agentStoreSchema = `
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, type TEXT NOT NULL, token TEXT NOT NULL,
-    registered_at TEXT NOT NULL, last_seen TEXT, inventory_count INTEGER NOT NULL DEFAULT 0);
+    registered_at TEXT NOT NULL, last_seen TEXT, inventory_count INTEGER NOT NULL DEFAULT 0, version TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS agent_inventory (
     agent_id TEXT NOT NULL, fingerprint TEXT NOT NULL, subject TEXT, issuer TEXT,
     not_before TEXT, not_after TEXT, source TEXT, auto_renewable INTEGER NOT NULL DEFAULT 0,
@@ -51,6 +53,12 @@ CREATE TABLE IF NOT EXISTS agent_results (
     id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, task_id TEXT, fingerprint TEXT,
     outcome TEXT, served_fingerprint TEXT, rolled_back INTEGER NOT NULL DEFAULT 0,
     detail TEXT, reported_at TEXT NOT NULL);
+-- W29-06 (migration 000240): per-agent single-use enrollment tokens, hash only.
+CREATE TABLE IF NOT EXISTS agent_enrollment_tokens (
+    id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+    redeemed_at TEXT NOT NULL DEFAULT '', redeemed_agent_id TEXT NOT NULL DEFAULT '',
+    revoked_at TEXT NOT NULL DEFAULT '', tenant_id TEXT NOT NULL DEFAULT 'default');
 CREATE INDEX IF NOT EXISTS idx_agent_inventory_agent ON agent_inventory(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_endpoints_agent ON agent_endpoints(agent_id);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_agent ON agent_tasks(agent_id);
@@ -62,6 +70,10 @@ type dbAgentStore struct {
 	db            *sql.DB
 	ph            func(n int) string
 	thresholdDays int
+
+	// changeSink (W24-15) receives change events after a push commits; nil = off.
+	changeSink agentChangeSink
+	stale      staleTracker
 }
 
 func (s *dbAgentStore) EnsureSchema(ctx context.Context) error {
@@ -71,6 +83,12 @@ func (s *dbAgentStore) EnsureSchema(ctx context.Context) error {
 	// Best-effort upgrade for pre-W2-09 tables created without token_hash.
 	// Ignore the error: a duplicate-column failure means it already exists.
 	_, _ = s.db.ExecContext(ctx, "ALTER TABLE agents ADD COLUMN token_hash TEXT NOT NULL DEFAULT ''") // best-effort upgrade: duplicate-column error = already migrated
+	// W24-13: same best-effort upgrade for pre-000142 agents tables.
+	_, _ = s.db.ExecContext(ctx, "ALTER TABLE agents ADD COLUMN version TEXT NOT NULL DEFAULT ''") // best-effort upgrade: duplicate-column error = already migrated
+	// W34-09 (migration 000346): the agent's latest host pass, as JSON.
+	_, _ = s.db.ExecContext(ctx, "ALTER TABLE agents ADD COLUMN host_report TEXT") // best-effort upgrade: duplicate-column error = already migrated
+	// W33-24: same best-effort upgrade for pre-000323 agent_enrollment_tokens tables.
+	_, _ = s.db.ExecContext(ctx, "ALTER TABLE agent_enrollment_tokens ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'") // best-effort upgrade: duplicate-column error = already migrated
 	// W19-13: same best-effort upgrade for pre-existing agent_inventory/agent_tasks
 	// tables (this store's own DSN may not be the one internal/db/migrate.go
 	// applies 000057_agent_dns_identifiers to -- see the dedupAgentTasks doc
@@ -152,20 +170,19 @@ func (s *dbAgentStore) migrateLegacyPlaintextTokens(ctx context.Context) error {
 		}
 	}
 	if len(pending) > 0 {
-		log.Printf("agent store: migrated %d legacy plaintext agent token(s) to hashed storage", len(pending))
+		logging.Infof("agent store: migrated %d legacy plaintext agent token(s) to hashed storage", len(pending))
 	}
 
-	// Verify (log-only, not fatal): NewAgentStoreFromEnv falls back to the
-	// fully in-memory, plaintext, non-constant-time store on any EnsureSchema
-	// error — failing here on a leftover row would trade "mostly hashed, one
-	// stuck row" for "every token plaintext in memory," which is worse, not
-	// safer. Surface it loudly instead so an operator can investigate.
+	// Verify (log-only, not fatal): an EnsureSchema error now takes the whole
+	// agent store offline (503), so failing here on one leftover row would stop
+	// every agent for one stuck row. Surface it loudly instead so an operator
+	// can investigate.
 	var remaining int
 	if err := s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM agents WHERE token != ''").Scan(&remaining); err != nil {
 		return fmt.Errorf("verify agent token migration: %w", err)
 	}
 	if remaining > 0 {
-		log.Printf("agent store: WARNING — %d agent row(s) still hold a plaintext token after migration; investigate", remaining)
+		logging.Infof("agent store: WARNING — %d agent row(s) still hold a plaintext token after migration; investigate", remaining)
 	}
 	return nil
 }
@@ -236,22 +253,122 @@ func (s *dbAgentStore) authToken(ctx context.Context, q interface {
 }
 
 func (s *dbAgentStore) register(name string, agentType AgentType) (id, token string, err error) {
-	id, err = generateToken(8)
-	if err != nil {
-		return "", "", fmt.Errorf("generate agent id: %w", err)
+	if id, err = newAgentID(); err != nil {
+		return "", "", err
 	}
+	token, err = s.registerWithID(id, name, agentType)
+	return id, token, err
+}
+
+func (s *dbAgentStore) registerWithID(id, name string, agentType AgentType) (token string, err error) {
 	token, err = generateToken(32)
 	if err != nil {
-		return "", "", fmt.Errorf("generate agent token: %w", err)
+		return "", fmt.Errorf("generate agent token: %w", err)
 	}
 	// token is stored empty; only its hash is persisted (G-28).
 	q := fmt.Sprintf(`INSERT INTO agents (id, name, type, token, token_hash, registered_at, inventory_count)
 		VALUES (%s, %s, %s, '', %s, %s, 0)`, s.ph(1), s.ph(2), s.ph(3), s.ph(4), s.ph(5))
 	if _, err = s.db.ExecContext(context.Background(), q, id, name, string(agentType),
 		hashAgentToken(token), time.Now().UTC().Format(time.RFC3339)); err != nil {
-		return "", "", fmt.Errorf("insert agent: %w", err)
+		return "", fmt.Errorf("insert agent: %w", err)
 	}
-	return id, token, nil
+	return token, nil
+}
+
+func (s *dbAgentStore) setVersion(agentID, version string) {
+	if version == "" {
+		return
+	}
+	q := fmt.Sprintf("UPDATE agents SET version = %s WHERE id = %s", s.ph(1), s.ph(2))
+	if _, err := s.db.ExecContext(context.Background(), q, version, agentID); err != nil {
+		logging.Infof("agent store: record version for %s: %v", agentID, err)
+	}
+}
+
+func (s *dbAgentStore) setHostReport(agentID string, report AgentHostReport) {
+	b, err := json.Marshal(report)
+	if err != nil {
+		return
+	}
+	q := fmt.Sprintf("UPDATE agents SET host_report = %s WHERE id = %s", s.ph(1), s.ph(2))
+	if _, err := s.db.ExecContext(context.Background(), q, string(b), agentID); err != nil {
+		logging.Infof("agent store: record host report for %s: %v", agentID, err)
+	}
+}
+
+// agentChildTables hold per-agent rows keyed by agent_id; remove must clear
+// them with the agents row or orphaned inventory keeps inflating counts.
+var agentChildTables = []string{"agent_inventory", "agent_endpoints", "agent_tasks", "agent_results"}
+
+// deleteAgentTx deletes one agent and its child rows inside tx.
+func (s *dbAgentStore) deleteAgentTx(ctx context.Context, tx *sql.Tx, agentID string) (bool, error) {
+	for _, t := range agentChildTables {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM %s WHERE agent_id = %s", t, s.ph(1)), agentID); err != nil {
+			return false, err
+		}
+	}
+	res, err := tx.ExecContext(ctx, fmt.Sprintf("DELETE FROM agents WHERE id = %s", s.ph(1)), agentID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+func (s *dbAgentStore) remove(agentID string) error {
+	ctx := context.Background()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	found, err := s.deleteAgentTx(ctx, tx, agentID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrAgentNotFound
+	}
+	return tx.Commit()
+}
+
+func (s *dbAgentStore) pruneSilent(cutoff time.Time) []string {
+	ctx := context.Background()
+	rows, err := s.db.QueryContext(ctx, "SELECT id, registered_at, last_seen FROM agents")
+	if err != nil {
+		logging.Infof("agent store: prune query: %v", err)
+		return nil
+	}
+	var stale []string
+	for rows.Next() {
+		var id, registeredAt string
+		var lastSeen sql.NullString
+		if err := rows.Scan(&id, &registeredAt, &lastSeen); err != nil {
+			break
+		}
+		newest := parseTimeOrZero(registeredAt)
+		if lastSeen.Valid {
+			if t := parseTimeOrZero(lastSeen.String); t.After(newest) {
+				newest = t
+			}
+		}
+		if newest.Before(cutoff) {
+			stale = append(stale, id)
+		}
+	}
+	rows.Close()
+
+	var removed []string
+	for _, id := range stale {
+		if err := s.remove(id); err != nil {
+			if !errors.Is(err, ErrAgentNotFound) { // gone already: someone else pruned it
+				logging.Infof("agent store: prune %s: %v", id, err)
+			}
+			continue
+		}
+		removed = append(removed, id)
+	}
+	return removed
 }
 
 func (s *dbAgentStore) heartbeat(agentID, token string) error {
@@ -276,6 +393,15 @@ func (s *dbAgentStore) submitInventory(agentID, token string, certs []AgentDisco
 
 	if err := s.authToken(ctx, tx, agentID, token); err != nil {
 		return err
+	}
+
+	var prevInv []AgentDiscoveredCert
+	agentName := ""
+	if s.changeSink != nil {
+		if prevInv, err = s.loadInventoryTx(ctx, tx, agentID); err != nil {
+			return err
+		}
+		agentName = s.agentName(ctx, tx, agentID)
 	}
 
 	// Replace inventory.
@@ -333,7 +459,13 @@ func (s *dbAgentStore) submitInventory(agentID, token string, certs []AgentDisco
 	if _, err := tx.ExecContext(ctx, upd, len(certs), time.Now().UTC().Format(time.RFC3339), agentID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if s.changeSink != nil {
+		s.emitInventoryChanges(ctx, agentID, agentName, prevInv, certs)
+	}
+	return nil
 }
 
 // insertTaskTx inserts a renewal task, silently skipping (rather than
@@ -600,7 +732,7 @@ func (s *dbAgentStore) agentCounts() (total, active int) {
 
 func (s *dbAgentStore) list() []AgentInfo {
 	rows, err := s.db.QueryContext(context.Background(),
-		"SELECT id, name, type, registered_at, last_seen, inventory_count FROM agents")
+		"SELECT id, name, type, registered_at, last_seen, inventory_count, version, COALESCE(host_report, '') FROM agents")
 	if err != nil {
 		return nil
 	}
@@ -610,9 +742,15 @@ func (s *dbAgentStore) list() []AgentInfo {
 		var info AgentInfo
 		var registeredAt string
 		var lastSeen sql.NullString
-		var typ string
-		if err := rows.Scan(&info.ID, &info.Name, &typ, &registeredAt, &lastSeen, &info.InventoryCount); err != nil {
+		var typ, hostReport string
+		if err := rows.Scan(&info.ID, &info.Name, &typ, &registeredAt, &lastSeen, &info.InventoryCount, &info.Version, &hostReport); err != nil {
 			return out
+		}
+		if hostReport != "" {
+			var hr AgentHostReport
+			if json.Unmarshal([]byte(hostReport), &hr) == nil {
+				info.HostReport = &hr
+			}
 		}
 		info.Type = AgentType(typ)
 		info.RegisteredAt = parseTimeOrZero(registeredAt)
@@ -627,7 +765,7 @@ func (s *dbAgentStore) list() []AgentInfo {
 }
 
 // fallbackAgentStore is the ONE in-memory agent store the whole process shares
-// when no database is configured.
+// when the in-memory adapter is requested by name (APP_AGENT_STORE_PROVIDER=memory).
 //
 // NewAgentStoreFromEnv has more than one caller — handlers.go builds one for
 // the HTTP handlers, and cmd/kryptkeeper/main.go builds one for the scheduled
@@ -637,7 +775,7 @@ func (s *dbAgentStore) list() []AgentInfo {
 // never wrote to and could never assign a task — a silent no-op that looks
 // exactly like "no certs are due".
 //
-// Deliberately scoped to the fallback only. The DB path stays un-memoized, so
+// Deliberately scoped to the explicit-memory mode only. The DB path stays un-memoized, so
 // this introduces no process-global database handle and no cross-test coupling
 // for the configured case; it shares only the store that is already
 // process-local by nature. Tests construct NewAgentStore() directly and are
@@ -657,10 +795,214 @@ func sharedFallbackAgentStore() AgentStore {
 	return fallbackAgentStore
 }
 
-// NewAgentStoreFromEnv returns a DB-backed agent store when a DB is configured,
-// falling back to a process-shared in-memory store if the DB is unavailable
-// (mirrors the other providers). The DB store self-ensures its schema.
+// lazyAgentStore answers errStoreUnavailable (and empty results) until the
+// configured database opens (D-290-A, S-03). It never falls back to memory:
+// that held agent tokens in plaintext, lost them on restart and diverged HA
+// replicas. Routes are gated on ready() so callers get a 503, not the empty
+// results the error-less accessors return.
+type lazyAgentStore struct {
+	*lazyStore[AgentStore]
+	sinkMu sync.Mutex
+	sink   agentChangeSink
+}
+
+// SetAgentChangeSink is applied to the DB store now or, if the database is
+// still down, when it comes up (W24-15 notifications must survive a late open).
+func (l *lazyAgentStore) SetAgentChangeSink(f agentChangeSink) {
+	l.sinkMu.Lock()
+	l.sink = f
+	l.sinkMu.Unlock()
+	if s, err := l.get(); err == nil {
+		l.applySink(s)
+	}
+}
+
+func (l *lazyAgentStore) applySink(s AgentStore) {
+	l.sinkMu.Lock()
+	f := l.sink
+	l.sinkMu.Unlock()
+	if setter, ok := s.(agentChangeSinkSetter); ok && f != nil {
+		setter.SetAgentChangeSink(f)
+	}
+}
+
+func (l *lazyAgentStore) register(name string, t AgentType) (string, string, error) {
+	s, err := l.get()
+	if err != nil {
+		return "", "", err
+	}
+	return s.register(name, t)
+}
+
+func (l *lazyAgentStore) heartbeat(agentID, token string) error {
+	s, err := l.get()
+	if err != nil {
+		return err
+	}
+	return s.heartbeat(agentID, token)
+}
+
+func (l *lazyAgentStore) submitInventory(agentID, token string, certs []AgentDiscoveredCert, eps []AgentEndpoint) error {
+	s, err := l.get()
+	if err != nil {
+		return err
+	}
+	return s.submitInventory(agentID, token, certs, eps)
+}
+
+func (l *lazyAgentStore) getTasks(agentID, token string) ([]AgentRenewalTask, error) {
+	s, err := l.get()
+	if err != nil {
+		return nil, err
+	}
+	return s.getTasks(agentID, token)
+}
+
+func (l *lazyAgentStore) submitRenewalResult(agentID, token string, r AgentRenewalResult) error {
+	s, err := l.get()
+	if err != nil {
+		return err
+	}
+	return s.submitRenewalResult(agentID, token, r)
+}
+
+func (l *lazyAgentStore) endpointsFor(agentID string) []AgentEndpoint {
+	if s, err := l.get(); err == nil {
+		return s.endpointsFor(agentID)
+	}
+	return nil
+}
+
+func (l *lazyAgentStore) tasksFor(agentID string) []AgentRenewalTask {
+	if s, err := l.get(); err == nil {
+		return s.tasksFor(agentID)
+	}
+	return nil
+}
+
+func (l *lazyAgentStore) resultsFor(agentID string) []AgentRenewalResult {
+	if s, err := l.get(); err == nil {
+		return s.resultsFor(agentID)
+	}
+	return nil
+}
+
+func (l *lazyAgentStore) allResults() []AgentResultEntry {
+	if s, err := l.get(); err == nil {
+		return s.allResults()
+	}
+	return nil
+}
+
+func (l *lazyAgentStore) endpointCount() (int, error) {
+	s, err := l.get()
+	if err != nil {
+		return 0, err
+	}
+	return s.endpointCount()
+}
+
+func (l *lazyAgentStore) agentCounts() (int, int) {
+	if s, err := l.get(); err == nil {
+		return s.agentCounts()
+	}
+	return 0, 0
+}
+
+func (l *lazyAgentStore) list() []AgentInfo {
+	if s, err := l.get(); err == nil {
+		return s.list()
+	}
+	return nil
+}
+
+func (l *lazyAgentStore) sweepRenewals(now time.Time) int {
+	if s, err := l.get(); err == nil {
+		return s.sweepRenewals(now)
+	}
+	return 0
+}
+
+func (l *lazyAgentStore) setVersion(agentID, version string) {
+	if s, err := l.get(); err == nil {
+		s.setVersion(agentID, version)
+	}
+}
+
+func (l *lazyAgentStore) setHostReport(agentID string, report AgentHostReport) {
+	if s, err := l.get(); err == nil {
+		s.setHostReport(agentID, report)
+	}
+}
+
+func (l *lazyAgentStore) remove(agentID string) error {
+	s, err := l.get()
+	if err != nil {
+		return err
+	}
+	return s.remove(agentID)
+}
+
+func (l *lazyAgentStore) pruneSilent(cutoff time.Time) []string {
+	if s, err := l.get(); err == nil {
+		return s.pruneSilent(cutoff)
+	}
+	return nil
+}
+
+func (l *lazyAgentStore) registerWithID(id, name string, t AgentType) (string, error) {
+	s, err := l.get()
+	if err != nil {
+		return "", err
+	}
+	return s.registerWithID(id, name, t)
+}
+
+func (l *lazyAgentStore) mintEnrollmentToken(label, createdBy, tenant string, ttl time.Duration, now time.Time) (AgentEnrollmentToken, string, error) {
+	s, err := l.get()
+	if err != nil {
+		return AgentEnrollmentToken{}, "", err
+	}
+	return s.mintEnrollmentToken(label, createdBy, tenant, ttl, now)
+}
+
+func (l *lazyAgentStore) redeemEnrollmentToken(secret, agentID string, now time.Time) (string, error) {
+	s, err := l.get()
+	if err != nil {
+		return "", err
+	}
+	return s.redeemEnrollmentToken(secret, agentID, now)
+}
+
+func (l *lazyAgentStore) listEnrollmentTokens() []AgentEnrollmentToken {
+	if s, err := l.get(); err == nil {
+		return s.listEnrollmentTokens()
+	}
+	return nil
+}
+
+func (l *lazyAgentStore) revokeEnrollmentToken(id string, now time.Time) error {
+	s, err := l.get()
+	if err != nil {
+		return err
+	}
+	return s.revokeEnrollmentToken(id, now)
+}
+
+// NewAgentStoreFromEnv returns the DB-backed agent store behind a gate that
+// fails closed while the database is down; the shared in-memory store only
+// when APP_AGENT_STORE_PROVIDER=memory names it. The DB store self-ensures its
+// schema.
 func NewAgentStoreFromEnv() AgentStore {
+	if memoryProviderRequested("APP_AGENT_STORE_PROVIDER", "agent store") {
+		return sharedFallbackAgentStore()
+	}
+	l := &lazyAgentStore{}
+	l.lazyStore = newLazyStore[AgentStore]("agent-store", openAgentStore, l.applySink)
+	return l
+}
+
+func openAgentStore() (AgentStore, error) {
 	state := newDBProviderState[*dbAgentStore](
 		"agent-store",
 		func() (string, error) {
@@ -678,12 +1020,14 @@ func NewAgentStoreFromEnv() AgentStore {
 		},
 	)
 	if state.openErr != nil || state.store == nil {
-		_ = dbProviderUnavailable("agent-store", state.openErr) // logs the outage itself; return value is the same sentinel
-		return sharedFallbackAgentStore()
+		if state.openErr == nil {
+			state.openErr = errStoreUnavailable
+		}
+		return nil, dbProviderUnavailable("agent-store", state.openErr) // logs the cause; callers see only errStoreUnavailable
 	}
 	if err := state.store.EnsureSchema(context.Background()); err != nil {
-		_ = dbProviderUnavailable("agent-store", err) // logs the outage itself; return value is the same sentinel
-		return sharedFallbackAgentStore()
+		releaseFailedOpenDB("agent-store", state.store.db)
+		return nil, dbProviderUnavailable("agent-store", err) // logs the cause; callers see only errStoreUnavailable
 	}
-	return state.store
+	return state.store, nil
 }

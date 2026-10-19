@@ -7,13 +7,13 @@ package agentinstall
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"time"
 )
 
@@ -99,11 +99,9 @@ func NewK8sPusher(cfg K8sConfig, client *http.Client) (*K8sPusher, error) {
 			if !pool.AppendCertsFromPEM(cfg.CACertPEM) {
 				return nil, fmt.Errorf("k8s push: CA bundle contains no usable PEM certificate")
 			}
-			client = &http.Client{Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
-			}}
+			client = guardedPushClient(pool)
 		} else {
-			client = http.DefaultClient
+			client = guardedPushClient(nil)
 		}
 	}
 	return &K8sPusher{
@@ -179,6 +177,15 @@ func (p *K8sPusher) tlsSecretManifest(req PushRequest) []byte {
 // Push creates or replaces the TLS secret, verifies what the endpoint
 // serves, and restores the pre-push cluster state on a mismatch.
 func (p *K8sPusher) Push(ctx context.Context, req PushRequest) (InstallResult, error) {
+	// Both names are spliced into the API path; Kubernetes itself only
+	// allows DNS-1123 names, so anything else (a "/" or "..") is refused here
+	// rather than letting the request address a different API resource.
+	if !k8sNamespacePattern.MatchString(p.cfg.Namespace) || len(p.cfg.Namespace) > 63 {
+		return InstallResult{}, fmt.Errorf("k8s push: namespace %q is not a valid DNS-1123 label", p.cfg.Namespace)
+	}
+	if !k8sSecretNamePattern.MatchString(p.cfg.SecretName) || len(p.cfg.SecretName) > 253 {
+		return InstallResult{}, fmt.Errorf("k8s push: secret name %q is not a valid DNS-1123 subdomain", p.cfg.SecretName)
+	}
 	if len(req.CertPEM) == 0 || len(req.KeyPEM) == 0 {
 		return InstallResult{}, fmt.Errorf("k8s push: cert and key are required")
 	}
@@ -291,3 +298,8 @@ func (p *K8sPusher) verifyUntilMatchOrExhausted(ctx context.Context, hostPort, e
 	}
 	return served, err
 }
+
+var (
+	k8sNamespacePattern  = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	k8sSecretNamePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+)

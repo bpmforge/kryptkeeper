@@ -595,6 +595,7 @@ func TestComputeComplianceEvidence_ExpiredActiveCADoesNotCountAsActive(t *testin
 // production traffic hits.
 func TestReportTotals_AgreeWithCertificateListForTeamScopedPrincipal(t *testing.T) {
 	t.Setenv("AUTH_MODE", "jwt")
+	t.Setenv("APP_AUTH_UNMAPPED_ROLE", "read-only") // not a role-mapping test
 	t.Setenv("APP_JWT_HS256_SECRET", "reports-test-jwt-secret")
 
 	tempDir := t.TempDir()
@@ -871,8 +872,6 @@ func TestComputeIssuanceVelocity_AnomalyAtExactMinimumBoundary(t *testing.T) {
 // TestIssuanceVelocityReport_AnomalyThresholdDocumentationInResponse verifies
 // the HTTP response includes the anomaly threshold documentation fields.
 func TestIssuanceVelocityReport_AnomalyThresholdDocumentationInResponse(t *testing.T) {
-	mux, _ := newTestReportsMux(t)
-
 	// Build a request with 6 certificates to exceed the minimum sample.
 	now := time.Now().UTC()
 	certs := make([]CertificateItem, 0, 6)
@@ -890,7 +889,7 @@ func TestIssuanceVelocityReport_AnomalyThresholdDocumentationInResponse(t *testi
 	}
 
 	provider := &reportCertProvider{items: certs}
-	mux = http.NewServeMux()
+	mux := http.NewServeMux()
 	registerReportsHandlers(mux, newReportsTestAuth(t), provider, &reportCAProvider{}, stubTemplateProvider{}, nil, stubAuditProvider{})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/reports/issuance-velocity", nil)

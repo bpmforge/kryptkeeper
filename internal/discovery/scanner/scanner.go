@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	ldap "github.com/go-ldap/ldap/v3"
+
 	"kryptkeeper/internal/ca"
 )
 
@@ -37,6 +39,9 @@ type DiscoveredCert struct {
 	RiskScore          int
 	RiskFlags          []string
 	Raw                []byte
+	// SourcePath is the file the cert was read from on the scanned host
+	// (agentless SSH); the hub persists it on certificate_endpoints.source_path.
+	SourcePath string
 	// Served: the cert came out of a TLS-presented peer chain, so ApplyTrust
 	// may judge it as a chain. Store enumerations, SSH and mesh sources leave
 	// it false and are never classified.
@@ -48,10 +53,20 @@ type DiscoveredCert struct {
 	// served leaf (see ClassifyChain). Empty class = never classified.
 	// ChainCompleteKnown is false when completeness could not be judged, in
 	// which case ChainComplete is meaningless (stored as NULL).
-	TrustClass         string
+	TrustClass string
+	// IssuerClass refines TrustClass with the operator's authorized issuers
+	// (hub|authorized|public|private_unknown|self_signed|unknown); empty when
+	// it was not judged.
+	IssuerClass        string
 	ChainComplete      bool
 	ChainCompleteKnown bool
 	ChainTrusted       bool
+	// IssuedByADCS marks a certificate carrying the Microsoft template
+	// extensions, i.e. issued by an AD CS enterprise CA; ADCSTemplate is the
+	// template name when the extension named one. Not persisted yet: the
+	// issuer-class work reads it from here.
+	IssuedByADCS bool   `json:",omitempty"`
+	ADCSTemplate string `json:",omitempty"`
 }
 
 // DiscoveredEndpoint holds a scanned network endpoint.
@@ -90,6 +105,16 @@ type DiscoveredEndpoint struct {
 	// filled cheaply from the capture handshake; deep scans additionally
 	// enumerate OFFERED versions.
 	CryptoPosture *CryptoPosture `json:",omitempty"`
+	// Fingerprint is the resolved technology behind this endpoint with the
+	// evidence that backs it (FR-P27). ServerTech stays populated for readers
+	// that predate it and equals Fingerprint.Tech when that is a web server.
+	Fingerprint *Fingerprint `json:",omitempty"`
+	// HostObs carries what a host-side scan saw about the machine itself; nil for
+	// every network-scanned endpoint.
+	HostObs *HostObservations `json:",omitempty"`
+	// signals are the raw observations collected during capture; Resolve folds
+	// them (plus the port default) into Fingerprint once the capture is over.
+	signals []Evidence
 }
 
 // ScanResult is the output of a scan job.
@@ -123,6 +148,10 @@ type ScanConfig struct {
 	Deep       bool
 	DeepPortLo int
 	DeepPortHi int
+	// ActiveProbes enables the fingerprint probes that cost more than the
+	// connection a scan already makes (LDAP rootDSE): set for full scans and
+	// implied by Deep. Fast and targeted scans leave it off (D-206).
+	ActiveProbes bool
 }
 
 // Scanner performs TLS certificate discovery.
@@ -149,6 +178,7 @@ func New(config ScanConfig) *Scanner {
 		config.Ports = []int{443}
 	}
 	sc := &Scanner{config: config, protocol: NewProtocolScanner(config.Timeout)}
+	sc.protocol.active = config.ActiveProbes || config.Deep
 	if config.Deep {
 		sc.captureRetries = 1
 	}
@@ -252,16 +282,40 @@ func (s *Scanner) scanEndpointOnce(ctx context.Context, target string) Discovere
 	// STARTTLS certs (mail, Postgres) were never captured because the whole
 	// ProtocolScanner had no caller.
 	entry := protocolForPort(port)
+	var ep DiscoveredEndpoint
 	switch entry.kind {
 	case probeSSH:
-		return s.protocol.ScanSSH(ctx, host, port)
+		ep = s.protocol.ScanSSH(ctx, host, port)
 	case probeRDP:
-		return withHandshakeFinding(s.protocol.ScanRDP(ctx, host, port))
+		ep = withHandshakeFinding(s.protocol.ScanRDP(ctx, host, port))
+	case probeTDS:
+		ep = withHandshakeFinding(s.protocol.ScanTDS(ctx, host, port))
 	case probeSTARTTLS:
-		return withHandshakeFinding(s.protocol.ScanSTARTTLS(ctx, host, port, entry.starttls))
+		ep = withHandshakeFinding(s.protocol.ScanSTARTTLS(ctx, host, port, entry.starttls))
 	default:
-		return s.captureTLS(ctx, host, port, entry)
+		ep = s.captureTLS(ctx, host, port, entry)
 	}
+	return finalizeFingerprint(ep, entry)
+}
+
+// finalizeFingerprint resolves the signals gathered during capture into the
+// endpoint's fingerprint and derives the fields that depend on it. A port
+// nothing answered on is left alone: it is never persisted.
+func finalizeFingerprint(ep DiscoveredEndpoint, entry protocolEntry) DiscoveredEndpoint {
+	if !ep.Reachable && ep.Error != "" {
+		return ep
+	}
+	fp := Resolve(append(append([]Evidence{}, ep.signals...), portEvidence(entry.protocol)...))
+	ep.Fingerprint = &fp
+	if IsWebServerTech(fp.Tech) {
+		ep.ServerTech = fp.Tech
+	}
+	// A port default alone is a guess, and a guess must not steer automation:
+	// only a fingerprint with a real observation behind it recommends a mode.
+	if fp.Confidence != ConfidenceLow && len(ep.Certs) > 0 {
+		ep.RecommendedInstallMode = recommendInstallMode(ep.ServerTech, ep.Protocol)
+	}
+	return ep
 }
 
 // withHandshakeFinding records an STARTTLS/RDP endpoint that answered but
@@ -279,7 +333,7 @@ func withHandshakeFinding(ep DiscoveredEndpoint) DiscoveredEndpoint {
 // on an open one (reachable). cfg.ServerName is set from host: tls.Dial did
 // that implicitly, tls.Client does not.
 func (s *Scanner) dialTLS(ctx context.Context, host string, port int, cfg *tls.Config) (conn *tls.Conn, reachable bool, err error) {
-	dialer := &net.Dialer{Timeout: s.config.Timeout}
+	dialer := guardedDialer(s.config.Timeout)
 	raw, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, fmt.Sprint(port)))
 	if err != nil {
 		return nil, false, err
@@ -372,29 +426,37 @@ func (s *Scanner) finishTLSCapture(ep DiscoveredEndpoint, conn *tls.Conn, state 
 		dc.Served = true
 		ep.Certs = append(ep.Certs, dc)
 	}
-	// Over the SAME established TLS connection, ask for the HTTP Server
-	// header to fingerprint the web technology. HTTPS-family ports only;
-	// LDAPS/AMQPS/etc. would not answer HTTP. Best-effort — a service that
-	// does not speak HTTP just yields no fingerprint, never an error.
-	// Fingerprint on known HTTP ports always; in deep mode, on ANY port we
-	// got a TLS cert from, since a deep scan finds HTTP on arbitrary ports
-	// (8444, 7443, …) the catalogue would never list. The HEAD read is
-	// deadline-bounded, so a non-HTTP TLS service (LDAPS) just yields no
-	// fingerprint rather than hanging.
-	if (isHTTPPort(port) || s.config.Deep) && len(ep.Certs) > 0 {
-		if tech := fingerprintServer(conn, host, s.config.Timeout); tech != "" {
+	ep.signals = append(ep.signals, certEvidence(state.PeerCertificates)...)
+	// Over the SAME established TLS connection, read what the service says
+	// about itself: the greeting of an implicit-TLS mail port, otherwise the
+	// HTTP response. HTTPS-family ports only; LDAPS/AMQPS/etc. would not
+	// answer HTTP. Best-effort — a service that does not speak HTTP just
+	// yields no fingerprint, never an error. Probe known HTTP ports always;
+	// in deep mode, ANY port we got a TLS cert from, since a deep scan finds
+	// HTTP on arbitrary ports (8444, 7443, …) the catalogue would never list.
+	// Both reads are deadline-bounded, so a non-HTTP TLS service (LDAPS) just
+	// yields no fingerprint rather than hanging. Neither opens a connection.
+	switch {
+	case len(ep.Certs) == 0:
+	case (s.config.ActiveProbes || s.config.Deep) && isLDAPImplicitTLS(proto):
+		ep.signals = append(ep.signals, implicitLDAPRootDSE(conn, s.config.Timeout)...)
+	case isMailImplicitTLS(proto):
+		ep.signals = append(ep.signals, greetingEvidence(conn, proto, s.config.Timeout)...)
+	case isHTTPPort(port) || s.config.Deep:
+		tech, ev := probeHTTP(conn, host, port, s.config.Timeout)
+		if tech != "" {
 			ep.ServerTech = tech
 		}
+		ep.signals = append(ep.signals, ev...)
 	}
-	// The recommendation draws on BOTH the web-server fingerprint (when we
-	// got one) and the service protocol — so an LDAPS/WinRM/k8s endpoint
-	// gets a sensible automation hint even though it serves no HTTP.
-	ep.RecommendedInstallMode = recommendInstallMode(ep.ServerTech, proto)
 	// Record the on-the-wire crypto posture from THIS handshake (free) —
 	// including whether ML-KEM was actually negotiated. A deep scan also
 	// enumerates the offered TLS versions and probes for ML-KEM support
 	// (extra handshakes, so gated to the slow mode).
 	posture := PostureFromState(host, port, state)
+	if s.config.Deep && len(ep.Certs) > 0 {
+		ep.signals = append(ep.signals, probeTLSStack(context.Background(), host, port, s.config.Timeout)...)
+	}
 	if s.config.Deep {
 		full := s.postureProber().ProbeEndpoint(context.Background(), host, port)
 		if full.Error == "" {
@@ -414,32 +476,27 @@ func (s *Scanner) postureProber() *PostureProber {
 	return NewPostureProber(s.config.Timeout)
 }
 
+func isLDAPImplicitTLS(protocol string) bool { return protocol == "ldaps" || protocol == "ldaps-gc" }
+
+// implicitLDAPRootDSE runs the rootDSE read over the already-established LDAPS
+// connection. The ldap connection is closed afterwards; the underlying TLS
+// connection is closed by the caller as well, which is harmless.
+func implicitLDAPRootDSE(conn net.Conn, timeout time.Duration) []Evidence {
+	lc := ldap.NewConn(conn, true)
+	lc.Start()
+	defer lc.Close()
+	return rootDSEEvidence(lc, timeout)
+}
+
 // isHTTPPort reports whether a port is expected to speak HTTP over its TLS
 // layer (so a Server-header probe is worthwhile).
 func isHTTPPort(port int) bool {
 	switch port {
-	case 443, 8443, 4443, 9443, 10443, 6443:
+	case 443, 8443, 4443, 9443, 10443, 6443, 5986:
 		return true
 	default:
 		return false
 	}
-}
-
-// fingerprintServer sends a minimal HTTP HEAD over the already-open TLS
-// connection and classifies the Server response header.
-func fingerprintServer(conn net.Conn, host string, timeout time.Duration) string {
-	_ = conn.SetDeadline(time.Now().Add(timeout))        // best-effort read deadline; a fingerprint probe failure is non-fatal
-	defer func() { _ = conn.SetDeadline(time.Time{}) }() // clear deadline; error irrelevant on a closing conn
-	req := "HEAD / HTTP/1.1\r\nHost: " + host + "\r\nUser-Agent: Kryptkeeper-Scan\r\nConnection: close\r\n\r\n"
-	if _, err := conn.Write([]byte(req)); err != nil {
-		return ""
-	}
-	buf := make([]byte, 4096)
-	n, _ := conn.Read(buf)
-	if n <= 0 {
-		return ""
-	}
-	return classifyServerHeader(string(buf[:n]))
 }
 
 // classifyServerHeader maps an HTTP response's Server header to a
@@ -451,28 +508,7 @@ func classifyServerHeader(resp string) string {
 		if !strings.HasPrefix(strings.ToLower(line), "server:") {
 			continue
 		}
-		val := strings.ToLower(strings.TrimSpace(line[len("server:"):]))
-		switch {
-		case strings.Contains(val, "microsoft-iis") || strings.Contains(val, "iis"):
-			return "iis"
-		case strings.Contains(val, "apache"):
-			return "apache"
-		case strings.Contains(val, "nginx"):
-			return "nginx"
-		case strings.Contains(val, "haproxy"):
-			return "haproxy"
-		case strings.Contains(val, "caddy"):
-			return "caddy"
-		case strings.Contains(val, "envoy"):
-			return "envoy"
-		case strings.Contains(val, "litespeed"):
-			return "litespeed"
-		case val == "":
-			return ""
-		default:
-			// Record the first token of an unrecognized server verbatim.
-			return strings.Fields(val)[0]
-		}
+		return classifyServerValue(strings.ToLower(strings.TrimSpace(line[len("server:"):])))
 	}
 	// Some servers (notably hardened IIS) suppress the Server header but
 	// still leak identity elsewhere; a couple of cheap tells.
@@ -480,6 +516,32 @@ func classifyServerHeader(resp string) string {
 		return "iis"
 	}
 	return ""
+}
+
+// classifyServerValue maps a lower-cased Server header value to a technology
+// tag, or its first token when unrecognised.
+func classifyServerValue(val string) string {
+	switch {
+	case strings.Contains(val, "microsoft-iis") || strings.Contains(val, "iis"):
+		return "iis"
+	case strings.Contains(val, "apache"):
+		return "apache"
+	case strings.Contains(val, "nginx"):
+		return "nginx"
+	case strings.Contains(val, "haproxy"):
+		return "haproxy"
+	case strings.Contains(val, "caddy"):
+		return "caddy"
+	case strings.Contains(val, "envoy"):
+		return "envoy"
+	case strings.Contains(val, "litespeed"):
+		return "litespeed"
+	case val == "":
+		return ""
+	default:
+		// Record the first token of an unrecognized server verbatim.
+		return strings.Fields(val)[0]
+	}
 }
 
 // recommendInstallMode maps a fingerprint — the web-server technology when
@@ -521,12 +583,12 @@ func (s *Scanner) expandDeep(ctx context.Context, targets []string) []string {
 	lo, hi := deepPortRange(s.config)
 	out := make([]string, 0, len(targets))
 	for _, t := range targets {
-		host, portStr, err := net.SplitHostPort(t)
+		_, portStr, err := net.SplitHostPort(t)
 		if err == nil && portStr != "" {
 			out = append(out, t) // explicitly pinned port — honor it
 			continue
 		}
-		host = t
+		host := t
 		if h, _, e := net.SplitHostPort(t); e == nil {
 			host = h
 		}
@@ -617,6 +679,7 @@ func CertToDiscovered(cert *x509.Certificate, scannedHost string, isLeaf bool) D
 func certToDiscovered(cert *x509.Certificate, scannedHost string, isLeaf bool) DiscoveredCert {
 	fingerprint := fmt.Sprintf("%x", sha256.Sum256(cert.Raw))
 	riskScore, riskFlags := computeCertRisk(cert, scannedHost, isLeaf)
+	adcs := ParseADCS(cert)
 	return DiscoveredCert{
 		Fingerprint:        fingerprint,
 		SerialNumber:       cert.SerialNumber.String(),
@@ -632,6 +695,8 @@ func certToDiscovered(cert *x509.Certificate, scannedHost string, isLeaf bool) D
 		RiskScore:          riskScore,
 		RiskFlags:          riskFlags,
 		Raw:                cert.Raw,
+		IssuedByADCS:       adcs.IssuedByADCS,
+		ADCSTemplate:       adcs.TemplateName,
 	}
 }
 
@@ -680,7 +745,8 @@ func computeCertRisk(cert *x509.Certificate, scannedHost string, isLeaf bool) (i
 		flags = append(flags, "PQC_VULNERABLE")
 	}
 
-	if cert.SignatureAlgorithm == x509.SHA1WithRSA || cert.SignatureAlgorithm == x509.MD5WithRSA {
+	switch cert.SignatureAlgorithm {
+	case x509.SHA1WithRSA, x509.MD5WithRSA, x509.MD2WithRSA, x509.ECDSAWithSHA1, x509.DSAWithSHA1:
 		score += 30
 		flags = append(flags, "WEAK_SIGNATURE")
 	}

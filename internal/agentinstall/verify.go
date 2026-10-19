@@ -11,7 +11,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net"
 	"strings"
 	"time"
@@ -58,7 +58,7 @@ func verifierWithPolicy(p egress.Policy) Verifier {
 			if errors.Is(err, egress.ErrBlockedDestination) {
 				return "", errors.New("verify address is not permitted")
 			}
-			log.Printf("agentinstall: verify dial %s failed: %v", hostPort, err)
+			logging.Warnf("agentinstall: verify dial %s failed: %v", hostPort, err)
 			return "", errors.New("tls dial to the verify address failed")
 		}
 		defer conn.Close()

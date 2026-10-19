@@ -67,6 +67,17 @@ cleanup() {
 trap cleanup EXIT
 
 curlj() { curl -sS --cacert "$CA_PEM" -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' "$@"; }
+# curlc <token> curl-args...: prints the HTTP status, body in $WORK/last.json.
+curlc() { local tok="$1"; shift; curl -sS --cacert "$CA_PEM" -o "$WORK/last.json" -w '%{http_code}' -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' "$@"; }
+jget() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
+
+# W26-11: one named pki-admin (alice) from APP_API_KEYS_JSON approves the CMP
+# poll item. The bootstrap token can propose but never approve
+# (internal/bootstrap/separation_of_duties.go), so it cannot stand in.
+API_PEPPER="uat-pepper-32-characters-minimum!!"
+ALICE_SECRET="$(openssl rand -hex 24)"
+ALICE_VERIFIER="$(printf '%s' "$ALICE_SECRET" | openssl dgst -sha256 -hmac "$API_PEPPER" -hex | awk '{print $NF}')"
+T_alice="kk_uatalice_${ALICE_SECRET}"
 
 # ---------------------------------------------------------------------------
 # 1. Build and start the hub, self-issuing TLS from its own default CA, with
@@ -96,6 +107,8 @@ export KRYPTKEEPER_TLS_REQUEST_CLIENT_CERT=true
 export KRYPTKEEPER_TLS_SANS="host.containers.internal,localhost,127.0.0.1"
 export KRYPTKEEPER_SCEP_ENABLED=true
 export KRYPTKEEPER_CMP_SECRET="$CMP_SECRET" KRYPTKEEPER_CMP_REFERENCE="$CMP_REFERENCE"
+export APP_API_KEY_AUTH_ENABLED=true APP_API_KEY_PEPPER="$API_PEPPER" \
+  APP_API_KEYS_JSON="[{\"name\":\"alice\",\"kid\":\"uatalice\",\"secret_verifier\":\"$ALICE_VERIFIER\",\"principal_id\":\"alice\",\"role\":\"pki-admin\",\"active\":true}]"
 
 "$WORK/kryptkeeper" >"$WORK/hub.log" 2>&1 &
 HUB_PID=$!
@@ -185,6 +198,51 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 2b. W26-11: EST label routes (W26-06). A label publishes
+#     /.well-known/est/<label>/ bound to one template; the template's
+#     enrollment_permissions must list the pseudo role protocol:est. The same
+#     globalsign/est client enrolls on the label path (AdditionalPathSegment).
+# ---------------------------------------------------------------------------
+STEP "EST labels: bind labels to templates through POST /api/v1/est/labels"
+mktpl_est() { # mktpl_est <name> <enroll roles json> -> prints template id
+  curlj -X POST "$HUB_BASE/api/v1/templates" -d "{\"name\":\"$1\",\"display_name\":\"$1\",\"validity_period\":\"P365D\",\"key_usage\":[\"digitalSignature\"],\"extended_key_usage\":[\"clientAuth\"],\"allowed_algorithms\":[\"ECDSA\",\"RSA\"],\"active\":true,\"enrollment_permissions\":{\"enroll\":$2}}" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])'
+}
+EST_LBL_TPL="$(mktpl_est est-label-tpl '["protocol:est"]')"
+EST_DENY_TPL="$(mktpl_est est-denied-tpl '["pki-admin"]')"
+[ -n "$EST_LBL_TPL" ] && [ -n "$EST_DENY_TPL" ] && PASS "templates created: est-label-tpl ($EST_LBL_TPL, allows protocol:est), est-denied-tpl ($EST_DENY_TPL, pki-admin only)" || DIE "could not create EST label templates"
+c=$(curlc "$TOKEN" -X POST "$HUB_BASE/api/v1/est/labels" -d "{\"label\":\"uat-label\",\"template_id\":\"$EST_LBL_TPL\",\"description\":\"W26-11 live label\"}")
+[ "$c" = 201 ] && PASS "label uat-label created (201)" || FAIL "create label uat-label -> $c $(cat "$WORK/last.json")"
+c=$(curlc "$TOKEN" -X POST "$HUB_BASE/api/v1/est/labels" -d "{\"label\":\"uat-denied\",\"template_id\":\"$EST_DENY_TPL\"}")
+[ "$c" = 201 ] && PASS "label uat-denied created (201)" || FAIL "create label uat-denied -> $c $(cat "$WORK/last.json")"
+c=$(curlc "$TOKEN" "$HUB_BASE/api/v1/est/labels")
+[ "$c" = 200 ] && [ "$(jget 'sorted(l["label"] for l in d["data"])' <"$WORK/last.json")" = "['uat-denied', 'uat-label']" ] \
+  && PASS "GET /api/v1/est/labels lists both labels" || FAIL "label list -> $c $(cat "$WORK/last.json")"
+
+est_label_run() { # est_label_run <logname> <label> <cn> <expect: ""|refuse>
+  podman run ${KK_PODMAN_HOST_ARGS} --rm \
+    -v "$HERE/estcheck:/src:ro" -v "$HERE/est-run.sh:/est-run.sh:ro" \
+    -e EST_HOST="host.containers.internal:${HUB_PORT}" -e EST_USER=uat-est -e EST_PASS=uat-est-password \
+    -e EST_LABEL="$2" -e EST_CN="$3" -e EST_EXPECT="$4" -e EST_REENROLL=0 \
+    "$GOLANG_IMG" sh /est-run.sh >"$WORK/$1.log" 2>&1
+  cat "$WORK/$1.log"
+}
+EST_LABEL_CN=uat-est-label.est.uat.example
+STEP "EST labels: enroll on the label path with a name under the user's suffix"
+est_label_run est-label uat-label "$EST_LABEL_CN" ""
+grep -q "PASS enroll" "$WORK/est-label.log" && PASS "globalsign/est enrolled on /.well-known/est/uat-label/" || FAIL "EST label enroll failed (see $WORK/est-label.log)"
+LBL_TPL_SEEN="$(curlj "$HUB_BASE/api/v1/certificates?q=$EST_LABEL_CN&limit=10" | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; print(" ".join(c["template_id"]+"/"+c["source"] for c in d))')"
+case "$LBL_TPL_SEEN" in *"$EST_LBL_TPL/est"*) PASS "the issued certificate is in inventory with template_id est-label-tpl, source=est" ;; *) FAIL "label-issued cert not tied to est-label-tpl: [$LBL_TPL_SEEN]" ;; esac
+
+STEP "EST labels: refused outside the user's suffix, refused without protocol:est, unknown label 404"
+est_label_run est-label-out uat-label uat-est-evil.other.example refuse
+grep -q "PASS refused" "$WORK/est-label-out.log" && PASS "a name outside the allowed suffix is refused on the label path" || FAIL "outside-suffix enroll was not refused (see $WORK/est-label-out.log)"
+est_label_run est-label-denied uat-denied uat-est-denied.est.uat.example refuse
+grep -q "PASS refused" "$WORK/est-label-denied.log" && PASS "a label whose template does not list protocol:est refuses a valid name (403)" || FAIL "label without protocol:est enrolled (see $WORK/est-label-denied.log)"
+c=$(curl -sS --cacert "$CA_PEM" -o /dev/null -w '%{http_code}' "$HUB_BASE/.well-known/est/nolabel/cacerts")
+[ "$c" = 404 ] && PASS "an unknown label answers 404" || FAIL "unknown label -> $c, want 404"
+
+# ---------------------------------------------------------------------------
 # 3. SCEP -- real client: micromdm/scep (a maintained Go reimplementation of
 #    Cisco's sscep protocol handling; builds cleanly, unlike sscep's autotools
 #    build which needs libssl-dev headers not worth vendoring for one step).
@@ -261,6 +319,27 @@ case "$SCEP_AUDIT" in
   *) FAIL "SCEP audit rows missing: [$SCEP_AUDIT]" ;;
 esac
 
+STEP "SCEP renewal (W26-30): RenewalReq signed by the current certificate"
+case "$(scep_result renew)" in
+  *"issued old_serial="*"subject=CN=$SCEP_CN"*)
+    PASS "SCEP renewal signed by the current cert is issued (same CN, new serial)"
+    if openssl verify -CAfile "$WORK/scep-ca.pem" "$SCEP_OUT/renew.pem" >"$WORK/scep-verify2.log" 2>&1; then
+      PASS "the renewed certificate chains to the RSA SCEP CA"
+    else
+      FAIL "renewed certificate does not chain to the SCEP CA: $(cat "$WORK/scep-verify2.log")"
+    fi
+    ;;
+  *) FAIL "SCEP renewal: $(scep_result renew) (see $WORK/scep.log)" ;;
+esac
+case "$(scep_result renew-rogue)" in *refused*) PASS "SCEP renewal signed by an unrelated key is refused" ;; *) FAIL "SCEP renewal with an unrelated key: $(scep_result renew-rogue)" ;; esac
+case "$(scep_result renew-foreign)" in *refused*) PASS "SCEP RenewalReq from a self-signed certificate the CA never issued is refused" ;; *) FAIL "SCEP renewal with a foreign cert: $(scep_result renew-foreign)" ;; esac
+case "$(scep_result replay)" in *refused*) PASS "SCEP: the used challenge still fails after the renewal (replay refused)" ;; *) FAIL "SCEP: challenge replay after renewal: $(scep_result replay)" ;; esac
+SCEP_RENEW_AUDIT="$(curlj "$HUB_BASE/api/v1/audit?limit=100" | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; rows=d if isinstance(d,list) else d.get("entries",d.get("items",[])); print(" ".join(r["action"]+":"+r["outcome"] for r in rows if r["action"]=="scep.renew"))')"
+case "$SCEP_RENEW_AUDIT" in
+  *"scep.renew:success"*) case "$SCEP_RENEW_AUDIT" in *"scep.renew:denied"*) PASS "scep.renew audited, success and denied: [$SCEP_RENEW_AUDIT]" ;; *) FAIL "no scep.renew denied row: [$SCEP_RENEW_AUDIT]" ;; esac ;;
+  *) FAIL "no scep.renew success row: [$SCEP_RENEW_AUDIT]" ;;
+esac
+
 # ---------------------------------------------------------------------------
 # 4. CMP -- real client: OpenSSL 3's `openssl cmp` app (RFC 4210/6712).
 #    W19-31: -tls_used enables the client's TLS connection options;
@@ -269,9 +348,12 @@ esac
 #    plain `-trusted` flag, that name only exists for CMP message-signer
 #    verification, a separate concern from the transport).
 # ---------------------------------------------------------------------------
-STEP "CMP: real client (openssl cmp -cmd ir / -cmd kur) against /cmp (TLS)"
+STEP "CMP: real client (openssl cmp -cmd ir / kur / rr) against /cmp (TLS)"
+CMP_OUT="$HERE/.scep-out.cmp.$$" # under $HOME like SCEP_OUT; removed with .scep-out.* in cleanup
+mkdir -p "$CMP_OUT"
 podman run ${KK_PODMAN_HOST_ARGS} --rm \
   -v "$HERE/cmp-run.sh:/cmp-run.sh:ro" \
+  -v "$CMP_OUT:/out" \
   -v "$CA_PEM:/ca.pem:ro" \
   -e CMP_URL="https://host.containers.internal:${HUB_PORT}/cmp" \
   -e CMP_SECRET="$CMP_SECRET" \
@@ -298,6 +380,28 @@ if grep -q "KUR_RC=0" "$WORK/cmp.log" && grep -q "kur.pem (kur succeeded)" "$WOR
   PASS "CMP kur via openssl cmp"
 else
   echo "FINDING: CMP kur did not succeed with -secret/-ref alone -- see $WORK/cmp.log. internal/cmp only implements RFC 4210 section 5.1.3.1 PasswordBasedMac protection (see docs/STATUS.md W19-16); section 5.1.3.2 signature-based protection (the client's existing certificate+key, which is what a real kur normally authenticates with) is not implemented. This is a documented gap, not a fixture bug."
+fi
+
+STEP "CMP rr (W26-08): revoke with the shared secret, OCSP and CRL show it"
+if grep -q "RR_BADSECRET_REJECTED=1" "$WORK/cmp.log"; then PASS "CMP rr with a wrong -secret is rejected"; else FAIL "CMP rr with a wrong secret was not rejected -- see $WORK/cmp.log"; fi
+if grep -q "RR_RC=0" "$WORK/cmp.log"; then
+  PASS "CMP rr via openssl cmp (PBM-protected, reason keyCompromise)"
+  RR_SERIAL="$(openssl x509 -in "$CMP_OUT/rr-target.pem" -noout -serial | cut -d= -f2)"
+  RR_STATUS=""
+  for _ in $(seq 1 10); do
+    RR_STATUS="$(openssl ocsp -issuer "$WORK/ca.pem" -cert "$CMP_OUT/rr-target.pem" -url "$HUB_BASE/ocsp" -CAfile "$WORK/ca.pem" -text 2>&1 | grep -i 'Cert Status' | head -1)"
+    case "$RR_STATUS" in *revoked*) break ;; esac
+    sleep 1
+  done
+  case "$RR_STATUS" in *revoked*) PASS "OCSP answers revoked for the rr'd certificate (serial $RR_SERIAL)" ;; *) FAIL "OCSP after CMP rr: [$RR_STATUS]" ;; esac
+  curl -sS --cacert "$CA_PEM" "$HUB_BASE/crl/$CA_ID.crl" -o "$WORK/rr.crl"
+  openssl crl -in "$WORK/rr.crl" -inform der -noout -text 2>&1 | grep -qi "$RR_SERIAL" \
+    && PASS "the CRL lists the rr'd serial" || FAIL "CRL does not list the rr'd serial $RR_SERIAL"
+  if grep -q "RR_AGAIN_REJECTED=1" "$WORK/cmp.log"; then PASS "a second rr for the same certificate is rejected"; else FAIL "a second CMP rr was not rejected"; fi
+  RR_AUDIT="$(curlj "$HUB_BASE/api/v1/audit?limit=200" | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; rows=d if isinstance(d,list) else d.get("entries",d.get("items",[])); print(" ".join(r["action"]+":"+r["outcome"] for r in rows if r["action"]=="cmp.rr"))')"
+  case "$RR_AUDIT" in *"cmp.rr:success"*) PASS "cmp.rr success is audited" ;; *) FAIL "no cmp.rr success audit row: [$RR_AUDIT]" ;; esac
+else
+  FAIL "CMP rr did not succeed (RR_RC missing or non-zero; see $WORK/cmp.log)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -349,9 +453,9 @@ TPL_ID="$(curlj -X POST "$HUB_BASE/api/v1/templates" -d '{"name":"uat-basic","di
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')"
 [ -n "$TPL_ID" ] && PASS "template created: $TPL_ID" || DIE "could not create issuance template"
 
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$WORK/leaf1.key" >/dev/null 2>&1
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$WORK/leaf1.key" >/dev/null 2>&1
 openssl req -new -key "$WORK/leaf1.key" -subj "/CN=uat-ocsp-leaf1" -out "$WORK/leaf1.csr" >/dev/null 2>&1
-openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$WORK/leaf2.key" >/dev/null 2>&1
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$WORK/leaf2.key" >/dev/null 2>&1
 openssl req -new -key "$WORK/leaf2.key" -subj "/CN=uat-ocsp-leaf2" -out "$WORK/leaf2.csr" >/dev/null 2>&1
 
 python3 - "$WORK" "$CA_ID" "$TPL_ID" <<'PYEOF'
@@ -399,6 +503,68 @@ echo "$CRL_TEXT" | grep -qi "$LEAF1_SERIAL" && PASS "CRL lists leaf1's serial ($
 LEAF2_SERIAL="$(openssl x509 -in "$WORK/leaf2.pem" -noout -serial | cut -d= -f2)"
 echo "$CRL_TEXT" | grep -qi "$LEAF2_SERIAL" && FAIL "CRL incorrectly lists non-revoked leaf2's serial" \
   || PASS "CRL correctly omits non-revoked leaf2"
+
+# ---------------------------------------------------------------------------
+# W26-11: CMP deferred issuance (W26-08). KRYPTKEEPER_CMP_TEMPLATE names the
+# template whose require_approval gates EVERY CMP enrollment, so it is set only
+# now, after the plain ir/kur/rr steps. openssl cmp gets `waiting`, then sends
+# pollReq (the hub's checkAfter is 30 s) until a named approver approves the
+# cmp_enroll item in the pending-actions queue.
+# ---------------------------------------------------------------------------
+STEP "CMP poll: ir against an approval-required template, pollReq until approved"
+CMP_TPL_ID="$(curlj -X POST "$HUB_BASE/api/v1/templates" -d '{"name":"uat-cmp-approval","display_name":"UAT CMP approval","validity_period":"P365D","key_usage":["digitalSignature","keyEncipherment"],"extended_key_usage":["clientAuth"],"allowed_algorithms":["RSA"],"active":true,"require_approval":true,"approval_roles":["pki-admin"]}' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')"
+[ -n "$CMP_TPL_ID" ] && PASS "approval-required template created: $CMP_TPL_ID" || DIE "could not create the CMP approval template"
+kill "$HUB_PID" >/dev/null 2>&1
+wait "$HUB_PID" 2>/dev/null
+export KRYPTKEEPER_CMP_TEMPLATE="$CMP_TPL_ID"
+"$WORK/kryptkeeper" >>"$WORK/hub.log" 2>&1 &
+HUB_PID=$!
+for _ in $(seq 1 30); do curl -sSk -o /dev/null "$HUB_BASE/healthz" && break; sleep 0.5; done
+curl -sS --cacert "$CA_PEM" "$HUB_BASE/healthz" | grep -q '"status":"ok"' && PASS "hub restarted with KRYPTKEEPER_CMP_TEMPLATE=$CMP_TPL_ID" || DIE "hub did not come back up, see $WORK/hub.log"
+grep -q "CMP: enrollment waits for approval" "$WORK/hub.log" && PASS "hub logged that CMP enrollment waits for approval" || FAIL "hub did not log the CMP approval gate"
+
+podman run ${KK_PODMAN_HOST_ARGS} --rm \
+  -v "$HERE/cmp-run.sh:/cmp-run.sh:ro" -v "$CMP_OUT:/out" -v "$CA_PEM:/ca.pem:ro" \
+  -e CMP_MODE=poll -e CMP_URL="https://host.containers.internal:${HUB_PORT}/cmp" \
+  -e CMP_SECRET="$CMP_SECRET" -e CMP_REFERENCE="$CMP_REFERENCE" -e CMP_CA=/ca.pem \
+  "$ALPINE_IMG" sh /cmp-run.sh >"$WORK/cmp-poll.log" 2>&1 &
+POLL_PID=$!
+
+CMP_ACT=""
+for _ in $(seq 1 90); do
+  CMP_ACT="$(curlj "$HUB_BASE/api/v1/pending-actions?status=pending" | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; print(next((a["id"] for a in d if a["action_type"]=="cmp_enroll"), ""))' 2>/dev/null)"
+  [ -n "$CMP_ACT" ] && break
+  sleep 1
+done
+[ -n "$CMP_ACT" ] && PASS "a cmp_enroll item is pending in the approval queue ($CMP_ACT)" || { kill "$POLL_PID" 2>/dev/null; DIE "no cmp_enroll pending action appeared; client log: $(tail -5 "$WORK/cmp-poll.log")"; }
+for _ in $(seq 1 30); do grep -qiE 'poll|waiting' "$WORK/cmp-poll.log" && break; sleep 1; done
+grep -qiE 'poll|waiting' "$WORK/cmp-poll.log" && PASS "client log shows waiting/pollReq before approval" || FAIL "client log has no waiting/pollReq evidence (see $WORK/cmp-poll.log)"
+grep -q "poll.pem (ir poll succeeded)" "$WORK/cmp-poll.log" && FAIL "the client already holds a certificate before approval" || PASS "no certificate issued before approval"
+c=$(curlc "$TOKEN" -X POST "$HUB_BASE/api/v1/pending-actions/$CMP_ACT/approve")
+[ "$c" = 403 ] && PASS "the bootstrap token cannot approve the item ($c)" || FAIL "bootstrap approve -> $c $(cat "$WORK/last.json")"
+c=$(curlc "$T_alice" -X POST "$HUB_BASE/api/v1/pending-actions/$CMP_ACT/approve")
+[ "$c" = 200 ] && PASS "alice (a second principal) approves the cmp_enroll item (200)" || FAIL "alice approve -> $c $(cat "$WORK/last.json")"
+wait "$POLL_PID"
+cat "$WORK/cmp-poll.log"
+if grep -q "IR_POLL_RC=0" "$WORK/cmp-poll.log" && grep -q "poll.pem (ir poll succeeded)" "$WORK/cmp-poll.log"; then
+  PASS "openssl cmp ir completes after approval (IR_POLL_RC=0, certificate issued)"
+  openssl verify -CAfile "$WORK/ca.pem" "$CMP_OUT/poll.pem" >/dev/null 2>&1 && PASS "the polled certificate chains to the CMP CA" || FAIL "polled certificate does not chain to the CMP CA"
+else
+  FAIL "CMP poll flow did not end with a certificate (see $WORK/cmp-poll.log)"
+fi
+POLL_AUDIT="$(curlj "$HUB_BASE/api/v1/audit?limit=200" | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; rows=d if isinstance(d,list) else d.get("entries",d.get("items",[])); print(" ".join(r["action"]+":"+r["outcome"] for r in rows if r["action"] in ("cmp.ir","cmp.poll")))')"
+case "$POLL_AUDIT" in *"cmp.ir:pending_approval"*) PASS "cmp.ir pending_approval is audited" ;; *) FAIL "no cmp.ir pending_approval audit row: [$POLL_AUDIT]" ;; esac
+unset KRYPTKEEPER_CMP_TEMPLATE
+
+# ---------------------------------------------------------------------------
+# W22-17: issuance-policy refusal reaches ACME and EST clients. Self-contained
+# (own podman network and hub: ACME http-01 needs the hub to dial the client
+# container, which this host-process hub cannot), so it runs after the
+# host-hub steps and only contributes its exit status.
+# ---------------------------------------------------------------------------
+STEP "issuance-policy refusal (ACME + EST), tests/live/protocols/policy-refusal"
+bash "$HERE/policy-refusal/run.sh" || FAILED=1
 
 # ---------------------------------------------------------------------------
 STEP "summary"

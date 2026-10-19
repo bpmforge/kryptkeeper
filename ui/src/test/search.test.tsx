@@ -13,7 +13,7 @@ vi.mock("../lib/api", () => ({
   },
 }));
 
-import Search from "../pages/Search";
+import Search, { humanizeDescription } from "../pages/Search";
 import { api } from "../lib/api";
 
 function renderSearch() {
@@ -31,6 +31,15 @@ function renderSearch() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+describe("humanizeDescription", () => {
+  it("replaces embedded ISO instants with the app date format", () => {
+    const out = humanizeDescription("Issued: 2026-04-07T12:30:00Z");
+    expect(out).not.toContain("T12:30:00Z");
+    expect(out).toMatch(/^Issued: Apr \d+, 2026/);
+    expect(humanizeDescription("Protocol: tls")).toBe("Protocol: tls");
+  });
 });
 
 describe("Search page", () => {

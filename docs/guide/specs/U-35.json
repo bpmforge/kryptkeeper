@@ -1,0 +1,427 @@
+{
+  "task": "U-35",
+  "title": "Configure notifications (email, Slack, webhook, PagerDuty)",
+  "sourceStory": "STORIES.md#u-35",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/integrations"
+      },
+      "caption": "Open /integrations",
+      "slug": "integrations-notifications",
+      "expect": {
+        "label": "SMTP host"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-35/01-integrations-notifications.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "SMTP host"
+      },
+      "value": "192.0.2.166",
+      "caption": "Fill **SMTP host** with \"192.0.2.166\"",
+      "slug": "SMTP host",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-35/02-smtp-host.png",
+        "annotated": "docs/guide/screenshots/U-35/02-smtp-host-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 872,
+          "w": 384,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "css": "xpath=//input[@aria-label=\"SMTP host\"]/ancestor::div[.//button[normalize-space()=\"Save\"]][1]//button[normalize-space()=\"Save\"]"
+      },
+      "caption": "Click **Save** on the SMTP host row",
+      "slug": "smtp-host-saved",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-35/03-smtp-host-saved.png",
+        "annotated": "docs/guide/screenshots/U-35/03-smtp-host-saved-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 670,
+          "y": 856,
+          "w": 61,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "SMTP port"
+      },
+      "value": "11025",
+      "caption": "Fill **SMTP port** with \"11025\"",
+      "slug": "SMTP port",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-35/04-smtp-port.png",
+        "annotated": "docs/guide/screenshots/U-35/04-smtp-port-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 872,
+          "w": 384,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "css": "xpath=//input[@aria-label=\"SMTP port\"]/ancestor::div[.//button[normalize-space()=\"Save\"]][1]//button[normalize-space()=\"Save\"]"
+      },
+      "caption": "Click **xpath=//input[@aria-label=\"SMTP port\"]/ancestor::div[.//button[normalize-space()=\"Save\"]][1]//button[normalize-space()=\"Save\"]**",
+      "slug": "smtp-port-saved",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-35/05-smtp-port-saved.png",
+        "annotated": "docs/guide/screenshots/U-35/05-smtp-port-saved-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 670,
+          "y": 856,
+          "w": 61,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "SMTP from address"
+      },
+      "value": "kryptkeeper@acme.test",
+      "caption": "Fill **SMTP from address** with \"kryptkeeper@acme.test\"",
+      "slug": "SMTP from address",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-35/06-smtp-from-address.png",
+        "annotated": "docs/guide/screenshots/U-35/06-smtp-from-address-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 872,
+          "w": 384,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "css": "xpath=//input[@aria-label=\"SMTP from address\"]/ancestor::div[.//button[normalize-space()=\"Save\"]][1]//button[normalize-space()=\"Save\"]"
+      },
+      "caption": "Click **xpath=//input[@aria-label=\"SMTP from address\"]/ancestor::div[.//button[normalize-space()=\"Save\"]][1]//button[normalize-space()=\"Save\"]**",
+      "slug": "smtp-from-saved",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-35/07-smtp-from-saved.png",
+        "annotated": "docs/guide/screenshots/U-35/07-smtp-from-saved-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 670,
+          "y": 856,
+          "w": 61,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Webhook URL",
+        "exact": true
+      },
+      "value": "http://192.0.2.166:18099/hook",
+      "caption": "Fill **Webhook URL** with \"http://192.0.2.166:18099/hook\"",
+      "slug": "webhook-url",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-35/08-webhook-url.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "css": "xpath=//input[@aria-label=\"Webhook URL\"]/ancestor::div[.//button[normalize-space()=\"Save\"]][1]//button[normalize-space()=\"Save\"]"
+      },
+      "caption": "Click **xpath=//input[@aria-label=\"Webhook URL\"]/ancestor::div[.//button[normalize-space()=\"Save\"]][1]//button[normalize-space()=\"Save\"]**",
+      "slug": "webhook-saved",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-35/09-webhook-saved.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Notification test channel"
+      },
+      "value": "Email (SMTP)",
+      "caption": "Select \"Email (SMTP)\" in **Notification test channel**",
+      "slug": "test-channel",
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-35/10-test-channel.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Notification test target"
+      },
+      "value": "ops@acme.test",
+      "caption": "Fill **Notification test target** with \"ops@acme.test\"",
+      "slug": "test-target",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-35/11-test-target.png",
+        "annotated": "docs/guide/screenshots/U-35/11-test-target-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 456,
+          "y": 872,
+          "w": 819,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Send test"
+      },
+      "caption": "Click **Send test**",
+      "slug": "test-sent",
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-35/12-test-sent.png",
+        "annotated": "docs/guide/screenshots/U-35/12-test-sent-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1283,
+          "y": 856,
+          "w": 112,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "http://127.0.0.1:18025/"
+      },
+      "caption": "The sink: the test message arrives in the Mailpit inbox",
+      "slug": "mailpit-inbox",
+      "settle": 1500,
+      "n": 13,
+      "capture": {
+        "file": "docs/guide/screenshots/U-35/13-mailpit-inbox.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "flags": "LOCAL SINK (Mailpit SMTP on the Mac LAN address, port 11025 (the hub egress policy refuses loopback), UI on :18025)",
+  "lastRun": {
+    "at": "2026-10-18T12:47:06.657Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-35",
+    "steps": 13,
+    "shots": 13,
+    "annotated": 8,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-35/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-35/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

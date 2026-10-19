@@ -5,11 +5,12 @@
 package bootstrap
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"strconv"
 	"strings"
@@ -30,19 +31,25 @@ type CryptoPostureReport struct {
 	AutomationCoverage AutomationCoverageSummary `json:"automation_coverage"`
 	RiskBreakdown      RiskBreakdownSummary      `json:"risk_breakdown"`
 	Findings           FindingFunnelSummary      `json:"findings"`
+	// findingKeys are the distinct findings behind Findings, kept off the
+	// wire so the report handler can persist their identities (W22-29).
+	findingKeys []FindingKey
 }
 
-// FindingFunnelSummary is raw/effective/suppressed finding counts for a
-// report surface — see docs/design/FINDING_ECONOMICS.md. This is NOT the
-// full five-stage funnel (raw → dedup → scope → applicability → effective →
-// suppressed) that doc describes: persisted dedup identity, tenant scope
-// filtering, and applicability re-checks are explicitly out of scope for
-// this ticket (W2-11) and remain future work. Raw is every finding the
-// source layer produces on every read, with no dedup or identity. Effective
-// is raw minus every finding that currently carries an active accepted-risk
-// exception (FindingException/W2-06). Suppressed is that subtracted count,
-// reported alongside raw and effective rather than hidden behind them —
-// raw is never replaced or omitted.
+// FindingFunnelSummary is the finding funnel for a report surface — see
+// docs/design/FINDING_ECONOMICS.md. Raw is every finding the source layer
+// produces on every read. Deduped collapses repeats of the same finding on
+// the same target to one persisted identity (W22-29; FindingIdentityID).
+// InScope is Deduped today: every funnel surface is a super-admin aggregate
+// or already scoped at the source, so the scope stage removes nothing yet.
+// Suppressed is the in-scope identities that currently carry an active
+// accepted-risk exception (FindingException/W2-06), and Effective is
+// InScope - Suppressed. Invariants: Raw >= Deduped >= InScope >= Effective
+// and Effective + Suppressed == InScope. Raw is never replaced or omitted.
+// Applicability re-checks (stage 4) remain future work.
+//
+// Snapshots persisted before W22-29 decode with Deduped and InScope at 0;
+// a reader must treat 0 alongside a non-zero Raw as "unknown", not as zero.
 //
 // GET /api/v1/reports/crypto-posture (computeCryptoPostureReport), the
 // executive summary, the PQC countdown, and every persisted GET
@@ -54,6 +61,8 @@ type CryptoPostureReport struct {
 // surfaces still use it, always raw==effective by design there).
 type FindingFunnelSummary struct {
 	Raw        int `json:"raw"`
+	Deduped    int `json:"deduped"`
+	InScope    int `json:"in_scope"`
 	Effective  int `json:"effective"`
 	Suppressed int `json:"suppressed"`
 }
@@ -138,13 +147,21 @@ func reportVisibleCertificates(ctx context.Context, pd AuthPrincipal, certProvid
 	if len(items) > limit {
 		// A ceiling is a memory guard, not a report scope: say so loudly so a
 		// truncated report is never mistaken for a complete one.
-		log.Printf("report: inventory has %d certificates, truncating to the %d-row ceiling", len(items), limit)
+		logging.Infof("report: inventory has %d certificates, truncating to the %d-row ceiling", len(items), limit)
 		items = items[:limit]
 	}
 	return reportScopeCertificates(ctx, pd, items), nil
 }
 
 func registerReportsHandlers(mux *http.ServeMux, auth *Authenticator, certProvider CertificateProvider, caProvider CAProvider, templateProvider TemplateProvider, keys keystore.Store, auditProvider AuditProvider) {
+	if keys != nil {
+		// Scheduled/emailed packs have no principal; they are fleet-wide and
+		// super-admin-only (see registerEvidenceHandlers), so use an
+		// unscoped admin view.
+		packCustodyLoader = func(ctx context.Context) (*KeyCustodyReport, string) {
+			return packKeyCustody(ctx, AuthPrincipal{Role: "pki-admin", SuperAdmin: true}, keys, auditProvider)
+		}
+	}
 	// W2-11: constructed here (not threaded through this function's
 	// signature) to match the pqcWaveStore/pqcSnapshotStore precedent
 	// below — RegisterHandlers/registerReportsHandlers' call sites live
@@ -153,6 +170,54 @@ func registerReportsHandlers(mux *http.ServeMux, auth *Authenticator, certProvid
 	// (env misconfigured) degrades to an empty active-exception set rather
 	// than failing the whole report.
 	findingExceptionStore, _ := newFindingExceptionStoreFromEnv()
+	findingIdentityStore, _ := newFindingIdentityStoreFromEnv()
+	attestStore := NewComplianceAttestationStoreFromEnv()
+
+	// W24-36: board estate report (origin x management_state).
+	mux.HandleFunc("/api/v1/reports/estate", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeMethodNotAllowed(w, http.MethodGet)
+			return
+		}
+		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
+		if err != nil {
+			emitAuditEvent(r, auditProvider, "", "report.estate", "report", "estate", AuditOutcomeDenied)
+			writeUnauthorized(w)
+			return
+		}
+		items, err := reportVisibleCertificates(r.Context(), pd, certProvider, reportCertificateCeiling)
+		if err != nil {
+			emitAuditEvent(r, auditProvider, pd.ID, "report.estate", "report", "estate", AuditOutcomeFailure)
+			logging.Infof("estate report: list certs: %v", err)
+			writeServiceUnavailable(w, "report unavailable")
+			return
+		}
+		report := computeEstateReport(items)
+
+		if strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format"))) == "pdf" {
+			pdfBytes, perr := renderEstateReportPDF(report, time.Now().UTC())
+			if perr != nil {
+				emitAuditEvent(r, auditProvider, pd.ID, "report.estate_pdf", "report", "estate", AuditOutcomeFailure)
+				logging.Infof("estate report pdf: %v", perr)
+				writeServiceUnavailable(w, "pdf unavailable")
+				return
+			}
+			emitAuditEvent(r, auditProvider, pd.ID, "report.estate_pdf", "report", "estate", AuditOutcomeSuccess)
+			w.Header().Set("Content-Type", "application/pdf")
+			w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="estate-report-%s.pdf"`, time.Now().UTC().Format("2006-01-02")))
+			_, _ = w.Write(pdfBytes)
+			return
+		}
+
+		emitAuditEvent(r, auditProvider, pd.ID, "report.estate", "report", "estate", AuditOutcomeSuccess)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if err := json.NewEncoder(w).Encode(struct {
+			Data EstateReport `json:"data"`
+		}{Data: report}); err != nil {
+			logging.Warnf("failed to encode estate report: %v", err)
+		}
+	})
 
 	mux.HandleFunc("/api/v1/reports/crypto-posture", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -170,7 +235,7 @@ func registerReportsHandlers(mux *http.ServeMux, auth *Authenticator, certProvid
 		items, err := reportVisibleCertificates(r.Context(), pd, certProvider, reportCertificateCeiling)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, pd.ID, "report.crypto_posture", "report", "crypto-posture", AuditOutcomeFailure)
-			log.Printf("crypto posture report: list certs: %v", err)
+			logging.Infof("crypto posture report: list certs: %v", err)
 			writeServiceUnavailable(w, "report unavailable")
 			return
 		}
@@ -183,13 +248,14 @@ func registerReportsHandlers(mux *http.ServeMux, auth *Authenticator, certProvid
 		}
 
 		report := computeCryptoPostureReport(items, activeFindingExceptions(r.Context(), findingExceptionStore))
+		observeFindingIdentities(r.Context(), findingIdentityStore, report.findingKeys)
 		emitAuditEvent(r, auditProvider, pd.ID, "report.crypto_posture", "report", "crypto-posture", AuditOutcomeSuccess)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(struct {
 			Data CryptoPostureReport `json:"data"`
 		}{Data: report}); err != nil {
-			log.Printf("failed to encode crypto posture report: %v", err)
+			logging.Warnf("failed to encode crypto posture report: %v", err)
 		}
 	})
 
@@ -208,7 +274,7 @@ func registerReportsHandlers(mux *http.ServeMux, auth *Authenticator, certProvid
 		cas, err := caProvider.ListCAs(r.Context(), CAListQuery{Limit: 1000})
 		if err != nil {
 			emitAuditEvent(r, auditProvider, pd.ID, "report.ca_health", "report", "ca-health", AuditOutcomeFailure)
-			log.Printf("ca health report: list CAs: %v", err)
+			logging.Infof("ca health report: list CAs: %v", err)
 			writeServiceUnavailable(w, "report unavailable")
 			return
 		}
@@ -321,6 +387,13 @@ func registerReportsHandlers(mux *http.ServeMux, auth *Authenticator, certProvid
 			writeUnauthorized(w)
 			return
 		}
+		// F5: the report returns actor, source IP and change summary per audit
+		// row, so it needs the same audit.read as GET /api/v1/audit. No custom
+		// role store is threaded here, so only built-in roles holding audit.read
+		// (and admins) pass.
+		if !requireReadPermission(w, r, auditProvider, pd, auth.roleStore, "audit.read", "report.change_audit", "report", "change-audit") {
+			return
+		}
 		days := 30
 		if raw := strings.TrimSpace(r.URL.Query().Get("days")); raw != "" {
 			if n, err2 := strconv.Atoi(raw); err2 == nil && n > 0 && n <= 365 {
@@ -369,6 +442,11 @@ func registerReportsHandlers(mux *http.ServeMux, auth *Authenticator, certProvid
 		if framework == "" {
 			framework = "all"
 		}
+		if !validComplianceFramework(framework) {
+			emitAuditEvent(r, auditProvider, pd.ID, "report.compliance_evidence", "report", "compliance-evidence", AuditOutcomeFailure)
+			writeBadRequest(w, "framework must be one of: all, soc2, pci, nist, dora, nis2, fedramp")
+			return
+		}
 		certs, err := reportVisibleCertificates(r.Context(), pd, certProvider, reportCertificateCeiling)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, pd.ID, "report.compliance_evidence", "report", "compliance-evidence", AuditOutcomeFailure)
@@ -381,19 +459,22 @@ func registerReportsHandlers(mux *http.ServeMux, auth *Authenticator, certProvid
 			// list; building the report without it would present "no active
 			// CAs" or a pass as if it were evidence.
 			emitAuditEvent(r, auditProvider, pd.ID, "report.compliance_evidence", "report", "compliance-evidence", AuditOutcomeFailure)
-			log.Printf("compliance evidence: list CAs: %v", err)
+			logging.Infof("compliance evidence: list CAs: %v", err)
 			writeServiceUnavailable(w, "report unavailable")
 			return
 		}
 		cas.Items = reportScopeCAs(r.Context(), pd, cas.Items)
 		report := computeComplianceEvidence(certs, cas.Items, framework)
+		applyManualControls(r.Context(), attestStore, &report, time.Now().UTC())
+		report.AcceptedRisks = buildAcceptedRisks(r.Context(), findingExceptionStore, certs, cas.Items, time.Now())
+		report.KeyCustody, report.KeyCustodyNote = packKeyCustody(r.Context(), pd, keys, auditProvider)
 
 		// PDF evidence pack (v1.4): branded, auditor-ready.
 		if strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format"))) == "pdf" {
 			pdfBytes, perr := renderComplianceEvidencePDF(report, len(activeCertificates(certs)), time.Now().UTC())
 			if perr != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "report.compliance_evidence", "report", "compliance-evidence", AuditOutcomeFailure)
-				log.Printf("compliance evidence pdf: %v", perr)
+				logging.Infof("compliance evidence pdf: %v", perr)
 				writeServiceUnavailable(w, "pdf unavailable")
 				return
 			}
@@ -459,8 +540,20 @@ func activeFindingExceptions(ctx context.Context, store FindingExceptionStore) [
 	}
 	active, err := store.ListActive(ctx, time.Now())
 	if err != nil {
-		log.Printf("finding exceptions unavailable, funnel will report raw==effective: %v", err)
+		logging.Warnf("finding exceptions unavailable, funnel will report raw==effective: %v", err)
 		return nil
+	}
+	if ts, ok := store.(findingExceptionTenantStore); ok && len(active) > 0 {
+		_ = ts.EnsureTenantSchema(ctx) // self-heal; a failure surfaces on the read below
+		stamps, terr := ts.TenantsByID(ctx)
+		if terr != nil {
+			// Unknown tenants must not be guessed: suppress nothing.
+			logging.Warnf("finding exception tenants unavailable, funnel will report raw==effective: %v", terr)
+			return nil
+		}
+		for i := range active {
+			active[i].Tenant = stamps[active[i].ID]
+		}
 	}
 	return active
 }
@@ -492,6 +585,7 @@ func computeCryptoPostureReport(certs []CertificateItem, activeExceptions []Find
 	}
 
 	exceptionIdx := findingExceptionIndex(activeExceptions)
+	funnel := newFunnelBuilder()
 
 	var pqcTally pqc.ReadinessTally
 	for _, cert := range certs {
@@ -549,17 +643,16 @@ func computeCryptoPostureReport(certs []CertificateItem, activeExceptions []Find
 			report.RiskBreakdown.Low++
 		}
 
-		// Finding funnel (W2-11): raw is every computeRiskFlags flag this
-		// certificate carries today, no dedup — see FindingFunnelSummary's
-		// doc comment for why this isn't the full five-stage funnel.
+		// Finding funnel: identity is (certificate, fingerprint, flag), so a
+		// flag repeated on one certificate is one finding. Tenant is "": a
+		// fingerprint belongs to one CA and so to one tenant.
 		for _, flag := range cert.RiskFlags {
-			report.Findings.Raw++
-			if exceptionIdx[findingExceptionKey(FindingExceptionTargetCertificate, cert.FingerprintSHA256, flag)] {
-				report.Findings.Suppressed++
-			}
+			funnel.Add("", FindingExceptionTargetCertificate, cert.FingerprintSHA256, flag,
+				exceptionIdx[findingExceptionKey(FindingExceptionTargetCertificate, cert.FingerprintSHA256, flag)])
 		}
 	}
-	report.Findings.Effective = report.Findings.Raw - report.Findings.Suppressed
+	report.Findings = funnel.Summary()
+	report.findingKeys = funnel.Identities()
 
 	pqcTally.Finalize(report.TotalCerts)
 	report.PQCReadiness.QuantumSafe = pqcTally.QuantumSafe
@@ -584,18 +677,19 @@ func writeCryptoPostureCSV(w http.ResponseWriter, certs []CertificateItem) {
 	w.WriteHeader(http.StatusOK)
 
 	cw := csv.NewWriter(w)
-	_ = cw.Write([]string{
+	header := []string{
 		"fingerprint_sha256", "common_name", "ca_id", "template_id",
 		"public_key_algorithm", "key_size_bits", "signature_algorithm",
 		"valid_from", "valid_until", "pqc_readiness", "risk_score", "grade",
 		"renewal_method", "renewal_status", "revoked_at",
-	})
+	}
+	_ = cw.Write(header)
 	for _, c := range certs {
 		revokedAt := ""
 		if c.RevokedAt != nil {
 			revokedAt = *c.RevokedAt
 		}
-		_ = cw.Write([]string{
+		_ = cw.Write(hardenRowFor(header, []string{
 			c.FingerprintSHA256,
 			c.CommonName,
 			c.CAID,
@@ -611,7 +705,7 @@ func writeCryptoPostureCSV(w http.ResponseWriter, certs []CertificateItem) {
 			c.RenewalMethod,
 			c.RenewalStatus,
 			revokedAt,
-		})
+		}))
 	}
 	cw.Flush()
 }
@@ -1091,6 +1185,12 @@ type ComplianceEvidenceReport struct {
 	Framework   string              `json:"framework"`
 	Controls    []ComplianceControl `json:"controls"`
 	Summary     ComplianceSummary   `json:"summary"`
+	// AcceptedRisks (W22-32): the active accepted-risk exceptions in scope.
+	AcceptedRisks []AcceptedRisk `json:"accepted_risks"`
+	// KeyCustody (W28-10): the custody section, tenant-filtered; when nil,
+	// KeyCustodyNote says why.
+	KeyCustody     *KeyCustodyReport `json:"key_custody,omitempty"`
+	KeyCustodyNote string            `json:"key_custody_note,omitempty"`
 }
 
 type ComplianceControl struct {
@@ -1100,6 +1200,15 @@ type ComplianceControl struct {
 	Status      string `json:"status"` // pass, warn, fail
 	Evidence    string `json:"evidence"`
 	Remediation string `json:"remediation,omitempty"`
+	// Rule is the pass/warn/fail rule applied; Artifacts cite the evidence
+	// to verify it (W28-10).
+	Rule      string            `json:"rule"`
+	Artifacts []ControlArtifact `json:"artifacts"`
+	// Type is "manual" for human-attested controls (W28-11); Attester and
+	// AttestedAt are set only while a current attestation exists.
+	Type       string `json:"type,omitempty"`
+	Attester   string `json:"attester,omitempty"`
+	AttestedAt string `json:"attested_at,omitempty"`
 }
 
 type ComplianceSummary struct {
@@ -1308,6 +1417,7 @@ func computeComplianceEvidenceAt(certs []CertificateItem, cas []CAListItem, fram
 
 	// W16-05: DORA / NIS2 EU control mappings (framework "dora"/"nis2"/"all").
 	report.Controls = append(report.Controls, doraNIS2Controls(certs, cas, framework, now)...)
+	report.Controls = append(report.Controls, fedrampControls(certs, cas, framework, now)...)
 
 	// --- CA health cross-cut: used for both SOC2 and PCI ---
 	if framework == "all" {
@@ -1324,6 +1434,10 @@ func computeComplianceEvidenceAt(certs []CertificateItem, cas []CAListItem, fram
 			Status:    statusOf(activeCAs > 0, true),
 			Evidence:  fmt.Sprintf("Active CAs: %d of %d total.", activeCAs, len(cas)),
 		})
+	}
+
+	for i := range report.Controls {
+		applyControlArtifactIndex(&report.Controls[i])
 	}
 
 	// Tally summary.
@@ -1352,6 +1466,7 @@ type AlgorithmSunsetReport struct {
 }
 
 type SunsetAlgoGroup struct {
+	ID           string   `json:"id"` // key for GET /certificates?sunset_group=
 	Algorithm    string   `json:"algorithm"`
 	Deadline     string   `json:"deadline"` // RFC 3339 date of ban
 	Standard     string   `json:"standard"`
@@ -1368,6 +1483,128 @@ type SunsetAlgoSummary struct {
 	Compliant  int `json:"compliant"`
 }
 
+// sunsetAlgoRule is one Algorithm Sunset group. id is the stable key the
+// certificate list's sunset_group filter takes, so a group's drill-through
+// and its count come from the same match func.
+type sunsetAlgoRule struct {
+	id          string
+	match       func(CertificateItem) bool
+	algorithm   string
+	deadline    string
+	standard    string
+	status      string
+	urgency     string
+	recommended string
+}
+
+var sunsetRules = []sunsetAlgoRule{
+	{
+		id:          "weak_signature",
+		algorithm:   "SHA-1 / MD5 signature",
+		deadline:    "2016-01-01T00:00:00Z",
+		standard:    "CA/B Forum BR 1.5.6",
+		status:      "banned",
+		urgency:     "immediate",
+		recommended: "SHA-256 or SHA-384",
+		match: func(c CertificateItem) bool {
+			for _, f := range c.RiskFlags {
+				if f == "WEAK_SIGNATURE" {
+					return true
+				}
+			}
+			return false
+		},
+	},
+	{
+		id:          "weak_rsa_key",
+		algorithm:   "RSA < 2048-bit",
+		deadline:    "2014-01-01T00:00:00Z",
+		standard:    "NIST SP 800-131A",
+		status:      "banned",
+		urgency:     "immediate",
+		recommended: "RSA-3072 or ECDSA P-256",
+		match: func(c CertificateItem) bool {
+			for _, f := range c.RiskFlags {
+				if f == "WEAK_RSA_KEY" {
+					return true
+				}
+			}
+			return false
+		},
+	},
+	{
+		id:          "rsa2048_post2030",
+		algorithm:   "RSA-2048 (post-2030)",
+		deadline:    "2031-01-01T00:00:00Z",
+		standard:    "NIST SP 800-131A Rev.3",
+		status:      "sunset_2030",
+		urgency:     "high",
+		recommended: "RSA-3072, RSA-4096, or ECDSA P-256+",
+		match: func(c CertificateItem) bool {
+			for _, f := range c.RiskFlags {
+				if f == "NIST_SUNSET_RSA2048" {
+					return true
+				}
+			}
+			return false
+		},
+	},
+	{
+		id:          "ecc224_post2030",
+		algorithm:   "ECC-224 / P-224 (post-2030)",
+		deadline:    "2031-01-01T00:00:00Z",
+		standard:    "NIST SP 800-131A Rev.3",
+		status:      "sunset_2030",
+		urgency:     "high",
+		recommended: "ECDSA P-256 or P-384",
+		match: func(c CertificateItem) bool {
+			for _, f := range c.RiskFlags {
+				if f == "NIST_SUNSET_ECC224" {
+					return true
+				}
+			}
+			return false
+		},
+	},
+	{
+		id:          "validity_397_days",
+		algorithm:   "Validity > 397 days",
+		deadline:    "2020-09-01T00:00:00Z",
+		standard:    "CA/B Forum SC-31",
+		status:      "banned",
+		urgency:     "immediate",
+		recommended: "≤397 day validity (47 days by March 2029)",
+		match: func(c CertificateItem) bool {
+			for _, f := range c.RiskFlags {
+				if f == "VALIDITY_EXCEEDS_397_DAYS" {
+					return true
+				}
+			}
+			return false
+		},
+	},
+	{
+		id:          "pqc_vulnerable",
+		algorithm:   "Classical algorithms (PQC-vulnerable)",
+		deadline:    "2030-01-01T00:00:00Z",
+		standard:    "CNSA 2.0 / NIST IR 8413",
+		status:      "sunset_2030",
+		urgency:     "medium",
+		recommended: "ML-DSA-65, ML-DSA-87, or Hybrid ECDSA+ML-DSA",
+		match:       func(c CertificateItem) bool { return c.PQCVulnerable },
+	},
+}
+
+// sunsetRuleByID returns the group with the given id.
+func sunsetRuleByID(id string) (sunsetAlgoRule, bool) {
+	for _, r := range sunsetRules {
+		if r.id == id {
+			return r, true
+		}
+	}
+	return sunsetAlgoRule{}, false
+}
+
 func computeAlgorithmSunset(certs []CertificateItem) AlgorithmSunsetReport {
 	certs = activeCertificates(certs) // revoked certs cannot be migrated; see certificate_active.go
 	now := time.Now().UTC()
@@ -1376,111 +1613,10 @@ func computeAlgorithmSunset(certs []CertificateItem) AlgorithmSunsetReport {
 		TotalCerts:  len(certs),
 	}
 
-	type algoRule struct {
-		match       func(CertificateItem) bool
-		algorithm   string
-		deadline    string
-		standard    string
-		status      string
-		urgency     string
-		recommended string
-	}
-
-	rules := []algoRule{
-		{
-			algorithm:   "SHA-1 / MD5 signature",
-			deadline:    "2016-01-01T00:00:00Z",
-			standard:    "CA/B Forum BR 1.5.6",
-			status:      "banned",
-			urgency:     "immediate",
-			recommended: "SHA-256 or SHA-384",
-			match: func(c CertificateItem) bool {
-				for _, f := range c.RiskFlags {
-					if f == "WEAK_SIGNATURE" {
-						return true
-					}
-				}
-				return false
-			},
-		},
-		{
-			algorithm:   "RSA < 2048-bit",
-			deadline:    "2014-01-01T00:00:00Z",
-			standard:    "NIST SP 800-131A",
-			status:      "banned",
-			urgency:     "immediate",
-			recommended: "RSA-3072 or ECDSA P-256",
-			match: func(c CertificateItem) bool {
-				for _, f := range c.RiskFlags {
-					if f == "WEAK_RSA_KEY" {
-						return true
-					}
-				}
-				return false
-			},
-		},
-		{
-			algorithm:   "RSA-2048 (post-2030)",
-			deadline:    "2031-01-01T00:00:00Z",
-			standard:    "NIST SP 800-131A Rev.3",
-			status:      "sunset_2030",
-			urgency:     "high",
-			recommended: "RSA-3072, RSA-4096, or ECDSA P-256+",
-			match: func(c CertificateItem) bool {
-				for _, f := range c.RiskFlags {
-					if f == "NIST_SUNSET_RSA2048" {
-						return true
-					}
-				}
-				return false
-			},
-		},
-		{
-			algorithm:   "ECC-224 / P-224 (post-2030)",
-			deadline:    "2031-01-01T00:00:00Z",
-			standard:    "NIST SP 800-131A Rev.3",
-			status:      "sunset_2030",
-			urgency:     "high",
-			recommended: "ECDSA P-256 or P-384",
-			match: func(c CertificateItem) bool {
-				for _, f := range c.RiskFlags {
-					if f == "NIST_SUNSET_ECC224" {
-						return true
-					}
-				}
-				return false
-			},
-		},
-		{
-			algorithm:   "Validity > 397 days",
-			deadline:    "2020-09-01T00:00:00Z",
-			standard:    "CA/B Forum SC-31",
-			status:      "banned",
-			urgency:     "immediate",
-			recommended: "≤397 day validity (47 days by March 2029)",
-			match: func(c CertificateItem) bool {
-				for _, f := range c.RiskFlags {
-					if f == "VALIDITY_EXCEEDS_397_DAYS" {
-						return true
-					}
-				}
-				return false
-			},
-		},
-		{
-			algorithm:   "Classical algorithms (PQC-vulnerable)",
-			deadline:    "2030-01-01T00:00:00Z",
-			standard:    "CNSA 2.0 / NIST IR 8413",
-			status:      "sunset_2030",
-			urgency:     "medium",
-			recommended: "ML-DSA-65, ML-DSA-87, or Hybrid ECDSA+ML-DSA",
-			match:       func(c CertificateItem) bool { return c.PQCVulnerable },
-		},
-	}
-
 	groupMap := make(map[string]*SunsetAlgoGroup)
-	for _, rule := range rules {
+	for _, rule := range sunsetRules {
 		g := &SunsetAlgoGroup{
+			ID:           rule.id,
 			Algorithm:    rule.algorithm,
 			Deadline:     rule.deadline,
 			Standard:     rule.standard,
@@ -1493,7 +1629,7 @@ func computeAlgorithmSunset(certs []CertificateItem) AlgorithmSunsetReport {
 	}
 
 	for _, cert := range certs {
-		for _, rule := range rules {
+		for _, rule := range sunsetRules {
 			if !rule.match(cert) {
 				continue
 			}
@@ -1505,7 +1641,7 @@ func computeAlgorithmSunset(certs []CertificateItem) AlgorithmSunsetReport {
 		}
 	}
 
-	for _, rule := range rules {
+	for _, rule := range sunsetRules {
 		g := groupMap[rule.algorithm]
 		if g.Count == 0 {
 			continue
@@ -1525,4 +1661,152 @@ func computeAlgorithmSunset(certs []CertificateItem) AlgorithmSunsetReport {
 
 	_ = now
 	return report
+}
+
+// W24-36: estate board report. Counts follow the dashboard rule
+// (certs_summary_db_provider.go): active certificates only, empty
+// management_state counts as managed, empty origin as internal.
+
+var (
+	estateOrigins = []string{"internal", "imported", "discovered", "synced"}
+	estateStates  = []string{"managed", "external", "unmanaged"}
+)
+
+type EstateCell struct {
+	Origin          string `json:"origin"`
+	ManagementState string `json:"management_state"`
+	Count           int    `json:"count"`
+}
+
+type EstateReport struct {
+	GeneratedAt string               `json:"generated_at"`
+	Org         string               `json:"org"`
+	Total       int                  `json:"total"`
+	ByState     map[string]int       `json:"by_state"`
+	ByOrigin    map[string]int       `json:"by_origin"`
+	Matrix      []EstateCell         `json:"matrix"`
+	PQC         PQCReadinessSummary  `json:"pqc"`
+	Risk        RiskBreakdownSummary `json:"risk"`
+}
+
+func computeEstateReport(certs []CertificateItem) EstateReport {
+	active := activeCertificates(certs)
+	counts := make(map[[2]string]int, len(estateOrigins)*len(estateStates))
+	known := func(v string, set []string) bool {
+		for _, s := range set {
+			if s == v {
+				return true
+			}
+		}
+		return false
+	}
+	for i := range active {
+		origin, state := active[i].Origin, active[i].ManagementState
+		if origin == "" {
+			origin = "internal"
+		}
+		if state == "" {
+			state = "managed"
+		}
+		if !known(origin, estateOrigins) || !known(state, estateStates) {
+			// DB CHECK constraints make this impossible; do not invent an "other" bucket.
+			logging.Infof("estate report: ignoring certificate with unknown origin=%q management_state=%q", origin, state)
+			continue
+		}
+		counts[[2]string{origin, state}]++
+	}
+
+	r := EstateReport{
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+		Org:         orgName(),
+		ByState:     make(map[string]int, len(estateStates)),
+		ByOrigin:    make(map[string]int, len(estateOrigins)),
+		Matrix:      make([]EstateCell, 0, len(estateOrigins)*len(estateStates)),
+	}
+	for _, o := range estateOrigins {
+		r.ByOrigin[o] = 0
+	}
+	for _, st := range estateStates {
+		r.ByState[st] = 0
+	}
+	for _, o := range estateOrigins {
+		for _, st := range estateStates {
+			n := counts[[2]string{o, st}]
+			r.Matrix = append(r.Matrix, EstateCell{Origin: o, ManagementState: st, Count: n})
+			r.ByOrigin[o] += n
+			r.ByState[st] += n
+			r.Total += n
+		}
+	}
+	posture := computeCryptoPostureReport(active, nil)
+	r.PQC = posture.PQCReadiness
+	r.Risk = posture.RiskBreakdown
+	return r
+}
+
+func renderEstateReportPDF(r EstateReport, createdAt time.Time) ([]byte, error) {
+	pdf, tr := newBrandedPDF("Estate Report", createdAt)
+	pdf.AddPage()
+
+	pdf.SetTextColor(15, 23, 42)
+	pdf.SetFont("Helvetica", "B", 22)
+	pdf.CellFormat(0, 13, tr("Certificate Estate — Board Report"), "", 1, "L", false, 0, "")
+	pdf.SetFont("Helvetica", "", 11)
+	pdf.SetTextColor(71, 85, 105)
+	pdf.CellFormat(0, 7, tr(fmt.Sprintf("%s · %d certificates", r.Org, r.Total)), "", 1, "L", false, 0, "")
+	pdf.Ln(4)
+
+	cell := func(origin, state string) int {
+		for _, c := range r.Matrix {
+			if c.Origin == origin && c.ManagementState == state {
+				return c.Count
+			}
+		}
+		return 0
+	}
+	widths := []float64{50, 32, 32, 32, 32}
+	pdf.SetFont("Helvetica", "B", 10)
+	pdf.SetTextColor(15, 23, 42)
+	pdf.SetFillColor(241, 245, 249)
+	for i, h := range []string{"Origin", "Managed", "External", "Unmanaged", "Total"} {
+		pdf.CellFormat(widths[i], 7, tr(h), "1", 0, "L", true, 0, "")
+	}
+	pdf.Ln(-1)
+	pdf.SetFont("Helvetica", "", 10)
+	for _, o := range estateOrigins {
+		pdf.CellFormat(widths[0], 7, tr(o), "1", 0, "L", false, 0, "")
+		for i, st := range estateStates {
+			pdf.CellFormat(widths[i+1], 7, fmt.Sprintf("%d", cell(o, st)), "1", 0, "R", false, 0, "")
+		}
+		pdf.CellFormat(widths[4], 7, fmt.Sprintf("%d", r.ByOrigin[o]), "1", 0, "R", false, 0, "")
+		pdf.Ln(-1)
+	}
+	pdf.SetFont("Helvetica", "B", 10)
+	pdf.CellFormat(widths[0], 7, tr("Totals"), "1", 0, "L", true, 0, "")
+	for i, st := range estateStates {
+		pdf.CellFormat(widths[i+1], 7, fmt.Sprintf("%d", r.ByState[st]), "1", 0, "R", true, 0, "")
+	}
+	pdf.CellFormat(widths[4], 7, fmt.Sprintf("%d", r.Total), "1", 0, "R", true, 0, "")
+	pdf.Ln(-1)
+	pdf.Ln(5)
+
+	pdf.SetFont("Helvetica", "B", 12)
+	pdf.SetTextColor(15, 23, 42)
+	pdf.CellFormat(0, 8, tr("Post-Quantum readiness"), "", 1, "L", false, 0, "")
+	pdf.SetFont("Helvetica", "", 10)
+	pdf.SetTextColor(51, 65, 85)
+	pdf.CellFormat(0, 6, tr(fmt.Sprintf("%d quantum-safe · %d leaf-only · %d migration-ready · %d vulnerable · %d n/a",
+		r.PQC.QuantumSafe, r.PQC.QuantumSafeLeafOnly, r.PQC.MigrationReady, r.PQC.Vulnerable, r.PQC.NotApplicable)), "", 1, "L", false, 0, "")
+	pdf.Ln(2)
+	pdf.CellFormat(0, 6, tr(fmt.Sprintf("Risk: %d critical · %d high · %d medium · %d low",
+		r.Risk.Critical, r.Risk.High, r.Risk.Medium, r.Risk.Low)), "", 1, "L", false, 0, "")
+
+	var buf bytes.Buffer
+	if err := pdf.Output(&buf); err != nil {
+		return nil, err
+	}
+	if err := pdf.Error(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }

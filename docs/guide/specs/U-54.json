@@ -1,0 +1,103 @@
+{
+  "task": "U-54",
+  "title": "Review issuance anomalies",
+  "sourceStory": "STORIES.md#u-54",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/anomalies"
+      },
+      "caption": "Open /reports/anomalies",
+      "slug": "anomalies-no-scan-yet",
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-54/01-anomalies-no-scan-yet.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/issuance-velocity"
+      },
+      "caption": "Open /reports/issuance-velocity",
+      "slug": "issuance-velocity",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-54/02-issuance-velocity.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "flags": "TIME (scan runs every KRYPTKEEPER_ANOMALY_SWEEP_MINUTES)",
+  "lastRun": {
+    "at": "2026-10-18T12:37:22.287Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-54",
+    "steps": 2,
+    "shots": 2,
+    "annotated": 0,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/reports/issuance-velocity"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-54/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-54/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

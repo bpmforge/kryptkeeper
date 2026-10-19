@@ -13,7 +13,9 @@ package keyinventory
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"time"
 )
 
 // Key is one cloud KMS key's metadata.
@@ -27,6 +29,10 @@ type Key struct {
 	RotationEnabled bool   `json:"rotation_enabled"`
 	CreatedAt       string `json:"created_at,omitempty"`
 	PQCReadiness    string `json:"pqc_readiness"` // vulnerable | quantum_safe | unknown
+	// KeyType is "" for cloud KMS keys, "host" or "user" for SSH keys (W24-33).
+	KeyType string `json:"key_type,omitempty"`
+	// Stale is true when the key is past its rotation window (SSH user keys).
+	Stale bool `json:"stale,omitempty"`
 }
 
 // KeyInventory aggregates keys across providers.
@@ -41,17 +47,64 @@ type KeySource interface {
 	ListKeys(ctx context.Context) ([]Key, error)
 }
 
-// Collect runs every source; per-provider failures are recorded and
-// never sink the others (read-only, a dead provider is not fatal).
+// DefaultProviderTimeout bounds each provider so one hung source cannot hold
+// the whole inventory request.
+const DefaultProviderTimeout = 3 * time.Second
+
+// Collect runs every source concurrently with DefaultProviderTimeout;
+// per-provider failures are recorded and never sink the others (read-only,
+// a dead provider is not fatal).
 func Collect(ctx context.Context, sources ...KeySource) KeyInventory {
+	return CollectWithTimeout(ctx, DefaultProviderTimeout, sources...)
+}
+
+type collectResult struct {
+	keys []Key
+	err  error
+}
+
+// CollectWithTimeout runs each source in its own goroutine under a
+// per-provider deadline. A source that ignores its context is abandoned at
+// the deadline (its result channel is buffered, so it cannot leak a blocked
+// send). Output order follows source order.
+func CollectWithTimeout(ctx context.Context, perProvider time.Duration, sources ...KeySource) KeyInventory {
+	chans := make([]chan collectResult, len(sources))
+	for i, s := range sources {
+		ch := make(chan collectResult, 1)
+		chans[i] = ch
+		sctx, cancel := context.WithTimeout(ctx, perProvider)
+		go func(s KeySource) {
+			defer cancel()
+			keys, err := s.ListKeys(sctx)
+			ch <- collectResult{keys, err}
+		}(s)
+	}
 	inv := KeyInventory{}
-	for _, s := range sources {
-		keys, err := s.ListKeys(ctx)
-		if err != nil {
-			inv.Errors = append(inv.Errors, s.Provider()+": "+err.Error())
-			continue
+	deadline := time.Now().Add(perProvider)
+	record := func(s KeySource, r collectResult) {
+		if r.err != nil {
+			inv.Errors = append(inv.Errors, s.Provider()+": "+r.err.Error())
+			return
 		}
-		inv.Keys = append(inv.Keys, keys...)
+		inv.Keys = append(inv.Keys, r.keys...)
+	}
+	for i, s := range sources {
+		select { // a finished source always wins over an expired deadline
+		case r := <-chans[i]:
+			record(s, r)
+			continue
+		default:
+		}
+		timer := time.NewTimer(time.Until(deadline))
+		select {
+		case r := <-chans[i]:
+			record(s, r)
+		case <-timer.C:
+			inv.Errors = append(inv.Errors, fmt.Sprintf("%s: timed out after %s", s.Provider(), perProvider))
+		case <-ctx.Done():
+			inv.Errors = append(inv.Errors, s.Provider()+": "+ctx.Err().Error())
+		}
+		timer.Stop()
 	}
 	return inv
 }

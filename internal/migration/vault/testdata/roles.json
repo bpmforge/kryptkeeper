@@ -1,0 +1,84 @@
+{
+  "roles": {
+    "codesign": {
+      "data": {
+        "allow_any_name": true,
+        "allow_bare_domains": false,
+        "allow_ip_sans": false,
+        "allow_subdomains": false,
+        "client_flag": false,
+        "code_signing_flag": true,
+        "email_protection_flag": false,
+        "ext_key_usage_oids": [],
+        "key_bits": 3072,
+        "key_type": "rsa",
+        "key_usage": [
+          "DigitalSignature"
+        ],
+        "require_cn": false,
+        "server_flag": false,
+        "ttl": 31536000,
+        "use_pss": false
+      }
+    },
+    "example-dot-com": {
+      "allow_any_name": false,
+      "allow_bare_domains": false,
+      "allow_ip_sans": true,
+      "allow_subdomains": true,
+      "allowed_domains": [
+        "example.com"
+      ],
+      "client_flag": true,
+      "code_signing_flag": false,
+      "email_protection_flag": false,
+      "ext_key_usage": [
+        "ServerAuth"
+      ],
+      "key_bits": 2048,
+      "key_type": "rsa",
+      "key_usage": [
+        "DigitalSignature",
+        "KeyAgreement",
+        "KeyEncipherment"
+      ],
+      "max_ttl": 2592000,
+      "organization": [
+        "Example Corp"
+      ],
+      "ou": [
+        "Platform"
+      ],
+      "require_cn": true,
+      "server_flag": true,
+      "ttl": 259200
+    },
+    "internal-ec": {
+      "allow_any_name": false,
+      "allow_bare_domains": true,
+      "allow_ip_sans": false,
+      "allow_subdomains": true,
+      "allowed_domains": [
+        "svc.corp"
+      ],
+      "allowed_uri_sans": [
+        "spiffe://corp/*"
+      ],
+      "client_flag": true,
+      "code_signing_flag": false,
+      "email_protection_flag": false,
+      "ext_key_usage_oids": [],
+      "key_bits": 256,
+      "key_type": "ec",
+      "key_usage": [
+        "DigitalSignature",
+        "KeyAgreement"
+      ],
+      "no_store": false,
+      "require_cn": true,
+      "server_flag": true,
+      "signature_bits": 256,
+      "ttl": "24h"
+    }
+  }
+}

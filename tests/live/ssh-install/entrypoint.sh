@@ -33,6 +33,16 @@ case "$ROLE" in
     apachectl configtest
     apachectl -D FOREGROUND &
     ;;
+  haproxy)
+    service nginx stop 2>/dev/null || true
+    haproxy -c -f /etc/haproxy/haproxy.cfg
+    haproxy -f /etc/haproxy/haproxy.cfg -D -p /run/haproxy.pid
+    ;;
+  tomcat|tomcat-jks)
+    [ "$ROLE" = tomcat-jks ] && cp /opt/tomcat/conf/server-jks.xml /opt/tomcat/conf/server.xml
+    service nginx stop 2>/dev/null || true
+    setsid /opt/tomcat/bin/startup.sh >/dev/null 2>&1 </dev/null
+    ;;
   *)
     echo "unknown ROLE: $ROLE" >&2
     exit 1

@@ -38,7 +38,16 @@ func NewGCPCertManagerConnector(ctx context.Context) (*GCPCertManagerConnector, 
 		return nil, fmt.Errorf("GCP_PROJECT_ID is required")
 	}
 
-	region := os.Getenv("GCP_REGION")
+	return NewGCPCertManagerConnectorForScope(ctx, Scope{Provider: ProviderGCPCertManager, ProjectID: projectID, Region: os.Getenv("GCP_REGION")})
+}
+
+// NewGCPCertManagerConnectorForScope targets one project and location
+// (default "global"); the token still comes from the environment.
+func NewGCPCertManagerConnectorForScope(ctx context.Context, sc Scope) (*GCPCertManagerConnector, error) {
+	projectID, region := sc.ProjectID, sc.Region
+	if projectID == "" {
+		return nil, fmt.Errorf("project_id is required")
+	}
 	if region == "" {
 		region = "global"
 	}

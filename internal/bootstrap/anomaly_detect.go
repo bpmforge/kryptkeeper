@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"kryptkeeper/internal/ca"
 )
@@ -26,6 +27,7 @@ type IssuanceEvent struct {
 	Subject     string
 	CAID        string
 	RequestedBy string
+	Fingerprint string
 	IssuedAt    time.Time
 }
 
@@ -71,6 +73,12 @@ func (d *AnomalyDetector) Scan(events []IssuanceEvent, now time.Time) []AnomalyF
 		if age < 0 || age > 30*24*time.Hour {
 			continue
 		}
+		// Imported, discovered and synced certificates carry no issuing CA of
+		// this hub; pooling them under "" produced a finding about a CA with
+		// an empty id (CB-09).
+		if e.CAID == "" {
+			continue
+		}
 		perCA30d[e.CAID]++
 		if age <= 24*time.Hour {
 			perCA24h[e.CAID]++
@@ -110,6 +118,11 @@ func (d *AnomalyDetector) Scan(events []IssuanceEvent, now time.Time) []AnomalyF
 	// requester_burst: distinct subjects per requester within 1h.
 	perRequester := map[string]map[string]bool{}
 	for _, e := range events {
+		// Unknown requesters (imported/discovered/protocol-issued certs)
+		// must not be pooled into one synthetic bucket.
+		if e.RequestedBy == "" {
+			continue
+		}
 		if age := now.Sub(e.IssuedAt); age >= 0 && age <= time.Hour {
 			if perRequester[e.RequestedBy] == nil {
 				perRequester[e.RequestedBy] = map[string]bool{}
@@ -139,70 +152,134 @@ func (d *AnomalyDetector) Scan(events []IssuanceEvent, now time.Time) []AnomalyF
 // --- NL policy drafting -------------------------------------------------
 
 var (
-	reMaxValidity = regexp.MustCompile(`(?i)(?:valid(?:ity)?[^.\d]{0,20}|max(?:imum)? validity[^.\d]{0,10})(\d+)\s*(day|d\b)`)
-	reRSABits     = regexp.MustCompile(`(?i)rsa[^.\d]{0,20}(\d{4})\s*(?:bits?)?`)
-	reAllowCA     = regexp.MustCompile(`(?i)allow\s+ca\s+cert`)
-	reOnlyAlgs    = regexp.MustCompile(`(?i)only\s+([a-z0-9, ]+?)(?:\s+(?:keys|algorithms|certs)|[.;]|$)`)
+	reMaxValidity = regexp.MustCompile(`(?i)(?:valid(?:ity)?[^.\d]{0,20}|max(?:imum)? validity[^.\d]{0,10})(\d+)\s*(?:days?\b|d\b)`)
+	// reMaxValidityAlt covers "max 90 days"; consulted only when reMaxValidity
+	// does not match so one phrase is never counted twice.
+	reMaxValidityAlt = regexp.MustCompile(`(?i)\bmax(?:imum)?\s+(?:of\s+)?(\d+)\s*days?\b`)
+	reRSABits        = regexp.MustCompile(`(?i)rsa[^.,;\d]{0,40}?(\d{4})\s*(?:bits?)?`)
+	reAllowCA        = regexp.MustCompile(`(?i)allow\s+ca\s+cert(?:ificate)?s?`)
+	reOnlyAlgs       = regexp.MustCompile(`(?i)only\s+([a-z0-9, ]+?)(?:\s+(?:keys|algorithms|certs)|[.;]|$)`)
+	reDraftSplit     = regexp.MustCompile(`[.;,\n]`)
 )
 
 var knownAlgorithms = map[string]string{
 	"rsa": "rsa", "ecdsa": "ecdsa", "ed25519": "ed25519",
 }
 
-// DraftPolicyFromNL turns an operator's natural-language request into a
-// PROPOSED (never active) issuance policy on the real W5-05 rule
-// schema. Deterministic phrase extraction; unrecognized text errors
-// with what IS understood rather than yielding a silently-empty policy.
-// The explanation names every extracted rule — the reviewer must see
-// exactly what the text became.
-func DraftPolicyFromNL(name, text string) (ca.IssuancePolicy, []string, error) {
-	rules := ca.PolicyRules{}
-	var explanation []string
+// draftStopwords are connective fragments left over once the recognised
+// phrases are blanked out; they carry no policy intent so they are not
+// reported as unrecognised.
+var draftStopwords = map[string]bool{
+	"and": true, "or": true, "then": true, "also": true, "please": true, "the": true, "a": true, "an": true,
+	"all": true, "any": true, "cert": true, "certs": true, "certificate": true, "certificates": true,
+	"key": true, "keys": true, "algorithm": true, "algorithms": true, "must": true, "should": true,
+	"be": true, "have": true, "use": true,
+}
 
-	if m := reMaxValidity.FindStringSubmatch(text); m != nil {
-		days, err := strconv.Atoi(m[1])
-		if err == nil && days > 0 {
+// PolicyDraftResult is the outcome of parsing operator text. Unrecognized
+// holds every clause no rule consumed, verbatim: text is reported, never
+// silently dropped.
+type PolicyDraftResult struct {
+	Policy       ca.IssuancePolicy
+	Explanation  []string
+	Unrecognized []string
+}
+
+// ParsePolicyDraft turns an operator's natural-language request into a
+// PROPOSED (never active) issuance policy on the real W5-05 rule schema.
+// Deterministic phrase extraction, no LLM and no network (D-058). It never
+// errors and Policy.Enabled is always false: NL text asking for activation
+// ("enable it now") is deliberately not honored, it surfaces as Unrecognized.
+func ParsePolicyDraft(name, text string) PolicyDraftResult {
+	rules := ca.PolicyRules{}
+	var explanation, unrecognized []string
+	var spans [][2]int
+
+	if loc := reMaxValidity.FindStringSubmatchIndex(text); loc != nil {
+		if days, err := strconv.Atoi(text[loc[2]:loc[3]]); err == nil && days > 0 {
 			rules.MaxValidityDays = days
 			explanation = append(explanation, fmt.Sprintf("max validity %d days", days))
+			spans = append(spans, [2]int{loc[0], loc[1]})
+		}
+	} else if loc := reMaxValidityAlt.FindStringSubmatchIndex(text); loc != nil {
+		if days, err := strconv.Atoi(text[loc[2]:loc[3]]); err == nil && days > 0 {
+			rules.MaxValidityDays = days
+			explanation = append(explanation, fmt.Sprintf("max validity %d days", days))
+			spans = append(spans, [2]int{loc[0], loc[1]})
 		}
 	}
-	if m := reRSABits.FindStringSubmatch(text); m != nil {
-		bits, err := strconv.Atoi(m[1])
-		if err == nil && bits >= 2048 {
+	if loc := reRSABits.FindStringSubmatchIndex(text); loc != nil {
+		if bits, err := strconv.Atoi(text[loc[2]:loc[3]]); err == nil && bits >= 2048 {
 			rules.MinRSABits = bits
 			explanation = append(explanation, fmt.Sprintf("minimum RSA key size %d bits", bits))
+			spans = append(spans, [2]int{loc[0], loc[1]})
 		}
 	}
-	if reAllowCA.MatchString(text) {
+	if loc := reAllowCA.FindStringIndex(text); loc != nil {
 		rules.AllowCACerts = true
 		explanation = append(explanation, "CA certificates allowed through the leaf path (explicit opt-in)")
+		spans = append(spans, [2]int{loc[0], loc[1]})
 	}
-	if m := reOnlyAlgs.FindStringSubmatch(text); m != nil {
-		var algs []string
-		for _, part := range strings.FieldsFunc(m[1], func(r rune) bool { return r == ',' || r == ' ' }) {
+	if loc := reOnlyAlgs.FindStringSubmatchIndex(text); loc != nil {
+		var algs, unknown []string
+		seen := map[string]bool{}
+		for _, part := range strings.FieldsFunc(text[loc[2]:loc[3]], func(r rune) bool { return r == ',' || r == ' ' }) {
 			p := strings.ToLower(strings.TrimSpace(part))
 			if p == "and" || p == "or" || p == "" {
 				continue
 			}
-			if canonical, ok := knownAlgorithms[p]; ok {
+			canonical, ok := knownAlgorithms[p]
+			switch {
+			case !ok:
+				unknown = append(unknown, part)
+			case !seen[canonical]:
+				seen[canonical] = true
 				algs = append(algs, canonical)
 			}
 		}
 		if len(algs) > 0 {
 			rules.AllowedAlgorithms = algs
 			explanation = append(explanation, "allowed algorithms: "+strings.Join(algs, ", "))
+			spans = append(spans, [2]int{loc[0], loc[1]})
+			for _, u := range unknown {
+				unrecognized = append(unrecognized, "algorithm not supported: "+u)
+			}
 		}
 	}
 
-	if len(explanation) == 0 {
+	// Blank consumed spans so only clauses no rule understood remain.
+	rest := []byte(text)
+	for _, sp := range spans {
+		for i := sp[0]; i < sp[1]; i++ {
+			rest[i] = ' '
+		}
+	}
+	var leftovers []string
+	for _, frag := range reDraftSplit.Split(string(rest), -1) {
+		frag = strings.TrimSpace(frag)
+		if frag == "" || !strings.ContainsFunc(frag, unicode.IsLetter) || draftStopwords[strings.ToLower(frag)] {
+			continue
+		}
+		leftovers = append(leftovers, frag)
+	}
+	unrecognized = append(leftovers, unrecognized...)
+
+	return PolicyDraftResult{
+		Policy:       ca.IssuancePolicy{Name: name, Enabled: false, Rules: rules},
+		Explanation:  explanation,
+		Unrecognized: unrecognized,
+	}
+}
+
+// DraftPolicyFromNL is ParsePolicyDraft for callers that want an error when
+// nothing was understood; the error names what IS understood.
+func DraftPolicyFromNL(name, text string) (ca.IssuancePolicy, []string, error) {
+	res := ParsePolicyDraft(name, text)
+	if len(res.Explanation) == 0 {
 		return ca.IssuancePolicy{}, nil, fmt.Errorf(
 			"no policy rules recognized in %q — understood phrases: validity limits (\"valid for at most 90 days\"), RSA floors (\"rsa at least 3072 bits\"), algorithm restrictions (\"only ecdsa and ed25519\"), CA-cert opt-in (\"allow ca certificates\")", text)
 	}
-
-	// Proposed, never active: Enabled is false at construction and
-	// SubmitPolicyDraft forces it false again. NL text asking for
-	// activation ("enable it now") is deliberately not honored.
-	return ca.IssuancePolicy{Name: name, Enabled: false, Rules: rules}, explanation, nil
+	return res.Policy, res.Explanation, nil
 }
 
 // SubmitPolicyDraft persists a draft as a DISABLED policy row. The

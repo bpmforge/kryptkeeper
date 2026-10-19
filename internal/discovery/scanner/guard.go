@@ -11,6 +11,10 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
+
+	"kryptkeeper/internal/egress"
 )
 
 const (
@@ -76,8 +80,8 @@ func denied(deny []netip.Prefix, ip netip.Addr) bool {
 
 // CheckTarget validates one scan target (bare host, host:port, IP, or CIDR)
 // before a job is queued. portsPerHost is how many ports each address will be
-// probed on. Hostnames are not resolved here, so a name that resolves into the
-// deny list is not caught; the deny list guards literal IPs and CIDRs.
+// probed on. Hostnames are not resolved here; the dialers
+// (guardedDialer) re-check the resolved address when connecting.
 func CheckTarget(target string, portsPerHost int, deny []netip.Prefix, maxTargets int) error {
 	if portsPerHost < 1 {
 		portsPerHost = 1
@@ -103,4 +107,27 @@ func CheckTarget(target string, portsPerHost int, deny []netip.Prefix, maxTarget
 		return ErrTargetDenied
 	}
 	return nil
+}
+
+// dialPolicy is the address policy applied to every address a scanner
+// actually connects to. Private space and loopback stay scannable (inventorying
+// internal networks is the product's purpose, and a scope has no per-operator
+// loopback notion to key on); link-local/cloud-metadata, unspecified and
+// multicast are refused by egress, plus the operator deny CIDRs.
+var dialPolicy = egress.Policy{AllowPrivate: true, AllowLoopback: true}
+
+// guardedDialer returns a dialer that checks the resolved address at connect
+// time. CheckTarget only sees the literal target, so a hostname that resolves
+// (or rebinds) to 169.254.169.254 would otherwise be dialled.
+func guardedDialer(timeout time.Duration) *net.Dialer {
+	deny := DenyCIDRsFromEnv()
+	return &net.Dialer{Timeout: timeout, Control: func(network, address string, c syscall.RawConn) error {
+		if err := dialPolicy.DialControl()(network, address, c); err != nil {
+			return ErrTargetDenied
+		}
+		if ap, err := netip.ParseAddrPort(address); err == nil && denied(deny, ap.Addr()) {
+			return ErrTargetDenied
+		}
+		return nil
+	}}
 }

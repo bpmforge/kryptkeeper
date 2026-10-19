@@ -23,8 +23,8 @@ import {
   Settings as SettingsIcon,
   FileSignature,
   Workflow,
+  Gauge,
   ShieldAlert,
-  Bot,
   Fingerprint,
   Building,
   PlugZap,
@@ -32,16 +32,29 @@ import {
   Plug,
   CalendarClock,
   Cloud,
+  Database,
+  ArrowRightLeft,
+  Layers,
+  Bot,
+  Network,
+  Terminal,
+  FilePlus2,
+  ListChecks,
 } from "lucide-react";
 import {
   canManageUsers,
   canReadKeyInventory,
   canReadOperationalSummaries,
 } from "./auth";
+import { canManageEnrollment } from "./enrollmentApi";
 
 export type NavIcon = ComponentType<{ size?: number; className?: string }>;
 
 export type NavPermission = (role?: string, scopes?: string[]) => boolean;
+
+// Deployment flags that gate whole nav items. An unknown flag counts as off
+// so an item never flashes in while the flag is still loading.
+export type NavFlags = { multiTenancy?: boolean };
 
 export type NavItem = {
   to: string;
@@ -52,6 +65,8 @@ export type NavItem = {
   // action buttons gate on canManage*. Only present for nav items whose
   // underlying page already restricts the whole thing to a permission.
   permission?: NavPermission;
+  // Hidden unless the named deployment flag is explicitly true.
+  requiresFlag?: keyof NavFlags;
 };
 
 export type NavSection = {
@@ -72,19 +87,44 @@ export const navSections: NavSection[] = [
     label: "Today",
     items: [
       { to: "/", label: "What needs a human", icon: LayoutDashboard },
-      { to: "/approvals", label: "Approvals", icon: Stamp },
-      { to: "/pending-actions", label: "Pending Actions", icon: Bot },
+      { to: "/inbox", label: "Approvals inbox", icon: Stamp },
       { to: "/alerts", label: "Alerts", icon: Bell },
+      { to: "/search", label: "Search", icon: SearchIcon },
+      { to: "/ssh-certificates", label: "SSH Certificates", icon: Terminal },
+      { to: "/nhi", label: "Machine Identities", icon: Bot },
+      { to: "/reports/anomalies", label: "Anomalies", icon: ShieldAlert },
+      {
+        to: "/ct-findings",
+        label: "CT Findings",
+        icon: ShieldAlert,
+        permission: canReadOperationalSummaries,
+      },
     ],
   },
   {
     label: "Automation",
     items: [
       { to: "/automation", label: "Automation", icon: Workflow },
+      { to: "/targets", label: "Targets", icon: PlugZap },
       { to: "/targets/setup", label: "Target Setup", icon: PlugZap },
       { to: "/targets/renewal-policy", label: "Renewal Policy", icon: CalendarClock },
+      {
+        to: "/renewal/rollout-groups",
+        label: "Rollout Groups",
+        icon: Layers,
+        permission: (role) => role === "pki-admin",
+      },
       { to: "/delivery-plugins", label: "Delivery Plugins", icon: Puzzle },
       { to: "/agents", label: "Agents", icon: Cpu },
+    ],
+  },
+  {
+    // Split from Automation when v0.14 (Enrollment) and v0.15 (Rollout
+    // Groups) together pushed it past the 8-item scan limit.
+    label: "Connect",
+    items: [
+      { to: "/acme", label: "ACME", icon: Plug, permission: canManageUsers },
+      { to: "/enrollment", label: "Enrollment Protocols", icon: Plug, permission: canManageEnrollment },
       {
         to: "/integrations",
         label: "Integrations",
@@ -98,18 +138,25 @@ export const navSections: NavSection[] = [
     items: [
       { to: "/certificates", label: "Certificates", icon: ShieldCheck },
       { to: "/cas", label: "Certificate Authorities", icon: Building2 },
+      {
+        to: "/ceremonies",
+        label: "Key Ceremonies",
+        icon: Gavel,
+        permission: (role) => role === "pki-admin",
+      },
       { to: "/keys", label: "Keys", icon: KeyRound },
       { to: "/code-signing", label: "Code Signing", icon: FileSignature },
       { to: "/spiffe", label: "SPIFFE", icon: Fingerprint },
       { to: "/templates", label: "Templates", icon: FileCheck2 },
       { to: "/discovery", label: "Discovery", icon: Radar },
-      { to: "/search", label: "Search", icon: SearchIcon },
     ],
   },
   {
     label: "Evidence",
     items: [
+      { to: "/reports/slo", label: "SLOs", icon: Gauge },
       { to: "/reports/compliance-evidence", label: "Compliance Evidence", icon: BookOpen },
+      { to: "/reports/key-custody", label: "Key Custody", icon: KeyRound, permission: (role) => role === "pki-admin" },
       {
         to: "/audit",
         label: "Audit Log",
@@ -118,6 +165,7 @@ export const navSections: NavSection[] = [
       },
       { to: "/reports/change-audit", label: "Change Audit", icon: ClipboardList },
       { to: "/history", label: "History", icon: HistoryIcon },
+      { to: "/blast-radius", label: "Blast Radius", icon: Network },
     ],
   },
   {
@@ -142,8 +190,32 @@ export const navSections: NavSection[] = [
     label: "Administration",
     items: [
       { to: "/users", label: "Users", icon: UsersIcon, permission: canManageUsers },
-      { to: "/tenants", label: "Tenants", icon: Building },
+      { to: "/access-review", label: "Access Review", icon: ClipboardList, permission: canManageUsers },
+      {
+        to: "/tenants",
+        label: "Tenants",
+        icon: Building,
+        requiresFlag: "multiTenancy",
+      },
+      { to: "/policies", label: "Policies", icon: ShieldCheck, permission: canManageUsers },
+      { to: "/roles", label: "Roles", icon: KeyRound, permission: canManageUsers },
+      { to: "/inventory-sources", label: "Inventory Sources", icon: Database },
+      { to: "/migration", label: "Migration", icon: ArrowRightLeft },
       { to: "/settings", label: "Settings", icon: SettingsIcon },
+    ],
+  },
+];
+
+// W33-22: the requester role is an app owner's, not an operator's. It sees
+// exactly two items; every other nav entry is hidden regardless of scopes.
+export const isRequesterOnly = (role?: string) => (role ?? "").trim() === "requester";
+
+export const requesterNavSections: NavSection[] = [
+  {
+    label: "Requests",
+    items: [
+      { to: "/certificates/issue", label: "Request", icon: FilePlus2 },
+      { to: "/my-requests", label: "My Requests", icon: ListChecks },
     ],
   },
 ];
@@ -158,12 +230,16 @@ export function filterNavSections(
   sections: NavSection[],
   role?: string,
   scopes?: string[],
+  flags: NavFlags = {},
 ): NavSection[] {
+  if (isRequesterOnly(role)) return requesterNavSections;
   return sections
     .map((section) => ({
       ...section,
       items: section.items.filter(
-        (item) => !item.permission || item.permission(role, scopes),
+        (item) =>
+          (!item.permission || item.permission(role, scopes)) &&
+          (!item.requiresFlag || flags[item.requiresFlag] === true),
       ),
     }))
     .filter((section) => section.items.length > 0);

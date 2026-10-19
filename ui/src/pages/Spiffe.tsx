@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { scrollableProps } from "../lib/scrollable";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Wand2 } from "lucide-react";
 import { api } from "../lib/api";
@@ -109,7 +110,7 @@ function MintPanel({ trustDomain }: { trustDomain: string }) {
             <summary className="cursor-pointer text-xs text-muted-foreground">
               SVID certificate (PEM)
             </summary>
-            <pre className="mt-1 overflow-x-auto rounded-lg bg-background/60 p-2 text-[10px] text-foreground">
+            <pre className="mt-1 overflow-x-auto rounded-lg bg-background/60 p-2 text-[10px] text-foreground" {...scrollableProps}>
               {result.svid_pem}
             </pre>
           </details>
@@ -117,7 +118,7 @@ function MintPanel({ trustDomain }: { trustDomain: string }) {
             <summary className="cursor-pointer text-xs text-muted-foreground">
               Private key (PEM)
             </summary>
-            <pre className="mt-1 overflow-x-auto rounded-lg bg-background/60 p-2 text-[10px] text-foreground">
+            <pre className="mt-1 overflow-x-auto rounded-lg bg-background/60 p-2 text-[10px] text-foreground" {...scrollableProps}>
               {result.key_pem}
             </pre>
           </details>
@@ -158,14 +159,22 @@ export default function Spiffe() {
 
       <Panel
         title="Issued SVIDs"
-        subtitle={`${svids.length} certificate(s) with a spiffe:// identity`}
+        subtitle={`${svids.length} ${svids.length === 1 ? "certificate" : "certificates"} with a spiffe:// identity`}
       >
         {svids.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No SVIDs yet. Mint one above (or via POST /api/v1/spiffe/svid).
+            {status?.enabled ? (
+              <>
+                No SVIDs yet. Mint one above, or via{" "}
+                <code>POST /api/v1/spiffe/svid</code>.
+              </>
+            ) : (
+              "No SVIDs yet. Once SPIFFE is configured you can mint them here."
+            )}
           </p>
         ) : (
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto" {...scrollableProps}>
+          <table className="w-full min-w-[34rem] text-sm">
             <thead>
               <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
                 <th className="py-2 pr-4">SPIFFE ID</th>
@@ -196,6 +205,7 @@ export default function Spiffe() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </Panel>
     </div>

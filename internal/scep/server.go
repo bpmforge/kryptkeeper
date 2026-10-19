@@ -5,6 +5,7 @@
 package scep
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/rand"
@@ -15,13 +16,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/smallstep/pkcs7"
+	"kryptkeeper/internal/logging"
 
 	"kryptkeeper/internal/ca"
 )
@@ -42,14 +44,25 @@ var (
 
 // messageType / pkiStatus / failInfo values (RFC 8894 §3.2, §3.3, §3.3.3).
 const (
-	msgTypePKCSReq = "19"
-	msgTypeCertRep = "3"
+	msgTypePKCSReq    = "19"
+	msgTypeRenewalReq = "17"
+	msgTypeCertRep    = "3"
 
 	pkiStatusSuccess = "0"
 	pkiStatusFailure = "2"
 
-	failInfoBadRequest = "2"
+	failInfoBadMessageCheck = "1"
+	failInfoBadRequest      = "2"
 )
+
+// errBadSignature marks a pkiMessage whose CMS signature did not verify; the
+// CertRep then carries failInfo badMessageCheck instead of badRequest.
+var errBadSignature = errors.New("pkiMessage signature verification failed")
+
+// RevocationChecker reports whether a certificate serial issued by the SCEP CA
+// is revoked. An error means the status is unknown; renewal treats that as a
+// refusal.
+type RevocationChecker func(serial *big.Int) (bool, error)
 
 // DecrypterFunc returns the crypto.Decrypter for the SCEP CA's private key,
 // resolved lazily on every enrollment rather than cached at startup -- a
@@ -69,6 +82,8 @@ type Server struct {
 	// existing caller and test that builds a Server without
 	// WithIssuedRecorder keeps working unchanged.
 	issuedRecorder ca.IssuedCertificateRecorder
+	enrollGate     EnrollmentGate
+	revoked        RevocationChecker // nil refuses every renewal (fail closed)
 	audit          AuditFunc
 	now            func() time.Time
 }
@@ -76,7 +91,7 @@ type Server struct {
 // AuditEvent is one SCEP enrollment outcome. Detail never carries the
 // challenge itself.
 type AuditEvent struct {
-	Action   string // "scep.enroll"
+	Action   string // "scep.enroll" or "scep.renew"
 	Actor    string // the challenge's bound CN, or empty when unknown
 	Outcome  string // "success" or "denied"
 	SourceIP string
@@ -85,6 +100,13 @@ type AuditEvent struct {
 
 // AuditFunc records an AuditEvent; main adapts it to the hub's audit log.
 type AuditFunc func(ctx context.Context, ev AuditEvent)
+
+// WithRevocationChecker wires the revocation lookup renewal needs to refuse a
+// revoked signer certificate. Without it every renewal is refused.
+func (s *Server) WithRevocationChecker(fn RevocationChecker) *Server {
+	s.revoked = fn
+	return s
+}
 
 // WithAuditFunc records enrollment outcomes.
 func (s *Server) WithAuditFunc(fn AuditFunc) *Server {
@@ -149,6 +171,20 @@ func (s *Server) WithIssuedRecorder(r ca.IssuedCertificateRecorder) *Server {
 	return s
 }
 
+// EnrollmentGate decides whether this protocol may issue from its configured
+// template (W23-43). It is a function value because protocol packages must not
+// import internal/bootstrap. An error wrapping ca.ErrEnrollmentDenied is a
+// policy denial; any other error is a failure to evaluate, which also blocks
+// issuance (fail closed). Nil means no gate is configured.
+type EnrollmentGate func(ctx context.Context, actor string) error
+
+// WithEnrollmentGate wires the template enrollment gate and returns the server
+// for chaining.
+func (s *Server) WithEnrollmentGate(g EnrollmentGate) *Server {
+	s.enrollGate = g
+	return s
+}
+
 // Handler returns an http.Handler for SCEP endpoints.
 // All SCEP operations go through a single endpoint with ?operation= parameter.
 func (s *Server) Handler() http.Handler {
@@ -177,7 +213,7 @@ func (s *Server) handleGetCACert(w http.ResponseWriter, r *http.Request) {
 
 	caObj, err := s.caEngine.GetCA(s.caID)
 	if err != nil {
-		log.Printf("scep GetCACert: %v", err)
+		logging.Infof("scep GetCACert: %v", err)
 		http.Error(w, "CA unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -192,9 +228,9 @@ func (s *Server) handleGetCACert(w http.ResponseWriter, r *http.Request) {
 // SCEPStandard because handlePKIOperation only accepts the RFC 8894 PKCS#7
 // exchange (no legacy bare-CSR fallback), SHA-256 because buildCertRep signs
 // with SetDigestAlgorithm(OIDDigestAlgorithmSHA256), AES because NewServer
-// sets pkcs7.ContentEncryptionAlgorithm to AES-256-GCM. Renewal (RenewalReq,
-// messageType 17) is deliberately absent: handlePKIOperation only handles
-// PKCSReq.
+// sets pkcs7.ContentEncryptionAlgorithm to AES-256-GCM, Renewal because
+// handlePKIOperation accepts a PKCSReq or RenewalReq signed by a currently
+// valid, unrevoked certificate this CA issued (W26-30).
 func (s *Server) handleGetCACaps(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -207,6 +243,7 @@ func (s *Server) handleGetCACaps(w http.ResponseWriter, r *http.Request) {
 		"AES",
 		"POSTPKIOperation",
 		"SCEPStandard",
+		"Renewal",
 	}
 
 	w.Header().Set("Content-Type", "text/plain")
@@ -277,23 +314,58 @@ func (s *Server) handlePKIOperation(w http.ResponseWriter, r *http.Request) {
 
 	caObj, err := s.caEngine.GetCA(s.caID)
 	if err != nil {
-		log.Printf("scep PKIOperation: CA %s unavailable: %v", s.caID, err)
+		logging.Warnf("scep PKIOperation: CA %s unavailable: %v", s.caID, err)
 		http.Error(w, "CA unavailable", http.StatusServiceUnavailable)
 		return
 	}
 
-	csr, clientCert, failErr := s.unwrapRequest(outer, txID)
+	csr, clientCert, msgType, failErr := s.unwrapRequest(outer, txID)
 	if failErr != nil {
-		log.Printf("scep PKIOperation: %v", failErr)
-		s.writeCertRep(w, caObj, txID, senderNonce, pkiStatusFailure, failInfoBadRequest, nil, nil)
+		logging.Infof("scep PKIOperation: %v", failErr)
+		failInfo := failInfoBadRequest
+		if errors.Is(failErr, errBadSignature) {
+			failInfo = failInfoBadMessageCheck
+			if msgType == msgTypeRenewalReq {
+				s.emit(r, AuditEvent{Action: "scep.renew", Outcome: "denied", Detail: failErr.Error()})
+			}
+		}
+		s.writeCertRep(w, caObj, txID, senderNonce, pkiStatusFailure, failInfo, nil, nil)
 		return
+	}
+
+	// A signer that is not self-signed is a certificate the client already
+	// holds: this is a renewal and ONLY the renewal checks apply. Every
+	// refusal inside renew returns; nothing falls through to the challenge
+	// path below. A RenewalReq signed by a throwaway self-signed identity has
+	// nothing to renew and is refused, never treated as an enrollment.
+	if !isSelfSigned(clientCert) {
+		s.renew(w, r, caObj, txID, senderNonce, csr, clientCert)
+		return
+	}
+	if msgType == msgTypeRenewalReq {
+		s.denyRenewal(w, r, caObj, txID, senderNonce, clientCert, "RenewalReq signed by a self-signed certificate")
+		return
+	}
+
+	// W23-43: the gate runs before the challenge is claimed, so a denial does
+	// not burn a valid one-time challenge. The CSR subject is the only actor
+	// known at this point; the gate's verdict does not depend on it.
+	if s.enrollGate != nil {
+		actor := csr.Subject.CommonName
+		if gerr := s.enrollGate(r.Context(), actor); gerr != nil {
+			logging.Infof("scep PKIOperation: enrollment gate: %v", gerr)
+			s.emit(r, AuditEvent{Action: "scep.enroll", Actor: actor, Outcome: "denied",
+				Detail: "template enrollment_permissions: " + gerr.Error()})
+			s.writeCertRep(w, caObj, txID, senderNonce, pkiStatusFailure, failInfoBadRequest, nil, nil)
+			return
+		}
 	}
 
 	// The challenge is claimed before issuance, so two requests carrying
 	// it cannot both get a certificate; a CA failure after this burns it.
 	challenge, err := s.consumeChallenge(r.Context(), csr)
 	if err != nil {
-		log.Printf("scep PKIOperation: %v", err)
+		logging.Infof("scep PKIOperation: %v", err)
 		s.emit(r, AuditEvent{Action: "scep.enroll", Actor: challenge.CommonName, Outcome: "denied", Detail: err.Error()})
 		s.writeCertRep(w, caObj, txID, senderNonce, pkiStatusFailure, failInfoBadRequest, nil, nil)
 		return
@@ -310,9 +382,12 @@ func (s *Server) handlePKIOperation(w http.ResponseWriter, r *http.Request) {
 		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 	})
 	if err != nil {
-		log.Printf("scep PKIOperation: issuance failed: %v", err)
-		s.emit(r, AuditEvent{Action: "scep.enroll", Actor: challenge.CommonName, Outcome: "denied",
-			Detail: fmt.Sprintf("challenge %s consumed, issuance failed: %v", challenge.ID, err)})
+		logging.Warnf("scep PKIOperation: issuance failed: %v", err)
+		detail := fmt.Sprintf("challenge %s consumed, issuance failed: %v", challenge.ID, err)
+		if errors.Is(err, ca.ErrCARevoked) {
+			detail = fmt.Sprintf("challenge %s consumed, ca revoked: %v", challenge.ID, err)
+		}
+		s.emit(r, AuditEvent{Action: "scep.enroll", Actor: challenge.CommonName, Outcome: "denied", Detail: detail})
 		s.writeCertRep(w, caObj, txID, senderNonce, pkiStatusFailure, failInfoBadRequest, nil, nil)
 		return
 	}
@@ -328,11 +403,109 @@ func (s *Server) handlePKIOperation(w http.ResponseWriter, r *http.Request) {
 	// for ACME).
 	if s.issuedRecorder != nil {
 		if err := s.issuedRecorder.RecordIssuedCertificate(r.Context(), s.caID, issued.Certificate, issued.CertPEM, "scep"); err != nil {
-			log.Printf("scep: issued certificate %s not recorded: %v", issued.Fingerprint, err)
+			logging.Infof("scep: issued certificate %s not recorded: %v", issued.Fingerprint, err)
 		}
 	}
 
 	s.writeCertRep(w, caObj, txID, senderNonce, pkiStatusSuccess, "", issued.Certificate, clientCert)
+}
+
+// isSelfSigned reports whether cert is a genuine self-signed certificate: the
+// subject equals the issuer AND its signature verifies under its own key. A
+// certificate that merely claims issuer==subject is not self-signed. The
+// signature is checked directly rather than through CheckSignatureFrom, which
+// demands CA basic constraints that throwaway SCEP identities do not carry.
+func isSelfSigned(cert *x509.Certificate) bool {
+	return bytes.Equal(cert.RawSubject, cert.RawIssuer) &&
+		cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature) == nil
+}
+
+// revocationAdapter lets the optional RevocationChecker satisfy
+// ca.RevocationChecker; a nil checker yields nil so the shared check fails closed.
+type revocationAdapter struct{ fn RevocationChecker }
+
+func (a revocationAdapter) IsRevoked(serial *big.Int, _ string) (bool, time.Time, int, error) {
+	revoked, err := a.fn(serial)
+	return revoked, time.Time{}, 0, err
+}
+
+// denyRenewal audits a refused renewal and answers a FAILURE CertRep. It is the
+// single exit for every renewal refusal.
+func (s *Server) denyRenewal(w http.ResponseWriter, r *http.Request, caObj *ca.CA, txID string, nonce []byte, signer *x509.Certificate, reason string) {
+	logging.Warnf("scep PKIOperation: renewal refused: %s", reason)
+	actor := ""
+	if signer != nil {
+		actor = signer.Subject.CommonName
+	}
+	s.emit(r, AuditEvent{Action: "scep.renew", Actor: actor, Outcome: "denied", Detail: reason})
+	s.writeCertRep(w, caObj, txID, nonce, pkiStatusFailure, failInfoBadRequest, nil, nil)
+}
+
+// renew handles a request signed by a certificate the client already holds
+// (RFC 8894 §3.3.1.2). The signer must chain to this CA, be within its
+// validity window, and be known unrevoked; no challenge is used or consumed.
+// The new certificate takes its names from the signer, which proved them at
+// first enrollment, never from the CSR. Every refusal returns through
+// denyRenewal; this function never reaches the challenge path.
+func (s *Server) renew(w http.ResponseWriter, r *http.Request, caObj *ca.CA, txID string, nonce []byte, csr *x509.CertificateRequest, signer *x509.Certificate) {
+	var rev ca.RevocationChecker
+	if s.revoked != nil {
+		rev = revocationAdapter{fn: s.revoked}
+	}
+	if err := ca.CheckHubClientCertificate(signer, caObj.Certificate, s.caID, s.now(), rev); err != nil {
+		reason := "signer certificate was not issued by this CA"
+		var refused *ca.CredentialRefusedError
+		if errors.As(err, &refused) {
+			reason = refused.Reason
+			if refused.Err != nil {
+				logging.Infof("scep PKIOperation: renewal check: %v", refused.Err)
+			}
+		}
+		s.denyRenewal(w, r, caObj, txID, nonce, signer, reason)
+		return
+	}
+	if signer.Subject.CommonName == "" && len(signer.DNSNames) == 0 {
+		s.denyRenewal(w, r, caObj, txID, nonce, signer, "signer certificate carries no name to renew")
+		return
+	}
+
+	actor := signer.Subject.CommonName
+	if s.enrollGate != nil {
+		if gerr := s.enrollGate(r.Context(), actor); gerr != nil {
+			s.denyRenewal(w, r, caObj, txID, nonce, signer, "template enrollment_permissions: "+gerr.Error())
+			return
+		}
+	}
+
+	// Same issuance call shape as enrollment; the CSR only proves the key
+	// (the same key as the old certificate or a new one -- both allowed).
+	issued, err := s.caEngine.IssueCertificate(s.caID, ca.IssuanceRequest{
+		CSR:             csr,
+		Subject:         &pkix.Name{CommonName: signer.Subject.CommonName},
+		DNSNames:        signer.DNSNames,
+		CallerNamesOnly: true,
+		Validity:        365 * 24 * time.Hour,
+		KeyUsage:        x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	})
+	if err != nil {
+		reason := fmt.Sprintf("issuance failed: %v", err)
+		if errors.Is(err, ca.ErrCARevoked) {
+			reason = fmt.Sprintf("ca revoked: %v", err)
+		}
+		s.denyRenewal(w, r, caObj, txID, nonce, signer, reason)
+		return
+	}
+	s.emit(r, AuditEvent{Action: "scep.renew", Actor: actor, Outcome: "success",
+		Detail: fmt.Sprintf("old_serial=%s new_serial=%s subject=%q", signer.SerialNumber.Text(16),
+			issued.Certificate.SerialNumber.Text(16), issued.Certificate.Subject.String())})
+
+	if s.issuedRecorder != nil {
+		if err := s.issuedRecorder.RecordIssuedCertificate(r.Context(), s.caID, issued.Certificate, issued.CertPEM, "scep"); err != nil {
+			logging.Infof("scep: renewed certificate %s not recorded: %v", issued.Fingerprint, err)
+		}
+	}
+	s.writeCertRep(w, caObj, txID, nonce, pkiStatusSuccess, "", issued.Certificate, signer)
 }
 
 // unwrapRequest verifies the client's self-signed enrollment envelope and
@@ -341,60 +514,61 @@ func (s *Server) handlePKIOperation(w http.ResponseWriter, r *http.Request) {
 // or a CSR that fails to parse/self-verify -- all of which the caller turns
 // into a FAILURE CertRep rather than an HTTP error, since the outer message
 // parsed fine enough to attribute a transactionID.
-func (s *Server) unwrapRequest(outer *pkcs7.PKCS7, txID string) (*x509.CertificateRequest, *x509.Certificate, error) {
-	var msgType asn1.RawValue
-	if err := outer.UnmarshalSignedAttribute(oidMessageType, &msgType); err != nil {
-		return nil, nil, fmt.Errorf("txn %s: missing messageType: %w", txID, err)
+func (s *Server) unwrapRequest(outer *pkcs7.PKCS7, txID string) (*x509.CertificateRequest, *x509.Certificate, string, error) {
+	var mt asn1.RawValue
+	if err := outer.UnmarshalSignedAttribute(oidMessageType, &mt); err != nil {
+		return nil, nil, "", fmt.Errorf("txn %s: missing messageType: %w", txID, err)
 	}
-	if string(msgType.Bytes) != msgTypePKCSReq {
-		return nil, nil, fmt.Errorf("txn %s: unsupported messageType %q (only PKCSReq/19 is implemented)", txID, string(msgType.Bytes))
+	msgType := string(mt.Bytes)
+	if msgType != msgTypePKCSReq && msgType != msgTypeRenewalReq {
+		return nil, nil, msgType, fmt.Errorf("txn %s: unsupported messageType %q (only PKCSReq/19 and RenewalReq/17 are implemented)", txID, msgType)
 	}
 
-	// RFC 8894 enrollment requests are signed by the client's own freshly
-	// generated, not-yet-issued key, self-certified into a throwaway
-	// certificate for exactly this exchange -- there is no CA to chain to
-	// yet, so an empty truststore (signature-only verification) is the
-	// correct check here, not a loosened one.
+	// Signature-only verification against the signer certificate embedded in
+	// the message: an initial enrollment is signed by a throwaway self-signed
+	// identity with no CA to chain to. Whether the signer is acceptable as a
+	// renewal credential (chains to this CA, valid, unrevoked) is decided
+	// afterwards by renew, never here.
 	if err := outer.Verify(); err != nil {
-		return nil, nil, fmt.Errorf("txn %s: signature verification failed: %w", txID, err)
+		return nil, nil, msgType, fmt.Errorf("txn %s: %w: %v", txID, errBadSignature, err)
 	}
 
 	clientCert := outer.GetOnlySigner()
 	if clientCert == nil {
-		return nil, nil, fmt.Errorf("txn %s: pkiMessage must have exactly one signer", txID)
+		return nil, nil, msgType, fmt.Errorf("txn %s: pkiMessage must have exactly one signer", txID)
 	}
 
 	if s.decrypter == nil {
-		return nil, nil, fmt.Errorf("txn %s: SCEP decryption not configured", txID)
+		return nil, nil, msgType, fmt.Errorf("txn %s: SCEP decryption not configured", txID)
 	}
 	decrypter, err := s.decrypter()
 	if err != nil {
-		return nil, nil, fmt.Errorf("txn %s: resolving CA decrypter: %w", txID, err)
+		return nil, nil, msgType, fmt.Errorf("txn %s: resolving CA decrypter: %w", txID, err)
 	}
 
 	caObj, err := s.caEngine.GetCA(s.caID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("txn %s: CA unavailable: %w", txID, err)
+		return nil, nil, msgType, fmt.Errorf("txn %s: CA unavailable: %w", txID, err)
 	}
 
 	envelope, err := pkcs7.Parse(outer.Content)
 	if err != nil {
-		return nil, nil, fmt.Errorf("txn %s: inner content is not a PKCS#7 envelope: %w", txID, err)
+		return nil, nil, msgType, fmt.Errorf("txn %s: inner content is not a PKCS#7 envelope: %w", txID, err)
 	}
 	csrDER, err := envelope.Decrypt(caObj.Certificate, decrypter)
 	if err != nil {
-		return nil, nil, fmt.Errorf("txn %s: decrypting envelopedData: %w", txID, err)
+		return nil, nil, msgType, fmt.Errorf("txn %s: decrypting envelopedData: %w", txID, err)
 	}
 
 	csr, err := x509.ParseCertificateRequest(csrDER)
 	if err != nil {
-		return nil, nil, fmt.Errorf("txn %s: invalid CSR: %w", txID, err)
+		return nil, nil, msgType, fmt.Errorf("txn %s: invalid CSR: %w", txID, err)
 	}
 	if err := csr.CheckSignature(); err != nil {
-		return nil, nil, fmt.Errorf("txn %s: invalid CSR signature: %w", txID, err)
+		return nil, nil, msgType, fmt.Errorf("txn %s: invalid CSR signature: %w", txID, err)
 	}
 
-	return csr, clientCert, nil
+	return csr, clientCert, msgType, nil
 }
 
 // writeCertRep builds and sends the CertRep pkiMessage. On failure (status
@@ -405,7 +579,7 @@ func (s *Server) unwrapRequest(outer *pkcs7.PKCS7, txID string) (*x509.Certifica
 func (s *Server) writeCertRep(w http.ResponseWriter, caObj *ca.CA, txID string, recipientNonce []byte, status, failInfo string, issuedCert, clientCert *x509.Certificate) {
 	body, err := s.buildCertRep(caObj, txID, recipientNonce, status, failInfo, issuedCert, clientCert)
 	if err != nil {
-		log.Printf("scep: building CertRep failed: %v", err)
+		logging.Warnf("scep: building CertRep failed: %v", err)
 		http.Error(w, "internal error building CertRep", http.StatusInternalServerError)
 		return
 	}

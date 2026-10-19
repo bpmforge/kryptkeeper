@@ -9,9 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // W17-07: the W16-04 cluster-atomic rollout, wired to real targets.
@@ -68,6 +69,7 @@ func registerRolloutHandler(mux *http.ServeMux, auth *Authenticator, certificate
 			return
 		}
 		if len(req.Nodes) > maxRolloutNodes {
+			emitAuditEvent(r, auditProvider, pd.ID, "certificate.renew_rollout", "certificate", req.Fingerprint, AuditOutcomeFailure)
 			writeBadRequestJSON(w, fmt.Sprintf("a rollout group is limited to %d nodes", maxRolloutNodes))
 			return
 		}
@@ -123,64 +125,145 @@ func registerRolloutHandler(mux *http.ServeMux, auth *Authenticator, certificate
 			nodes = append(nodes, RolloutNode{ID: spec.TargetID, IsCanary: spec.IsCanary})
 		}
 
+		// Staged (two-phase) rollout needs every node to be an ssh-mode
+		// nginx/apache/haproxy host; a mixed group stays sequential rather
+		// than half-staging.
+		stageable := true
+		for _, spec := range req.Nodes {
+			p := profiles[spec.TargetID]
+			if targets[spec.TargetID].InstallMode != "ssh" || (p.ServerType != "nginx" && p.ServerType != "apache" && p.ServerType != "haproxy") {
+				stageable = false
+				break
+			}
+		}
+		mode := RolloutModeSequential
+		if stageable {
+			mode = RolloutModeStaged
+		}
+		group := RolloutGroup{Name: req.Group, Nodes: nodes, Window: req.Window}
+
+		respond := func(result RolloutResult) {
+			if err := json.NewEncoder(w).Encode(struct {
+				Data RolloutResult `json:"data"`
+			}{Data: result}); err != nil {
+				logging.Warnf("failed to encode rollout result: %v", err)
+			}
+		}
+
+		// The window is checked BEFORE renewing: an out-of-window request
+		// must not issue a certificate or dial any node.
+		if now := time.Now().UTC(); !req.Window.allows(now) {
+			emitAuditEventDetail(r, auditProvider, pd.ID, "certificate.renew_rollout", "certificate", req.Fingerprint, AuditOutcomeSuccess,
+				fmt.Sprintf(`{"group":%q,"nodes":%d,"deferred":true,"halted":false,"mode":%q}`, req.Group, len(nodes), mode))
+			respond(deferredResult(group, mode))
+			return
+		}
+
+		// The rollout runs inside this request, well past server.go's 15s
+		// WriteTimeout once a plugin node waits out its verify propagation
+		// window (W27-37, up to 30 min per node). Extend the deadline the
+		// way renewal/execute does, sized to the group, and re-arm it
+		// before the response is written.
+		rc := http.NewResponseController(w)
+		rolloutBudget := renewalExecuteBudget + time.Duration(len(nodes))*(maxPluginVerifyWindow+2*time.Minute)
+		_ = rc.SetWriteDeadline(time.Now().Add(rolloutBudget + renewalResponseWindow)) // unsupported ResponseWriter (tests) keeps server.go's default
+		_ = rc.SetReadDeadline(time.Now().Add(rolloutBudget + renewalResponseWindow))  // unsupported ResponseWriter (tests) keeps server.go's default
+
 		// ONE renewal for the WHOLE group. Renewing per node would give
 		// each node a different certificate — the precise opposite of
 		// what a cluster serving one identity needs.
 		material, err := executor.renewPushMaterial(r.Context(), req.Fingerprint)
+		if errors.Is(err, errCertificateConflict) {
+			successor := successorFingerprintOf(r.Context(), certificateProvider, req.Fingerprint)
+			emitAuditEventDetail(r, auditProvider, pd.ID, "certificate.renew_rollout", "certificate", req.Fingerprint, AuditOutcomeFailure,
+				conflictAuditDetail(successor))
+			writeRenewalConflict(w, successor)
+			return
+		}
 		if err != nil {
 			emitAuditEvent(r, auditProvider, pd.ID, "certificate.renew_rollout", "certificate", req.Fingerprint, AuditOutcomeFailure)
-			log.Printf("rollout: renew: %v", err)
+			logging.Infof("rollout: renew: %v", err)
 			writeServiceUnavailable(w, "renewal failed: "+err.Error())
 			return
 		}
 		defer zeroize(material.KeyPEM)
 
-		install := func(ctx context.Context, node RolloutNode) (bool, string) {
-			res, perr := executor.pushMaterialToTarget(ctx, targets[node.ID], profiles[node.ID],
-				material.ChainPEM, material.KeyPEM, material.LeafFingerprint)
-			if perr != nil {
-				return false, perr.Error()
+		var result RolloutResult
+		if stageable {
+			adapter := &sshStagedRollout{
+				e: executor, targets: targets, profiles: profiles,
+				chainPEM: material.ChainPEM, keyPEM: material.KeyPEM, leafFP: material.LeafFingerprint,
+				conns: map[string]*stagedConn{},
 			}
-			if !res.Verified {
-				detail := res.Detail
-				if detail == "" {
-					detail = res.Outcome
-				}
-				return false, detail
-			}
-			return true, res.Outcome
+			defer adapter.closeAll()
+			result = RunStagedRolloutGroup(r.Context(), group, adapter.ops(), time.Now().UTC())
+		} else {
+			result = runSequentialRollout(r.Context(), executor, group, targets, profiles, material)
 		}
-
-		// Reverting a node that ALREADY SUCCEEDED would mean re-installing
-		// the predecessor certificate — and its private key, which we
-		// deliberately do not retain (the key-boundary law; retention is
-		// the opt-in W15-03 escrow, off by default). So this reports the
-		// limitation instead of returning nil and letting the engine
-		// record a rollback that never happened. RunRolloutGroup marks
-		// such nodes rollback_failed, which tells the operator exactly
-		// which nodes are on the new certificate and need attention.
-		// Nodes whose VERIFY failed are already reverted by the pusher's
-		// own restore inside pushMaterialToTarget.
-		rollback := func(_ context.Context, node RolloutNode) error {
-			return fmt.Errorf("node %s installed successfully and cannot be auto-reverted: "+
-				"restoring the predecessor certificate requires its private key, which is not retained", node.ID)
-		}
-
-		result := RunRolloutGroup(r.Context(), RolloutGroup{Name: req.Group, Nodes: nodes, Window: req.Window},
-			install, rollback, time.Now().UTC())
+		result.NewFingerprint = material.LeafFingerprint
+		_ = rc.SetWriteDeadline(time.Now().Add(renewalResponseWindow)) // re-arm so the outcome is written after a long run
 
 		outcome := AuditOutcomeSuccess
 		if result.Halted {
 			outcome = AuditOutcomeFailure
 		}
 		emitAuditEventDetail(r, auditProvider, pd.ID, "certificate.renew_rollout", "certificate", req.Fingerprint, outcome,
-			fmt.Sprintf(`{"group":%q,"nodes":%d,"deferred":%t,"halted":%t,"halt_reason":%q}`,
-				req.Group, len(nodes), result.Deferred, result.Halted, result.HaltReason))
-
-		if err := json.NewEncoder(w).Encode(struct {
-			Data RolloutResult `json:"data"`
-		}{Data: result}); err != nil {
-			log.Printf("failed to encode rollout result: %v", err)
+			fmt.Sprintf(`{"group":%q,"nodes":%d,"deferred":%t,"halted":%t,"halt_reason":%q,"mode":%q}`,
+				req.Group, len(nodes), result.Deferred, result.Halted, result.HaltReason, result.Mode))
+		// One row per node so each node's fate is reconstructable from the log.
+		for _, n := range result.NodeResults {
+			detail, _ := json.Marshal(struct {
+				Group   string `json:"group"`
+				NodeID  string `json:"node_id"`
+				Outcome string `json:"outcome"`
+				Canary  bool   `json:"canary"`
+			}{req.Group, n.NodeID, n.Outcome, n.IsCanary})
+			emitAuditEventDetail(r, auditProvider, pd.ID, "certificate.renew_rollout", "certificate", req.Fingerprint,
+				nodeAuditOutcome(n.Outcome), string(detail))
 		}
+
+		respond(result)
 	})
+}
+
+func nodeAuditOutcome(outcome string) AuditOutcome {
+	switch outcome {
+	case "installed":
+		return AuditOutcomeSuccess
+	case "skipped":
+		return AuditOutcomeSkipped
+	default:
+		return AuditOutcomeFailure
+	}
+}
+
+// runSequentialRollout is the pre-W27-15 path for groups that cannot be staged
+// (non-ssh or mixed): install node by node. Reverting a node that ALREADY
+// SUCCEEDED would mean re-installing the predecessor certificate and its
+// private key, which is deliberately not retained (the key-boundary law;
+// retention is the opt-in W15-03 escrow, off by default), so such nodes are
+// reported rollback_failed, telling the operator exactly which nodes are on
+// the new certificate. Nodes whose VERIFY failed are already reverted by the
+// pusher's own restore inside pushMaterialToTarget.
+func runSequentialRollout(ctx context.Context, executor *RenewalExecutor, group RolloutGroup, targets map[string]ManagedTarget, profiles map[string]RenewalInstallProfile, material renewedPushMaterial) RolloutResult {
+	install := func(ctx context.Context, node RolloutNode) (bool, string) {
+		res, perr := executor.pushMaterialToTarget(ctx, targets[node.ID], profiles[node.ID],
+			material.ChainPEM, material.KeyPEM, material.LeafFingerprint)
+		if perr != nil {
+			return false, perr.Error()
+		}
+		if !res.Verified {
+			detail := res.Detail
+			if detail == "" {
+				detail = res.Outcome
+			}
+			return false, detail
+		}
+		return true, res.Outcome
+	}
+	rollback := func(_ context.Context, node RolloutNode) error {
+		return fmt.Errorf("node %s installed successfully and cannot be auto-reverted: "+
+			"restoring the predecessor certificate requires its private key, which is not retained", node.ID)
+	}
+	return RunRolloutGroup(ctx, group, install, rollback, time.Now().UTC())
 }

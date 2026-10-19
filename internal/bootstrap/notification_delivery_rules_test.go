@@ -59,7 +59,8 @@ func newRuleTestStore(t *testing.T) *dbNotificationProvider {
 		threshold_days INTEGER NOT NULL CHECK (threshold_days > 0),
 		channel TEXT NOT NULL CHECK (channel IN ('email','slack','pagerduty','webhook')),
 		target TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
-		created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
+		created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+		tenant TEXT NOT NULL DEFAULT '')`); err != nil {
 		t.Fatal(err)
 	}
 	return &dbNotificationProvider{store: &sqliteNotificationStore{db: db}}
@@ -168,7 +169,7 @@ func TestNotificationRulesAPIWithDeliveryProvider(t *testing.T) {
 	t.Setenv("APP_BOOTSTRAP_TOKEN", "test-token")
 	mux := http.NewServeMux()
 	registerNotificationHandlers(mux, NewAuthenticatorFromEnv(),
-		newDeliveryNotificationProvider(nil, 1, newRuleTestStore(t)), stubAuditProvider{})
+		newDeliveryNotificationProvider(nil, 1, newRuleTestStore(t)), stubAuditProvider{}, nil)
 
 	call := func(method, path, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -198,7 +199,7 @@ func TestNotificationRulesAPIWithoutStoreIs503NotCreated(t *testing.T) {
 	t.Setenv("APP_BOOTSTRAP_TOKEN", "test-token")
 	mux := http.NewServeMux()
 	registerNotificationHandlers(mux, NewAuthenticatorFromEnv(),
-		newDeliveryNotificationProvider(nil, 1, nil), stubAuditProvider{})
+		newDeliveryNotificationProvider(nil, 1, nil), stubAuditProvider{}, nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/notifications/rules",
 		strings.NewReader(`{"name":"x","threshold_days":5,"channel":"email","target":"a@b.c"}`))
 	req.Header.Set("Authorization", "Bearer test-token")

@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -42,7 +43,7 @@ func NewCustomRoleStoreFromEnv() *CustomRoleStore {
 	if _, err := state.store.db.Exec(`
 CREATE TABLE IF NOT EXISTS custom_roles (
     name TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '',
-    permissions TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    permissions TEXT NOT NULL DEFAULT '[]', tenant_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS role_sod_constraints (
     id TEXT PRIMARY KEY, permission_a TEXT NOT NULL, permission_b TEXT NOT NULL,
     created_at TEXT NOT NULL, UNIQUE (permission_a, permission_b));`); err != nil {
@@ -71,6 +72,16 @@ type roleListEntry struct {
 	Description string   `json:"description,omitempty"`
 	Permissions []string `json:"permissions,omitempty"`
 	Builtin     bool     `json:"builtin"`
+	TenantID    string   `json:"tenant_id,omitempty"`
+}
+
+// roleTenantRefusal reports whether pd may NOT write a role owned by roleTenant.
+// Global roles ("") are super-admin-only; tenant roles belong to that tenant.
+func roleTenantRefusal(pd AuthPrincipal, roleTenant string) bool {
+	if pd.SuperAdmin {
+		return false
+	}
+	return roleTenant == "" || roleTenant != pd.Tenant
 }
 
 // registerCustomRoleHandlers mounts the roles admin API.
@@ -103,7 +114,13 @@ func registerCustomRoleHandlers(mux *http.ServeMux, auth *Authenticator, store *
 		}
 		switch r.Method {
 		case http.MethodGet:
-			custom, err := store.ListRoles()
+			var custom []CustomRole
+			var err error
+			if pd.SuperAdmin && !pd.TenantScoped {
+				custom, err = store.ListRoles()
+			} else {
+				custom, err = store.ListRolesForTenant(pd.Tenant)
+			}
 			if err != nil {
 				writeServiceUnavailable(w, "role list failed")
 				return
@@ -113,7 +130,7 @@ func registerCustomRoleHandlers(mux *http.ServeMux, auth *Authenticator, store *
 				out = append(out, roleListEntry{Name: name, Builtin: true})
 			}
 			for _, c := range custom {
-				out = append(out, roleListEntry{Name: c.Name, Description: c.Description, Permissions: c.Permissions})
+				out = append(out, roleListEntry{Name: c.Name, Description: c.Description, Permissions: c.Permissions, TenantID: c.TenantID})
 			}
 			writeJSONData(w, out)
 		case http.MethodPost:
@@ -122,6 +139,11 @@ func registerCustomRoleHandlers(mux *http.ServeMux, auth *Authenticator, store *
 				writeBadRequest(w, "invalid JSON")
 				return
 			}
+			// Never trust the body's tenant_id: the owner is the caller's tenant.
+			role.TenantID = ""
+			if pd.TenantScoped {
+				role.TenantID = pd.Tenant
+			}
 			if ref := roleGrantRefusal(pd, store, role); ref != nil {
 				refuseGrant(w, r, auditProvider, pd, "role.create", "role", role.Name, ref)
 				return
@@ -129,7 +151,14 @@ func registerCustomRoleHandlers(mux *http.ServeMux, auth *Authenticator, store *
 			created, err := store.CreateRole(role)
 			if err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "role.create", "role", role.Name, AuditOutcomeFailure)
-				writeBadRequest(w, err.Error()) // store refusal text verbatim
+				switch {
+				case errors.Is(err, errCustomRoleExists):
+					writeConflict(w, err.Error())
+				case errors.Is(err, errCustomRolePersist):
+					writeServiceUnavailable(w, "the role could not be saved")
+				default:
+					writeBadRequest(w, err.Error()) // store refusal text verbatim
+				}
 				return
 			}
 			emitAuditEvent(r, auditProvider, pd.ID, "role.create", "role", created.Name, AuditOutcomeSuccess)
@@ -165,6 +194,10 @@ func registerCustomRoleHandlers(mux *http.ServeMux, auth *Authenticator, store *
 				writeBadRequest(w, "invalid JSON")
 				return
 			}
+			// A SoD constraint is applied to every tenant's roles.
+			if denyNonSuperAdminGlobal(w, r, auditProvider, pd, "role.sod_add", "role_sod", "-") {
+				return
+			}
 			created, err := store.AddSoDConstraint(req.PermissionA, req.PermissionB)
 			if err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "role.sod_add", "role_sod", req.PermissionA+"|"+req.PermissionB, AuditOutcomeFailure)
@@ -198,6 +231,15 @@ func registerCustomRoleHandlers(mux *http.ServeMux, auth *Authenticator, store *
 		}
 		if r.Method == http.MethodPut || r.Method == http.MethodDelete {
 			if existing, found, err := store.GetRole(name); err == nil && found {
+				if roleTenantRefusal(pd, existing.TenantID) {
+					action := "role.update"
+					if r.Method == http.MethodDelete {
+						action = "role.delete"
+					}
+					emitAuditEventDetail(r, auditProvider, pd.ID, action, "role", name, AuditOutcomeDenied, "cross-tenant")
+					writeForbidden(w, "role belongs to another tenant")
+					return
+				}
 				if ref := checkPermissionGrant(pd, store, existing.Permissions); ref != nil {
 					refuseGrant(w, r, auditProvider, pd, "role.update", "role", name, ref)
 					return
@@ -219,6 +261,10 @@ func registerCustomRoleHandlers(mux *http.ServeMux, auth *Authenticator, store *
 			updated, err := store.UpdateRole(role)
 			if err != nil {
 				emitAuditEvent(r, auditProvider, pd.ID, "role.update", "role", name, AuditOutcomeFailure)
+				if errors.Is(err, errCustomRolePersist) {
+					writeServiceUnavailable(w, "the role could not be saved")
+					return
+				}
 				writeBadRequest(w, err.Error())
 				return
 			}

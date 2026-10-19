@@ -234,3 +234,15 @@ func TestDescribeAuthzError(t *testing.T) {
 		t.Errorf("detail lost: %v", got)
 	}
 }
+
+func TestServeChallenge_RejectsNonBase64URLToken(t *testing.T) {
+	webRoot := t.TempDir()
+	for _, tok := range []string{"", "../../etc/cron.d/x", "a/b", "a.b", `a\b`} {
+		if _, err := serveChallenge(context.Background(), tok, "k", webRoot, ""); err == nil {
+			t.Errorf("token %q: want error, got nil", tok)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(webRoot, ".well-known")); !os.IsNotExist(err) {
+		t.Fatalf("rejected tokens must not create anything under the webroot (stat err=%v)", err)
+	}
+}

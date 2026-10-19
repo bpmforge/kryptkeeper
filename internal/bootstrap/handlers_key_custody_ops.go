@@ -79,6 +79,9 @@ func registerKeyCustodyOpsHandlers(mux *http.ServeMux, auth *Authenticator, stor
 			writeForbidden(w, "admin role required for key custody operations")
 			return AuthPrincipal{}, false
 		}
+		if denyTenantPrincipalKeyOp(w, r, auditProvider, pd, action, "key", "-") {
+			return AuthPrincipal{}, false
+		}
 		if r.Method != http.MethodPost {
 			writeMethodNotAllowed(w, http.MethodPost)
 			return AuthPrincipal{}, false
@@ -100,10 +103,12 @@ func registerKeyCustodyOpsHandlers(mux *http.ServeMux, auth *Authenticator, stor
 			ApprovedActionID     string `json:"approved_action_id"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16*1024)).Decode(&req); err != nil {
+			emitAuditEvent(r, auditProvider, pd.ID, "leaf_escrow.deposit", "key", "-", AuditOutcomeFailure)
 			writeBadRequest(w, "invalid request body")
 			return
 		}
 		if dualControl.Enabled() && strings.TrimSpace(req.KeyID) == "" {
+			emitAuditEvent(r, auditProvider, pd.ID, "leaf_escrow.deposit", "key", "-", AuditOutcomeFailure)
 			writeBadRequest(w, "key_id is required")
 			return
 		}
@@ -122,6 +127,7 @@ func registerKeyCustodyOpsHandlers(mux *http.ServeMux, auth *Authenticator, stor
 		if err != nil {
 			// The refusal reason (not opted in / single control) is safe to
 			// surface: it names policy, never key or custodian material.
+			emitAuditEvent(r, auditProvider, pd.ID, "leaf_escrow.deposit", "key", req.KeyID, AuditOutcomeDenied)
 			writeForbidden(w, err.Error())
 			return
 		}
@@ -144,6 +150,7 @@ func registerKeyCustodyOpsHandlers(mux *http.ServeMux, auth *Authenticator, stor
 			ApprovedActionID     string          `json:"approved_action_id"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024*1024)).Decode(&req); err != nil || len(req.Bundle) == 0 {
+			emitAuditEvent(r, auditProvider, pd.ID, "leaf_escrow.recover", "key", "-", AuditOutcomeFailure)
 			writeBadRequest(w, "bundle and both custodian passphrases are required")
 			return
 		}
@@ -160,6 +167,7 @@ func registerKeyCustodyOpsHandlers(mux *http.ServeMux, auth *Authenticator, stor
 			auditRequestTenant(r), req.Bundle,
 			[]byte(req.CustodianAPassphrase), []byte(req.CustodianBPassphrase), time.Now())
 		if err != nil {
+			emitAuditEvent(r, auditProvider, pd.ID, "leaf_escrow.recover", "key", "-", AuditOutcomeFailure)
 			writeBadRequest(w, err.Error())
 			return
 		}

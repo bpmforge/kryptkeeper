@@ -387,6 +387,9 @@ func selfSignedCAPEM(t *testing.T, cn string) []byte {
 }
 
 func TestK8sPusherTrustsConfiguredCACert(t *testing.T) {
+	prev := pushAllowLoopback
+	pushAllowLoopback = true
+	t.Cleanup(func() { pushAllowLoopback = prev })
 	srv := newK8sTLSFixture(t)
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})
 
@@ -403,6 +406,9 @@ func TestK8sPusherTrustsConfiguredCACert(t *testing.T) {
 }
 
 func TestK8sPusherUntrustedCACertFailsVerification(t *testing.T) {
+	prev := pushAllowLoopback
+	pushAllowLoopback = true
+	t.Cleanup(func() { pushAllowLoopback = prev })
 	srv := newK8sTLSFixture(t)
 	wrongCAPEM := selfSignedCAPEM(t, "not-the-real-cluster-ca")
 
@@ -422,5 +428,21 @@ func TestK8sPusherUntrustedCACertFailsVerification(t *testing.T) {
 func TestK8sPusherMalformedCACertRefusedAtConstruction(t *testing.T) {
 	if _, err := NewK8sPusher(K8sConfig{BaseURL: "https://k8s.invalid", CACertPEM: []byte("not a pem bundle")}, nil); err == nil {
 		t.Fatal("a malformed CA bundle must be refused at construction, not deferred to the first push")
+	}
+}
+
+func TestK8sPushRejectsNonDNS1123Names(t *testing.T) {
+	for _, cfg := range []K8sConfig{
+		{BaseURL: "https://k.invalid", Namespace: "../kube-system", SecretName: "x"},
+		{BaseURL: "https://k.invalid", Namespace: "edge", SecretName: "a/b"},
+		{BaseURL: "https://k.invalid", Namespace: "Edge", SecretName: "x"},
+	} {
+		p, err := NewK8sPusher(cfg, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.Push(context.Background(), PushRequest{}); err == nil || !strings.Contains(err.Error(), "DNS-1123") {
+			t.Errorf("%+v: want DNS-1123 refusal, got %v", cfg, err)
+		}
 	}
 }

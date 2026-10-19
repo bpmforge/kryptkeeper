@@ -1,0 +1,6 @@
+{"endpoints":[
+ {"protocol":"smtp","port":25,"cert":"smtp"},{"protocol":"smtp","port":587,"cert":"smtp"},
+ {"protocol":"imap","port":143,"cert":"imap"},{"protocol":"pop3","port":110,"cert":"imap"},
+ {"protocol":"postgres","port":5432,"cert":"postgres"},{"protocol":"ldap","port":389,"cert":"ldap"},
+ {"protocol":"rdp","port":3389,"cert":"rdp"},
+ {"protocol":"ssh","port":22,"hostkeys":true}]}

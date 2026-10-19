@@ -58,9 +58,10 @@ func TestNewAuthenticatorFromEnvDiscoveryEnabledIsFalseOutsideOIDC(t *testing.T)
 // oidcJWKSCache nil under bootstrap mode and make every OIDC login fail
 // closed on ID-token validation with no way to succeed.
 func TestNewAuthenticatorFromEnv_OIDCJWKSCacheBuiltUnderBootstrapMode(t *testing.T) {
-	discovery := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var discovery *httptest.Server
+	discovery = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"authorization_endpoint":"https://idp.example.com/authorize","token_endpoint":"https://idp.example.com/token","jwks_uri":"https://idp.example.com/jwks"}`))
+		_, _ = w.Write([]byte(`{"authorization_endpoint":"https://idp.example.com/authorize","token_endpoint":"` + discovery.URL + `/token","jwks_uri":"` + discovery.URL + `/jwks"}`))
 	}))
 	defer discovery.Close()
 
@@ -84,7 +85,7 @@ func TestNewAuthenticatorFromEnv_OIDCJWKSCacheBuiltUnderBootstrapMode(t *testing
 	if auth.config.oidcAuthorizationEndpoint != "https://idp.example.com/authorize" {
 		t.Errorf("oidcAuthorizationEndpoint = %q", auth.config.oidcAuthorizationEndpoint)
 	}
-	if auth.config.oidcTokenEndpoint != "https://idp.example.com/token" {
+	if auth.config.oidcTokenEndpoint != discovery.URL+"/token" {
 		t.Errorf("oidcTokenEndpoint = %q", auth.config.oidcTokenEndpoint)
 	}
 }
@@ -160,8 +161,8 @@ func TestNewAuthenticatorFromEnv_SCIMDefaultsApplied(t *testing.T) {
 
 	auth := NewAuthenticatorFromEnv()
 
-	if auth.config.scimDefaultRole != "pki-viewer" {
-		t.Errorf("scimDefaultRole = %q, want pki-viewer default", auth.config.scimDefaultRole)
+	if auth.config.scimDefaultRole != "" {
+		t.Errorf("scimDefaultRole = %q, want no default (an ungrouped SCIM user has no role until mapped)", auth.config.scimDefaultRole)
 	}
 	if auth.config.scimBearerToken != "" {
 		t.Errorf("expected no SCIM bearer token configured by default, got %q", auth.config.scimBearerToken)

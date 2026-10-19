@@ -29,7 +29,10 @@ const riskyScoreThreshold = 70
 //     endpoint risky, and only that endpoint (owner policy, 2026-10);
 //  3. the endpoint itself has a high-severity finding
 //     (scanner.HighSeverityEndpointFindings: DEPRECATED_TLS_VERSION, NOT_TLS,
-//     TLS_HANDSHAKE_FAILED, POSTGRES_TLS_DISABLED). An open port on which no
+//     TLS_HANDSHAKE_FAILED, POSTGRES_TLS_DISABLED, SERVICE_RUNS_AS_ROOT,
+//     KEY_WORLD_READABLE, and a PRIVILEGED_INSTALL_PATH marked
+//     severity=high: the target auto-renews with no privileged credential,
+//     so renewal will fail). An open port on which no
 //     working TLS protects the service is a finding whichever way it fails;
 //     such an endpoint scores scanner.EndpointFindingScore on its own.
 //
@@ -58,6 +61,7 @@ func riskyEndpointSQL(activeLiteral string) string {
 	for _, f := range scanner.HighSeverityEndpointFindings {
 		endpointConds = append(endpointConds, `COALESCE(e.issues, '') LIKE '%"`+f+`%'`)
 	}
+	endpointConds = append(endpointConds, `COALESCE(e.issues, '') LIKE '%"`+scanner.PrivilegedHighPrefix+`%'`)
 	return `(e.id IN (
 			SELECT ce.endpoint_id FROM certificate_endpoints ce
 			JOIN certificates c ON ce.certificate_fingerprint = c.fingerprint_sha256
@@ -80,7 +84,7 @@ func endpointIsRisky(ep DiscoveryEndpoint) bool {
 		}
 	}
 	return slices.ContainsFunc(ep.Issues, func(issue string) bool {
-		return slices.Contains(scanner.HighSeverityEndpointFindings, scanner.FindingCode(issue))
+		return scanner.IsHighSeverityFinding(issue)
 	})
 }
 

@@ -7,10 +7,17 @@ package bootstrap
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"kryptkeeper/internal/keyinventory"
+	"kryptkeeper/internal/sshkeys"
 )
 
 func TestComputeExecutiveSummary_AggregatesAndFlagsRisks(t *testing.T) {
@@ -156,5 +163,235 @@ func TestExecutiveSummaryHandler_JSONAndPDF(t *testing.T) {
 	}
 	if b := rec2.Body.Bytes(); len(b) < 100 || string(b[:5]) != "%PDF-" {
 		t.Error("pdf response is not a PDF")
+	}
+}
+
+// W24-35: key PQC readiness in the executive summary.
+
+func withKeyPQCFixtures(t *testing.T, extra ...keyinventory.KeySource) {
+	t.Helper()
+	srcs := append([]keyinventory.KeySource{
+		fakeKeySource{provider: "aws-kms", keys: []keyinventory.Key{
+			{Provider: "aws-kms", KeyID: "q", PQCReadiness: "quantum_safe"},
+			{Provider: "aws-kms", KeyID: "v", PQCReadiness: "vulnerable"},
+			{Provider: "aws-kms", KeyID: "e", PQCReadiness: ""},
+		}},
+		fakeKeySource{provider: "azure-kv", keys: []keyinventory.Key{
+			{Provider: "azure-kv", KeyID: "v2", PQCReadiness: "vulnerable"},
+			{Provider: "azure-kv", KeyID: "u", PQCReadiness: "unknown"},
+		}},
+	}, extra...)
+	withKeySources(t, srcs...)
+	inv := sshkeys.NewInventory()
+	inv.Add(sshkeys.SSHKey{Fingerprint: "SHA256:x", KeyType: sshkeys.RSA, BitSize: 3072, Host: "h"})
+	withSSHUserInventory(t, inv)
+	prev := keyInventoryDiscovery
+	keyInventoryDiscovery = nil
+	t.Cleanup(func() { keyInventoryDiscovery = prev })
+}
+
+func TestSummarizeKeyPQC_CountsAllClasses(t *testing.T) {
+	withKeyPQCFixtures(t)
+	s := summarizeKeyPQC(collectKeyInventory(context.Background()))
+	if s.Ready != 1 || s.NotReady != 3 || s.Unknown != 2 || s.Total != 6 || s.Ready+s.NotReady+s.Unknown != s.Total {
+		t.Fatalf("unexpected %+v", s)
+	}
+}
+
+func execSummaryKeyPQC(t *testing.T) (int, map[string]any) {
+	t.Helper()
+	mux := http.NewServeMux()
+	registerExecutiveSummaryHandler(mux, newReportsTestAuth(t), &reportCertProvider{items: buildTestCerts()}, &reportCAProvider{}, nil, stubAuditProvider{})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/reports/executive-summary", nil)
+	req.Header.Set("Authorization", "Bearer reports-test-token")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var body struct {
+		Data struct {
+			KeyPQC map[string]any `json:"key_pqc"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	return rec.Code, body.Data.KeyPQC
+}
+
+func TestExecutiveSummaryHandler_IncludesKeyPQC(t *testing.T) {
+	withKeyPQCFixtures(t, fakeKeySource{provider: "gcp-kms", err: errors.New("boom arn:aws:secret")})
+	code, k := execSummaryKeyPQC(t)
+	if code != http.StatusOK || k == nil {
+		t.Fatalf("code=%d key_pqc=%v", code, k)
+	}
+	if k["ready"] != float64(1) || k["not_ready"] != float64(3) || k["unknown"] != float64(2) || k["total"] != float64(6) {
+		t.Fatalf("counts: %v", k)
+	}
+	errs, _ := k["errors"].([]any)
+	if len(errs) != 1 || errs[0] != "cloud key inventory unavailable: gcp-kms" {
+		t.Fatalf("errors: %v", k["errors"])
+	}
+}
+
+func TestExecutiveSummaryHandler_NoKeySourcesIsZeroNotAbsent(t *testing.T) {
+	withKeySources(t)
+	withSSHUserInventory(t, sshkeys.NewInventory())
+	prev := keyInventoryDiscovery
+	keyInventoryDiscovery = nil
+	t.Cleanup(func() { keyInventoryDiscovery = prev })
+	_, k := execSummaryKeyPQC(t)
+	if k == nil || k["total"] != float64(0) || k["ready"] != float64(0) {
+		t.Fatalf("expected zeroed key_pqc, got %v", k)
+	}
+}
+
+func TestExecutiveSummaryHandler_KeyPQCHiddenFromTenantScoped(t *testing.T) {
+	mux, acmeToken, _ := setupTenantWritePathTest(t)
+	withKeyPQCFixtures(t)
+	keyPQC := func(token, tenant string) (int, bool) {
+		var rec *httptest.ResponseRecorder
+		if tenant != "" {
+			rec = doTenantReq(mux, http.MethodGet, "/api/v1/reports/executive-summary", token, tenant)
+		} else {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/reports/executive-summary", nil)
+			req.Header.Set("Authorization", "Bearer "+token)
+			rec = httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+		}
+		var body struct {
+			Data map[string]json.RawMessage `json:"data"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		_, ok := body.Data["key_pqc"]
+		return rec.Code, ok
+	}
+	if code, ok := keyPQC("root-token", ""); code != http.StatusOK || !ok {
+		t.Fatalf("super-admin: code=%d has key_pqc=%v", code, ok)
+	}
+	if code, ok := keyPQC(acmeToken, "acme"); code != http.StatusOK || ok {
+		t.Fatalf("tenant-scoped: code=%d has key_pqc=%v (must be omitted)", code, ok)
+	}
+}
+
+func execSummaryGET(t *testing.T, mux *http.ServeMux, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer reports-test-token")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET %s: %d %s", path, rec.Code, rec.Body.String())
+	}
+	return rec
+}
+
+func TestExecutiveSummaryHandler_TrendMatchesPostureTrendEndpoint(t *testing.T) {
+	auth := newReportsTestAuth(t)
+	store := newTestPostureStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for i, days := range []int{120, 40, 10} {
+		at := now.AddDate(0, 0, -days).Format(time.RFC3339)
+		if err := store.Save(ctx, snapshotFromReport("psn-"+string(rune('a'+i)), at, sampleReport(10+i, 40, 50))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mux := http.NewServeMux()
+	registerExecutiveSummaryHandlerWithTrend(mux, auth, &reportCertProvider{items: buildTestCerts()}, &reportCAProvider{}, nil, store, stubAuditProvider{})
+	registerPostureTrendHandler(mux, auth, store, stubAuditProvider{})
+
+	var sum struct {
+		Data struct {
+			Trend ExecutiveTrend `json:"trend"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(execSummaryGET(t, mux, "/api/v1/reports/executive-summary").Body.Bytes(), &sum); err != nil {
+		t.Fatal(err)
+	}
+	var tr struct {
+		Data PostureTrendResponse `json:"data"`
+	}
+	since := now.AddDate(0, 0, -90).Format(time.RFC3339)
+	if err := json.Unmarshal(execSummaryGET(t, mux, "/api/v1/reports/crypto-posture/trend?since="+since).Body.Bytes(), &tr); err != nil {
+		t.Fatal(err)
+	}
+	if sum.Data.Trend.Days != 90 || len(sum.Data.Trend.Points) != 2 || len(tr.Data.Snapshots) != 2 {
+		t.Fatalf("points=%d snapshots=%d days=%d, want 2/2/90", len(sum.Data.Trend.Points), len(tr.Data.Snapshots), sum.Data.Trend.Days)
+	}
+	for i, p := range sum.Data.Trend.Points {
+		sn := tr.Data.Snapshots[i]
+		if p.CapturedAt != sn.CapturedAt || p.TotalCerts != sn.TotalCerts || !reflect.DeepEqual(p.Grades, sn.Report.GradeDistribution) {
+			t.Fatalf("point %d %+v != snapshot %+v", i, p, sn)
+		}
+	}
+}
+
+func TestExecutiveSummaryPDF_ContainsTrendSection(t *testing.T) {
+	prev := pdfCompression
+	pdfCompression = false
+	t.Cleanup(func() { pdfCompression = prev })
+	auth := newReportsTestAuth(t)
+	store := newTestPostureStore(t)
+	at := time.Now().UTC().AddDate(0, 0, -5)
+	if err := store.Save(context.Background(), snapshotFromReport("psn-pdf", at.Format(time.RFC3339), sampleReport(7, 40, 50))); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	registerExecutiveSummaryHandlerWithTrend(mux, auth, &reportCertProvider{items: buildTestCerts()}, &reportCAProvider{}, nil, store, stubAuditProvider{})
+	text := pdfText(execSummaryGET(t, mux, "/api/v1/reports/executive-summary?format=pdf").Body.Bytes())
+	for _, want := range []string{"Posture trend (last 90 days)", at.Format("2006-01-02")} {
+		if !strings.Contains(text, want) {
+			t.Errorf("PDF missing %q", want)
+		}
+	}
+}
+
+func TestExecutiveSummaryPDF_EmptyTrendIsExplicit(t *testing.T) {
+	prev := pdfCompression
+	pdfCompression = false
+	t.Cleanup(func() { pdfCompression = prev })
+	mux := http.NewServeMux()
+	registerExecutiveSummaryHandlerWithTrend(mux, newReportsTestAuth(t), &reportCertProvider{}, &reportCAProvider{}, nil, newTestPostureStore(t), stubAuditProvider{})
+	var sum struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(execSummaryGET(t, mux, "/api/v1/reports/executive-summary").Body.Bytes(), &sum); err != nil {
+		t.Fatal(err)
+	}
+	var tr struct {
+		Points json.RawMessage `json:"points"`
+	}
+	if err := json.Unmarshal(sum.Data["trend"], &tr); err != nil || string(tr.Points) != "[]" {
+		t.Fatalf("trend.points = %s err=%v, want []", tr.Points, err)
+	}
+	text := pdfText(execSummaryGET(t, mux, "/api/v1/reports/executive-summary?format=pdf").Body.Bytes())
+	if !strings.Contains(text, "No posture snapshots in the last 90 days.") {
+		t.Error("PDF missing explicit empty state")
+	}
+}
+
+func TestExecutiveSummary_TrendHiddenFromTenantScoped(t *testing.T) {
+	mux, acmeToken, _ := setupTenantWritePathTest(t)
+	hasTrend := func(token, tenant string) (int, bool) {
+		var rec *httptest.ResponseRecorder
+		if tenant != "" {
+			rec = doTenantReq(mux, http.MethodGet, "/api/v1/reports/executive-summary", token, tenant)
+		} else {
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/reports/executive-summary", nil)
+			req.Header.Set("Authorization", "Bearer "+token)
+			rec = httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+		}
+		var body struct {
+			Data map[string]json.RawMessage `json:"data"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		_, ok := body.Data["trend"]
+		return rec.Code, ok
+	}
+	if code, ok := hasTrend("root-token", ""); code != http.StatusOK || !ok {
+		t.Fatalf("super-admin: code=%d has trend=%v", code, ok)
+	}
+	if code, ok := hasTrend(acmeToken, "acme"); code != http.StatusOK || ok {
+		t.Fatalf("tenant-scoped: code=%d has trend=%v (must be omitted)", code, ok)
 	}
 }

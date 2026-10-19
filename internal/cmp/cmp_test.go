@@ -74,14 +74,6 @@ func explicitContext(tag int, der []byte) asn1.RawValue {
 	return asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: tag, IsCompound: true, Bytes: der}
 }
 
-// cmpTestMessage holds the pieces of a request this test file builds, so a
-// test can mutate one piece (wrong secret, dropped protection, tampered
-// POPO) before assembling the final PKIMessage.
-type cmpTestMessage struct {
-	transactionID []byte
-	senderNonce   []byte
-}
-
 // buildCRMFIRBody builds a CertReqMessages body (used for IR/CR/KUR alike)
 // containing one CertReqMsg: certReqId=0, CertTemplate{subject, publicKey},
 // and a POPOSigningKey signature over the CertRequest DER — RFC 4211 §4.1's
@@ -684,5 +676,33 @@ func TestCMPHandlerIR_RSA2048_Accepted(t *testing.T) {
 	msg := decodeResponse(t, rr.Body.Bytes())
 	if msg.Body.Tag != PKIBodyIP {
 		t.Fatalf("body tag = %d, want PKIBodyIP for an RSA-2048 key", msg.Body.Tag)
+	}
+}
+
+// W23-35: an IR through a revoked CA is answered with an error PKIMessage and
+// records nothing.
+func TestCMPHandlerIR_RefusedWhenCARevoked(t *testing.T) {
+	engine, caID := newCMPTestEngine(t)
+	recorder := &fakeIssuedRecorder{}
+	h := newServerForTest(engine, caID).WithIssuedRecorder(recorder).Handler()
+
+	priv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	pkiMsg := buildProtectedPKIMessage(t, PKIBodyIR, buildCRMFIRBody(t, priv, "cmp-revoked"), pbmOptions{})
+
+	if err := engine.UpdateCAStatus(caID, "revoked"); err != nil {
+		t.Fatal(err)
+	}
+	rr := postCMP(h, pkiMsg)
+	msg := decodeResponse(t, rr.Body.Bytes())
+	if msg.Body.Tag != PKIBodyError {
+		t.Fatalf("body tag = %d, want PKIBodyError (%d)", msg.Body.Tag, PKIBodyError)
+	}
+	if !strings.Contains(rr.Body.String(), "issuing CA revoked") {
+		t.Error("error body does not say the issuing CA is revoked")
+	}
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+	if recorder.calls != 0 {
+		t.Fatalf("a certificate was recorded through a revoked CA: %d", recorder.calls)
 	}
 }

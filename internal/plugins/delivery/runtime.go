@@ -72,6 +72,10 @@ type Plugin struct {
 	compiled wazero.CompiledModule
 	manifest abi.Manifest
 	granted  abi.Capabilities
+	// invokeHook replaces the WebAssembly call in package tests so the hub's
+	// verify/rollback logic can be driven without compiling a plugin.
+	invokeHook func(ctx context.Context, op string, in []byte) ([]byte, error)
+	clock      verifyClock
 }
 
 // Manifest returns the plugin's manifest.
@@ -121,6 +125,9 @@ func (p *Plugin) Close(ctx context.Context) error { return p.compiled.Close(ctx)
 // invoke runs one operation in a fresh instance and returns the plugin's
 // Response result.
 func (p *Plugin) invoke(ctx context.Context, st *callState, op string, in []byte) ([]byte, error) {
+	if p.invokeHook != nil {
+		return p.invokeHook(ctx, op, in)
+	}
 	ctx = context.WithValue(ctx, callStateKey{}, st)
 	logw := &lineWriter{st: st}
 	cfg := wazero.NewModuleConfig().

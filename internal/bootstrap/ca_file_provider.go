@@ -7,23 +7,19 @@ package bootstrap
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"os"
 	"strings"
 	"time"
-)
 
-const defaultCAFilePath = "./var/bootstrap-cas.json"
+	"kryptkeeper/internal/logging"
+)
 
 type fileCAProvider struct {
 	filePath string
 }
 
 func NewFileCAProviderFromEnv() CAProvider {
-	path := strings.TrimSpace(os.Getenv("APP_CA_FILE"))
-	if path == "" {
-		path = defaultCAFilePath
-	}
+	path := resolveStateFilePath(os.Getenv, "APP_CA_FILE", "bootstrap-cas.json")
 	initStateDir(path)
 	return &fileCAProvider{filePath: path}
 }
@@ -40,13 +36,13 @@ func (p *fileCAProvider) ListCAs(_ context.Context, query CAListQuery) (CAListRe
 
 	body, err := os.ReadFile(p.filePath)
 	if err != nil {
-		log.Printf("ca file fallback: unreadable %q: %v", p.filePath, err)
+		logging.Infof("ca file fallback: unreadable %q: %v", p.filePath, err)
 		return CAListResult{Items: []CAListItem{}, Total: 0, Limit: limit}, nil
 	}
 
 	var items []CAListItem
 	if err := json.Unmarshal(body, &items); err != nil {
-		log.Printf("ca file fallback: invalid JSON")
+		logging.Infof("ca file fallback: invalid JSON")
 		return CAListResult{Items: []CAListItem{}, Total: 0, Limit: limit}, nil
 	}
 
@@ -246,13 +242,13 @@ func (p *fileCAProvider) CreateCA(_ context.Context, _ CACreateRequest) (CAListI
 func (p *fileCAProvider) loadItems() ([]CAListItem, bool) {
 	body, err := os.ReadFile(p.filePath)
 	if err != nil {
-		log.Printf("ca file fallback: unreadable %q: %v", p.filePath, err)
+		logging.Infof("ca file fallback: unreadable %q: %v", p.filePath, err)
 		return nil, false
 	}
 
 	var items []CAListItem
 	if err := json.Unmarshal(body, &items); err != nil {
-		log.Printf("ca file fallback: invalid JSON")
+		logging.Infof("ca file fallback: invalid JSON")
 		return nil, false
 	}
 	return items, true

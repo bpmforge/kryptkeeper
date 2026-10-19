@@ -14,7 +14,8 @@ import (
 
 // activeTenantStore is the process-wide tenant store used by list handlers that
 // resolve tenancy without taking the store as a parameter. Set once in
-// RegisterHandlers; nil => no filtering (single-tenant / store unavailable).
+// RegisterHandlers; nil with multi-tenancy on => tenant-scoped principals are
+// denied (D-202); with it off nothing is filtered anyway.
 var activeTenantStore TenantStore
 
 func setActiveTenantStore(s TenantStore) { activeTenantStore = s }
@@ -38,8 +39,11 @@ func tenantVisible(pd AuthPrincipal, effectiveTenant string) bool {
 // caVisibleToTenant reports whether a CA (by its tenant mapping) is visible to a
 // principal.
 func caVisibleToTenant(ctx context.Context, store TenantStore, pd AuthPrincipal, caID string) bool {
-	if tenantBypass(pd) || store == nil {
+	if tenantBypass(pd) {
 		return true
+	}
+	if store == nil {
+		return false // D-202: fail closed when the tenant store is unavailable
 	}
 	t, err := store.CATenant(ctx, caID)
 	if err != nil {
@@ -50,8 +54,11 @@ func caVisibleToTenant(ctx context.Context, store TenantStore, pd AuthPrincipal,
 
 // filterCAsByTenant returns only the CAs visible to the principal.
 func filterCAsByTenant(ctx context.Context, store TenantStore, pd AuthPrincipal, items []CAListItem) []CAListItem {
-	if tenantBypass(pd) || store == nil {
+	if tenantBypass(pd) {
 		return items
+	}
+	if store == nil {
+		return []CAListItem{} // D-202
 	}
 	out := make([]CAListItem, 0, len(items))
 	for _, item := range items {
@@ -64,8 +71,11 @@ func filterCAsByTenant(ctx context.Context, store TenantStore, pd AuthPrincipal,
 
 // filterCertificatesByTenant scopes certificates by their issuing CA's tenant.
 func filterCertificatesByTenant(ctx context.Context, store TenantStore, pd AuthPrincipal, items []CertificateItem) []CertificateItem {
-	if tenantBypass(pd) || store == nil {
+	if tenantBypass(pd) {
 		return items
+	}
+	if store == nil {
+		return []CertificateItem{} // D-202
 	}
 	out := make([]CertificateItem, 0, len(items))
 	for _, item := range items {
@@ -80,13 +90,23 @@ func filterCertificatesByTenant(ctx context.Context, store TenantStore, pd AuthP
 	return out
 }
 
-// filterApprovalsByTenant scopes issuance approval requests by their CA's tenant.
+// filterApprovalsByTenant scopes issuance approval requests by their CA's
+// tenant; SSH rows (no CA) by their stored tenant, even with no store.
 func filterApprovalsByTenant(ctx context.Context, store TenantStore, pd AuthPrincipal, items []ApprovalRequest) []ApprovalRequest {
-	if tenantBypass(pd) || store == nil {
+	if tenantBypass(pd) {
 		return items
 	}
 	out := make([]ApprovalRequest, 0, len(items))
 	for _, item := range items {
+		if item.Kind == approvalKindSSH {
+			if approvalTenant(ctx, store, item) == pd.Tenant {
+				out = append(out, item)
+			}
+			continue
+		}
+		if store == nil {
+			continue // D-202: CA-backed rows need the store to prove tenancy
+		}
 		t, err := store.CATenant(ctx, item.CAID)
 		if err != nil {
 			continue // deny by default
@@ -102,8 +122,11 @@ func filterApprovalsByTenant(ctx context.Context, store TenantStore, pd AuthPrin
 // is visible to a principal (unmapped templates belong to the default tenant
 // — a shared catalog entry).
 func templateVisibleToTenant(ctx context.Context, store TenantStore, pd AuthPrincipal, templateID string) bool {
-	if tenantBypass(pd) || store == nil {
+	if tenantBypass(pd) {
 		return true
+	}
+	if store == nil {
+		return false // D-202
 	}
 	t, err := store.TemplateTenant(ctx, templateID)
 	if err != nil {
@@ -115,8 +138,11 @@ func templateVisibleToTenant(ctx context.Context, store TenantStore, pd AuthPrin
 // filterTemplatesByTenant scopes templates by their explicit tenant mapping
 // (unmapped templates belong to the default tenant — a shared catalog entry).
 func filterTemplatesByTenant(ctx context.Context, store TenantStore, pd AuthPrincipal, items []TemplateItem) []TemplateItem {
-	if tenantBypass(pd) || store == nil {
+	if tenantBypass(pd) {
 		return items
+	}
+	if store == nil {
+		return []TemplateItem{} // D-202
 	}
 	out := make([]TemplateItem, 0, len(items))
 	for _, item := range items {
@@ -157,10 +183,12 @@ func registerTenantHandlers(mux *http.ServeMux, auth *Authenticator, store Tenan
 	requireSuperAdmin := func(w http.ResponseWriter, r *http.Request) (AuthPrincipal, bool) {
 		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
 		if err != nil {
+			emitAuditEvent(r, auditProvider, "", "tenant.admin", "tenant", "-", AuditOutcomeDenied)
 			writeUnauthorized(w)
 			return AuthPrincipal{}, false
 		}
 		if !pd.SuperAdmin {
+			emitAuditEvent(r, auditProvider, pd.ID, "tenant.admin", "tenant", "-", AuditOutcomeDenied)
 			writeForbidden(w, "tenant administration requires super-admin")
 			return AuthPrincipal{}, false
 		}
@@ -190,16 +218,19 @@ func registerTenantHandlers(mux *http.ServeMux, auth *Authenticator, store Tenan
 				Name string `json:"name"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				emitAuditEvent(r, auditProvider, pd.ID, "tenant.create", "tenant", "-", AuditOutcomeFailure)
 				writeBadRequest(w, "invalid JSON")
 				return
 			}
 			req.ID = strings.TrimSpace(req.ID)
 			if req.ID == "" || req.Name == "" {
+				emitAuditEvent(r, auditProvider, pd.ID, "tenant.create", "tenant", "-", AuditOutcomeFailure)
 				writeBadRequest(w, "id and name are required")
 				return
 			}
 			t, err := store.CreateTenant(r.Context(), req.ID, req.Name)
 			if err != nil {
+				emitAuditEvent(r, auditProvider, pd.ID, "tenant.create", "tenant", "-", AuditOutcomeFailure)
 				writeServiceUnavailable(w, "create failed: "+err.Error())
 				return
 			}
@@ -226,10 +257,12 @@ func registerTenantHandlers(mux *http.ServeMux, auth *Authenticator, store Tenan
 			TenantID string `json:"tenant_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.CAID == "" || req.TenantID == "" {
+			emitAuditEvent(r, auditProvider, pd.ID, "tenant.ca_map", "tenant", "-", AuditOutcomeFailure)
 			writeBadRequest(w, "ca_id and tenant_id are required")
 			return
 		}
 		if err := store.SetCATenant(r.Context(), req.CAID, req.TenantID); err != nil {
+			emitAuditEvent(r, auditProvider, pd.ID, "tenant.ca_map", "tenant", "-", AuditOutcomeFailure)
 			writeServiceUnavailable(w, "mapping failed")
 			return
 		}
@@ -252,10 +285,12 @@ func registerTenantHandlers(mux *http.ServeMux, auth *Authenticator, store Tenan
 			TenantID   string `json:"tenant_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TemplateID == "" || req.TenantID == "" {
+			emitAuditEvent(r, auditProvider, pd.ID, "tenant.template_map", "tenant", "-", AuditOutcomeFailure)
 			writeBadRequest(w, "template_id and tenant_id are required")
 			return
 		}
 		if err := store.SetTemplateTenant(r.Context(), req.TemplateID, req.TenantID); err != nil {
+			emitAuditEvent(r, auditProvider, pd.ID, "tenant.template_map", "tenant", "-", AuditOutcomeFailure)
 			writeServiceUnavailable(w, "mapping failed")
 			return
 		}
@@ -296,4 +331,62 @@ func registerTenantHandlers(mux *http.ServeMux, auth *Authenticator, store Tenan
 		}
 		writeJSONData(w, resp)
 	})
+}
+
+// drainPages reads every page of an offset-paged list. Tenant filtering has
+// to run over the whole set before total/cursor are computed, otherwise the
+// provider's fleet-wide total leaks other tenants' row counts (L-20).
+func drainPages[T any](fetch func(offset, limit int) (items []T, total int, err error)) ([]T, error) {
+	const pageSize = 100
+	var all []T
+	for offset := 0; ; {
+		items, total, err := fetch(offset, pageSize)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, items...)
+		offset += len(items)
+		if len(items) == 0 || offset >= total {
+			return all, nil
+		}
+	}
+}
+
+// pageSlice returns the [offset, offset+limit) window of items.
+func pageSlice[T any](items []T, offset, limit int) []T {
+	if offset > len(items) {
+		offset = len(items)
+	}
+	end := offset + limit
+	if end > len(items) || end < offset {
+		end = len(items)
+	}
+	return items[offset:end]
+}
+
+// denyNonSuperAdminGlobal refuses an operation on instance-global state (runtime
+// config, plugins, ceremonies, SCEP, AD sync) unless the caller is an unscoped
+// super-admin. With multi-tenancy off every principal passes, so single-tenant
+// behaviour is unchanged. Returns true when it has written the 403.
+func denyNonSuperAdminGlobal(w http.ResponseWriter, r *http.Request, audit AuditProvider, pd AuthPrincipal, action, resType, resID string) bool {
+	if tenantBypass(pd) {
+		return false
+	}
+	emitAuditEventDetail(r, audit, pd.ID, action, resType, resID, AuditOutcomeDenied, `{"reason":"global setting; super-admin only when multi-tenancy is on"}`)
+	writeForbidden(w, "instance-wide setting: platform super-admin required when multi-tenancy is on")
+	return true
+}
+
+// stampedTenantVisible reports whether a row that carries its own tenant column
+// is visible to the principal. Rows predating tenancy hold "" and belong to
+// DefaultTenant. Shared by every store-backed resource whose tenant travels
+// with the row (credentials, connectors, inventory sources, notifications).
+func stampedTenantVisible(pd AuthPrincipal, stamped string) bool {
+	if tenantBypass(pd) {
+		return true
+	}
+	if stamped == "" {
+		stamped = DefaultTenant
+	}
+	return stamped == pd.Tenant
 }

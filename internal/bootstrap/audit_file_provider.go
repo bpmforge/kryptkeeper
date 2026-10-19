@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,9 +19,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-)
 
-const defaultAuditFilePath = "./var/bootstrap-audit.json"
+	"kryptkeeper/internal/logging"
+)
 
 // fileAuditSyncInterval bounds how long an appended record may sit in the
 // page cache before it is fsynced. Every audited request appends, so a sync
@@ -56,10 +55,7 @@ type fileAuditProvider struct {
 // cannot be opened, migrated or written, so the hub can refuse to start
 // instead of running without an audit trail.
 func NewFileAuditProviderFromEnv() (AuditProvider, error) {
-	path := strings.TrimSpace(os.Getenv("APP_AUDIT_FILE"))
-	if path == "" {
-		path = defaultAuditFilePath
-	}
+	path := resolveStateFilePath(os.Getenv, "APP_AUDIT_FILE", "bootstrap-audit.json")
 	return openFileAuditProvider(path, fileAuditSyncInterval)
 }
 
@@ -83,7 +79,7 @@ func openFileAuditProvider(path string, syncInterval time.Duration) (*fileAuditP
 	p.nextID = maxID + 1
 	p.needNewline = !endsClean
 	if n := p.corruptLines.Load(); n > 0 {
-		log.Printf("audit file %q: %d unreadable line(s) skipped; the remaining records are intact", path, n)
+		logging.Infof("audit file %q: %d unreadable line(s) skipped; the remaining records are intact", path, n)
 	}
 	return p, nil
 }
@@ -133,11 +129,11 @@ func migrateLegacyAuditFile(path string) error {
 	}
 	if d, err := os.Open(filepath.Dir(path)); err == nil {
 		if serr := d.Sync(); serr != nil {
-			log.Printf("audit file %q: directory sync after migration failed: %v", path, serr)
+			logging.Warnf("audit file %q: directory sync after migration failed: %v", path, serr)
 		}
 		_ = d.Close()
 	}
-	log.Printf("audit file %q: migrated %d legacy records to JSON Lines (original kept as %q)", path, len(legacy), bak)
+	logging.Infof("audit file %q: migrated %d legacy records to JSON Lines (original kept as %q)", path, len(legacy), bak)
 	return nil
 }
 
@@ -218,6 +214,9 @@ func (p *fileAuditProvider) ListEntries(_ context.Context, query AuditListQuery)
 		if query.Action != "" && entry.Action != query.Action {
 			return
 		}
+		if query.ActionPrefix != "" && entry.Action != query.ActionPrefix && !strings.HasPrefix(entry.Action, query.ActionPrefix+".") {
+			return
+		}
 		if query.ActorType != "" && entry.ActorType != query.ActorType {
 			return
 		}
@@ -231,6 +230,9 @@ func (p *fileAuditProvider) ListEntries(_ context.Context, query AuditListQuery)
 			return
 		}
 		if query.TraceID != "" && entry.TraceID != query.TraceID {
+			return
+		}
+		if query.Tenant != "" && auditEntryTenantOrDefault(entry.Tenant) != query.Tenant {
 			return
 		}
 		if query.Outcome != "" && entry.Outcome != query.Outcome {
@@ -251,7 +253,7 @@ func (p *fileAuditProvider) ListEntries(_ context.Context, query AuditListQuery)
 	}
 	if n := corrupt.Load(); n > 0 {
 		p.corruptLines.Add(n)
-		log.Printf("audit file %q: skipped %d unreadable line(s) while listing", p.filePath, n)
+		logging.Infof("audit file %q: skipped %d unreadable line(s) while listing", p.filePath, n)
 	}
 	if filtered == nil {
 		filtered = []AuditEntry{}
@@ -336,7 +338,7 @@ func (p *fileAuditProvider) syncNow() {
 	}
 	p.dirty = false
 	if err := p.f.Sync(); err != nil {
-		log.Printf("audit file %q: sync failed: %v", p.filePath, err)
+		logging.Warnf("audit file %q: sync failed: %v", p.filePath, err)
 	}
 }
 

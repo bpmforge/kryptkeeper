@@ -12,10 +12,13 @@
 //	KRYPTKEEPER_AGENT_TYPE    Agent type: linux | mac | windows (default: detected from OS)
 //	KRYPTKEEPER_AGENT_ID      Agent ID from prior registration (omit to auto-register)
 //	KRYPTKEEPER_AGENT_TOKEN   Agent token from prior registration (omit to auto-register)
+//	KRYPTKEEPER_ENROLL_TOKEN  Single-use enrollment token minted by a hub admin (kkenr_...); exchanged for
+//	                          the long-lived credential on first start, then scrubbed from the service
+//	                          env file. Env/file only (never a CLI argument); never logged
 //	KRYPTKEEPER_AGENT_CREDENTIALS_FILE  Where a console run keeps its registration (0600; default
 //	                          <user config dir>/kryptkeeper-agent/credentials.env); read on start
-//	KRYPTKEEPER_POLL_INTERVAL Polling interval in seconds (default: 300)
-//	KRYPTKEEPER_SCAN_PATHS    Comma-separated cert directory paths to scan (default: standard paths)
+//	KRYPTKEEPER_POLL_INTERVAL Polling interval in seconds (default: 60)
+//	KRYPTKEEPER_SCAN_PATHS    Comma-separated cert directory paths to scan (default: standard paths; on Windows see docs/ops/WINDOWS_AGENT.md)
 //	KRYPTKEEPER_CONFIG_PATHS  Comma-separated config directories to scan for cert references
 //	KRYPTKEEPER_WEB_ROOT      Web root for ACME HTTP-01 challenge files (optional)
 //	KRYPTKEEPER_HUB_CA_CERT      Inline PEM CA bundle to verify the Hub's TLS
@@ -33,7 +36,9 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
+	"kryptkeeper/internal/privexec"
+	"log/slog"
 	"net"
 	"os"
 	"runtime"
@@ -44,6 +49,7 @@ import (
 	"kryptkeeper/internal/agentclient"
 	"kryptkeeper/internal/agentdiscovery"
 	"kryptkeeper/internal/agentinstall"
+	"kryptkeeper/internal/metrics"
 )
 
 // version/commit/date are injected by .goreleaser.yaml's ldflags at release
@@ -54,6 +60,12 @@ var (
 	date    = "unknown"
 )
 
+// startupBanner is the first log line: it names the running build so an
+// operator can match the agent to the version the hub lists for it.
+func startupBanner() string {
+	return fmt.Sprintf("kryptkeeper-agent %s (commit %s, built %s) starting", version, commit, date)
+}
+
 func main() {
 	// Handle generator flags before requiring HUB_URL.
 	for _, arg := range os.Args[1:] {
@@ -62,13 +74,20 @@ func main() {
 			fmt.Print(generateSystemdUnit())
 			os.Exit(0)
 		case "--generate-sudoers":
-			fmt.Print(generateSudoers())
+			out, err := generateSudoers(sudoersModeFlag(os.Args[1:]))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			fmt.Print(out)
 			os.Exit(0)
 		case "--version":
 			fmt.Printf("kryptkeeper-agent %s (commit %s, built %s)\n", version, commit, date)
 			os.Exit(0)
 		}
 	}
+
+	logging.Setup(logging.ConfigFromEnv(os.Getenv))
 
 	// W18-07: under the Windows Service Control Manager the agent is started
 	// without an interactive environment; the service shim loads its settings
@@ -82,6 +101,7 @@ func main() {
 // run is the agent loop. It returns when ctx is cancelled (service stop);
 // as a console process ctx is never cancelled.
 func run(ctx context.Context) {
+	logging.Info(startupBanner())
 	hubURL := mustEnv("KRYPTKEEPER_HUB_URL")
 
 	agentName := os.Getenv("KRYPTKEEPER_AGENT_NAME")
@@ -106,21 +126,34 @@ func run(ctx context.Context) {
 		credFile = credentialsFilePath()
 		if credFile != "" {
 			if err := loadEnvFile(credFile); err != nil && !os.IsNotExist(err) {
-				log.Fatalf("load agent credentials from %s: %v", credFile, err)
+				logging.Fatalf("load agent credentials from %s: %v", credFile, err)
 			}
 		}
 	}
 	agentID := os.Getenv("KRYPTKEEPER_AGENT_ID")
 	agentToken := os.Getenv("KRYPTKEEPER_AGENT_TOKEN")
 
-	pollInterval := 300 * time.Second
+	// 60s keeps a healthy agent inside the hub's 5-minute stale cutoff.
+	pollInterval := 60 * time.Second
 	if raw := os.Getenv("KRYPTKEEPER_POLL_INTERVAL"); raw != "" {
 		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
 			pollInterval = time.Duration(n) * time.Second
 		}
 	}
 
+	// Probes answer while registering; readiness stays false until the first
+	// heartbeat. A bind failure must not stop the agent or block service start.
+	go func() {
+		cfg := newOpsConfig(metrics.OpsAddrFromEnv(os.Getenv, defaultOpsAddr), pollInterval, time.Now)
+		if err := metrics.ServeOps(ctx, cfg); err != nil {
+			slog.Warn("agent ops listener not started", "addr", cfg.Addr, "error", err)
+		}
+	}()
+
 	scanPaths := agentdiscovery.DefaultLinuxPaths
+	if runtime.GOOS == "windows" {
+		scanPaths = agentdiscovery.DefaultWindowsPaths(os.Getenv)
+	}
 	if raw := os.Getenv("KRYPTKEEPER_SCAN_PATHS"); raw != "" {
 		scanPaths = strings.Split(raw, ",")
 	}
@@ -132,50 +165,69 @@ func run(ctx context.Context) {
 
 	webRoot := os.Getenv("KRYPTKEEPER_WEB_ROOT")
 
+	// W34-09: the discovery walk runs through the same privilege layer as the
+	// hub's SSH scans. Password mode needs a stored secret and is not offered.
+	disc, err := newHostDiscovery(os.Getenv("KRYPTKEEPER_PRIVILEGE_MODE"))
+	if err != nil {
+		logging.Fatalf("%v", err)
+	}
+
 	// W19-32: the Hub has self-issued its own TLS listener by default since
 	// W19-14, so the agent needs an explicit trust anchor for it -- a bad
 	// bundle fails startup here rather than surfacing as a confusing TLS
 	// error on the first heartbeat.
 	hubRootCAs, err := agentclient.HubCACertPoolFromEnv()
 	if err != nil {
-		log.Fatalf("hub CA trust: %v", err)
+		logging.Fatalf("hub CA trust: %v", err)
 	}
 
 	client := agentclient.New(hubURL, agentID, agentToken, hubRootCAs)
 	client.EnrollmentSecret = os.Getenv("KRYPTKEEPER_AGENT_ENROLLMENT_SECRET")
+	client.EnrollmentToken = strings.TrimSpace(os.Getenv("KRYPTKEEPER_ENROLL_TOKEN"))
+	client.Version = version
 
 	if agentID == "" || agentToken == "" {
-		log.Printf("registering agent %q (%s) with hub %s", agentName, agentType, hubURL)
+		logging.Infof("registering agent %q (%s) with hub %s", agentName, agentType, hubURL)
 		resp, err := client.Register(context.Background(), agentName, agentType)
 		if err != nil {
-			log.Fatalf("registration failed: %v", err)
+			logging.Fatalf("registration failed: %v", err)
 		}
-		log.Printf("registered: agent_id=%s", resp.AgentID)
+		logging.Infof("registered: agent_id=%s", resp.AgentID)
+		enrolledByToken := client.EnrollmentToken != ""
 		if serviceEnvFile != "" {
 			// A service restarts on every boot; without persisting, each start
 			// would register a fresh agent and orphan the previous one.
 			if err := persistCredentials(serviceEnvFile, resp.AgentID, resp.Token); err != nil {
-				log.Fatalf("persist agent credentials to %s: %v", serviceEnvFile, err)
+				logging.Fatalf("persist agent credentials to %s: %v", serviceEnvFile, err)
 			}
-			log.Printf("agent credentials saved to %s", serviceEnvFile)
+			logging.Infof("agent credentials saved to %s", serviceEnvFile)
+			if enrolledByToken {
+				// Scrub only after the credentials are safely persisted.
+				if err := scrubEnrollToken(serviceEnvFile); err != nil {
+					logging.Warnf("could not remove the spent enrollment token from %s: %v", serviceEnvFile, err)
+				}
+			}
 		} else {
 			// The token is never logged (log sinks are not a secret store);
 			// it goes to a 0600 file the next start reads back.
 			if credFile == "" {
-				log.Printf("agent registered as %s; no credentials file location (set KRYPTKEEPER_AGENT_CREDENTIALS_FILE), so the agent will re-register on its next start", resp.AgentID)
+				logging.Infof("agent registered as %s; no credentials file location (set KRYPTKEEPER_AGENT_CREDENTIALS_FILE), so the agent will re-register on its next start", resp.AgentID)
 			} else if err := writeCredentialsFile(credFile, resp.AgentID, resp.Token); err != nil {
-				log.Fatalf("persist agent credentials to %s: %v", credFile, err)
+				logging.Fatalf("persist agent credentials to %s: %v", credFile, err)
 			} else {
-				log.Printf("agent registered as %s; credentials saved to %s (mode 0600)", resp.AgentID, credFile)
+				logging.Infof("agent registered as %s; credentials saved to %s (mode 0600)", resp.AgentID, credFile)
 			}
 		}
 	}
 
-	log.Printf("agent %s starting; hub=%s poll=%s", client.AgentID, hubURL, pollInterval)
+	client.EnrollmentToken = ""
+	os.Unsetenv("KRYPTKEEPER_ENROLL_TOKEN")
+
+	logging.Infof("agent %s starting; hub=%s poll=%s", client.AgentID, hubURL, pollInterval)
 
 	guard := newRenewGuard()
 	for {
-		runCycle(client, guard, scanPaths, configPaths, webRoot, hubRootCAs)
+		runCycle(client, guard, disc, scanPaths, configPaths, webRoot, hubRootCAs)
 		select {
 		case <-ctx.Done():
 			return
@@ -184,18 +236,23 @@ func run(ctx context.Context) {
 	}
 }
 
-func runCycle(client *agentclient.Client, guard *renewGuard, scanPaths, configPaths []string, webRoot string, hubRootCAs *x509.CertPool) {
+func runCycle(client *agentclient.Client, guard *renewGuard, disc hostDiscovery, scanPaths, configPaths []string, webRoot string, hubRootCAs *x509.CertPool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	if err := client.Heartbeat(ctx); err != nil {
-		log.Printf("heartbeat error: %v", err)
+		logging.Infof("heartbeat error: %v", err)
+	} else {
+		lastHeartbeatOK.Store(time.Now().Unix())
 	}
 
 	// Discover certs from filesystem and Windows store (platform-specific).
-	certs, err := agentdiscovery.WalkCerts(scanPaths)
+	certs, host, err := disc.discover(ctx, scanPaths)
 	if err != nil {
-		log.Printf("discovery error: %v", err)
+		logging.Infof("discovery error: %v", err)
+	}
+	if host != nil && host.UnreadableTotal > 0 {
+		logging.Infof("discovery: %d path(s) unreadable at privilege mode %s; reported to the hub", host.UnreadableTotal, host.PrivilegeMode)
 	}
 
 	// Also discover certs referenced in web server config files.
@@ -203,7 +260,7 @@ func runCycle(client *agentclient.Client, guard *renewGuard, scanPaths, configPa
 	if len(configPaths) > 0 {
 		cfgCerts, err := agentdiscovery.WalkConfigCerts(configPaths)
 		if err != nil {
-			log.Printf("config discovery error: %v", err)
+			logging.Infof("config discovery error: %v", err)
 		}
 		certs = append(certs, cfgCerts...)
 
@@ -211,26 +268,26 @@ func runCycle(client *agentclient.Client, guard *renewGuard, scanPaths, configPa
 		endpoints = agentdiscovery.WalkEndpoints(configPaths)
 	}
 
-	log.Printf("discovered %d certificates, %d endpoints", len(certs), len(endpoints))
+	logging.Infof("discovered %d certificates, %d endpoints", len(certs), len(endpoints))
 
-	if len(certs) > 0 || len(endpoints) > 0 {
-		accepted, err := client.PostInventory(ctx, certs, endpoints)
+	if len(certs) > 0 || len(endpoints) > 0 || host != nil {
+		accepted, err := client.PostInventoryHost(ctx, certs, endpoints, host)
 		if err != nil {
-			log.Printf("inventory post error: %v", err)
+			logging.Infof("inventory post error: %v", err)
 		} else {
-			log.Printf("hub accepted %d certificates (%d endpoints)", accepted, len(endpoints))
+			logging.Infof("hub accepted %d certificates (%d endpoints)", accepted, len(endpoints))
 		}
 	}
 
 	tasks, err := client.GetTasks(ctx)
 	if err != nil {
-		log.Printf("get tasks error: %v", err)
+		logging.Infof("get tasks error: %v", err)
 		return
 	}
 
 	renewer := agentclient.NewAcmeRenewer(client.HubURL, hubRootCAs)
 	for _, task := range tasks {
-		log.Printf("task %s: %s %s (expires %s)", task.TaskID, task.Action, task.Subject,
+		logging.Infof("task %s: %s %s (expires %s)", task.TaskID, task.Action, task.Subject,
 			task.NotAfter.Format("2006-01-02"))
 	}
 	// A task stays queued at the hub until a result is reported, so the same
@@ -250,7 +307,7 @@ func renewTask(client *agentclient.Client, renewer *agentclient.AcmeRenewer, tas
 
 	err := doRenew(ctx, client, renewer, task, webRoot)
 	if err != nil {
-		log.Printf("renew %s: %v", task.Subject, err)
+		logging.Infof("renew %s: %v", task.Subject, err)
 	}
 	return err
 }
@@ -276,7 +333,7 @@ func doRenew(ctx context.Context, client *agentclient.Client, renewer *agentclie
 	if err != nil {
 		return reportFailure(client, task, err)
 	}
-	log.Printf("renewed %s: cert %d bytes", task.Subject, len(result.CertPEM))
+	logging.Infof("renewed %s: cert %d bytes", task.Subject, len(result.CertPEM))
 
 	// v1.3 autopilot: if the task carries install hints, install the renewed
 	// cert where the web server reads it, validate, reload, and verify (with
@@ -290,10 +347,10 @@ func doRenew(ctx context.Context, client *agentclient.Client, renewer *agentclie
 // installUnsupported reports why task's install hints cannot be honoured on
 // goos. The install step shells out through sudo to nginx/apache/haproxy
 // paths, which cannot work on Windows; a Windows cert-store/IIS target is
-// planned for v0.10.
+// not implemented (v1 limit; use agentless WinRM/IIS).
 func installUnsupported(goos string, task agentclient.RenewalTask) error {
 	if goos == "windows" && task.CertPath != "" {
-		return errors.New("install targets not supported on Windows agent in v0.9; use agentless WinRM/IIS")
+		return errors.New("install targets are not supported on the Windows agent; use agentless WinRM/IIS")
 	}
 	return nil
 }
@@ -308,7 +365,7 @@ func reportFailure(client *agentclient.Client, task agentclient.RenewalTask, err
 		Outcome:     "failed",
 		Detail:      err.Error(),
 	}); rerr != nil {
-		log.Printf("report failure %s: %v", task.Subject, rerr)
+		logging.Infof("report failure %s: %v", task.Subject, rerr)
 	}
 	return err
 }
@@ -327,9 +384,9 @@ func installRenewed(ctx context.Context, client *agentclient.Client, task agentc
 		ExpectedFingerprint: newFP,
 	})
 	if err != nil {
-		log.Printf("install %s: %v (outcome=%s rolled_back=%v)", task.Subject, err, res.Outcome, res.RolledBack)
+		logging.Infof("install %s: %v (outcome=%s rolled_back=%v)", task.Subject, err, res.Outcome, res.RolledBack)
 	} else {
-		log.Printf("installed %s: cert=%s outcome=%s verified=%v", task.Subject, task.CertPath, res.Outcome, res.Verified)
+		logging.Infof("installed %s: cert=%s outcome=%s verified=%v", task.Subject, task.CertPath, res.Outcome, res.Verified)
 	}
 
 	if rerr := client.PostRenewalResult(ctx, agentclient.RenewalResult{
@@ -340,7 +397,7 @@ func installRenewed(ctx context.Context, client *agentclient.Client, task agentc
 		RolledBack:        res.RolledBack,
 		Detail:            res.Detail,
 	}); rerr != nil {
-		log.Printf("report result %s: %v", task.Subject, rerr)
+		logging.Infof("report result %s: %v", task.Subject, rerr)
 	}
 	return err
 }
@@ -449,39 +506,52 @@ func defaultAgentType() agentclient.AgentType {
 func mustEnv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
-		log.Fatalf("required environment variable %s is not set", key)
+		logging.Fatalf("required environment variable %s is not set", key)
 	}
 	return v
 }
 
-// generateSudoers returns the sudoers drop-in for Renewal Autopilot (v1.3).
-// It grants the agent ONLY the commands needed to install renewed certs and
-// reload the web server — the narrow privilege model from the v1.3 scope.
+// generateSudoers returns the sudoers drop-in for Renewal Autopilot (v1.3),
+// rendered by the same privexec.Sudoers the hub's privilege bundle uses. The
+// default nopasswd mode grants only the commands needed to install renewed
+// certs and reload the web server; helper mode grants one hash-pinned helper.
 //
 // NOTE: the default systemd unit sets NoNewPrivileges=true, which blocks sudo.
 // Autopilot requires setting NoNewPrivileges=false in the unit; until then the
 // agent stays discovery+renew-only and never installs. This is an opt-in.
-func generateSudoers() string {
-	return `# Kryptkeeper Agent — Renewal Autopilot privilege allowlist (v1.3)
+func generateSudoers(mode privexec.Mode) (string, error) {
+	body, err := privexec.Sudoers("kryptkeeper-agent", mode, "", []string{"/etc/nginx/ssl", "/etc/apache2/ssl"})
+	if err != nil {
+		return "", err
+	}
+	header := `# Kryptkeeper Agent - Renewal Autopilot privilege allowlist (v1.3)
 #
 # Install:   kryptkeeper-agent --generate-sudoers | sudo tee /etc/sudoers.d/kryptkeeper-agent
 # Secure:    sudo chmod 0440 /etc/sudoers.d/kryptkeeper-agent
 # Validate:  sudo visudo -cf /etc/sudoers.d/kryptkeeper-agent
+# Helper:    kryptkeeper-agent --generate-sudoers --sudoers-mode=helper
 #
-# Tighten the cert-directory globs below to the exact paths discovered on THIS
-# host before deploying. Wildcards do not span '/', so list each cert dir.
+# Tighten the cert-directory globs below to the exact paths on THIS host. In an
+# argument, '*' matches '/' too (fnmatch without FNM_PATHNAME), so a glob is not
+# a directory boundary; list each cert dir and prefer helper mode.
 #
 # Also required for autopilot: set NoNewPrivileges=false in the systemd unit
 # (the default true value blocks sudo). Leave it true to keep the agent
 # discovery+renew-only (no install).
 
-Cmnd_Alias KK_INSTALL = /usr/bin/install -m * /etc/nginx/ssl/*, /usr/bin/install -m * /etc/apache2/ssl/*
-Cmnd_Alias KK_READ    = /bin/cat /etc/nginx/ssl/*, /bin/cat /etc/apache2/ssl/*
-Cmnd_Alias KK_TEST    = /usr/sbin/nginx -t, /usr/sbin/apachectl configtest, /usr/bin/apachectl configtest
-Cmnd_Alias KK_RELOAD  = /usr/bin/systemctl reload nginx, /usr/bin/systemctl reload apache2, /usr/sbin/nginx -s reload, /usr/sbin/apachectl -k graceful
-
-kryptkeeper-agent ALL=(root) NOPASSWD: KK_INSTALL, KK_READ, KK_TEST, KK_RELOAD
 `
+	return header + body, nil
+}
+
+// sudoersModeFlag reads --sudoers-mode=<mode>; the default keeps the
+// pre-W34 behaviour (raw allowlist).
+func sudoersModeFlag(args []string) privexec.Mode {
+	for _, a := range args {
+		if v, ok := strings.CutPrefix(a, "--sudoers-mode="); ok {
+			return privexec.Mode(v)
+		}
+	}
+	return privexec.ModeNoPasswd
 }
 
 // generateSystemdUnit returns a systemd unit file for the kryptkeeper-agent service.
@@ -506,7 +576,7 @@ Environment=KRYPTKEEPER_AGENT_ID=<agent-id-from-registration>
 Environment=KRYPTKEEPER_AGENT_TOKEN=<token-from-registration>
 
 # Optional tuning
-#Environment=KRYPTKEEPER_POLL_INTERVAL=300
+#Environment=KRYPTKEEPER_POLL_INTERVAL=60
 #Environment=KRYPTKEEPER_SCAN_PATHS=/etc/ssl,/etc/pki/tls
 #Environment=KRYPTKEEPER_WEB_ROOT=/var/www/html
 

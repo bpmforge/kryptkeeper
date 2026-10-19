@@ -35,7 +35,7 @@ below means certificates synced, not directory-object counts.
   ports so the fixture doesn't need root).
 - The hub runs on the host (as in every other `tests/live/*` fixture) and
   reaches the DC over those published ports.
-- Realm `KKUAT.LOCAL`. Seed: 3 users (alice, bob, carol), 2 computers
+- Realm `CORP.LOCAL`. Seed: 3 users (alice, bob, carol), 2 computers
   (WKSTN01, WKSTN02), a dedicated `kkhubsync` bind account, and real
   self-signed EC certificates attached to alice's and bob's `userCertificate`
   attribute via `ldapmodify`.
@@ -79,3 +79,11 @@ CONTAINER_ENGINE=$HOME/bin/podman-root bash tests/live/ad-ldap/run.sh
 `CONTAINER_ENGINE` must be a single path (the script quotes it), and the
 gated Go test reads the same variable. `run.sh` still fails fast with the
 panic diagnosis if it is run rootless.
+
+## Samba is unsupported for adcs_live
+
+The Samba AD DC fixture (`run.sh` here) cannot run the AD CS path:
+samba-domain provisioning failed on this fixture (FEATURE_VALIDATION_v0.9
+row 88) and Samba has no AD CS role. `adcs_live` is validated ONLY against a
+Windows DC via `windows/run.sh` (W24-27; see `windows/README.md`). The Samba
+fixture remains useful for the generic LDAP read path.

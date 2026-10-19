@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net"
 	"net/url"
+	"strings"
 	"time"
 
 	"kryptkeeper/internal/keystore"
@@ -24,7 +25,44 @@ var (
 	// CA-state problem as a conflict instead of a backend outage.
 	ErrCANotActive    = errors.New("ca is not active")
 	ErrCANoSigningKey = errors.New("ca has no signing key")
+	// ErrCARevoked marks a CA that is revoked, or has a revoked ancestor.
+	// It is joined with ErrCANotActive so existing 409 mapping still applies.
+	ErrCARevoked = errors.New("ca is revoked")
+	// ErrCAAlreadyRevoked: RevokeCA on a CA that is already revoked.
+	ErrCAAlreadyRevoked = errors.New("ca is already revoked")
+	// ErrCANotDeletable: DeleteCA on a CA that is neither revoked nor expired.
+	ErrCANotDeletable = errors.New("ca must be revoked or expired before deletion")
+	// ErrCAHasChildren: DeleteCA on a CA that still has child CAs.
+	ErrCAHasChildren = errors.New("ca has child cas")
+
+	// ErrUnknownKeyStorageType is returned when a CA is saved with a backend
+	// label outside the canonical vocabulary (W23-10).
+	ErrUnknownKeyStorageType = errors.New("unknown key storage type")
 )
+
+// NormalizeKeyStorageType maps an engine/env backend label onto the canonical
+// API and DB vocabulary: software | pkcs11 | vault | cloud_kms | external.
+// The engine keeps the env spelling ("cloudkms") in memory; normalising at the
+// DB and API edges keeps the label identical before and after a restart.
+func NormalizeKeyStorageType(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch s {
+	case "":
+		return "software"
+	case "cloudkms", "cloud-kms":
+		return "cloud_kms"
+	default:
+		return s
+	}
+}
+
+func validKeyStorageType(s string) bool {
+	switch s {
+	case "software", "pkcs11", "vault", "cloud_kms", "external":
+		return true
+	}
+	return false
+}
 
 // CA represents a Certificate Authority with its certificate and key reference.
 type CA struct {
@@ -34,11 +72,15 @@ type CA struct {
 	KeyID       string // references keystore.Store
 	Certificate *x509.Certificate
 	CertPEM     []byte
-	ParentCAID  string // empty for root CAs
-	Status      string // "active", "suspended"
-	CreatedAt   time.Time
+	// CSRPEM is the PKCS#10 request of an issuing CA awaiting its offline-signed
+	// certificate (status pending_certificate); cleared on completion (W23-04).
+	CSRPEM     []byte
+	ParentCAID string // empty for root CAs
+	Status     string // "active", "suspended"
+	CreatedAt  time.Time
 	// KeyStorageType records which keystore.Store backend actually holds
-	// KeyID's private key ("software", "pkcs11", "vault", "cloudkms").
+	// KeyID's private key ("software", "pkcs11", "vault", "cloudkms"). It is
+	// immutable after creation: the store never updates it (W23-10).
 	// W19-08: previously hardcoded to "software" everywhere it was read,
 	// so an HSM-held CA key was misreported as software-custody — a false
 	// claim about key custody, not a cosmetic label. Empty for CAs with no

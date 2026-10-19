@@ -189,3 +189,21 @@ func TestSAMLGuard_AssertionReplayCacheHonoursNotOnOrAfterAndCap(t *testing.T) {
 		t.Fatal("a full replay cache must refuse new assertions, not evict old ones")
 	}
 }
+
+func TestSAMLACS_OversizeBodyRefusedBeforeParsing(t *testing.T) {
+	h := newSAMLGuardHarness(t, "true")
+	// A valid, signed response padded past the cap must be refused: the
+	// limit applies before any parsing or signature work.
+	form := url.Values{
+		"SAMLResponse": {h.response("assertion-oversize", "")},
+		"pad":          {strings.Repeat("A", samlACSMaxBodyBytes)},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/saml/acs", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	h.mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("oversize ACS body = %d, want 401", rec.Code)
+	}
+	assertNoSessionCookie(t, rec)
+}

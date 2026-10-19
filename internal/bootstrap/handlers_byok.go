@@ -84,6 +84,7 @@ func registerBYOKHandlers(mux *http.ServeMux, auth *Authenticator, auditProvider
 		}
 		if err != nil ||
 			len(req.Bundle) == 0 || strings.TrimSpace(req.KeyID) == "" {
+			emitAuditEvent(r, auditProvider, pd.ID, "byok.export", "key", "-", AuditOutcomeFailure)
 			writeBadRequest(w, "bundle, key_id and both custodian passphrases are required")
 			return
 		}

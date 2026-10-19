@@ -41,8 +41,8 @@ spec:
             - name: KRYPTKEEPER_NAMESPACES
               value: {{ join "," .Values.watchNamespaces | quote }}
             {{- end }}
-            - name: KRYPTKEEPER_POLL_INTERVAL
-              value: {{ .Values.pollIntervalSeconds | quote }}
+            - name: KRYPTKEEPER_RESYNC_INTERVAL
+              value: {{ .Values.resyncIntervalSeconds | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       nodeSelector:

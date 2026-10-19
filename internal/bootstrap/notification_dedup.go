@@ -8,8 +8,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // renewalAlertCooldownStore persists the last time a renewal-reminder
@@ -143,8 +144,25 @@ func newRenewalAlertCooldownStoreFromEnv() (renewalAlertCooldownStore, error) {
 func newRenewalAlertCooldownStoreFromEnvLogged() renewalAlertCooldownStore {
 	store, err := newRenewalAlertCooldownStoreFromEnv()
 	if err != nil {
-		log.Printf("renewal scheduler: alert-cooldown store unavailable, cooldown will not be enforced: %v", err)
+		logging.Warnf("renewal scheduler: alert-cooldown store unavailable, cooldown will not be enforced: %v", err)
 		return nil
 	}
 	return store
+}
+
+// crossingKey is the cooldown-store key recording that rule ruleID already
+// fired for the certificate with fingerprint certFP. A renewal changes the
+// fingerprint, which starts a new cycle.
+func crossingKey(certFP, ruleID string) string {
+	return certFP + "#rule:" + ruleID + "#crossed"
+}
+
+// hasCrossed reports whether a crossing was recorded under key. A store error
+// counts as not crossed, matching the old fail-open cooldown read.
+func hasCrossed(ctx context.Context, store renewalAlertCooldownStore, key string) bool {
+	if store == nil {
+		return false
+	}
+	_, ok, err := store.LastAlertedAt(ctx, key)
+	return err == nil && ok
 }

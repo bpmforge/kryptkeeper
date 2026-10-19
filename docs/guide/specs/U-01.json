@@ -1,0 +1,317 @@
+{
+  "task": "U-01",
+  "sourceStory": "STORIES.md#u-01-sign-in-and-find-your-way-around",
+  "title": "Sign in and find your way around",
+  "persona": "ada.admin (pki-admin)",
+  "signedOut": true,
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/login"
+      },
+      "caption": "Open the sign-in page",
+      "slug": "login-empty",
+      "expect": {
+        "role": "button",
+        "name": "Sign in"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-01/01-login-empty.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Email"
+      },
+      "value": "ada.admin@acme.test",
+      "caption": "Fill **Email** with \"ada.admin@acme.test\"",
+      "slug": "fill-email",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-01/02-fill-email.png",
+        "annotated": "docs/guide/screenshots/U-01/02-fill-email-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 553,
+          "y": 420,
+          "w": 334,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Password"
+      },
+      "value": "GuideDemo!2026",
+      "caption": "Fill **Password** (the value is masked)",
+      "slug": "fill-password",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-01/03-fill-password.png",
+        "annotated": "docs/guide/screenshots/U-01/03-fill-password-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 553,
+          "y": 494,
+          "w": 334,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Sign in"
+      },
+      "caption": "Click **Sign in**",
+      "slug": "signed-in-dashboard",
+      "expect": {
+        "role": "heading",
+        "name": "What needs a human"
+      },
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-01/04-signed-in-dashboard.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "role": "link",
+        "name": "What needs a human"
+      },
+      "caption": "The sidebar groups the pages: Today, Automation, Connect, Estate, Evidence, Analysis, Administration",
+      "slug": "sidebar-groups",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-01/05-sidebar-groups.png",
+        "annotated": "docs/guide/screenshots/U-01/05-sidebar-groups-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 8,
+          "y": 108,
+          "w": 203,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "radio",
+        "name": "Dark"
+      },
+      "caption": "Click the **Dark** theme button",
+      "slug": "theme-dark",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-01/06-theme-dark.png",
+        "annotated": "docs/guide/screenshots/U-01/06-theme-dark-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 140,
+          "y": 771,
+          "w": 28,
+          "h": 28
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "radio",
+        "name": "Light"
+      },
+      "caption": "Click the **Light** theme button",
+      "slug": "theme-light",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-01/07-theme-light.png",
+        "annotated": "docs/guide/screenshots/U-01/07-theme-light-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 110,
+          "y": 771,
+          "w": 28,
+          "h": 28
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Collapse sidebar"
+      },
+      "caption": "Click **Collapse sidebar**",
+      "slug": "sidebar-collapsed",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-01/08-sidebar-collapsed.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Expand sidebar"
+      },
+      "caption": "Click **Expand sidebar**",
+      "slug": "sidebar-expanded",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-01/09-sidebar-expanded.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:38:04.588Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-01",
+    "steps": 9,
+    "shots": 9,
+    "annotated": 5,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-01/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-01/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

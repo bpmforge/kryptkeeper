@@ -1,0 +1,111 @@
+# W23-28/W23-29: two hub replicas on one Postgres and one shared keystore.
+# Harness only: plain HTTP (KRYPTKEEPER_TLS_DISABLE) removes certificate
+# plumbing, and APP_TRUSTED_PROXY_CIDRS trusts the podman gateway so the
+# soak's prober can send a distinct X-Forwarded-For per request (CRL is
+# limited to 30/min and OCSP to 200/min per client IP otherwise).
+#
+# Networks: kk-b sits on `db` (postgres) and `front` (published port). The
+# partition test disconnects only `db`, so the host can still ask B for /readyz
+# while B cannot reach Postgres.
+#
+# Required env (run.sh exports them): KK_HA_PG_PASSWORD, KK_HA_TOKEN,
+# KK_HA_KEYSTORE_PASSPHRASE.
+name: kkha
+
+x-hub: &hub
+  image: localhost/kryptkeeper:kkha-w23
+  environment: &hub-env
+    AUTH_MODE: bootstrap
+    APP_BOOTSTRAP_TOKEN: ${KK_HA_TOKEN:?set KK_HA_TOKEN}
+    KRYPTKEEPER_KEYSTORE_PASSPHRASE: ${KK_HA_KEYSTORE_PASSPHRASE:?set KK_HA_KEYSTORE_PASSPHRASE}
+    KRYPTKEEPER_KEYSTORE_DIR: /shared/keys
+    KRYPTKEEPER_DB_MODE: postgres
+    DATABASE_URL: postgres://kryptkeeper:${KK_HA_PG_PASSWORD:?set KK_HA_PG_PASSWORD}@postgres:5432/kryptkeeper?sslmode=disable
+    APP_CERTIFICATE_PROVIDER: ca
+    APP_DISCOVERY_PROVIDER: db
+    APP_NOTIFICATION_PROVIDER: delivery
+    APP_BIND_ADDR: "0.0.0.0"
+    PORT: "8080"
+    KRYPTKEEPER_TLS_DISABLE: "true"
+    KRYPTKEEPER_BASE_URL: http://localhost:8080
+    RENEWAL_POLL_MINUTES: "1"
+    KRYPTKEEPER_REVOCATION_SYNC_INTERVAL: 2s
+    APP_TRUSTED_PROXY_CIDRS: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    # Templates have only a file provider (APP_TEMPLATE_PROVIDER has no db mode),
+    # so replicas see the same templates only through a shared file.
+    APP_TEMPLATE_FILE: /shared/templates/templates.json
+    KRYPTKEEPER_DATA_DIR: /var/kryptkeeper/data
+  restart: "no"
+
+services:
+  postgres:
+    image: docker.io/library/postgres:16-alpine
+    container_name: kkha_postgres_1
+    # Measured: one hub holds ~60 idle connections (12 pools of 5), so two
+    # replicas exceed the image default of 100 and B starts degraded.
+    command: ["postgres", "-c", "max_connections=300"]
+    environment:
+      POSTGRES_DB: kryptkeeper
+      POSTGRES_USER: kryptkeeper
+      POSTGRES_PASSWORD: ${KK_HA_PG_PASSWORD:?set KK_HA_PG_PASSWORD}
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [db]
+
+  # Named volumes are root-owned and the distroless image runs as 65532.
+  volinit:
+    image: docker.io/library/alpine:3.20
+    container_name: kkha_volinit_1
+    user: "0:0"
+    command: ["sh", "-c", "chown -R 65532:65532 /keys /tpl /data-a /data-b && chmod 700 /keys"]
+    volumes:
+      - keys:/keys
+      - tpl:/tpl
+      - data-a:/data-a
+      - data-b:/data-b
+    restart: "no"
+
+  kk-a:
+    <<: *hub
+    depends_on:
+      volinit:
+        condition: service_completed_successfully
+    container_name: kkha_kk-a_1
+    environment:
+      <<: *hub-env
+      # Only A creates the root; two replicas doing it would make two CAs.
+      KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT: "true"
+    ports:
+      - "127.0.0.1:18081:8080"
+    volumes:
+      - keys:/shared/keys
+      - tpl:/shared/templates
+      - data-a:/var/kryptkeeper/data
+    networks: [db, front]
+
+  kk-b:
+    <<: *hub
+    depends_on:
+      volinit:
+        condition: service_completed_successfully
+    container_name: kkha_kk-b_1
+    ports:
+      - "127.0.0.1:18082:8080"
+    volumes:
+      - keys:/shared/keys
+      - tpl:/shared/templates
+      - data-b:/var/kryptkeeper/data
+    networks: [db, front]
+
+networks:
+  db:
+  front:
+
+volumes:
+  pgdata:
+  keys:
+  tpl:
+  data-a:
+  data-b:

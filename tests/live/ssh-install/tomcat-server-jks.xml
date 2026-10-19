@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- W27-08 fixture: one HTTPS connector reading a JKS keystore. The
+     password is a FIXTURE-ONLY constant shared with the Containerfile and
+     run.sh; it protects a throwaway self-signed key. -->
+<Server port="8005" shutdown="SHUTDOWN">
+  <Service name="Catalina">
+    <Connector port="443" protocol="org.apache.coyote.http11.Http11NioProtocol" SSLEnabled="true">
+      <SSLHostConfig>
+        <Certificate certificateKeystoreFile="conf/kk.jks"
+                     certificateKeystorePassword="kk-uat-fixture-pw"
+                     certificateKeystoreType="JKS"/>
+      </SSLHostConfig>
+    </Connector>
+    <Engine name="Catalina" defaultHost="localhost">
+      <Host name="localhost" appBase="webapps" unpackWARs="false" autoDeploy="false"/>
+    </Engine>
+  </Service>
+</Server>

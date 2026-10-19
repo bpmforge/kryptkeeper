@@ -12,7 +12,7 @@
 #      issued by the staging CA, installed to nginx over SSH, verified
 #
 # Needs: a Cloudflare API token with DNS edit on the zone, in
-# ~/.config/kryptkeeper-lab/cloudflare-token (KK_CF_TOKEN_FILE overrides). The token
+# ~/.config/kryptkeeper-site/cloudflare-token, a token scoped to the kryptkeeper.io zone (KK_CF_TOKEN_FILE overrides). The token
 # is read by Python straight from that file and sent only to the hub; it is
 # never printed or passed on a command line. KK_ACME_ZONE (default
 # kryptkeeper.io) and KK_ACME_DIRECTORY (default LE staging) override.
@@ -20,6 +20,7 @@
 # The hub runs in a container on a podman network shared with the nginx
 # fixture and reaches it by container name; the hub refuses to verify-dial
 # loopback (RC1-A-04). Names, network and published ports are unique per run.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/podman.sh"
 set -u
 set -o pipefail
 
@@ -27,7 +28,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 SSH_FIXTURE="$REPO_ROOT/tests/live/ssh-install"
 WORK="$(mktemp -d /tmp/kk-uat-acmeup.XXXXXX)"
-TOKEN_FILE="${KK_CF_TOKEN_FILE:-$HOME/.config/kryptkeeper-lab/cloudflare-token}"
+TOKEN_FILE="${KK_CF_TOKEN_FILE:-$HOME/.config/kryptkeeper-site/cloudflare-token}"
 ZONE="${KK_ACME_ZONE:-kryptkeeper.io}"
 DIRECTORY="${KK_ACME_DIRECTORY:-https://acme-staging-v02.api.letsencrypt.org/directory}"
 NAME="kk-uat-$(date -u +%Y%m%d%H%M%S).$ZONE"
@@ -51,7 +52,7 @@ FAIL() { echo "FAIL: $*"; FAILED=1; }
 DIE()  { echo "FAIL: $*"; exit 1; }
 cleanup() {
   if [ "$FAILED" = 1 ]; then echo "--- hub log (last 25) ---"; podman logs "$HUB_CTR" 2>&1 | tail -25; fi
-  podman rm -f "$CTR" "$HUB_CTR" >/dev/null 2>&1
+  kk_rm "$CTR" "$HUB_CTR"
   podman network rm "$NET" >/dev/null 2>&1
   podman rmi -f "$IMAGE" "$HUB_IMAGE" >/dev/null 2>&1
   rm -f "$SSH_FIXTURE/authorized_keys"
@@ -64,7 +65,7 @@ jget() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.arg
 tls_fp() { echo | openssl s_client -connect "127.0.0.1:$TLS_PORT" 2>/dev/null | openssl x509 -outform DER 2>/dev/null | openssl dgst -sha256 -r | cut -d' ' -f1; }
 
 STEP "build hub and the nginx+sshd fixture"
-case "$(podman info --format '{{.Host.Arch}}' 2>/dev/null)" in arm64|aarch64) GOARCH=arm64 ;; *) GOARCH=amd64 ;; esac
+GOARCH="$(kk_goarch)"
 mkdir -p "$WORK/hubctx"
 (cd "$REPO_ROOT" && GOOS=linux GOARCH=$GOARCH CGO_ENABLED=0 go build -o "$WORK/hubctx/kryptkeeper" ./cmd/kryptkeeper) || DIE "go build failed"
 cp "$REPO_ROOT/tests/live/autopilot/hub.Containerfile" "$WORK/hubctx/Containerfile"

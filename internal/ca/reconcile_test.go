@@ -60,7 +60,7 @@ func TestCheckKeyConsistency_DetectsCrashWindowDivergence(t *testing.T) {
 		t.Fatalf("create keystore: %v", err)
 	}
 	store := &saveFailsAfterStore{Store: NewMemStore(), allowSaves: 1}
-	engine := NewEngine(keys, store)
+	engine := NewEngine(noSnapshotKeys{keys}, store)
 
 	root, err := engine.CreateRootCA("Root", pkix.Name{CommonName: "Root"}, keystore.ECDSAP256, 10*365*24*time.Hour)
 	if err != nil {
@@ -129,7 +129,7 @@ func TestCheckKeyConsistency_SuspendedCASkipped(t *testing.T) {
 		t.Fatalf("create keystore: %v", err)
 	}
 	store := &saveFailsAfterStore{Store: NewMemStore(), allowSaves: 1}
-	engine := NewEngine(keys, store)
+	engine := NewEngine(noSnapshotKeys{keys}, store)
 
 	root, err := engine.CreateRootCA("Root", pkix.Name{CommonName: "Root"}, keystore.ECDSAP256, 10*365*24*time.Hour)
 	if err != nil {
@@ -170,7 +170,7 @@ func TestCheckKeyConsistency_MLDSADetectsDivergence(t *testing.T) {
 		t.Fatalf("create keystore: %v", err)
 	}
 	store := &saveFailsAfterStore{Store: NewMemStore(), allowSaves: 1}
-	engine := NewEngine(keys, store)
+	engine := NewEngine(noSnapshotKeys{keys}, store)
 
 	root, err := engine.CreateRootCA("Root", pkix.Name{CommonName: "Root"}, keystore.MLDSA65, 10*365*24*time.Hour)
 	if err != nil {

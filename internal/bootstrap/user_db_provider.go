@@ -48,7 +48,7 @@ func (p *dbUserProvider) q(query string) string {
 // userSelectColumns is engine-neutral: last_login_at is timestamptz on
 // Postgres and TEXT on SQLite, so it is scanned as a nullable value instead of
 // being COALESCEd to ” (which Postgres rejects for timestamptz).
-const userSelectColumns = "id, email, role, active, last_login_at, created_at"
+const userSelectColumns = "id, email, role, active, last_login_at, created_at, tenant"
 
 // userRowScanner is the Scan half of *sql.Row / *sql.Rows.
 type userRowScanner interface{ Scan(dest ...any) error }
@@ -60,7 +60,7 @@ func scanUser(row userRowScanner) (UserRecord, error) {
 	var u UserRecord
 	var active bool
 	var lastLogin sql.NullString
-	if err := row.Scan(&u.ID, &u.Email, &u.Role, &active, &lastLogin, &u.CreatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.Email, &u.Role, &active, &lastLogin, &u.CreatedAt, &u.Tenant); err != nil {
 		return UserRecord{}, err
 	}
 	u.Status = statusFromActive(active)
@@ -134,6 +134,15 @@ func (p *dbUserProvider) idPossible(id string) bool {
 }
 
 func (p *dbUserProvider) InviteUser(ctx context.Context, email string, role string) (UserRecord, error) {
+	return p.InviteUserInTenant(ctx, email, role, "")
+}
+
+// InviteUserInTenant implements TenantUserInviter. DefaultTenant is stored as
+// "" so legacy rows and new default-tenant rows are indistinguishable.
+func (p *dbUserProvider) InviteUserInTenant(ctx context.Context, email, role, tenant string) (UserRecord, error) {
+	if tenant == DefaultTenant {
+		tenant = ""
+	}
 	if err := dbProviderUnavailable("user", p.openErr); err != nil {
 		return UserRecord{}, err
 	}
@@ -144,18 +153,18 @@ func (p *dbUserProvider) InviteUser(ctx context.Context, email string, role stri
 	if p.postgres {
 		// users.id is UUID with a gen_random_uuid() default; let the database mint it.
 		err := p.db.QueryRowContext(ctx, p.q(`
-			INSERT INTO users (email, role, active, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?) RETURNING id::text
-		`), email, role, true, p.ts(now), p.ts(now)).Scan(&id)
+			INSERT INTO users (email, role, active, created_at, updated_at, tenant)
+			VALUES (?, ?, ?, ?, ?, ?) RETURNING id::text
+		`), email, role, true, p.ts(now), p.ts(now), tenant).Scan(&id)
 		if err != nil {
 			return UserRecord{}, err
 		}
 	} else {
 		id = fmt.Sprintf("usr-%d", now.UnixNano())
 		if _, err := p.db.ExecContext(ctx, `
-			INSERT INTO users (id, email, role, active, created_at, updated_at)
-			VALUES (?, ?, ?, 1, ?, ?)
-		`, id, email, role, p.ts(now), p.ts(now)); err != nil {
+			INSERT INTO users (id, email, role, active, created_at, updated_at, tenant)
+			VALUES (?, ?, ?, 1, ?, ?, ?)
+		`, id, email, role, p.ts(now), p.ts(now), tenant); err != nil {
 			return UserRecord{}, err
 		}
 	}
@@ -165,6 +174,7 @@ func (p *dbUserProvider) InviteUser(ctx context.Context, email string, role stri
 		Role:      role,
 		Status:    "active",
 		CreatedAt: now.Format(time.RFC3339),
+		Tenant:    tenant,
 	}, nil
 }
 

@@ -24,7 +24,7 @@ key-rotation and CA-compromise procedures this backup/restore path underpins.
   itself) plus that backend's own DR procedure. `backup.sh` reports any
   skipped/errored keys in its output — do not treat a silent-looking bundle
   as complete without checking.
-- **Sqlite-mode deployments** have no scripted DB-backup path — `backup.sh`
+- **Sqlite-mode deployments** (superseded: scripted since W25-08, see Drill 3 below) had no scripted DB-backup path — `backup.sh`
   hard-requires `DATABASE_URL` + `pg_dump`. The keystore itself can still be
   backed up via the same admin endpoints; the sqlite file needs an ad hoc
   file-copy backup.
@@ -267,3 +267,68 @@ matching DR_RUNBOOK's own "Human-paired production drill" caveat:
   least once is still worth doing before treating this as fully proven for
   *this* deployment's production environment — this is what the ticket's
   `HUMAN-PAIR` note asks for beyond what an autonomous drill can provide.
+
+---
+
+## Release checklist: re-run the DR drill
+
+Run this before every release (W23-20, UC-A06). Targets: **RTO < 60 minutes, RPO < 24 hours**
+(the single DR targets shared with J05/M12; `DR_RUNBOOK.md` states none).
+
+1. Restore the latest backup into a clean hub, following "Restore" above, and time it against the RTO.
+2. Compare the newest backup's age at the moment of loss against the RPO.
+3. Run the escrow and BYOK drill: `bash tests/live/escrow-byok/run.sh` (podman; starts moto and Lowkey Vault, stops them on exit).
+4. Commit the generated record as `docs/release/DRILL_ESCROW_BYOK_vX.Y.md` with its date, git SHA and tool versions (the script writes it; never hand-edit results). Include the restore timing from steps 1-2.
+5. Block the release if the record for the current version is missing, or if a leg that passed in the previous record now fails. Legs recorded as PARTIAL or NOT IMPLEMENTED stay listed under "Not proven" until closed.
+
+## EXECUTED DRILL 3 (SQLite)
+
+W25-08. Real hub binary (`go build -o kryptkeeper ./cmd/kryptkeeper`, 2026-10-15, macOS arm64,
+sqlite3 3.54.0), `KRYPTKEEPER_DB_MODE=sqlite`, software keystore, loopback port 19080. Each run
+seeds a fresh hub with 1 root CA (`KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT`) + 1 issuing CA + 50
+certificates, saves the root PEM as the pre-disaster trust anchor, runs the real `backup.sh`, then
+declares disaster (T0: hub stopped, data and keystore directories deleted), runs the real
+`restore.sh`, boots a replacement hub, and finishes by issuing a new certificate from the restored
+issuing CA and verifying it against the saved root.
+
+Run 1 output (paths shortened):
+```
+run1: seeded certs=50
+[backup] database snapshot written: .../backup/db-20261016T002613Z.sqlite.gz ( 64K)
+[backup] keystore bundle written: .../keys-20261016T002613Z.json (exported=2 skipped_non_extractable=0 error=0)
+.../full.pem: OK
+run1 RESULT db_bytes=1093632 gz_bytes=65168 keys=2 restore_db=1 hub_ready_recovery=0 key_import_done=8 normal_restart_ready=1 issue_verify=0 RTO=10
+```
+`restore.sh` (run 3):
+```
+[restore] verifying checksums...
+db-20261016T002641Z.sqlite.gz: OK
+keys-20261016T002641Z.json: OK
+manifest.json: OK
+[restore] database restored
+[restore] importing keystore bundle...
+{"data":{"imported":2}}
+[restore] done
+```
+Runs 2 and 3: RTO 8 s and 7 s (min 7, median 8, max 10); per-phase table in
+`docs/ops/DR_RUNBOOK.md` under `## Recovery time (RTO)`.
+
+Findings from running it for real:
+1. **Dual control blocks `backup.sh`.** On a default hub the key export returned HTTP 202
+   (`dual control is on - after approval, retry with approved_action_id`) and the script failed.
+   The drill hub set `KRYPTKEEPER_KEY_DUAL_CONTROL=false` (drill only). `backup.sh` has no
+   approved-action support yet.
+2. **A restored database plus an empty keystore does not boot.** The hub exits with
+   `refusing to start: 2 active CA(s) have no usable key in the keystore`; earlier drills
+   described this as an advisory warning. The drill boots the replacement with
+   `KRYPTKEEPER_ALLOW_MISSING_CA_KEYS=true`, imports keys, then restarts without it
+   (restart counted in the RTO). After the normal restart the log had no `CA KEY INCONSISTENCY`.
+3. The first harness attempt measured nothing: a stale hub kept answering on the port after the
+   "disaster". The harness now fails if the old hub still answers after the kill.
+
+Automated row-count round trip (no hub): `bash scripts/deploy/backup_sqlite_test.sh`.
+
+### What's still open (after drill 3)
+
+SQLite DR is now scripted and timed on one node. Still open: Postgres RTO, dual-control approval
+in `backup.sh`, an off-instance restore, and a drill with an operator at the keyboard.

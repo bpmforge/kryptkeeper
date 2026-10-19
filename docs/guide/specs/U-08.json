@@ -1,0 +1,507 @@
+{
+  "task": "U-08",
+  "title": "Suspend, update, re-key or revoke a CA (guarded)",
+  "sourceStory": "STORIES.md#u-08",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/cas"
+      },
+      "caption": "Open /cas",
+      "slug": "cas-list",
+      "expect": {
+        "role": "button",
+        "name": "New CA"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/01-cas-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Lab Issuing CA"
+      },
+      "caption": "Click **Lab Issuing CA**",
+      "slug": "ca-detail",
+      "expect": {
+        "role": "button",
+        "name": "Update"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/02-ca-detail.png",
+        "annotated": "docs/guide/screenshots/U-08/02-ca-detail-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 525,
+          "w": 561,
+          "h": 78
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Update",
+        "exact": true
+      },
+      "caption": "Click **Update**",
+      "slug": "update-dialog",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/03-update-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Display name",
+        "within": "[role=dialog]"
+      },
+      "value": "Lab Issuing CA (renamed)",
+      "caption": "Fill **Display name** with \"Lab Issuing CA (renamed)\"",
+      "slug": "Display name",
+      "optional": true,
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/04-display-name.png",
+        "annotated": "docs/guide/screenshots/U-08/04-display-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 350,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "press",
+      "value": "Escape",
+      "caption": "press",
+      "slug": "press",
+      "capture": false,
+      "n": 5
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Re-key"
+      },
+      "caption": "Click **Re-key**",
+      "slug": "rekey-step-1-blast-radius",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/06-rekey-step-1-blast-radius.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Acknowledge impact"
+      },
+      "caption": "Click **Acknowledge impact**",
+      "slug": "impact-acknowledged",
+      "optional": true,
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/07-impact-acknowledged.png",
+        "annotated": "docs/guide/screenshots/U-08/07-impact-acknowledged-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 845,
+          "y": 542,
+          "w": 169,
+          "h": 36
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next",
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Next**",
+      "slug": "rekey-step-2-options",
+      "optional": true,
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/08-rekey-step-2-options.png",
+        "annotated": "docs/guide/screenshots/U-08/08-rekey-step-2-options-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 477,
+          "y": 585,
+          "w": 60,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next",
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Next**",
+      "slug": "rekey-step-3-review",
+      "optional": true,
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/09-rekey-step-3-review.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "press",
+      "value": "Escape",
+      "caption": "press",
+      "slug": "press",
+      "capture": false,
+      "n": 10
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Suspend",
+        "exact": true
+      },
+      "caption": "Click **Suspend**",
+      "slug": "suspend-confirm",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/11-suspend-confirm.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "placeholder": "CA name"
+      },
+      "value": "Lab Issuing CA",
+      "caption": "Fill **CA name** with \"Lab Issuing CA\"",
+      "slug": "type-ca-name",
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/12-type-ca-name.png",
+        "annotated": "docs/guide/screenshots/U-08/12-type-ca-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 474,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Confirm suspend"
+      },
+      "caption": "Click **Confirm suspend**",
+      "slug": "ca-suspended",
+      "n": 13,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/13-ca-suspended.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Activate",
+        "exact": true
+      },
+      "caption": "Click **Activate**",
+      "slug": "ca-reactivated",
+      "n": 14,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/14-ca-reactivated.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Confirm activate"
+      },
+      "caption": "Click **Confirm activate**",
+      "slug": "ca-active-again",
+      "n": 15,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/15-ca-active-again.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Lab Issuing CA"
+      },
+      "caption": "Click **Lab Issuing CA**",
+      "slug": "ca-selected-again",
+      "n": 16,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/16-ca-selected-again.png",
+        "annotated": "docs/guide/screenshots/U-08/16-ca-selected-again-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 525,
+          "w": 561,
+          "h": 78
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Revoke CA"
+      },
+      "caption": "Click **Revoke CA**",
+      "slug": "revoke-ca-confirm",
+      "n": 17,
+      "capture": {
+        "file": "docs/guide/screenshots/U-08/17-revoke-ca-confirm.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "press",
+      "value": "Escape",
+      "caption": "press",
+      "slug": "press",
+      "capture": false,
+      "n": 18
+    }
+  ],
+  "flags": "DESTRUCTIVE (run on a throwaway hub against the disposable Lab Issuing CA)",
+  "lastRun": {
+    "at": "2026-10-18T12:50:00.919Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-08",
+    "steps": 18,
+    "shots": 15,
+    "annotated": 6,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/cas/86065e24-4797-48f9-a422-f87c9326cc89"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-08/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-08/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

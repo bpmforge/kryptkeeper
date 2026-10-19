@@ -5,12 +5,18 @@
 package bootstrap
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"math/rand/v2"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 type searchResult struct {
@@ -27,12 +33,11 @@ func registerSearchHandlers(mux *http.ServeMux, auth *Authenticator, certProvide
 			writeMethodNotAllowed(w, http.MethodGet)
 			return
 		}
-		principal, err := auth.AuthenticatePrincipal(r, time.Now())
+		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
 		if err != nil {
 			writeUnauthorized(w)
 			return
 		}
-		_ = principal
 
 		q := strings.TrimSpace(r.URL.Query().Get("q"))
 		if q == "" {
@@ -45,28 +50,28 @@ func registerSearchHandlers(mux *http.ServeMux, auth *Authenticator, certProvide
 		results := make([]searchResult, 0, 20)
 		qLow := strings.ToLower(q)
 
-		// Search certificates.
-		certList, cerr := certProvider.ListCertificates(r.Context(), CertificateListQuery{Q: q, Limit: 10})
+		// Search certificates. The providers' own Q filter matches only the
+		// common name, so SAN/fingerprint/owner matching happens here.
+		certItems, cerr := searchCertificates(r.Context(), pd, certProvider, q, 10)
 		if cerr != nil {
-			log.Printf("search: cert list error: %v", cerr)
-		} else {
-			for _, c := range certList.Items {
-				results = append(results, searchResult{
-					Kind:        "certificate",
-					ID:          c.FingerprintSHA256,
-					Label:       c.CommonName,
-					Description: "Issued: " + c.ValidFrom,
-					URL:         "/certificates/" + c.FingerprintSHA256,
-				})
-			}
+			logging.Infof("search: cert list error: %v", cerr)
+		}
+		for _, c := range certItems {
+			results = append(results, searchResult{
+				Kind:        "certificate",
+				ID:          c.FingerprintSHA256,
+				Label:       c.CommonName,
+				Description: "Issued: " + c.ValidFrom,
+				URL:         "/certificates/" + c.FingerprintSHA256,
+			})
 		}
 
 		// Search CAs.
 		caList, caerr := caProvider.ListCAs(r.Context(), CAListQuery{Limit: 50})
 		if caerr != nil {
-			log.Printf("search: ca list error: %v", caerr)
+			logging.Infof("search: ca list error: %v", caerr)
 		} else {
-			for _, ca := range caList.Items {
+			for _, ca := range filterCAsByTenant(r.Context(), activeTenantStore, pd, caList.Items) {
 				name := ca.DisplayName
 				if name == "" {
 					name = ca.Name
@@ -93,9 +98,9 @@ func registerSearchHandlers(mux *http.ServeMux, auth *Authenticator, certProvide
 		// filter a page in-handler — the UI's badge map and Discovery's
 		// "Open full search" link both expected this producer to exist.
 		if discoveryProvider != nil {
-			epList, eperr := discoveryProvider.ListEndpoints(r.Context(), DiscoveryEndpointQuery{Limit: 100})
+			epList, eperr := discoveryProvider.ListEndpoints(withDiscoveryScope(r.Context(), pd), DiscoveryEndpointQuery{Limit: 100})
 			if eperr != nil {
-				log.Printf("search: endpoint list error: %v", eperr)
+				logging.Infof("search: endpoint list error: %v", eperr)
 			} else {
 				for _, ep := range epList.Endpoints {
 					if !strings.Contains(strings.ToLower(ep.Hostname), qLow) &&
@@ -117,11 +122,15 @@ func registerSearchHandlers(mux *http.ServeMux, auth *Authenticator, certProvide
 		}
 
 		// Search templates.
-		tplList, tplerr := templateProvider.ListTemplates(r.Context(), TemplateListQuery{Q: q, Limit: 10})
+		tplList, tplerr := templateProvider.ListTemplates(r.Context(), TemplateListQuery{Q: q, Limit: searchFetchLimit(pd, 10)})
 		if tplerr != nil {
-			log.Printf("search: template list error: %v", tplerr)
+			logging.Infof("search: template list error: %v", tplerr)
 		} else {
-			for _, t := range tplList.Items {
+			tplItems := filterTemplatesByTenant(r.Context(), activeTenantStore, pd, tplList.Items)
+			if len(tplItems) > 10 {
+				tplItems = tplItems[:10]
+			}
+			for _, t := range tplItems {
 				results = append(results, searchResult{
 					Kind:        "template",
 					ID:          t.ID,
@@ -132,8 +141,100 @@ func registerSearchHandlers(mux *http.ServeMux, auth *Authenticator, certProvide
 			}
 		}
 
+		// Sampled so a busy palette does not flood the append-only audit log.
+		// The query text is never recorded: it can be a fingerprint or an e-mail.
+		if rate := searchAuditSampleRate(); searchSampleFloat() < rate {
+			emitAuditEventDetail(r, auditProvider, pd.ID, "search.query", "search", "-", AuditOutcomeSuccess,
+				fmt.Sprintf(`{"query_len":%d,"results":%d,"sample_rate":%g}`, len(q), len(results), rate))
+		}
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{"data": results})
 	})
+}
+
+// searchAuditSampleRate reads SEARCH_AUDIT_SAMPLE_RATE, a float in [0,1];
+// unset, unparseable or out of range falls back to 0.1.
+func searchAuditSampleRate() float64 {
+	v, err := strconv.ParseFloat(strings.TrimSpace(os.Getenv("SEARCH_AUDIT_SAMPLE_RATE")), 64)
+	if err != nil || v < 0 || v > 1 {
+		return 0.1
+	}
+	return v
+}
+
+// searchSampleFloat is injectable so tests can make sampling deterministic.
+var searchSampleFloat = rand.Float64
+
+var errSearchEnough = errors.New("search: enough matches")
+
+// certMatchesSearch reports whether qLow (lower-cased, trimmed) matches the
+// certificate by CN, SAN, subject DN, owner, or fingerprint prefix.
+func certMatchesSearch(c CertificateItem, qLow string) bool {
+	has := func(s string) bool { return s != "" && strings.Contains(strings.ToLower(s), qLow) }
+	if has(c.CommonName) || has(c.SubjectDN) || has(c.OwnerEmail) || has(c.OwnerTeam) {
+		return true
+	}
+	for _, s := range c.SubjectAltNames {
+		if has(s) {
+			return true
+		}
+	}
+	for _, s := range c.URISANs {
+		if has(s) {
+			return true
+		}
+	}
+	// Short queries must not prefix-match every hash.
+	fp := strings.NewReplacer(":", "", " ", "").Replace(qLow)
+	return len(fp) >= 8 && strings.HasPrefix(strings.ToLower(c.FingerprintSHA256), fp)
+}
+
+// searchCertificates returns up to limit tenant-visible matches in provider
+// list order. Tenant semantics mirror filterCertificatesByTenant (deny by
+// default when a CA's tenant lookup fails), memoised per CA for the scan.
+func searchCertificates(ctx context.Context, pd AuthPrincipal, p CertificateProvider, q string, limit int) ([]CertificateItem, error) {
+	qLow := strings.ToLower(strings.TrimSpace(q))
+	store := activeTenantStore
+	scoped := !tenantBypass(pd)
+	visible := map[string]bool{}
+	out := make([]CertificateItem, 0, limit)
+	err := ForEachCertificate(ctx, p, CertificateListQuery{}, func(c CertificateItem) error {
+		if !certMatchesSearch(c, qLow) {
+			return nil
+		}
+		if scoped {
+			ok, seen := visible[c.CAID]
+			if !seen {
+				// No tenant store means no membership answer: deny (D-202).
+				if store != nil {
+					t, err := store.CATenant(ctx, c.CAID)
+					ok = err == nil && t == pd.Tenant
+				}
+				visible[c.CAID] = ok
+			}
+			if !ok {
+				return nil
+			}
+		}
+		out = append(out, c)
+		if len(out) >= limit {
+			return errSearchEnough
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, errSearchEnough) {
+		return nil, err
+	}
+	return out, nil
+}
+
+// searchFetchLimit widens a provider page for tenant-scoped callers because the
+// tenant filter is applied after the provider's own limit.
+func searchFetchLimit(pd AuthPrincipal, n int) int {
+	if tenantBypass(pd) {
+		return n
+	}
+	return 200
 }

@@ -467,3 +467,10 @@ func TestWebhookRefusesCrossHostRedirect(t *testing.T) {
 		t.Fatalf("cross-host redirect must be refused (hit=%v err=%v)", hit, err)
 	}
 }
+
+func TestRedactURLsMasksTokens(t *testing.T) {
+	got := RedactURLs(`Post "https://hooks.slack.com/services/T/B/SECRET": dial tcp: refused`)
+	if strings.Contains(got, "SECRET") || !strings.Contains(got, "dial tcp") {
+		t.Fatalf("RedactURLs = %q", got)
+	}
+}

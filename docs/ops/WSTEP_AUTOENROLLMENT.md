@@ -115,14 +115,47 @@ Kerberos URI. Windows renews over that Kerberos URI with a PKCS#7 request
 signed by the old key (MS-WSTEP 4.1.5.1), and the identity again comes from
 Kerberos. The TLS client-certificate path stays for non-Windows clients.
 
+### Key size and the issuance policy
+
+XCEP does not advertise the template's `min_key_size` as is. For each template
+it advertises the smallest RSA size that is at least the template's minimum
+**and** that the effective issuance policy accepts (the same `PolicyEngine`
+evaluation WSTEP applies at enrollment, so the two cannot disagree). With the
+default `Baseline` policy (`min_rsa_bits` 3072 since W22-14) a template whose
+`min_key_size` is 2048 is therefore advertised as 3072, and **Windows now
+generates 3072-bit keys**; a 4096 template stays 4096. No template data
+changes: deployments upgraded from v0.9 or earlier with 2048-bit templates are
+covered automatically, and clients that enrolled earlier keep their
+certificates until renewal. Loosening the policy lowers what is advertised on
+the next fetch (XCEP reads the policy per request).
+
+If no RSA size satisfies both the template and the policy (for example an
+ECDSA-only allow-list), the template is not offered and the hub logs
+`xcep: template X not offered to P: no RSA key size is accepted: <rule>`.
+XCEP policies are schema 2, which cannot advertise an ECDSA key, so Windows
+machine autoenrollment needs an RSA size in the policy's allow-list. If the
+policy cannot be read, `GetPolicies` faults rather than advertise a key
+WSTEP might refuse.
+
+A refused enrollment returns a SOAP fault (HTTP 500) whose reason names the
+policy and rule, e.g. `issuance policy "Baseline": rule min_rsa_bits: ...`.
+Windows logs it in the `CertificateServicesClient` event log where it
+surfaces it; it never contains key material.
+
 ### Audit
 
 `wstep.WithAuditFunc` and `xcep.WithAuditFunc` take a narrow callback. `main`
 adapts it to `AuditProvider.AppendEntry`; there is no new global. The events:
 
-- Success: `wstep.enroll`, `wstep.renew`.
+- Success: `wstep.enroll`, `wstep.renew`, and `xcep.policy` (at most one row
+  per principal per 15 minutes, listing the templates offered with their
+  advertised minimum key size, so a policy poll every GPO refresh does not
+  bury the enrollment trail).
 - Denied: `wstep.enroll`, `wstep.renew`, `xcep.policy`. The actor is the
-  principal or certificate subject when known.
+  principal or certificate subject when known. A WSTEP refusal by template
+  checks or the issuance policy has the template as its resource and the
+  violated rule in the detail (`rule=min_rsa_bits policy="Baseline": ...`);
+  the engine's own `policy.violation` row is written as well.
 
 The bare first-leg 401 challenge, sent with no `Authorization` header, is the
 normal start of every Negotiate exchange and is **not** audited. A presented
@@ -220,6 +253,29 @@ request is off unless `KRYPTKEEPER_TLS_REQUEST_CLIENT_CERT=true`. Set:
 
 Verified on lab-win11: `certutil -verify -urlfetch` gives "Base CRL Verified",
 "OCSP Verified" and "Leaf certificate revocation check passed".
+
+### Enroll lists and the D-291 upgrade
+
+A template's enroll list (`enrollment_permissions.enroll`) is enforced over
+XCEP and WSTEP exactly as EST, SCEP and ACME enforce it: an empty list is open;
+a non-empty list lets a Windows client enroll (and XCEP offer the template)
+only if it holds `protocol:wstep` (every Windows client) or
+`protocol:wstep:<host fqdn, lower case>` (one machine, e.g. a domain
+controller). `pki-admin`, `pki-operator` and other API roles never match a
+Windows caller. A refused request gets a SOAP fault, "... is not permitted to
+enroll certificate template ...", and a denied audit row.
+
+Before D-291 a list with no `protocol:wstep*` entry was ignored for Windows, so
+a template restricted to `["pki-admin"]` was still enrollable by every domain
+machine (finding S-01). **Upgrade:** on first start of a build with D-291 the
+hub appends `protocol:wstep` to the enroll list of each *autoenrolled* template
+that has a role-only list not naming `pki-admin`, so autoenrollment keeps
+working; the template revision is not bumped. Every other role-only list (not
+autoenrolled, or naming `pki-admin`) is left as is and is refused on WSTEP from
+then on; the startup log names them. It runs once (marker file
+`bootstrap-templates.json.d291-enroll-upgrade`), so a list narrowed afterwards
+is never re-widened. To let Windows enroll a template the upgrade left alone,
+add `protocol:wstep` to its enroll list.
 
 ### Template mapping (what TokenType carries)
 
@@ -320,6 +376,8 @@ the per-kind template offer (W20-17). See STATUS.
 
 Not verified live:
 - a time-based renewal (it needs about a day at the weeks granularity).
+- Windows 10, Server 2019 and Server 2022 (W26-13 matrix kit exists in `tests/live/wstep/matrix/`;
+  results are `PENDING-RUN`, see `docs/release/LIVE_RESULTS_FG2_WSTEP_MATRIX_v0.14.md`).
 
 Filed:
 - W20-10 (done, see Revocation pointers above).
@@ -331,6 +389,12 @@ Filed:
   verifies it (RFC 5652 5.4). The label is for the audit log only;
   authorization is Kerberos.
 - W20-12 (done): every issuing path now gets the pointers from the engine.
+
+## Lab and failures
+
+- [WSTEP_LAB_RUNBOOK.md](WSTEP_LAB_RUNBOOK.md): domain, service account, keytab, templates and GPO from scratch.
+- [WSTEP_FAILURES.md](WSTEP_FAILURES.md): client symptom to audit action and fix. The
+  `wstep.kerberos.failure` alert is planned, not emitted in v0.14.
 
 ## Implementation state (2026-10-07)
 

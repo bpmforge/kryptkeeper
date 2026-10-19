@@ -1,0 +1,343 @@
+{
+  "task": "U-48",
+  "title": "Generate, back up, import and rotate keys",
+  "sourceStory": "STORIES.md#u-48",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/keys"
+      },
+      "caption": "Open /keys",
+      "slug": "keys-list",
+      "expect": {
+        "role": "button",
+        "name": "Generate Key"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-48/01-keys-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Generate Key"
+      },
+      "caption": "Click **Generate Key**",
+      "slug": "generate-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "Generate New Key"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-48/02-generate-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "placeholder": "e.g. root-ca-2026"
+      },
+      "value": "lab-signing-key",
+      "caption": "Fill **e.g. root-ca-2026** with \"lab-signing-key\"",
+      "slug": "fill",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-48/03-fill.png",
+        "annotated": "docs/guide/screenshots/U-48/03-fill-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 415,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "css": "select",
+        "within": "[role=dialog]"
+      },
+      "value": "ECDSA-P384",
+      "caption": "Select \"ECDSA-P384\" in **select**",
+      "slug": "select",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-48/04-select.png",
+        "annotated": "docs/guide/screenshots/U-48/04-select-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 492,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Generate",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Generate**",
+      "slug": "key-generated",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-48/05-key-generated.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Import",
+        "exact": true
+      },
+      "caption": "Click **Import**",
+      "slug": "import-dialog",
+      "expect": {
+        "role": "button",
+        "name": "Import Key"
+      },
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-48/06-import-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Cancel",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Cancel**",
+      "slug": "import-cancelled",
+      "capture": false,
+      "n": 7
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Escrow"
+      },
+      "caption": "Click **Escrow**",
+      "slug": "escrow-dialog",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-48/08-escrow-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Cancel",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Cancel**",
+      "slug": "Cancel",
+      "capture": false,
+      "n": 9
+    },
+    {
+      "action": "check",
+      "target": {
+        "label": "Select lab-signing-key"
+      },
+      "caption": "Tick **Select lab-signing-key**",
+      "slug": "row-selected",
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-48/10-row-selected.png",
+        "annotated": "docs/guide/screenshots/U-48/10-row-selected-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 836,
+          "w": 16,
+          "h": 16
+        }
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "role": "button",
+        "name": "Bulk rotate"
+      },
+      "caption": "**Bulk rotate** and **Bulk delete** are destructive and are captured only up to the button",
+      "slug": "bulk-rotate-guarded",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-48/11-bulk-rotate-guarded.png",
+        "annotated": "docs/guide/screenshots/U-48/11-bulk-rotate-guarded-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 364,
+          "y": 245,
+          "w": 122,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:46:13.153Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-48",
+    "steps": 11,
+    "shots": 9,
+    "annotated": 4,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/keys"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-48/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-48/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

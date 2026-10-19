@@ -69,23 +69,11 @@ describe("Tenants page", () => {
     ).toBeInTheDocument();
   });
 
-  it("labels multi-tenancy experimental only when enabled", async () => {
+  it("no longer labels multi-tenancy experimental (W22-03)", async () => {
     (api.tenantContext as ReturnType<typeof vi.fn>).mockResolvedValue(superCtx);
-    const first = renderPage();
-    expect(
-      await screen.findByText(
-        /Experimental: tenant isolation is not a security boundary in this release\./,
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Experimental")).toBeInTheDocument();
-    first.unmount();
-
-    (api.tenantContext as ReturnType<typeof vi.fn>).mockResolvedValue({
-      data: { ...superCtx.data, enabled: false, tenants: [] },
-    });
     renderPage();
-    await screen.findByText(/Multi-tenancy is off/i);
-    expect(screen.queryByText("Experimental")).not.toBeInTheDocument();
+    await screen.findAllByText("Acme Corp");
+    expect(screen.queryByText(/experimental/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/not a security boundary/i)).not.toBeInTheDocument();
   });
 
@@ -135,5 +123,7 @@ describe("Tenants page", () => {
     expect(
       await screen.findByText(/Tenant administration is restricted/i),
     ).toBeInTheDocument();
+    // CB-12: say why a named admin cannot administer tenants.
+    expect(screen.getByText(/only the raw bootstrap/i)).toBeInTheDocument();
   });
 });

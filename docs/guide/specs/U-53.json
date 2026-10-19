@@ -1,0 +1,142 @@
+{
+  "task": "U-53",
+  "title": "Monitor Certificate Transparency findings",
+  "sourceStory": "STORIES.md#u-53",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/ct-findings"
+      },
+      "caption": "Open /ct-findings",
+      "slug": "ct-empty",
+      "allow": [
+        "404",
+        "503"
+      ],
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-53/01-ct-empty.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/settings"
+      },
+      "caption": "Open /settings",
+      "slug": "settings",
+      "expect": {
+        "role": "button",
+        "name": "Add domain"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-53/02-settings.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Add domain"
+      },
+      "caption": "Click **Add domain**",
+      "slug": "add-ct-domain-row",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-53/03-add-ct-domain-row.png",
+        "annotated": "docs/guide/screenshots/U-53/03-add-ct-domain-row-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 678,
+          "w": 130,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "flags": "EXTERNAL (public CT logs are not polled; empty state and settings only)",
+  "lastRun": {
+    "at": "2026-10-18T12:37:42.907Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-53",
+    "steps": 3,
+    "shots": 3,
+    "annotated": 1,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/settings"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-53/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-53/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

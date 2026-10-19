@@ -14,7 +14,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"log"
+	"math/big"
 	"net"
 	"net/url"
 	"os"
@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"kryptkeeper/internal/ca"
+	"kryptkeeper/internal/logging"
 )
 
 // tlsListenerSource is the ca.IssuedCertificateRecorder source label for the
@@ -82,6 +83,9 @@ func resolveTLSMode(needsCrypto bool, caEngine ca.Service, recorder ca.IssuedCer
 		if !needsCrypto || caEngine == nil {
 			return nil, "", fmt.Errorf("KRYPTKEEPER_TLS_SELF_ISSUE=true requires APP_CERTIFICATE_PROVIDER=ca (no CA engine to issue the listener certificate from)")
 		}
+		if defaultCAID == "" {
+			return nil, "", fmt.Errorf("KRYPTKEEPER_TLS_SELF_ISSUE=true needs a CA to issue the listener certificate, but none exists yet (first-run mode): create the root CA, then restart")
+		}
 		cert, err := selfIssuedTLSCertificate(caEngine, recorder, defaultCAID, dataDir, tlsSANs())
 		if err != nil {
 			return nil, "", fmt.Errorf("self-issuing TLS listener certificate: %w", err)
@@ -89,6 +93,31 @@ func resolveTLSMode(needsCrypto bool, caEngine ca.Service, recorder ca.IssuedCer
 		return baseTLSConfig(*cert), "", nil
 
 	default:
+		if needsCrypto && caEngine != nil && defaultCAID == "" {
+			// First-run mode: no CA exists to issue the listener certificate
+			// from. Never fall back to plain HTTP (the bootstrap token and the
+			// first login cross this listener): serve an ephemeral in-memory
+			// self-signed certificate until the operator creates the root and
+			// restarts. Never refuse to start, that is the point of first-run
+			// onboarding.
+			cert, err := ephemeralSelfSignedTLSCertificate(tlsSANs(), time.Now())
+			if err != nil {
+				return nil, "", fmt.Errorf("first-run mode: generating ephemeral TLS listener certificate: %w", err)
+			}
+			// The ephemeral certificate is its own trust anchor: publish its
+			// public half as ca.pem so the compose dashboard's nginx and the
+			// hub's healthcheck can verify the listener (W33-02). The key stays
+			// in memory. The CA-issued bundle replaces this on the next restart.
+			tlsDir := filepath.Join(dataDir, "tls")
+			if err := os.MkdirAll(tlsDir, 0o700); err != nil {
+				return nil, "", fmt.Errorf("first-run mode: creating %s: %w", tlsDir, err)
+			}
+			pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]})
+			if err := writeTrustBundle(tlsDir, pemBytes); err != nil {
+				return nil, "", fmt.Errorf("first-run mode: publishing ephemeral trust anchor: %w", err)
+			}
+			return baseTLSConfig(*cert), "first-run mode: no CA exists yet to self-issue the listener certificate -- serving an ephemeral self-signed certificate until a root CA is created and the hub is restarted (or set KRYPTKEEPER_TLS_CERT_FILE/KEY_FILE)", nil
+		}
 		if needsCrypto && caEngine != nil {
 			cert, err := selfIssuedTLSCertificate(caEngine, recorder, defaultCAID, dataDir, tlsSANs())
 			if err != nil {
@@ -185,7 +214,7 @@ func selfIssuedTLSCertificate(caEngine ca.Service, recorder ca.IssuedCertificate
 				// indefinitely. It does not refresh ca.pem for a CA rotated
 				// while the hub keeps running -- that requires a restart.
 				if err := writeCAChainBundle(caEngine, defaultCAID, tlsDir); err != nil {
-					log.Printf("tls: writing %s: %v", filepath.Join(tlsDir, "ca.pem"), err)
+					logging.Infof("tls: writing %s: %v", filepath.Join(tlsDir, "ca.pem"), err)
 				}
 				return &cert, nil
 			}
@@ -236,7 +265,7 @@ func selfIssuedTLSCertificate(caEngine ca.Service, recorder ca.IssuedCertificate
 	// failure must never block the hub from starting.
 	if recorder != nil {
 		if err := recorder.RecordIssuedCertificate(context.Background(), defaultCAID, issued.Certificate, issued.CertPEM, tlsListenerSource); err != nil {
-			log.Printf("tls: self-issued listener certificate not recorded: %v", err)
+			logging.Infof("tls: self-issued listener certificate not recorded: %v", err)
 		}
 	}
 
@@ -268,7 +297,7 @@ func selfIssuedTLSCertificate(caEngine ca.Service, recorder ca.IssuedCertificate
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[TLS] self-issued listener certificate from CA %s, valid until %s (SANs: %s)",
+	logging.Infof("[TLS] self-issued listener certificate from CA %s, valid until %s (SANs: %s)",
 		defaultCAID, issued.Certificate.NotAfter.Format(time.RFC3339), strings.Join(sans, ","))
 	return &cert, nil
 }
@@ -297,6 +326,12 @@ func writeCAChainBundle(caEngine ca.Service, defaultCAID, tlsDir string) error {
 	for _, c := range chain {
 		buf = append(buf, c.CertPEM...)
 	}
+	return writeTrustBundle(tlsDir, buf)
+}
+
+// writeTrustBundle writes the public trust anchor bytes to tlsDir/ca.pem and,
+// when KRYPTKEEPER_TLS_TRUST_EXPORT_DIR is set, to the export directory too.
+func writeTrustBundle(tlsDir string, buf []byte) error {
 	if err := os.WriteFile(filepath.Join(tlsDir, "ca.pem"), buf, 0o644); err != nil {
 		return err
 	}
@@ -358,4 +393,44 @@ func primarySAN(sans []string) string {
 		return sans[0]
 	}
 	return "localhost"
+}
+
+// ephemeralSelfSignedTLSCertificate mints an in-memory, self-signed P-256
+// listener certificate for first-run mode (W33-32). It is never written to
+// disk and is replaced by the CA-issued certificate on the first restart
+// after a root CA exists.
+func ephemeralSelfSignedTLSCertificate(sans []string, now time.Time) (*tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 127))
+	if err != nil {
+		return nil, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: "kryptkeeper first-run (ephemeral)"},
+		NotBefore:             now.Add(-5 * time.Minute),
+		NotAfter:              now.Add(30 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	for _, san := range sans {
+		if ip := net.ParseIP(san); ip != nil {
+			tmpl.IPAddresses = append(tmpl.IPAddresses, ip)
+		} else {
+			tmpl.DNSNames = append(tmpl.DNSNames, san)
+		}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, err
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, nil
 }

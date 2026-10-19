@@ -32,9 +32,10 @@ CREATE TABLE IF NOT EXISTS key_ceremonies (
     quorum        INTEGER NOT NULL CHECK (quorum >= 2),
     approvals     TEXT NOT NULL DEFAULT '[]',
     status        TEXT NOT NULL DEFAULT 'pending'
-                  CHECK (status IN ('pending', 'completed', 'aborted')),
+                  CHECK (status IN ('pending', 'completed', 'aborted', 'expired')),
     created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL
+    updated_at    TEXT NOT NULL,
+    reminder_sent_at TEXT
 );`
 
 func newCeremonyTestManager(t *testing.T) (*CeremonyManager, *Engine) {
@@ -236,5 +237,176 @@ func TestCeremonySurvivesManagerRestart(t *testing.T) {
 	caObj, _ := engine.GetCA(c.CAID)
 	if caObj.Status != "active" {
 		t.Fatalf("CA must activate across restarts, got %q", caObj.Status)
+	}
+}
+
+// W23-07: TTL auto-abort and approver notifications.
+
+type fakeNotifier struct {
+	sent [][2]string // (approver, subject)
+}
+
+func (f *fakeNotifier) NotifyApprover(approver, subject, _ string) error {
+	f.sent = append(f.sent, [2]string{approver, subject})
+	return nil
+}
+
+func (f *fakeNotifier) approvers() map[string]int {
+	out := map[string]int{}
+	for _, s := range f.sent {
+		out[s[0]]++
+	}
+	return out
+}
+
+func fixedClock(t0 time.Time) (func() time.Time, func(d time.Duration)) {
+	cur := t0
+	return func() time.Time { return cur }, func(d time.Duration) { cur = cur.Add(d) }
+}
+
+func TestCeremonyExpiresAfterTTLAndCANeverActivates(t *testing.T) {
+	mgr, engine := newCeremonyTestManager(t)
+	clock, advance := fixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	mgr.SetClock(clock)
+	c := startTestCeremony(t, mgr)
+
+	advance(71 * time.Hour)
+	if got, err := mgr.ExpireDue(); err != nil || len(got) != 0 {
+		t.Fatalf("must not expire before TTL: %v %v", got, err)
+	}
+	advance(1*time.Hour + time.Minute)
+	got, err := mgr.ExpireDue()
+	if err != nil || len(got) != 1 || got[0].ID != c.ID {
+		t.Fatalf("ExpireDue = %v, %v; want exactly %s", got, err, c.ID)
+	}
+	if again, _ := mgr.ExpireDue(); len(again) != 0 {
+		t.Fatalf("second ExpireDue must be a no-op, got %v", again)
+	}
+	cur, _, _ := mgr.Get(c.ID)
+	if cur.Status != CeremonyExpired {
+		t.Fatalf("status = %q, want expired", cur.Status)
+	}
+	if _, err := mgr.Approve(c.ID, "alice"); err == nil {
+		t.Fatal("approve on an expired ceremony must fail")
+	}
+	caObj, _ := engine.GetCA(c.CAID)
+	if caObj.Status != CAStatusPendingCeremony {
+		t.Fatalf("CA must stay pending_ceremony, got %q", caObj.Status)
+	}
+	if err := testIssuance(t, engine, c.CAID); err == nil {
+		t.Fatal("issuance from an expired ceremony's CA must be refused")
+	}
+}
+
+func TestCeremonyApproveAfterTTLExpiresInline(t *testing.T) {
+	mgr, engine := newCeremonyTestManager(t)
+	clock, advance := fixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	mgr.SetClock(clock)
+	c := startTestCeremony(t, mgr)
+	if _, err := mgr.Approve(c.ID, "alice"); err != nil {
+		t.Fatalf("first approve: %v", err)
+	}
+	advance(73 * time.Hour)
+	// Quorum would be reached by this approval; the TTL must win.
+	if _, err := mgr.Approve(c.ID, "bob"); err == nil {
+		t.Fatal("approval past the TTL must be refused")
+	}
+	cur, _, _ := mgr.Get(c.ID)
+	if cur.Status != CeremonyExpired {
+		t.Fatalf("status = %q, want expired", cur.Status)
+	}
+	caObj, _ := engine.GetCA(c.CAID)
+	if caObj.Status != CAStatusPendingCeremony {
+		t.Fatalf("CA must not activate, got %q", caObj.Status)
+	}
+}
+
+func TestCeremonyTTLConfigurableViaEnv(t *testing.T) {
+	t.Setenv("KRYPTKEEPER_CEREMONY_TTL", "1h")
+	if got := CeremonyTTLFromEnv(); got != time.Hour {
+		t.Fatalf("ttl = %s, want 1h", got)
+	}
+	for _, bad := range []string{"", "banana", "0s", "-5h"} {
+		t.Setenv("KRYPTKEEPER_CEREMONY_TTL", bad)
+		if got := CeremonyTTLFromEnv(); got != 72*time.Hour {
+			t.Fatalf("ttl for %q = %s, want 72h fallback", bad, got)
+		}
+	}
+	t.Setenv("KRYPTKEEPER_CEREMONY_TTL", "1h")
+	mgr, _ := newCeremonyTestManager(t)
+	clock, advance := fixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	mgr.SetClock(clock)
+	startTestCeremony(t, mgr)
+	advance(61 * time.Minute)
+	if got, _ := mgr.ExpireDue(); len(got) != 1 {
+		t.Fatalf("1h TTL must expire after 61m, got %d", len(got))
+	}
+}
+
+func TestCeremonyNotifiesEveryApproverOnStart(t *testing.T) {
+	mgr, _ := newCeremonyTestManager(t)
+	n := &fakeNotifier{}
+	mgr.SetNotifier(n)
+	startTestCeremony(t, mgr)
+	got := n.approvers()
+	for _, a := range []string{"alice", "bob", "carol"} {
+		if got[a] != 1 {
+			t.Fatalf("approver %s notified %d times, want 1 (all: %v)", a, got[a], got)
+		}
+	}
+	if len(got) != 3 {
+		t.Fatalf("only designated approvers may be notified, got %v", got)
+	}
+}
+
+func TestCeremonyReminderAt24hBeforeExpiry(t *testing.T) {
+	mgr, engine := newCeremonyTestManager(t)
+	clock, advance := fixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	mgr.SetClock(clock)
+	n := &fakeNotifier{}
+	mgr.SetNotifier(n)
+	startTestCeremony(t, mgr)
+	n.sent = nil
+
+	advance(47 * time.Hour)
+	if c, err := mgr.SendDueReminders(); err != nil || c != 0 || len(n.sent) != 0 {
+		t.Fatalf("no reminder before T-24h: %d %v %v", c, err, n.sent)
+	}
+	advance(1 * time.Hour)
+	c, err := mgr.SendDueReminders()
+	if err != nil || c != 1 {
+		t.Fatalf("reminder at T-24h: %d %v", c, err)
+	}
+	got := n.approvers()
+	if len(got) != 3 || got["alice"] != 1 || got["bob"] != 1 || got["carol"] != 1 {
+		t.Fatalf("reminder must reach exactly the 3 approvers once, got %v", got)
+	}
+	if c, _ := mgr.SendDueReminders(); c != 0 {
+		t.Fatalf("second pass must not re-remind, got %d", c)
+	}
+
+	// reminder_sent_at is persisted: a restarted manager does not re-remind.
+	reloaded, err := NewCeremonyManager(mgr.db, false, engine)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	reloaded.SetClock(clock)
+	n2 := &fakeNotifier{}
+	reloaded.SetNotifier(n2)
+	if c, _ := reloaded.SendDueReminders(); c != 0 || len(n2.sent) != 0 {
+		t.Fatalf("restart re-sent reminders: %d %v", c, n2.sent)
+	}
+
+	// Past expiry no reminder is sent either.
+	mgr2, _ := newCeremonyTestManager(t)
+	clock2, advance2 := fixedClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	mgr2.SetClock(clock2)
+	n3 := &fakeNotifier{}
+	mgr2.SetNotifier(n3)
+	startTestCeremony(t, mgr2)
+	n3.sent = nil
+	advance2(80 * time.Hour)
+	if c, _ := mgr2.SendDueReminders(); c != 0 || len(n3.sent) != 0 {
+		t.Fatalf("no reminder after expiry, got %d", c)
 	}
 }

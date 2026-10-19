@@ -1,0 +1,179 @@
+{
+  "mode": "full",
+  "scale": 60,
+  "n": 2000,
+  "limit": "100 new orders per 15000 ms (real)",
+  "cap": 10,
+  "constants": {
+    "workers": 16,
+    "poll_minutes": 1,
+    "jitter_percent": 10,
+    "stub_service_ms": 50,
+    "expiry_s": 420,
+    "import_allowance_s": 150,
+    "goal_s": 360
+  },
+  "completion_s_run_a": 323,
+  "completion_s_run_b": 325,
+  "completion_s_run_b2": null,
+  "stats_a": {
+    "orders": 2000,
+    "limit_hits": 82,
+    "violations": 21,
+    "late_violations": 0,
+    "peak_in_flight": 10,
+    "finalized_unique": 2000,
+    "duplicates": 0,
+    "first_order_unix": 1792313643,
+    "last_finalize_unix": 1792313974
+  },
+  "stats_b": {
+    "orders": 2000,
+    "limit_hits": 28,
+    "violations": 6,
+    "late_violations": 3,
+    "peak_in_flight": 10,
+    "finalized_unique": 2000,
+    "duplicates": 0,
+    "first_order_unix": 1792314259,
+    "last_finalize_unix": 1792314582
+  },
+  "stats_b2": {
+    "orders": 1700,
+    "limit_hits": 17,
+    "violations": 0,
+    "late_violations": 0,
+    "peak_in_flight": 10,
+    "finalized_unique": 1700,
+    "duplicates": 0,
+    "first_order_unix": 1792314868,
+    "last_finalize_unix": 1792315273
+  },
+  "legs": {
+    "a": {
+      "label": "A",
+      "completion_s": 323,
+      "restart_at_s": null,
+      "hub_max_in_flight_sampled": 10,
+      "samples": 63,
+      "audit": {
+        "success_unique": 2000,
+        "success_rows": 2000,
+        "failed_rows": 0,
+        "deferred_rows": 0,
+        "rate_limited_rows": 0,
+        "acme_ratelimited_rows": 424
+      },
+      "seed": {
+        "count": 2000,
+        "setup_s": 95,
+        "import_s": 115,
+        "bind_s": 49,
+        "expiry_unix": 1792314057,
+        "t0_unix": 1792313652,
+        "remaining_s": 405,
+        "backoffs_429": 0
+      }
+    },
+    "b": {
+      "label": "B",
+      "completion_s": 325,
+      "restart_at_s": 157,
+      "hub_max_in_flight_sampled": 8,
+      "samples": 63,
+      "audit": {
+        "success_unique": 2000,
+        "success_rows": 2000,
+        "failed_rows": 0,
+        "deferred_rows": 0,
+        "rate_limited_rows": 0,
+        "acme_ratelimited_rows": 135
+      },
+      "seed": {
+        "count": 2000,
+        "setup_s": 91,
+        "import_s": 114,
+        "bind_s": 46,
+        "expiry_unix": 1792314667,
+        "t0_unix": 1792314258,
+        "remaining_s": 408,
+        "backoffs_429": 0
+      }
+    },
+    "b2": {
+      "label": "B2",
+      "completion_s": null,
+      "restart_at_s": 161,
+      "hub_max_in_flight_sampled": 10,
+      "samples": 129,
+      "audit": {
+        "success_unique": 1700,
+        "success_rows": 1700,
+        "failed_rows": 0,
+        "deferred_rows": 0,
+        "rate_limited_rows": 0,
+        "acme_ratelimited_rows": 82
+      },
+      "seed": {
+        "count": 2000,
+        "setup_s": 94,
+        "import_s": 114,
+        "bind_s": 45,
+        "expiry_unix": 1792315277,
+        "t0_unix": 1792314868,
+        "remaining_s": 409,
+        "backoffs_429": 0
+      }
+    }
+  },
+  "restarts": {
+    "b": {
+      "mode": "stop",
+      "at_s": 157
+    },
+    "b2": {
+      "mode": "kill",
+      "at_s": 161
+    }
+  },
+  "env": {
+    "cpu": "AMD Ryzen 9 6900HX with Radeon Graphics",
+    "cores": "8",
+    "ram_gb": "12",
+    "go": "go1.26.9",
+    "commit": "b6b8ad3884",
+    "utc": "2026-10-18T09:25:51Z"
+  },
+  "pass": {
+    "run_a": {
+      "all_finalized": true,
+      "completion_within_goal": true,
+      "before_earliest_expiry": true,
+      "zero_ca_limit_violations": false,
+      "zero_late_violations": true,
+      "peak_in_flight_within_cap": true,
+      "zero_duplicate_issuance": true,
+      "all_have_successor": true
+    },
+    "run_b": {
+      "all_finalized": true,
+      "completion_within_goal": true,
+      "before_earliest_expiry": true,
+      "zero_ca_limit_violations": false,
+      "zero_late_violations": false,
+      "peak_in_flight_within_cap": true,
+      "zero_duplicate_issuance": true,
+      "all_have_successor": true
+    },
+    "run_b2_informational": {
+      "all_finalized": false,
+      "completion_within_goal": false,
+      "before_earliest_expiry": false,
+      "zero_ca_limit_violations": true,
+      "zero_late_violations": true,
+      "peak_in_flight_within_cap": true,
+      "zero_duplicate_issuance": true,
+      "all_have_successor": false
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "id": "kryptkeeper.vault-kv",
+  "name": "HashiCorp Vault KV v2",
+  "version": "1.0.0",
+  "publisher": "Kryptkeeper Authors",
+  "license": "Apache-2.0",
+  "source": "https://github.com/bpmforge/kryptkeeper/tree/main/plugins/vault",
+  "artifact": {"file": "plugin.wasm", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "verification": "readback",
+  "capabilities": {
+    "receive_private_key": true,
+    "network": {"hosts_from_credential": "base_url", "ports": [443, 8200]},
+    "tls_verify": true
+  },
+  "credential_schema": {
+    "base_url": {"type": "url", "required": true},
+    "token": {"type": "string", "required": true, "secret": true},
+    "namespace": {"type": "string"}
+  },
+  "target_schema": {
+    "mount": {"type": "string", "default": "secret"},
+    "path": {"type": "string", "required": true}
+  }
+}

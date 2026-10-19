@@ -12,10 +12,11 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // W11-02: bulk certificate import — a customer's pile of certs becomes a
@@ -151,8 +152,10 @@ func importBulkItems(ctx context.Context, provider CertificateProvider, req bulk
 			}
 		}
 		if ownership != nil {
-			if _, err := provider.UpdateOwnership(ctx, fp, *ownership); err != nil {
-				log.Printf("bulk import: ownership update failed for %s: %v", fp, err)
+			withSource := *ownership
+			withSource.Source = OwnershipSourceImport
+			if _, err := provider.UpdateOwnership(ctx, fp, withSource); err != nil {
+				logging.Warnf("bulk import: ownership update failed for %s: %v", fp, err)
 			}
 		}
 	}

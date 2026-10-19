@@ -5,6 +5,7 @@
 package ca
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -308,5 +309,21 @@ func TestAlgorithmAllowed(t *testing.T) {
 				t.Errorf("algorithmAllowed(%v, %q) = %v, want %v", tt.allowed, tt.csrAlgo, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCheckEnrollment(t *testing.T) {
+	ctx := context.Background()
+	if err := CheckEnrollment(ctx, "t", nil); err != nil {
+		t.Fatalf("empty list must allow: %v", err)
+	}
+	if err := CheckEnrollment(ctx, "t", []string{"a"}); !errors.Is(err, ErrEnrollmentDenied) {
+		t.Fatalf("no role must deny, got %v", err)
+	}
+	if err := CheckEnrollment(WithCallerRole(ctx, "b"), "t", []string{"a"}); !errors.Is(err, ErrEnrollmentDenied) {
+		t.Fatalf("unlisted role must deny, got %v", err)
+	}
+	if err := CheckEnrollment(WithCallerRole(ctx, "a"), "t", []string{"a"}); err != nil {
+		t.Fatalf("listed role must pass: %v", err)
 	}
 }

@@ -84,7 +84,16 @@ export function Wizard({
       onCancel?.();
       return;
     }
-    if (e.key === "Enter" && !(e.target instanceof HTMLTextAreaElement)) {
+    // Enter on a focused button or link must run THAT control (Back, Cancel, a choice
+    // card, "Create root CA"), not be hijacked into "Next" (WCAG 2.1.1).
+    const activatesNatively =
+      e.target instanceof HTMLElement &&
+      e.target.closest("button, a[href], summary") !== null;
+    if (
+      e.key === "Enter" &&
+      !activatesNatively &&
+      !(e.target instanceof HTMLTextAreaElement)
+    ) {
       e.preventDefault();
       if (index === totalSteps - 1) {
         void finish();
@@ -95,7 +104,7 @@ export function Wizard({
   };
 
   return (
-    <div className="space-y-4" onKeyDown={handleKeyDown}>
+    <div role="presentation" className="space-y-4" onKeyDown={handleKeyDown}>
       <ol className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs">
         {steps.map((s, i) => (
           <li
@@ -106,8 +115,8 @@ export function Wizard({
               i === index
                 ? "border-primary/50 bg-primary/10 text-primary"
                 : i < index || onSummaryStep
-                  ? "border-white/[0.08] bg-white/[0.03] text-muted-foreground"
-                  : "border-white/[0.05] text-muted-foreground",
+                  ? "border-border bg-muted text-muted-foreground"
+                  : "border-border text-muted-foreground",
             )}
           >
             <span>{i + 1}.</span>
@@ -121,7 +130,7 @@ export function Wizard({
               "flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-medium transition",
               onSummaryStep
                 ? "border-primary/50 bg-primary/10 text-primary"
-                : "border-white/[0.05] text-muted-foreground",
+                : "border-border text-muted-foreground",
             )}
           >
             <span>{steps.length + 1}.</span>
@@ -133,13 +142,13 @@ export function Wizard({
         Step {index + 1} of {totalSteps}
       </p>
 
-      <h3
+      <h2
         ref={headingRef}
         tabIndex={-1}
         className="text-sm font-semibold text-foreground outline-none"
       >
         {onSummaryStep ? "Review" : step?.title}
-      </h3>
+      </h2>
 
       <div>{onSummaryStep ? summary?.(summaryState) : step?.render()}</div>
 

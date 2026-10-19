@@ -18,6 +18,7 @@
 # host-loopback device is not a legitimate environment; a private network is.
 #
 # PASS/FAIL per step, non-zero exit on any FAIL, cleans up on exit.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/podman.sh"
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
@@ -43,7 +44,7 @@ FAIL() { echo "FAIL: $*"; FAILED=1; }
 DIE()  { echo "FAIL: $*"; FAILED=1; exit 1; }
 cleanup() {
   if [ "$FAILED" = 1 ]; then echo "--- hub log (last 30) ---"; hublog | tail -30; fi
-  podman rm -f "$CTR_HUB" "$CTR_DEV" >/dev/null 2>&1
+  kk_rm "$CTR_HUB" "$CTR_DEV"
   podman network rm "$NET" >/dev/null 2>&1
   podman rmi -f "$HUB_IMAGE" "$DEV_IMAGE" >/dev/null 2>&1
   rm -rf "$WORK" "$MOUNT_DIR"
@@ -55,7 +56,7 @@ code() { local tok="$1"; shift; curl -sS -o "$WORK/last.json" -w '%{http_code}' 
 jget() { python3 -c "import json,sys; d=json.load(sys.stdin); print(eval(sys.argv[1]))" "$1"; }
 
 STEP "build hub, mock device, example plugin"
-case "$(podman info --format '{{.Host.Arch}}' 2>/dev/null)" in arm64|aarch64) GOARCH=arm64 ;; *) GOARCH=amd64 ;; esac
+GOARCH="$(kk_goarch)"
 mkdir -p "$WORK/hubctx" "$WORK/devctx"
 (cd "$REPO_ROOT" && GOOS=linux GOARCH=$GOARCH CGO_ENABLED=0 go build -o "$WORK/hubctx/kryptkeeper" ./cmd/kryptkeeper \
   && GOOS=linux GOARCH=$GOARCH CGO_ENABLED=0 go build -o "$WORK/devctx/mockdevice" ./tests/live/plugins/mockdevice) \
@@ -118,7 +119,7 @@ EOF
 # is a fresh container over the same bind-mounted data dir, so podman logs
 # holds exactly that start's output.
 start_hub() {
-  podman rm -f "$CTR_HUB" >/dev/null 2>&1
+  kk_rm "$CTR_HUB"
   podman run -d --name "$CTR_HUB" --network "$NET" -p "127.0.0.1:$HUB_PORT:$HUB_PORT" --env-file "$WORK/hub.env" \
     -v "$MOUNT_DIR/data:/data" -v "$MOUNT_DIR/keys:/keys:ro" "$@" "$HUB_IMAGE" >/dev/null || return 1
   for _ in $(seq 1 60); do

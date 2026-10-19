@@ -3,7 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { CheckCircle2, AlertTriangle, XCircle, Download } from "lucide-react";
 import { toast } from "sonner";
 import { api, downloadAuthedFile } from "../lib/api";
+import { canReadKeyInventory, useAuthz } from "../lib/auth";
 import { Button, Panel, Select, StateMessage } from "../components/ui";
+import { humanizeEnum } from "../lib/utils";
 import { PageHeader } from "../components/PageHeader";
 import { ReportSkeleton } from "../components/Skeletons";
 
@@ -37,10 +39,13 @@ const FRAMEWORK_LABELS: Record<string, string> = {
   nist: "NIST SP 800-57",
   dora: "DORA",
   nis2: "NIS2",
+  fedramp: "FedRAMP Moderate",
 };
 
 export default function ComplianceEvidence() {
   const [framework, setFramework] = useState("all");
+  const authz = useAuthz();
+  const canExportCBOM = canReadKeyInventory(authz.data?.role);
   const q = useQuery({
     queryKey: ["report-compliance-evidence", framework],
     queryFn: () =>
@@ -48,6 +53,8 @@ export default function ComplianceEvidence() {
   });
   const report = q.data?.data as ComplianceData | undefined;
 
+  const scoreLevel = (pct: number) =>
+    pct >= 80 ? "good" : pct >= 50 ? "needs attention" : "poor";
   const scorePercent = report
     ? Math.round(
         (report.summary.pass / Math.max(1, report.controls.length)) * 100,
@@ -61,8 +68,9 @@ export default function ComplianceEvidence() {
         title="Compliance Evidence"
         description="SOC 2 · PCI DSS 4.0.1 · NIST SP 800-57 mapped to your cert posture."
         actions={
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Select
+              aria-label="Compliance framework"
               className="w-48"
               value={framework}
               onChange={(e) => setFramework(e.target.value)}
@@ -85,6 +93,20 @@ export default function ComplianceEvidence() {
               <Download size={13} aria-hidden="true" />
               Evidence pack (PDF)
             </Button>
+            {canExportCBOM && (
+              <Button
+                tone="secondary"
+                onClick={() =>
+                  void downloadAuthedFile(
+                    "/cbom",
+                    `cbom-${new Date().toISOString().slice(0, 10)}.json`,
+                  ).catch((err: Error) => toast.error(err.message))
+                }
+              >
+                <Download size={13} aria-hidden="true" />
+                Download CBOM
+              </Button>
+            )}
           </div>
         }
       />
@@ -101,10 +123,18 @@ export default function ComplianceEvidence() {
       {report && (
         <>
           {/* Score */}
-          <div className="glass rounded-2xl p-6 gradient-border flex items-center gap-6">
+          <div className="glass rounded-2xl p-6 gradient-border flex flex-wrap items-center gap-6">
             {/* Ring */}
-            <div className="relative w-24 h-24 shrink-0">
-              <svg viewBox="0 0 36 36" className="w-24 h-24 -rotate-90">
+            <div
+              role="img"
+              aria-label={`Compliance score ${scorePercent} percent, ${scoreLevel(scorePercent)}.`}
+              className="relative w-24 h-24 shrink-0"
+            >
+              <svg
+                viewBox="0 0 36 36"
+                className="w-24 h-24 -rotate-90"
+                aria-hidden="true"
+              >
                 <circle
                   cx="18"
                   cy="18"
@@ -142,6 +172,9 @@ export default function ComplianceEvidence() {
               </div>
               <div className="text-sm text-muted-foreground mt-1">
                 {FRAMEWORK_LABELS[framework]}
+              </div>
+              <div className="text-xs font-medium text-foreground mt-1">
+                Status: {humanizeEnum(scoreLevel(scorePercent))}
               </div>
               <div className="flex gap-4 mt-3">
                 <div className="text-center">

@@ -1,0 +1,74 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "id": "kryptkeeper.azure",
+  "name": "Azure Application Gateway / Front Door",
+  "version": "1.0.0",
+  "publisher": "Kryptkeeper Authors",
+  "license": "Apache-2.0",
+  "source": "https://github.com/bpmforge/kryptkeeper/tree/main/plugins/azure",
+  "artifact": {
+    "file": "plugin.wasm",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "verify_propagation_seconds": 1200,
+  "capabilities": {
+    "receive_private_key": true,
+    "network": {
+      "hosts_from_credential": "vault_url",
+      "hosts": [
+        "login.microsoftonline.com",
+        "management.azure.com"
+      ]
+    },
+    "tls_verify": true
+  },
+  "credential_schema": {
+    "vault_url": {
+      "type": "url",
+      "required": true
+    },
+    "tenant_id": {
+      "type": "string",
+      "required": true
+    },
+    "client_id": {
+      "type": "string",
+      "required": true
+    },
+    "client_secret": {
+      "type": "string",
+      "required": true,
+      "secret": true
+    }
+  },
+  "target_schema": {
+    "mode": {
+      "type": "string",
+      "required": true
+    },
+    "subscription_id": {
+      "type": "string",
+      "required": true
+    },
+    "resource_group": {
+      "type": "string",
+      "required": true
+    },
+    "keyvault_cert_name": {
+      "type": "string",
+      "required": true
+    },
+    "gateway_name": {
+      "type": "string"
+    },
+    "ssl_certificate_name": {
+      "type": "string"
+    },
+    "profile_name": {
+      "type": "string"
+    },
+    "secret_name": {
+      "type": "string"
+    }
+  }
+}

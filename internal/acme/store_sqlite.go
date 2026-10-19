@@ -232,16 +232,15 @@ func publicKeyToJWK(pub crypto.PublicKey) (*JSONWebKey, error) {
 		if key.Curve != elliptic.P256() {
 			return nil, fmt.Errorf("unsupported EC curve for account key")
 		}
-		// Fixed-length, zero-padded big-endian coordinates: big.Int.Bytes()
-		// strips leading zero bytes, which would silently shorten X or Y and
-		// change the RFC 7638 thumbprint the caller may separately derive
-		// from this same JWK.
-		size := (key.Curve.Params().BitSize + 7) / 8
-		x := make([]byte, size)
-		y := make([]byte, size)
-		xBytes, yBytes := key.X.Bytes(), key.Y.Bytes()
-		copy(x[size-len(xBytes):], xBytes)
-		copy(y[size-len(yBytes):], yBytes)
+		// Bytes is the fixed-length uncompressed point 0x04||X||Y, so the
+		// coordinates keep their leading zero bytes and the RFC 7638
+		// thumbprint the caller may separately derive stays stable.
+		point, err := key.Bytes()
+		if err != nil {
+			return nil, fmt.Errorf("encode EC account key: %w", err)
+		}
+		size := (len(point) - 1) / 2
+		x, y := point[1:1+size], point[1+size:]
 		return &JSONWebKey{
 			Kty: "EC",
 			Crv: "P-256",

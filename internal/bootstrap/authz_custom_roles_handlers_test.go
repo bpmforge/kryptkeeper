@@ -8,11 +8,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // W12-06: the roles admin API — CRUD, verbatim refusals, custom-role
@@ -27,7 +29,7 @@ func newRolesTestStore(t *testing.T) *CustomRoleStore {
 	t.Cleanup(func() { _ = db.Close() })
 	if _, err := db.Exec(`
 CREATE TABLE custom_roles (name TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '',
- permissions TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+ permissions TEXT NOT NULL DEFAULT '[]', tenant_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE role_sod_constraints (id TEXT PRIMARY KEY, permission_a TEXT NOT NULL,
  permission_b TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE (permission_a, permission_b));`); err != nil {
 		t.Fatalf("schema: %v", err)
@@ -188,5 +190,115 @@ func TestRolesUnauthorizedIsAudited(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(audit.events, " "), "role.access:denied") {
 		t.Fatalf("a denied roles access must be audited, got %v", audit.events)
+	}
+}
+
+// rolesTenantMux wires the roles API with MULTI_TENANCY on and two tenant admins.
+func rolesTenantMux(t *testing.T, audit AuditProvider) (mux *http.ServeMux, acme, globex string) {
+	t.Helper()
+	t.Setenv("AUTH_MODE", "bootstrap")
+	t.Setenv("APP_BOOTSTRAP_TOKEN", "root-token")
+	t.Setenv("APP_API_KEY_PEPPER", "test-pepper-32-chars-minimum!!!!")
+	t.Setenv("APP_API_KEY_AUTH_ENABLED", "true")
+	t.Setenv("MULTI_TENANCY", "on")
+	t.Setenv("KRYPTKEEPER_DATA_DIR", t.TempDir())
+	auth := NewAuthenticatorFromEnv()
+	_, acme, err := auth.CreateAPIKey("acme-svc", "svc-acme", "pki-admin", []string{"*"}, "", "acme", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, globex, err = auth.CreateAPIKey("globex-svc", "svc-globex", "pki-admin", []string{"*"}, "", "globex", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux = http.NewServeMux()
+	registerCustomRoleHandlers(mux, auth, newRolesTestStore(t), audit)
+	return mux, acme, globex
+}
+
+const rolePayload = `{"name":"%s","permissions":["certificate.read"]}`
+
+func TestRolesCrossTenantWriteForbidden(t *testing.T) {
+	audit := &recordingAudit{}
+	mux, acme, globex := rolesTenantMux(t, audit)
+	if rec := doLeakJSON(mux, http.MethodPost, "/api/v1/roles", acme, "", fmt.Sprintf(rolePayload, "acme-role")); rec.Code != http.StatusCreated {
+		t.Fatalf("acme create: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := doLeakJSON(mux, http.MethodPut, "/api/v1/roles/acme-role", globex, "", fmt.Sprintf(rolePayload, "acme-role")); rec.Code != http.StatusForbidden {
+		t.Fatalf("globex PUT: want 403, got %d", rec.Code)
+	}
+	if rec := doLeakJSON(mux, http.MethodDelete, "/api/v1/roles/acme-role", globex, "", ""); rec.Code != http.StatusForbidden {
+		t.Fatalf("globex DELETE: want 403, got %d", rec.Code)
+	}
+	if rec := doLeakJSON(mux, http.MethodGet, "/api/v1/roles", acme, "", ""); !strings.Contains(rec.Body.String(), "acme-role") {
+		t.Fatalf("role must survive: %s", rec.Body.String())
+	}
+	found := false
+	for _, e := range audit.events {
+		if e == "role.update:denied" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing role.update:denied in %v", audit.events)
+	}
+	// The owner may still edit and delete it.
+	if rec := doLeakJSON(mux, http.MethodDelete, "/api/v1/roles/acme-role", acme, "", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("owner DELETE: %d", rec.Code)
+	}
+}
+
+func TestRolesGlobalSuperAdminOnly(t *testing.T) {
+	mux, acme, _ := rolesTenantMux(t, &recordingAudit{})
+	if rec := doLeakJSON(mux, http.MethodPost, "/api/v1/roles", "root-token", "", fmt.Sprintf(rolePayload, "shared-role")); rec.Code != http.StatusCreated {
+		t.Fatalf("super-admin create global: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := doLeakJSON(mux, http.MethodPut, "/api/v1/roles/shared-role", acme, "", fmt.Sprintf(rolePayload, "shared-role")); rec.Code != http.StatusForbidden {
+		t.Fatalf("acme PUT global: want 403, got %d", rec.Code)
+	}
+	if rec := doLeakJSON(mux, http.MethodDelete, "/api/v1/roles/shared-role", acme, "", ""); rec.Code != http.StatusForbidden {
+		t.Fatalf("acme DELETE global: want 403, got %d", rec.Code)
+	}
+	if rec := doLeakJSON(mux, http.MethodDelete, "/api/v1/roles/shared-role", "root-token", "", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("super-admin DELETE global: %d", rec.Code)
+	}
+}
+
+func TestRolesListScopedToTenant(t *testing.T) {
+	mux, acme, globex := rolesTenantMux(t, &recordingAudit{})
+	doLeakJSON(mux, http.MethodPost, "/api/v1/roles", "root-token", "", fmt.Sprintf(rolePayload, "shared-role"))
+	doLeakJSON(mux, http.MethodPost, "/api/v1/roles", acme, "", fmt.Sprintf(rolePayload, "acme-role"))
+	doLeakJSON(mux, http.MethodPost, "/api/v1/roles", globex, "", fmt.Sprintf(rolePayload, "globex-role"))
+	body := doLeakJSON(mux, http.MethodGet, "/api/v1/roles", acme, "", "").Body.String()
+	for _, want := range []string{"acme-role", "shared-role", "pki-admin"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("acme list missing %s: %s", want, body)
+		}
+	}
+	if strings.Contains(body, "globex-role") {
+		t.Errorf("acme list leaks globex role: %s", body)
+	}
+	if all := doLeakJSON(mux, http.MethodGet, "/api/v1/roles", "root-token", "", "").Body.String(); !strings.Contains(all, "globex-role") || !strings.Contains(all, "acme-role") {
+		t.Errorf("super-admin must see all: %s", all)
+	}
+}
+
+// CB-03: a duplicate role name is a 409 with a plain message, never the
+// driver's UNIQUE-constraint text.
+func TestRolesDuplicateNameIsConflictWithoutDriverText(t *testing.T) {
+	mux := rolesTestMux(t, newRolesTestStore(t), &recordingAudit{})
+	body, _ := json.Marshal(CustomRole{Name: "cert-reader", Permissions: []string{"certificate.read"}})
+	for i, want := range []int{http.StatusCreated, http.StatusConflict} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, authedReq(http.MethodPost, "/api/v1/roles", body))
+		if rec.Code != want {
+			t.Fatalf("attempt %d: got %d want %d: %s", i, rec.Code, want, rec.Body.String())
+		}
+		if i == 1 {
+			out := rec.Body.String()
+			if !strings.Contains(out, "already defined") || strings.Contains(out, "UNIQUE") || strings.Contains(out, "custom_roles") {
+				t.Fatalf("conflict body leaks driver text or lacks message: %s", out)
+			}
+		}
 	}
 }

@@ -8,11 +8,14 @@ import (
 	"context"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"kryptkeeper/internal/keystore"
+	"kryptkeeper/internal/logging"
 	"kryptkeeper/internal/pqc"
 )
 
@@ -21,22 +24,97 @@ import (
 type migrateWaveExecutionParams struct {
 	WaveID     string `json:"wave_id"`
 	TemplateID string `json:"template_id"`
+	// TargetAlgorithm selects a classical (or explicit PQC) re-issue target
+	// from the template's allowed algorithms; empty keeps the PQC-only pick.
+	TargetAlgorithm string `json:"target_algorithm,omitempty"`
 }
 
 // migrateWaveMemberResult is one member's migration outcome -- always
 // recorded, never silently dropped (W4-03 acceptance #2).
 type migrateWaveMemberResult struct {
 	Fingerprint    string `json:"fingerprint"`
-	Status         string `json:"status"` // "migrated" | "failed"
+	Status         string `json:"status"` // pqc.Member*
 	NewFingerprint string `json:"new_fingerprint,omitempty"`
-	Error          string `json:"error,omitempty"`
+	// Error mirrors Reason for pre-W31-08 consumers.
+	Error  string `json:"error,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	// Delivery is none|verified|failed|unsupported.
+	Delivery string `json:"delivery,omitempty"`
+	// OldSerialServed is set only when delivery was attempted and the verifier
+	// confirmed the previous certificate is still what the target serves.
+	OldSerialServed *bool `json:"old_serial_served,omitempty"`
 }
 
 // migrateWaveExecutionResult is a full migrate-wave EXECUTE run's outcome.
 type migrateWaveExecutionResult struct {
-	Results  []migrateWaveMemberResult `json:"results"`
-	Migrated int                       `json:"migrated"`
-	Failed   int                       `json:"failed"`
+	Results     []migrateWaveMemberResult `json:"results"`
+	Migrated    int                       `json:"migrated"`
+	Failed      int                       `json:"failed"`
+	Skipped     int                       `json:"skipped"`
+	Unsupported int                       `json:"unsupported"`
+	Regressed   bool                      `json:"regressed"`
+	WaveStatus  string                    `json:"wave_status,omitempty"`
+}
+
+// Delivery outcomes a waveDeliverer reports.
+const (
+	waveDeliveryOK         = "ok"
+	waveDeliveryRolledBack = "rolled_back"
+	waveDeliveryFailed     = "failed"
+)
+
+// waveDelivery is one install attempt's outcome. Verified means the target was
+// observed serving the new fingerprint.
+type waveDelivery struct {
+	Outcome  string
+	Detail   string
+	Verified bool
+}
+
+// waveDeliverer is the UC-D01 install/verify/rollback seam for wave members.
+type waveDeliverer interface {
+	Supports(t ManagedTarget) (ok bool, reason string)
+	// Deliver installs the member's new cert, verifies the served fingerprint
+	// equals newFP and, on mismatch, restores the previous files. A non-nil
+	// error means the install was not attempted.
+	Deliver(ctx context.Context, t ManagedTarget, oldFP, newFP string) (waveDelivery, error)
+}
+
+// unsupportedWaveDeliverer is the production deliverer until ML-DSA private
+// key export exists (D-103 generate-without-deliver): RenewalExecutor generates
+// its own ECDSA/RSA key and cannot carry a hub-held ML-DSA key, so every bound
+// target is reported rather than silently skipped.
+type unsupportedWaveDeliverer struct{}
+
+const waveDeliveryUnsupportedReason = "PQC key material cannot be installed yet (D-103 generate-without-deliver); manual install"
+
+func (unsupportedWaveDeliverer) Supports(ManagedTarget) (bool, string) {
+	return false, waveDeliveryUnsupportedReason
+}
+
+func (unsupportedWaveDeliverer) Deliver(context.Context, ManagedTarget, string, string) (waveDelivery, error) {
+	return waveDelivery{}, errors.New(waveDeliveryUnsupportedReason)
+}
+
+// waveHooks are optional observation/veto points (W31-09 plugs in); the zero
+// value is a no-op.
+type waveHooks struct {
+	// PreApprove runs after the proposer/role/status checks and before the
+	// action is claimed; a non-empty return refuses the approval with a 409.
+	PreApprove   func(a PendingAction) string
+	MemberResult func(waveID string, r migrateWaveMemberResult)
+	WaveOutcome  func(waveID string, res migrateWaveExecutionResult)
+}
+
+// waveDeps are runWaveMigration's collaborators.
+type waveDeps struct {
+	certs   CertificateProvider
+	keys    keystore.Store
+	targets ManagedTargetStore
+	deliver waveDeliverer
+	// waves persists the regressed mark; nil skips persistence (the result
+	// still reports Regressed).
+	waves MigrationWaveStore
 }
 
 // templateHasPQCAlgorithm reports whether tpl's AllowedAlgorithms contains
@@ -65,11 +143,13 @@ func handleWaveExecutePropose(w http.ResponseWriter, r *http.Request, pd AuthPri
 		return
 	}
 	if pendingStore == nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_propose", "migration-wave", waveID, AuditOutcomeFailure)
 		writeServiceUnavailable(w, "pending-action store unavailable")
 		return
 	}
 	var req migrateWaveExecutionParams
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_propose", "migration-wave", waveID, AuditOutcomeFailure)
 		writeBadRequest(w, "invalid JSON")
 		return
 	}
@@ -77,6 +157,7 @@ func handleWaveExecutePropose(w http.ResponseWriter, r *http.Request, pd AuthPri
 
 	waves, err := waveStore.ListWaves(r.Context())
 	if err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_propose", "migration-wave", waveID, AuditOutcomeFailure)
 		writeServiceUnavailable(w, "list waves failed")
 		return
 	}
@@ -88,26 +169,31 @@ func handleWaveExecutePropose(w http.ResponseWriter, r *http.Request, pd AuthPri
 		}
 	}
 	if !found {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_propose", "migration-wave", waveID, AuditOutcomeFailure)
 		writeNotFound(w, "wave not found")
 		return
 	}
 
 	tpl, ok, err := templateProvider.GetTemplate(r.Context(), req.TemplateID)
 	if err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_propose", "migration-wave", waveID, AuditOutcomeFailure)
 		writeServiceUnavailable(w, "template lookup failed")
 		return
 	}
 	if !ok {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_propose", "migration-wave", waveID, AuditOutcomeFailure)
 		writeBadRequest(w, "template not found")
 		return
 	}
-	if _, ok := templateHasPQCAlgorithm(tpl); !ok {
-		writeBadRequest(w, "template has no ML-DSA/hybrid algorithm in its allowed_algorithms")
+	if _, ok := resolveWaveTargetAlgorithm(tpl, req.TargetAlgorithm); !ok {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_propose", "migration-wave", waveID, AuditOutcomeFailure)
+		writeBadRequest(w, "template has no allowed algorithm usable as the wave target")
 		return
 	}
 
 	paramsJSON, err := json.Marshal(req)
 	if err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_propose", "migration-wave", waveID, AuditOutcomeFailure)
 		writeServiceUnavailable(w, "encode params failed")
 		return
 	}
@@ -118,6 +204,7 @@ func handleWaveExecutePropose(w http.ResponseWriter, r *http.Request, pd AuthPri
 		Tenant:     pd.Tenant,
 	})
 	if err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_propose", "migration-wave", waveID, AuditOutcomeFailure)
 		writeServiceUnavailable(w, "propose failed")
 		return
 	}
@@ -132,21 +219,24 @@ func handleWaveExecutePropose(w http.ResponseWriter, r *http.Request, pd AuthPri
 // is out of this ticket's write_scope) but duplicates that endpoint's
 // proposer-cannot-approve-own-action and role-gate checks intentionally --
 // same security properties, independent dispatch path.
-func handleWaveExecuteApprove(w http.ResponseWriter, r *http.Request, auth *Authenticator, pd AuthPrincipal, waveID, actionID string, waveStore MigrationWaveStore, templateProvider TemplateProvider, certProvider CertificateProvider, keys keystore.Store, pendingStore PendingActionStore, auditProvider AuditProvider) {
+func handleWaveExecuteApprove(w http.ResponseWriter, r *http.Request, auth *Authenticator, pd AuthPrincipal, waveID, actionID string, waveStore MigrationWaveStore, templateProvider TemplateProvider, certProvider CertificateProvider, keys keystore.Store, pendingStore PendingActionStore, auditProvider AuditProvider, targets ManagedTargetStore, deliver waveDeliverer, hooks waveHooks) {
 	if r.Method != http.MethodPost {
 		writeMethodNotAllowed(w, http.MethodPost)
 		return
 	}
 	if pendingStore == nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
 		writeServiceUnavailable(w, "pending-action store unavailable")
 		return
 	}
 	action, ok, err := pendingStore.Get(r.Context(), actionID)
 	if err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
 		writeServiceUnavailable(w, "lookup failed")
 		return
 	}
 	if !ok || action.ActionType != "pqc_migrate_wave" {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
 		writeNotFound(w, "action not found")
 		return
 	}
@@ -155,19 +245,23 @@ func handleWaveExecuteApprove(w http.ResponseWriter, r *http.Request, auth *Auth
 		actionTenant = DefaultTenant
 	}
 	if !tenantVisible(pd, actionTenant) {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
 		writeNotFound(w, "action not found")
 		return
 	}
 	if action.Status != "pending" {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
 		writeConflict(w, "action is not pending")
 		return
 	}
 	var params migrateWaveExecutionParams
 	if err := json.Unmarshal(action.Params, &params); err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
 		writeServiceUnavailable(w, "corrupt action params")
 		return
 	}
 	if params.WaveID != waveID {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
 		writeNotFound(w, "action not found")
 		return
 	}
@@ -190,6 +284,7 @@ func handleWaveExecuteApprove(w http.ResponseWriter, r *http.Request, auth *Auth
 
 	waves, err := waveStore.ListWaves(r.Context())
 	if err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
 		writeServiceUnavailable(w, "list waves failed")
 		return
 	}
@@ -201,31 +296,50 @@ func handleWaveExecuteApprove(w http.ResponseWriter, r *http.Request, auth *Auth
 		}
 	}
 	if wave == nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
 		writeNotFound(w, "wave not found")
 		return
 	}
 
 	tpl, ok, err := templateProvider.GetTemplate(r.Context(), params.TemplateID)
 	if err != nil || !ok {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
 		writeServiceUnavailable(w, "template lookup failed")
 		return
 	}
-	algo, ok := templateHasPQCAlgorithm(tpl)
+	algo, ok := resolveWaveTargetAlgorithm(tpl, params.TargetAlgorithm)
 	if !ok {
-		writeServiceUnavailable(w, "template no longer has an ML-DSA/hybrid algorithm")
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
+		writeServiceUnavailable(w, "template has no allowed algorithm usable as the wave target")
 		return
+	}
+
+	if hooks.PreApprove != nil {
+		if msg := hooks.PreApprove(action); msg != "" {
+			emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeDenied)
+			writeConflict(w, msg)
+			return
+		}
 	}
 
 	// A01-003: claim the action (compare-and-set) before running the
 	// migration so racing approvals re-issue each member once.
 	if err := pendingStore.Decide(r.Context(), actionID, statusExecuting, pd.ID, nil); err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
 		writeConflict(w, "action is not pending")
 		return
 	}
-	execResult := runWaveMigration(r.Context(), certProvider, keys, *wave, algo)
+	publishMigrateWaveEvent(pd.Tenant, waveID, "running", "")
+	execResult := runWaveMigration(r.Context(), waveDeps{certs: certProvider, keys: keys, targets: targets, deliver: deliver, waves: waveStore}, *wave, algo, hooks)
+	if execResult.Failed == 0 {
+		publishMigrateWaveEvent(pd.Tenant, waveID, "completed", "migrated")
+	} else {
+		publishMigrateWaveEvent(pd.Tenant, waveID, "failed", fmt.Sprintf("%d of %d members failed", execResult.Failed, len(execResult.Results)))
+	}
 
 	resultJSON, err := json.Marshal(execResult)
 	if err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
 		writeServiceUnavailable(w, "encode result failed")
 		return
 	}
@@ -235,6 +349,7 @@ func handleWaveExecuteApprove(w http.ResponseWriter, r *http.Request, auth *Auth
 	// bulk_revoke's existing {revoked, failed} convention rather than
 	// treating any per-item failure as an overall action failure.
 	if err := pendingStore.Decide(r.Context(), actionID, "approved", pd.ID, resultJSON); err != nil {
+		emitAuditEvent(r, auditProvider, pd.ID, "pqc.wave_execute_approve", "migration-wave", waveID, AuditOutcomeFailure)
 		writeConflict(w, err.Error())
 		return
 	}
@@ -277,35 +392,145 @@ func handleWaveExecuteApprove(w http.ResponseWriter, r *http.Request, auth *Auth
 // not IP SANs separately, so a re-issued cert's IP SANs (if the original
 // had any) are not preserved -- out of this ticket's scope to add IP-SAN
 // tracking to the certificate store.
-func runWaveMigration(ctx context.Context, certProvider CertificateProvider, keys keystore.Store, wave MigrationWave, algo keystore.Algorithm) migrateWaveExecutionResult {
+func runWaveMigration(ctx context.Context, d waveDeps, wave MigrationWave, algo keystore.Algorithm, hooks waveHooks) migrateWaveExecutionResult {
 	result := migrateWaveExecutionResult{Results: make([]migrateWaveMemberResult, 0, len(wave.Members))}
-	for _, m := range wave.Members {
-		detail, ok, err := certProvider.GetCertificate(ctx, m.Fingerprint)
-		if err != nil || !ok {
-			result.Results = append(result.Results, migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: "failed", Error: "certificate not found"})
+	var targets []ManagedTarget
+	var targetsErr error
+	if d.targets != nil {
+		targets, targetsErr = d.targets.List(ctx)
+	}
+	record := func(r migrateWaveMemberResult) {
+		if r.Error == "" {
+			r.Error = r.Reason
+		}
+		switch r.Status {
+		case pqc.MemberMigrated:
+			result.Migrated++
+		case pqc.MemberSkipped:
+			result.Skipped++
+		case pqc.MemberDeliveryUnsupported:
+			result.Unsupported++
+		default:
 			result.Failed++
+		}
+		result.Results = append(result.Results, r)
+		d.recordMemberDelivery(ctx, wave.ID, r)
+		if hooks.MemberResult != nil {
+			hooks.MemberResult(wave.ID, r)
+		}
+	}
+	fail := func(fp, reason string) {
+		record(migrateWaveMemberResult{Fingerprint: fp, Status: pqc.MemberFailed, Reason: reason})
+	}
+
+	for _, m := range wave.Members {
+		if targetsErr != nil {
+			// Delivery state is unknowable; issuing now would strand an
+			// undeliverable successor, so refuse before touching the member.
+			fail(m.Fingerprint, "managed targets unavailable; nothing issued")
+			continue
+		}
+		detail, ok, err := d.certs.GetCertificate(ctx, m.Fingerprint)
+		if err != nil || !ok {
+			fail(m.Fingerprint, "certificate not found")
+			continue
+		}
+		if detail.SuccessorFP != nil {
+			record(migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: pqc.MemberSkipped,
+				Reason: fmt.Sprintf("renewed by another path (successor %s) mid-wave", *detail.SuccessorFP)})
 			continue
 		}
 		item := detail.CertificateItem
 
 		keyID := fmt.Sprintf("pqc-migrate-%s-%d", item.FingerprintSHA256, time.Now().UnixNano())
 		subject := pkix.Name{CommonName: item.CommonName}
-		migrated, err := pqc.BuildMigrationCSR(keys, keyID, algo, subject, item.SubjectAltNames, nil)
+		migrated, err := pqc.BuildTransitionCSR(d.keys, keyID, algo, subject, item.SubjectAltNames, nil)
 		if err != nil {
-			result.Results = append(result.Results, migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: "failed", Error: err.Error()})
-			result.Failed++
+			fail(m.Fingerprint, err.Error())
 			continue
 		}
-
-		renewed, err := certProvider.RenewCertificate(ctx, m.Fingerprint, CertificateRenewRequest{CSRPEM: migrated.CSRPEM})
+		renewed, err := d.certs.RenewCertificate(ctx, m.Fingerprint, CertificateRenewRequest{CSRPEM: migrated.CSRPEM})
 		if err != nil {
-			result.Results = append(result.Results, migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: "failed", Error: err.Error()})
-			result.Failed++
+			fail(m.Fingerprint, err.Error())
 			continue
 		}
+		newFP := renewed.FingerprintSHA256
 
-		result.Results = append(result.Results, migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: "migrated", NewFingerprint: renewed.FingerprintSHA256})
-		result.Migrated++
+		target, bound := matchWaveTarget(ctx, targets, detail)
+		if !bound || d.deliver == nil {
+			record(migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: pqc.MemberMigrated, NewFingerprint: newFP, Delivery: "none"})
+			continue
+		}
+		if supported, why := d.deliver.Supports(target); !supported {
+			record(migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: pqc.MemberDeliveryUnsupported, NewFingerprint: newFP, Delivery: "unsupported", Reason: why})
+			continue
+		}
+		del, derr := d.deliver.Deliver(ctx, target, m.Fingerprint, newFP)
+		switch {
+		case derr != nil:
+			result.Regressed = true
+			record(migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: pqc.MemberFailed, NewFingerprint: newFP, Delivery: "failed",
+				Reason: "delivery not attempted: " + derr.Error()})
+		case del.Verified && del.Outcome == waveDeliveryOK:
+			record(migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: pqc.MemberMigrated, NewFingerprint: newFP, Delivery: "verified"})
+		default:
+			// RenewCertificate already superseded the predecessor, so the
+			// inventory now shows the PQC successor while the target keeps the
+			// old cert; the wave is marked regressed rather than un-superseded.
+			result.Regressed = true
+			oldServed := del.Outcome == waveDeliveryRolledBack
+			record(migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: pqc.MemberFailed, NewFingerprint: newFP, Delivery: "failed",
+				Reason:          fmt.Sprintf("delivery %s: %s; rolled back", del.Outcome, del.Detail),
+				OldSerialServed: &oldServed})
+		}
+	}
+
+	if result.Regressed {
+		result.WaveStatus = waveStatusRegressed
+		if d.waves != nil {
+			if err := d.waves.UpdateWaveStatus(ctx, wave.ID, waveStatusRegressed); err != nil {
+				logging.Infof("pqc wave %s: persisting regressed status: %v", wave.ID, err)
+			}
+		}
+	}
+	if hooks.WaveOutcome != nil {
+		hooks.WaveOutcome(wave.ID, result)
 	}
 	return result
+}
+
+// recordMemberDelivery persists a member's delivery outcome so wave progress
+// does not count an issued-but-undelivered successor as migrated (W31-21). Only
+// results that issued a successor touch the record: unsupported/failed delivery
+// marks it, a migrated result clears it; skipped or pre-issuance failures leave
+// any earlier mark alone.
+func (d waveDeps) recordMemberDelivery(ctx context.Context, waveID string, r migrateWaveMemberResult) {
+	if d.waves == nil || r.NewFingerprint == "" {
+		return
+	}
+	status := ""
+	switch r.Status {
+	case pqc.MemberDeliveryUnsupported, pqc.MemberFailed:
+		status = r.Status
+	case pqc.MemberMigrated:
+	default:
+		return
+	}
+	if err := d.waves.SetMemberDelivery(ctx, waveID, r.Fingerprint, status); err != nil {
+		logging.Infof("pqc wave %s: persisting delivery status for %s: %v", waveID, r.Fingerprint, err)
+	}
+}
+
+// matchWaveTarget returns the first managed target whose host the certificate
+// is seen on or names (CN/SANs) and whose tenant may see the certificate's CA.
+func matchWaveTarget(ctx context.Context, targets []ManagedTarget, cert CertificateDetail) (ManagedTarget, bool) {
+	for _, t := range targets {
+		if strings.TrimSpace(t.Host) == "" || !targetMayReceiveCert(ctx, t, cert.CertificateItem) {
+			continue
+		}
+		if targetHostsCert(t.Host, cert) {
+			return t, true
+		}
+	}
+	return ManagedTarget{}, false
 }

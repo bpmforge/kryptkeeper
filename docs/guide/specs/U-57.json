@@ -1,0 +1,253 @@
+{
+  "task": "U-57",
+  "title": "Investigate with Audit Evidence, Change Audit and History",
+  "sourceStory": "STORIES.md#u-57",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/audit"
+      },
+      "caption": "Open /audit",
+      "slug": "audit-evidence",
+      "expect": {
+        "role": "button",
+        "name": "Apply filters"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-57/01-audit-evidence.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Filter audit action"
+      },
+      "value": "certificate.issue",
+      "caption": "Fill **Filter audit action** with \"certificate.issue\"",
+      "slug": "filter-action",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-57/02-filter-action.png",
+        "annotated": "docs/guide/screenshots/U-57/02-filter-action-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 265,
+          "w": 178,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Apply filters"
+      },
+      "caption": "Click **Apply filters**",
+      "slug": "filters-applied",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-57/03-filters-applied.png",
+        "annotated": "docs/guide/screenshots/U-57/03-filters-applied-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 355,
+          "w": 110,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "certificate.issue",
+        "nth": 0
+      },
+      "caption": "Click **certificate.issue**",
+      "slug": "audit-detail",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-57/04-audit-detail.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "role": "button",
+        "name": "Export CSV"
+      },
+      "caption": "Locate **Export CSV**",
+      "slug": "export-csv",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-57/05-export-csv.png",
+        "annotated": "docs/guide/screenshots/U-57/05-export-csv-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 459,
+          "y": 355,
+          "w": 105,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/change-audit"
+      },
+      "caption": "Open /reports/change-audit",
+      "slug": "change-audit",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-57/06-change-audit.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/history"
+      },
+      "caption": "Open /history",
+      "slug": "history-list",
+      "expect": {
+        "role": "button",
+        "name": "Refresh"
+      },
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-57/07-history-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:47:45.801Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-57",
+    "steps": 7,
+    "shots": 7,
+    "annotated": 3,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/history"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-57/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-57/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

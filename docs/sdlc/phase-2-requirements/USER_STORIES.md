@@ -35,11 +35,11 @@ Priorities: Must / Should / Could (map to Must-have / Should-have / Could-have).
 **Maps to:** FR-001, FR-003, FR-004
 
 **Acceptance Criteria:**
-- Given a valid root CA config (name, validity, algorithm RSA-4096/ECDSA P-384/Ed25519, key storage), when I submit the create request via the API, then a self-signed root CA certificate is generated, stored, and returned with its `fingerprint_sha256`.
+- Given a valid root CA config (name, validity, algorithm one of the supported matrix: ECDSA-P256, ECDSA-P384, RSA-2048, RSA-3072, RSA-4096, Ed25519, ML-DSA-44, ML-DSA-65, ML-DSA-87 -- 9 algorithms; key storage), when I submit the create request via the API, then a self-signed root CA certificate is generated, stored, and returned with its `fingerprint_sha256`.
 - Given I choose software key storage, when the root CA is created, then the key file on disk is PKCS#8 encrypted with Argon2id (minimum 64MB memory, 4 iterations) and cannot be read without the correct passphrase.
 - Given I choose PKCS#11 key storage, when the root CA is created, then the key is generated on the HSM/token and never leaves it.
 - Given the dashboard CA hierarchy view, when the root CA is created, then it appears as a root node with `status=active`.
-- Given an unsupported key algorithm (e.g., DSA), when the create request is submitted, then the API returns HTTP 400 with a clear error identifying the unsupported algorithm.
+- Given an unsupported key algorithm (e.g., DSA), when the create request is submitted, then the API returns HTTP 400 with a clear error identifying the unsupported algorithm and listing all 9 supported algorithms.
 
 ---
 

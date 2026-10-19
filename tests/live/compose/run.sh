@@ -13,6 +13,7 @@
 # background-and-forget.
 set -u
 set -o pipefail
+T0=$(date +%s)
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
@@ -24,6 +25,9 @@ STEP() { echo; echo "== $* =="; }
 PASS() { echo "PASS: $*"; }
 FAIL() { echo "FAIL: $*"; FAILED=1; }
 WARN() { echo "WARN: $*"; }
+# W25-02: per-phase wall-clock since script start; KK_TIMINGS_OUT lets a
+# release run keep the raw lines for docs/release/UAT_COMPOSE_QUICKSTART_*.md.
+MARK() { echo "TIMING: $1 $(( $(date +%s) - T0 ))s" | tee -a "${KK_TIMINGS_OUT:-/dev/null}"; }
 DIE()  { echo "FAIL: $*"; cleanup; exit 1; }
 
 cleanup() {
@@ -57,6 +61,7 @@ if podman compose -p "$PROJECT" up -d --build; then
 else
   DIE "podman compose up failed"
 fi
+MARK stack_up
 
 # ---------------------------------------------------------------------------
 # 2. Wait for the hub to report healthy (bounded: ~4.5 minutes).
@@ -64,8 +69,9 @@ fi
 STEP "wait for kryptkeeper healthy"
 # podman-compose's `ps -q <service>` doesn't accept a service-name filter
 # (unlike docker compose) -- resolve the container by its podman-compose
-# naming convention instead: <project>_<service>_1.
-HUB_CID="$(podman ps -a --filter "name=^${PROJECT}_kryptkeeper_1\$" --format '{{.ID}}' | head -1)"
+# naming convention instead: <project>_<service>_1 (podman-compose) or
+# <project>-<service>-1 (docker-compose as podman's compose provider).
+HUB_CID="$(podman ps -a --filter "name=^${PROJECT}[_-]kryptkeeper[_-]1\$" --format '{{.ID}}' | head -1)"
 [ -n "$HUB_CID" ] || DIE "could not resolve kryptkeeper container id"
 
 healthy=0
@@ -92,6 +98,7 @@ else
     echo "(podman healthcheck run also reported healthy on retry)"
   fi
 fi
+MARK hub_healthy
 
 # ---------------------------------------------------------------------------
 # 3. Export ca.pem from the tls-trust volume (never appdata -- that volume
@@ -139,18 +146,95 @@ fi
 #    over plain HTTP from the host (that boundary is unchanged by this
 #    ticket -- only the dashboard<->hub hop moved to verified TLS).
 # ---------------------------------------------------------------------------
-STEP "wait for dashboard /api/v1/healthz (waits on the CA bundle itself, see entrypoint)"
+STEP "wait for dashboard /healthz (waits on the CA bundle itself, see entrypoint)"
+# /api/v1/healthz was never a hub route: it used to fall through to the root
+# banner (200); unknown /api/ paths are a JSON 404 since ux/v1-review. Check the
+# proxied /healthz, then that the /api/ location reaches the hub (401, not 502).
 dash_ok=0
 for i in $(seq 1 90); do
-  code="$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:3000/api/v1/healthz 2>/dev/null || echo 000)"
+  code="$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:3000/healthz 2>/dev/null || echo 000)"
   if [ "$code" = "200" ]; then dash_ok=1; break; fi
   sleep 3
 done
 if [ "$dash_ok" = "1" ]; then
-  PASS "dashboard /api/v1/healthz proxied over TLS to the hub: HTTP 200"
+  PASS "dashboard /healthz proxied over TLS to the hub: HTTP 200"
 else
-  FAIL "dashboard /api/v1/healthz never returned 200 (last: ${code:-unknown})"
+  FAIL "dashboard /healthz never returned 200 (last: ${code:-unknown})"
 fi
+api_code="$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:3000/api/v1/cas 2>/dev/null || echo 000)"
+if [ "$api_code" = "401" ]; then
+  PASS "dashboard /api/ proxied over TLS to the hub: unauthenticated /api/v1/cas is the hub's 401"
+else
+  FAIL "dashboard /api/v1/cas without a token: want the hub's 401, got $api_code"
+fi
+
+MARK dashboard_ok
+
+# ---------------------------------------------------------------------------
+# W25-02: root CA + issuing CA + one cert + openssl verify, all over verified
+# TLS (--cacert, never -k) against the hub's self-issued listener cert.
+# ---------------------------------------------------------------------------
+BASE="https://localhost:8080"
+api()  { curl -sS --cacert "$CA_OUT/ca.pem" -H "Authorization: Bearer $APP_BOOTSTRAP_TOKEN" -H 'Content-Type: application/json' "$@"; }
+jget() { python3 -c "import json,sys
+d=json.load(sys.stdin)
+for k in sys.argv[1].split('.'):
+    d=d[int(k)] if k.isdigit() else d.get(k) if isinstance(d,dict) else None
+    if d is None: break
+print('' if d is None else d)" "$1" 2>/dev/null; }
+
+STEP "create root CA and issuing CA"
+ROOT_RESP="$(api -X POST "$BASE/api/v1/cas" -d '{"name":"uat-root","type":"root","algorithm":"ecdsaP256","validity":"10y","subject_cn":"UAT Root CA"}')"
+ROOT_ID="$(printf '%s' "$ROOT_RESP" | jget data.id)"
+ISSUING_ID=""
+if [ -n "$ROOT_ID" ]; then
+  ISS_RESP="$(api -X POST "$BASE/api/v1/cas" -d "{\"name\":\"uat-issuing\",\"type\":\"intermediate\",\"algorithm\":\"ecdsaP256\",\"validity\":\"5y\",\"parent_ca_id\":\"$ROOT_ID\",\"subject_cn\":\"UAT Issuing CA\"}")"
+  ISSUING_ID="$(printf '%s' "$ISS_RESP" | jget data.id)"
+fi
+if [ -n "$ROOT_ID" ] && [ -n "$ISSUING_ID" ]; then
+  PASS "root CA $ROOT_ID and issuing CA $ISSUING_ID created"
+else
+  FAIL "CA creation failed: root=${ROOT_RESP:-} issuing=${ISS_RESP:-}"
+fi
+
+STEP "create template and issue one certificate from the issuing CA"
+FP=""
+if [ -n "$ISSUING_ID" ]; then
+  TPL_ID="$(api -X POST "$BASE/api/v1/templates" -d '{"name":"uat-compose","display_name":"uat-compose","allowed_algorithms":["ECDSA"],"key_usage":["digitalSignature"],"extended_key_usage":["serverAuth"],"validity_period":"72h","active":true}' | jget data.id)"
+  openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout "$CA_OUT/leaf.key" -out "$CA_OUT/leaf.csr" -subj "/CN=uat.example.test" \
+    -addext "subjectAltName=DNS:uat.example.test" >/dev/null 2>&1
+  CSR_JSON="$(python3 -c 'import json,sys;print(json.dumps(sys.stdin.read()))' < "$CA_OUT/leaf.csr")"
+  if [ -n "$TPL_ID" ]; then
+    CERT_RESP="$(api -X POST "$BASE/api/v1/certificates" -d "{\"ca_id\":\"$ISSUING_ID\",\"template_id\":\"$TPL_ID\",\"csr_pem\":$CSR_JSON}")"
+    FP="$(printf '%s' "$CERT_RESP" | jget data.fingerprint_sha256)"
+  fi
+fi
+if [ -n "$FP" ]; then
+  PASS "certificate issued: $FP"
+else
+  FAIL "certificate issuance failed (template=${TPL_ID:-none}): ${CERT_RESP:-}"
+fi
+
+STEP "openssl verify leaf against issuing + root"
+if [ -n "$FP" ]; then
+  # include_chain omits the self-signed root, so fetch the CA chain explicitly.
+  api "$BASE/api/v1/certificates/$FP/download?format=pem" > "$CA_OUT/leaf.pem"
+  api "$BASE/api/v1/cas/$ISSUING_ID/chain?format=pem" > "$CA_OUT/cachain.pem"
+  awk '/BEGIN CERT/{n++} {print > sprintf("%s/ca%d.pem",d,n)}' d="$CA_OUT" "$CA_OUT/cachain.pem"
+  VOUT="$(openssl verify -CAfile "$CA_OUT/ca2.pem" -untrusted "$CA_OUT/ca1.pem" "$CA_OUT/leaf.pem" 2>&1)"
+  echo "$VOUT"
+  case "$VOUT" in
+    *"leaf.pem: OK") PASS "openssl verify OK" ;;
+    *) FAIL "openssl verify did not return OK" ;;
+  esac
+  if openssl verify -CAfile "$WRONG_CA" -untrusted "$CA_OUT/ca1.pem" "$CA_OUT/leaf.pem" >/dev/null 2>&1; then
+    FAIL "openssl verify accepted the leaf under a WRONG CA"
+  else
+    PASS "wrong CA rejected"
+  fi
+fi
+MARK cert_verified
 
 if [ "$FAILED" != "0" ]; then
   echo

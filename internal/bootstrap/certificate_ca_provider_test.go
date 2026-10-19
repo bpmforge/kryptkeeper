@@ -295,6 +295,9 @@ func TestCACertificateProviderRevokeFlow(t *testing.T) {
 	if revokeResult.RenewalStatus != "revoked" {
 		t.Errorf("expected revoked status, got %s", revokeResult.RenewalStatus)
 	}
+	if revokeResult.RevocationScope != RevocationScopeCA {
+		t.Errorf("revocation_scope = %q, want ca", revokeResult.RevocationScope)
+	}
 	if revokeResult.RevocationReason != 1 {
 		t.Errorf("expected reason 1, got %d", revokeResult.RevocationReason)
 	}

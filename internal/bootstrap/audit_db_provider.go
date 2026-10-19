@@ -8,12 +8,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"kryptkeeper/internal/logging"
 
 	kkdb "kryptkeeper/internal/db"
 	_ "modernc.org/sqlite"
@@ -32,6 +32,16 @@ type dbAuditProvider struct {
 	store   dbAuditStore
 	openErr error
 }
+
+// sqliteAuditNoDeleteTriggerSQL is shared with the W22-07 archive job, which
+// drops this trigger and re-creates it inside the one transaction that
+// deletes archived rows, so the guard is never absent for other connections.
+const sqliteAuditNoDeleteTriggerSQL = `CREATE TRIGGER IF NOT EXISTS trg_audit_log_no_delete
+BEFORE DELETE ON audit_log
+FOR EACH ROW
+BEGIN
+    SELECT RAISE(ABORT, 'audit_log is append-only');
+END;`
 
 // sqliteAuditSchema mirrors migrations 000004_audit_log_append_only +
 // 000011_audit_log_security_fields combined, plus the W2-04 tenant column —
@@ -72,13 +82,14 @@ FOR EACH ROW
 BEGIN
     SELECT RAISE(ABORT, 'audit_log is append-only');
 END;
-CREATE TRIGGER IF NOT EXISTS trg_audit_log_no_delete
-BEFORE DELETE ON audit_log
-FOR EACH ROW
-BEGIN
-    SELECT RAISE(ABORT, 'audit_log is append-only');
-END;`
+` + sqliteAuditNoDeleteTriggerSQL
 
+// W22-07: the append-only function below is migration 000087's version
+// (DELETE allowed only for rows covered by a recorded audit_archives row,
+// inside a transaction that opted in). It must match the migration, because
+// this CREATE OR REPLACE runs on every boot and would otherwise silently
+// revert it.
+//
 // postgresAuditSchema mirrors the same two migrations for Postgres: range
 // partitioning by month, an append-only trigger via a plpgsql function, and
 // row-level security. Every statement is written to be idempotent across
@@ -142,6 +153,18 @@ CREATE INDEX IF NOT EXISTS idx_audit_actor ON audit_log(actor_id);
 CREATE OR REPLACE FUNCTION prevent_audit_log_mutation()
 RETURNS trigger AS $f$
 BEGIN
+    IF TG_OP = 'DELETE' AND current_setting('kryptkeeper.audit_archive', true) = 'on' THEN
+        -- Nested so audit_archives is only resolved when the archive job has
+        -- opted in: a plain UPDATE/DELETE must raise "append-only" even on
+        -- a database where that table does not exist yet.
+        IF EXISTS (
+            SELECT 1 FROM audit_archives a
+             WHERE OLD.id BETWEEN a.first_id AND a.last_id
+               AND OLD.timestamp < a.before_ts::timestamptz
+        ) THEN
+            RETURN OLD;
+        END IF;
+    END IF;
     RAISE EXCEPTION 'audit_log is append-only';
 END;
 $f$ LANGUAGE plpgsql;
@@ -208,7 +231,7 @@ func newDBAuditStoreFromEnv() (dbAuditStore, error) {
 	)
 	if state.store != nil {
 		if err := state.store.EnsureSchema(context.Background()); err != nil {
-			log.Fatalf("APP_AUDIT_PROVIDER=db: audit_log schema initialization failed, refusing to start with a silently non-functional audit trail: %v", err)
+			logging.Fatalf("APP_AUDIT_PROVIDER=db: audit_log schema initialization failed, refusing to start with a silently non-functional audit trail: %v", err)
 		}
 	}
 	return state.store, state.openErr
@@ -279,6 +302,10 @@ func (s *sqliteAuditStore) ListEntries(ctx context.Context, query AuditListQuery
 		whereClauses = append(whereClauses, "action = ?")
 		args = append(args, query.Action)
 	}
+	if query.ActionPrefix != "" {
+		whereClauses = append(whereClauses, `(action = ? OR action LIKE ? ESCAPE '\')`)
+		args = append(args, query.ActionPrefix, escapeLIKE(query.ActionPrefix)+".%")
+	}
 	if query.ActorType != "" {
 		whereClauses = append(whereClauses, "actor_type = ?")
 		args = append(args, query.ActorType)
@@ -298,6 +325,10 @@ func (s *sqliteAuditStore) ListEntries(ctx context.Context, query AuditListQuery
 	if query.TraceID != "" {
 		whereClauses = append(whereClauses, "trace_id = ?")
 		args = append(args, query.TraceID)
+	}
+	if query.Tenant != "" {
+		whereClauses = append(whereClauses, "COALESCE(NULLIF(tenant, ''), 'default') = ?")
+		args = append(args, query.Tenant)
 	}
 	if query.Outcome != "" {
 		whereClauses = append(whereClauses, "outcome = ?")
@@ -384,6 +415,11 @@ func (s *postgresAuditStore) ListEntries(ctx context.Context, query AuditListQue
 	if query.Action != "" {
 		addFilter("action = $%d", query.Action)
 	}
+	if query.ActionPrefix != "" {
+		whereClauses = append(whereClauses, fmt.Sprintf(`(action = $%d OR action LIKE $%d ESCAPE '\')`, nextArg, nextArg+1))
+		args = append(args, query.ActionPrefix, escapeLIKE(query.ActionPrefix)+".%")
+		nextArg += 2
+	}
 	if query.ActorType != "" {
 		addFilter("actor_type = $%d", query.ActorType)
 	}
@@ -398,6 +434,9 @@ func (s *postgresAuditStore) ListEntries(ctx context.Context, query AuditListQue
 	}
 	if query.TraceID != "" {
 		addFilter("trace_id = $%d", query.TraceID)
+	}
+	if query.Tenant != "" {
+		addFilter("COALESCE(NULLIF(tenant, ''), 'default') = $%d", query.Tenant)
 	}
 	if query.Outcome != "" {
 		addFilter("outcome = $%d", string(query.Outcome))

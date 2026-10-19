@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,6 +18,18 @@ import (
 )
 
 func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discoveryProvider DiscoveryProvider, bus *EventBus, auditProvider AuditProvider) {
+	// Self-constructed (nil when the DB is unavailable) so this function's
+	// signature, and handlers.go, stay put.
+	registerDiscoveryHandlersWithTargets(mux, auth, discoveryProvider, bus, auditProvider, newManagedTargetStoreFromEnv())
+}
+
+// registerDiscoveryHandlersWithTargets is registerDiscoveryHandlers with the
+// managed-target store injected: ssh scans (W24-08) and the per-target
+// schedules (W24-04) both resolve targets through it.
+func registerDiscoveryHandlersWithTargets(mux *http.ServeMux, auth *Authenticator, discoveryProvider DiscoveryProvider, bus *EventBus, auditProvider AuditProvider, targets ManagedTargetStore) {
+	registerDiscoveryScheduleHandlers(mux, auth, discoveryProvider, newDiscoveryScheduleStoreFromEnv(), targets, auditProvider)
+	registerAuthorizedIssuerHandlers(mux, auth, newAuthorizedIssuerStoreFromEnv(), discoveryProvider, auditProvider)
+
 	mux.HandleFunc("/api/v1/discovery/summary", func(w http.ResponseWriter, r *http.Request) {
 		principal, err := auth.AuthenticatePrincipalDetails(r, time.Now())
 		if err != nil {
@@ -35,10 +47,10 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 			return
 		}
 
-		summary, err := discoveryProvider.GetSummary(r.Context())
+		summary, err := discoveryProvider.GetSummary(withDiscoveryScope(r.Context(), principal))
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "discovery.summary", "discovery", "summary", AuditOutcomeFailure)
-			log.Printf("discovery summary unavailable: %v", err)
+			logging.Warnf("discovery summary unavailable: %v", err)
 			writeServiceUnavailable(w, "discovery summary unavailable")
 			return
 		}
@@ -54,6 +66,7 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 				ActiveScanJobs      int                  `json:"active_scan_jobs"`
 				Findings            FindingFunnelSummary `json:"findings"`
 				TrustClasses        TrustClassCounts     `json:"trust_classes"`
+				InventoryClasses    InventoryClassCounts `json:"inventory_classes"`
 			} `json:"data"`
 		}{}
 
@@ -65,11 +78,12 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 		resp.Data.ActiveScanJobs = summary.ActiveScanJobs
 		resp.Data.Findings = summary.Findings
 		resp.Data.TrustClasses = summary.TrustClasses
+		resp.Data.InventoryClasses = summary.InventoryClasses
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/discovery/summary response: %v", err)
+			logging.Warnf("failed to encode /api/v1/discovery/summary response: %v", err)
 		}
 	})
 
@@ -101,11 +115,16 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 			writeBadRequest(w, "trust_class must be one of managed, public, private_other, self_signed, unknown")
 			return
 		}
+		query.InventoryClass = strings.TrimSpace(r.URL.Query().Get("inventory_class"))
+		if query.InventoryClass != "" && !IsInventoryClass(query.InventoryClass) {
+			writeBadRequest(w, "inventory_class must be one of managed, ours_unmanaged, authorized_external, unknown_issuer, self_signed")
+			return
+		}
 
-		result, err := discoveryProvider.ListEndpoints(r.Context(), query)
+		result, err := discoveryProvider.ListEndpoints(withDiscoveryScope(r.Context(), principal), query)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "discovery.endpoints.list", "discovery", "endpoints", AuditOutcomeFailure)
-			log.Printf("discovery endpoints unavailable: %v", err)
+			logging.Warnf("discovery endpoints unavailable: %v", err)
 			writeServiceUnavailable(w, "discovery endpoints unavailable")
 			return
 		}
@@ -136,7 +155,7 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/discovery/endpoints response: %v", err)
+			logging.Warnf("failed to encode /api/v1/discovery/endpoints response: %v", err)
 		}
 	})
 
@@ -180,10 +199,10 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 			Cursor: parseCursor(r.URL.Query().Get("cursor"), 0),
 		}
 
-		result, err := discoveryProvider.ListScanJobs(r.Context(), query)
+		result, err := discoveryProvider.ListScanJobs(withDiscoveryScope(r.Context(), principal), query)
 		if err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_jobs.list", "discovery", "scan-jobs", AuditOutcomeFailure)
-			log.Printf("discovery scan jobs unavailable: %v", err)
+			logging.Warnf("discovery scan jobs unavailable: %v", err)
 			writeServiceUnavailable(w, "discovery scan jobs unavailable")
 			return
 		}
@@ -214,7 +233,7 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/discovery/scan-jobs response: %v", err)
+			logging.Warnf("failed to encode /api/v1/discovery/scan-jobs response: %v", err)
 		}
 	})
 
@@ -242,6 +261,9 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 			// cert-bearing service on a non-standard port. Merged with the
 			// scan type's catalogue; ignored for a host:port target.
 			Ports []int `json:"ports,omitempty"`
+			// JITSudoPassword (ssh scans only, W34-17): used for this job only,
+			// held in memory, never stored, logged or audited.
+			JITSudoPassword string `json:"jit_sudo_password,omitempty"`
 		}
 		reader := http.MaxBytesReader(w, r.Body, 8*1024)
 		defer reader.Close()
@@ -269,6 +291,9 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 		// W18-12: agentless Windows store enumeration; target is a
 		// managed target id whose discovery_mode is winrm.
 		case scanTypeWinRM:
+		// W24-08: agentless SSH enumeration; target is a managed target id
+		// whose install_mode is ssh (isSSHDiscoveryTarget).
+		case scanTypeSSH:
 		// W19-17: cert-manager discovery scope is the env-configured
 		// connector's credentials (KRYPTKEEPER_K8S_*) — same "no target"
 		// shape as the cloud scan types below.
@@ -293,6 +318,58 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 			return
 		}
 
+		jit := newJITSudo(req.JITSudoPassword)
+		req.JITSudoPassword = ""
+		if req.ScanType != scanTypeSSH && jit.text() != "" {
+			jit.zero()
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+			writeBadRequest(w, "jit_sudo_password applies to ssh scans only")
+			return
+		}
+		if len(jit.text()) > maxJITSudoPasswordLen {
+			jit.zero()
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+			writeBadRequest(w, "jit_sudo_password is too long")
+			return
+		}
+		if jit.text() == "" {
+			jit = nil
+		}
+		// The job zeroizes the secret when it ends; until CreateScan hands it
+		// over, every early return must.
+		handedOff := false
+		if jit != nil {
+			time.AfterFunc(30*time.Minute, jit.zero) // backstop for a provider that never runs the job
+		}
+		defer func() {
+			if !handedOff {
+				jit.zero()
+			}
+		}()
+		if req.ScanType == scanTypeSSH {
+			if len(req.Ports) > 0 {
+				emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+				writeBadRequest(w, "ports does not apply to ssh scans")
+				return
+			}
+			if targets == nil {
+				emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+				writeServiceUnavailable(w, "managed targets unavailable")
+				return
+			}
+			t, err := targets.Get(r.Context(), req.Target)
+			if err != nil || !targetVisibleToTenant(principal, t) {
+				emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+				writeNotFound(w, "managed target not found")
+				return
+			}
+			if !isSSHDiscoveryTarget(t) {
+				emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
+				writeBadRequest(w, "target is not an ssh-mode managed target")
+				return
+			}
+		}
+
 		if err := checkScanTarget(req.ScanType, req.Target, req.Ports); err != nil {
 			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
 			if errors.Is(err, scanner.ErrTooManyTargets) {
@@ -303,10 +380,11 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 			return
 		}
 
-		result, err := discoveryProvider.CreateScan(r.Context(), req.ScanType, req.Target, req.Ports)
+		result, err := discoveryProvider.CreateScan(withJITSudo(withDiscoveryScope(r.Context(), principal), jit), req.ScanType, req.Target, req.Ports)
 		if err != nil {
+			jit.zero()
 			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", "scan", AuditOutcomeFailure)
-			log.Printf("discovery scan create failed: %v", err)
+			logging.Warnf("discovery scan create failed: %v", err)
 			if errors.Is(err, errDiscoveryScanUnsupported) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnprocessableEntity)
@@ -318,7 +396,12 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 			return
 		}
 
-		emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", result.ID, AuditOutcomeSuccess)
+		handedOff = true
+		if jit != nil {
+			emitAuditEventDetail(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", result.ID, AuditOutcomeSuccess, "privilege_source=jit")
+		} else {
+			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan.create", "discovery", result.ID, AuditOutcomeSuccess)
+		}
 		publishDiscoveryScanEvent(bus, principal.Tenant, result.ID, result.Status, fmt.Sprintf("scan queued for %s", result.Target))
 		resp := struct {
 			Data struct {
@@ -345,7 +428,7 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/discovery/scans response: %v", err)
+			logging.Warnf("failed to encode /api/v1/discovery/scans response: %v", err)
 		}
 	})
 
@@ -385,10 +468,15 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 			return
 		}
 
-		result, err := discoveryProvider.CancelScanJob(r.Context(), req.ScanJobID, req.Reason)
+		result, err := discoveryProvider.CancelScanJob(withDiscoveryScope(r.Context(), principal), req.ScanJobID, req.Reason)
 		if err != nil {
+			if errors.Is(err, errDiscoveryScanJobNotFound) {
+				emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.cancel", "discovery", "scan-job-cancel", AuditOutcomeDenied)
+				writeNotFound(w, "scan job not found")
+				return
+			}
 			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.cancel", "discovery", "scan-job-cancel", AuditOutcomeFailure)
-			log.Printf("discovery scan job cancel failed: %v", err)
+			logging.Warnf("discovery scan job cancel failed: %v", err)
 			if errors.Is(err, errDiscoveryScanUnsupported) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnprocessableEntity)
@@ -424,7 +512,7 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/discovery/scan-jobs/cancel response: %v", err)
+			logging.Warnf("failed to encode /api/v1/discovery/scan-jobs/cancel response: %v", err)
 		}
 	})
 
@@ -464,10 +552,15 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 			return
 		}
 
-		result, err := discoveryProvider.RequeueScanJob(r.Context(), req.ScanJobID, req.Reason)
+		result, err := discoveryProvider.RequeueScanJob(withDiscoveryScope(r.Context(), principal), req.ScanJobID, req.Reason)
 		if err != nil {
+			if errors.Is(err, errDiscoveryScanJobNotFound) {
+				emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.requeue", "discovery", "scan-job-requeue", AuditOutcomeDenied)
+				writeNotFound(w, "scan job not found")
+				return
+			}
 			emitAuditEvent(r, auditProvider, principal.ID, "discovery.scan_job.requeue", "discovery", "scan-job-requeue", AuditOutcomeFailure)
-			log.Printf("discovery scan job requeue failed: %v", err)
+			logging.Warnf("discovery scan job requeue failed: %v", err)
 			if errors.Is(err, errDiscoveryScanUnsupported) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnprocessableEntity)
@@ -505,7 +598,7 @@ func registerDiscoveryHandlers(mux *http.ServeMux, auth *Authenticator, discover
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusAccepted)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/discovery/scan-jobs/requeue response: %v", err)
+			logging.Warnf("failed to encode /api/v1/discovery/scan-jobs/requeue response: %v", err)
 		}
 	})
 }

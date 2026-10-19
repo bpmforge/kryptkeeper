@@ -16,7 +16,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"log"
+	"kryptkeeper/internal/logging"
 	"net/http"
 	"net/url"
 	"os"
@@ -133,6 +133,21 @@ func (reg *WorkloadRegistry) Attest(token string, now time.Time) (*WorkloadEntry
 	return &copyOf, nil
 }
 
+// RevokeBySPIFFEID marks every unredeemed entry for spiffeID used so its
+// join token can no longer mint, and returns how many it burned.
+func (reg *WorkloadRegistry) RevokeBySPIFFEID(spiffeID string) int {
+	reg.mu.Lock()
+	defer reg.mu.Unlock()
+	n := 0
+	for _, e := range reg.entries {
+		if e.SPIFFEID == spiffeID && !e.Used {
+			e.Used = true
+			n++
+		}
+	}
+	return n
+}
+
 // List returns entries (token hashes never leave), newest first.
 func (reg *WorkloadRegistry) List() []WorkloadEntry {
 	reg.mu.Lock()
@@ -208,6 +223,12 @@ func registerSPIFFEWorkloadHandlers(mux *http.ServeMux, auth *Authenticator, reg
 		}
 		if !canApproveActions(pd.Role) {
 			writeForbidden(w, "your role is not authorized to manage workload registrations")
+			return
+		}
+		// Entries live in one global registry and mint join tokens under the
+		// single trust domain, so a tenant-scoped approver must not see or
+		// add them (D-203).
+		if denyNonSuperAdminGlobal(w, r, auditProvider, pd, "spiffe.workload_entry", "spiffe", "-") {
 			return
 		}
 		switch r.Method {
@@ -318,7 +339,7 @@ func registerSPIFFEWorkloadHandlers(mux *http.ServeMux, auth *Authenticator, reg
 			emitAuditEvent(r, auditProvider, entry.ID, "spiffe.workload_attest", "spiffe_workload", entry.SPIFFEID, AuditOutcomeFailure)
 			// The CA engine's error text is for the operator's log, not the
 			// unauthenticated caller (SPIFFE-L).
-			log.Printf("spiffe workload svid issuance failed for %s: %v", entry.SPIFFEID, err)
+			logging.Warnf("spiffe workload svid issuance failed for %s: %v", entry.SPIFFEID, err)
 			writeServiceUnavailable(w, "svid issuance failed")
 			return
 		}

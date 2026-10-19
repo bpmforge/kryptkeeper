@@ -6,9 +6,13 @@ package ca
 
 import (
 	"database/sql"
+	"errors"
 	"math/big"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"kryptkeeper/internal/db"
 
 	_ "modernc.org/sqlite"
 )
@@ -30,6 +34,7 @@ CREATE TABLE certificate_authorities (
     key_storage_type TEXT NOT NULL DEFAULT 'software',
     key_id       TEXT,
     cert_pem     TEXT,
+    csr_pem      TEXT,
     status       TEXT NOT NULL DEFAULT 'active',
     parent_ca_id TEXT,
     created_at   TEXT NOT NULL,
@@ -82,7 +87,8 @@ CREATE TABLE ca_key_rotations (
     new_key_id  TEXT NOT NULL,
     new_cert_sn TEXT NOT NULL,
     method      TEXT NOT NULL,
-    rotated_at  TEXT NOT NULL
+    rotated_at  TEXT NOT NULL,
+    old_cert_pem TEXT NOT NULL DEFAULT ''
 )`)
 	if err != nil {
 		t.Fatalf("create ca_key_rotations table: %v", err)
@@ -303,7 +309,7 @@ func TestDBStoreRecordAndListKeyRotations(t *testing.T) {
 
 	store.Save(&CA{ID: "ca-1", Name: "CA 1", Type: "root", Status: "active", KeyID: "key-ca-1"})
 
-	r1 := KeyRotation{ID: "rot-1", CAID: "ca-1", OldKeyID: "key-ca-1-retired-1", NewKeyID: "key-ca-1", NewCertSN: "111", Method: "rekey_reissue", RotatedAt: time.Now().UTC().Truncate(time.Second)}
+	r1 := KeyRotation{ID: "rot-1", CAID: "ca-1", OldKeyID: "key-ca-1-retired-1", NewKeyID: "key-ca-1", NewCertSN: "111", Method: "rekey_reissue", RotatedAt: time.Now().UTC().Truncate(time.Second), OldCertPEM: []byte("-----BEGIN CERTIFICATE-----\nold\n-----END CERTIFICATE-----\n")}
 	if err := store.RecordKeyRotation(r1); err != nil {
 		t.Fatalf("RecordKeyRotation: %v", err)
 	}
@@ -325,6 +331,9 @@ func TestDBStoreRecordAndListKeyRotations(t *testing.T) {
 	}
 	if rotations[0].NewCertSN != "222" {
 		t.Errorf("NewCertSN = %q, want 222", rotations[0].NewCertSN)
+	}
+	if string(rotations[1].OldCertPEM) != string(r1.OldCertPEM) || len(rotations[0].OldCertPEM) != 0 {
+		t.Errorf("OldCertPEM round-trip: got %q / %q", rotations[1].OldCertPEM, rotations[0].OldCertPEM)
 	}
 	if !rotations[0].RotatedAt.Equal(r2.RotatedAt) {
 		t.Errorf("RotatedAt round-trip mismatch: got %v, want %v", rotations[0].RotatedAt, r2.RotatedAt)
@@ -597,5 +606,169 @@ func TestDBRevocationStoreRevokeInsertConflictUnderDifferentCAIDErrors(t *testin
 	}
 	if revoked {
 		t.Error("expected not revoked under caID=ca-mine -- the conflicting row belongs to a different certificate")
+	}
+}
+
+// --- W23-25: UNIQUE(issuer CA, serial) ---
+
+func openMigratedSQLite(t *testing.T) *sql.DB {
+	t.Helper()
+	d, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "serial.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = d.Close() })
+	if err := db.RunMigrations(d, "sqlite"); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	for _, id := range []string{"ca-1", "ca-2"} {
+		if _, err := d.Exec(`INSERT INTO certificate_authorities (id, name, display_name, type, key_storage_type, status)
+			VALUES (?, ?, ?, 'root', 'software', 'active')`, id, id, id); err != nil {
+			t.Fatalf("seed ca: %v", err)
+		}
+	}
+	return d
+}
+
+func insertSerialRow(d *sql.DB, fp, serial, caID string) error {
+	_, err := d.Exec(`INSERT INTO certificates
+		(fingerprint_sha256, serial_number, subject_dn, issuer_dn, ca_id, valid_from, valid_until,
+		 public_key_algorithm, signature_algorithm)
+		VALUES (?, ?, 'CN=x', 'CN=ca', ?, '2026-01-01T00:00:00Z', '2027-01-01T00:00:00Z', 'ECDSA', 'ecdsa-with-SHA256')`,
+		fp, serial, caID)
+	return err
+}
+
+func countSerial(t *testing.T, d *sql.DB, serial, caID string) int {
+	t.Helper()
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM certificates WHERE serial_number = ? AND ca_id = ?`, serial, caID).Scan(&n); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	return n
+}
+
+func TestMigratedSchemaEnforcesIssuerSerialUnique(t *testing.T) {
+	d := openMigratedSQLite(t)
+	if err := insertSerialRow(d, "fp-a", "100", "ca-1"); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	err := insertSerialRow(d, "fp-b", "100", "ca-1")
+	if err == nil {
+		t.Fatal("duplicate (ca_id, serial) must be rejected")
+	}
+	if !IsSerialCollision(err) {
+		t.Fatalf("IsSerialCollision(%v) = false", err)
+	}
+	if n := countSerial(t, d, "100", "ca-1"); n != 1 {
+		t.Fatalf("rows for (ca-1,100) = %d, want 1", n)
+	}
+	// Same serial under a different CA is legitimate.
+	if err := insertSerialRow(d, "fp-c", "100", "ca-2"); err != nil {
+		t.Fatalf("same serial, other CA must be allowed: %v", err)
+	}
+}
+
+func TestMigrationRollbackKeepsUniqueIndex(t *testing.T) {
+	d := openMigratedSQLite(t)
+	if err := db.RollbackMigration(d, "sqlite", 78); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	if err := insertSerialRow(d, "fp-a", "7", "ca-1"); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := insertSerialRow(d, "fp-b", "7", "ca-1"); !IsSerialCollision(err) {
+		t.Fatalf("index must survive rollback of later migrations, got %v", err)
+	}
+	if err := db.RunMigrations(d, "sqlite"); err != nil {
+		t.Fatalf("re-apply: %v", err)
+	}
+	if err := insertSerialRow(d, "fp-c", "7", "ca-1"); !IsSerialCollision(err) {
+		t.Fatalf("index must hold after re-apply, got %v", err)
+	}
+}
+
+func TestIsSerialCollisionIgnoresOtherErrors(t *testing.T) {
+	for name, err := range map[string]error{
+		"nil":      nil,
+		"no rows":  sql.ErrNoRows,
+		"fk":       errors.New("FOREIGN KEY constraint failed"),
+		"other uq": errors.New("UNIQUE constraint failed: certificates.fingerprint_sha256"),
+	} {
+		if IsSerialCollision(err) {
+			t.Errorf("%s: IsSerialCollision = true, want false", name)
+		}
+	}
+	if !IsSerialCollision(errors.New(`ERROR: duplicate key value violates unique constraint "idx_cert_serial_ca" (SQLSTATE 23505)`)) {
+		t.Error("postgres duplicate-key text must match")
+	}
+}
+
+func TestRetryOnSerialCollisionFreshSerial(t *testing.T) {
+	d := openMigratedSQLite(t)
+	if err := insertSerialRow(d, "fp-seed", "5", "ca-1"); err != nil {
+		t.Fatal(err)
+	}
+	serials := []string{"5", "6"}
+	calls := 0
+	err := RetryOnSerialCollision(5, func(n int) error {
+		calls++
+		return insertSerialRow(d, "fp-new-"+serials[n], serials[n], "ca-1")
+	})
+	if err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	var total, dupes int
+	_ = d.QueryRow(`SELECT COUNT(*) FROM certificates`).Scan(&total)
+	_ = d.QueryRow(`SELECT COUNT(*) FROM (SELECT 1 FROM certificates GROUP BY serial_number, ca_id HAVING COUNT(*) > 1)`).Scan(&dupes)
+	if total != 2 || dupes != 0 {
+		t.Fatalf("total=%d dupes=%d, want 2 and 0", total, dupes)
+	}
+}
+
+func TestRetryOnSerialCollisionExhausts(t *testing.T) {
+	d := openMigratedSQLite(t)
+	if err := insertSerialRow(d, "fp-seed", "5", "ca-1"); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	err := RetryOnSerialCollision(5, func(int) error {
+		calls++
+		return insertSerialRow(d, "fp-x", "5", "ca-1")
+	})
+	if !errors.Is(err, ErrSerialCollision) {
+		t.Fatalf("err = %v, want ErrSerialCollision", err)
+	}
+	if calls != 5 {
+		t.Fatalf("calls = %d, want 5", calls)
+	}
+	if n := countSerial(t, d, "5", "ca-1"); n != 1 {
+		t.Fatalf("rows = %d, want 1", n)
+	}
+}
+
+func TestRetryOnSerialCollisionPassesThroughOtherErrors(t *testing.T) {
+	sentinel := errors.New("boom")
+	calls := 0
+	err := RetryOnSerialCollision(5, func(int) error { calls++; return sentinel })
+	if err != sentinel || calls != 1 {
+		t.Fatalf("err=%v calls=%d, want sentinel after 1 call", err, calls)
+	}
+}
+
+func TestDBStoreSerialExists(t *testing.T) {
+	d := openMigratedSQLite(t)
+	if err := insertSerialRow(d, "fp-a", "42", "ca-1"); err != nil {
+		t.Fatal(err)
+	}
+	store := NewDBStore(d, false)
+	if ok, err := store.SerialExists("ca-1", big.NewInt(42)); err != nil || !ok {
+		t.Fatalf("SerialExists(ca-1,42) = %v,%v", ok, err)
+	}
+	if ok, err := store.SerialExists("ca-2", big.NewInt(42)); err != nil || ok {
+		t.Fatalf("SerialExists(ca-2,42) = %v,%v", ok, err)
 	}
 }

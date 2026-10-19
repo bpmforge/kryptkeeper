@@ -141,3 +141,20 @@ Larger than "small and safe" for a UAT-fixture-scope ticket — see
 `go build ./... && go test ./...` — 36 packages ok (includes W19-20's two
 new tests: `TestNewMeshDiscoveryTrustsConfiguredCACert`,
 `TestNewMeshDiscoveryFailsClosedWithoutCACert`). `make lint` — 0 issues.
+
+## Multi-cluster (W24-24)
+
+After the original checks, `run.sh` creates a second kind cluster `kk-uat-b`
+with Linkerd only (no Istio), mints a reader token for it, and registers both
+clusters through the config store: two `api_token` credentials plus
+`PUT /api/v1/config/discovery.kube_clusters` naming them `a` (`kk-uat`) and
+`b` (`kk-uat-b`). The hub is started once to create the credentials, then
+restarted (the mesh scheduler only exists at startup when a cluster is already
+configured) with no `KRYPTKEEPER_MESH_K8S_URL`.
+
+Asserted: two `linkerd-mesh` endpoints whose hostnames start `a/` and `b/`,
+each `mapped_certs[0].fingerprint` equal to that cluster's own
+`linkerd-identity-issuer` fingerprint read independently with kubectl+openssl,
+and an unchanged endpoint count after the following sweep (no duplicates).
+The matching cert-manager case lives in `tests/live/k8s/run.sh`.
+Requires the `linkerd` CLI (and `istioctl` for the original Istio leg).

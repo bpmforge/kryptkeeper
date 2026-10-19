@@ -5,20 +5,17 @@
 package agentinstall
 
 import (
-	"bytes"
 	"context"
-	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
+
+	"kryptkeeper/internal/privexec"
 )
 
-// SudoExecutor performs install operations on a real host using a narrow sudo
-// allowlist (the v1.3 privilege model). File placement uses `install` (atomic,
-// sets mode); config-test and reload run their respective binaries. The
-// deployment-time sudoers drop-in should permit exactly: the install binary
-// writing into the cert directory, `nginx -t` / `apachectl configtest`, and the
-// reload command — nothing more.
+// SudoExecutor performs install operations on the local host through a narrow
+// sudo allowlist (the v1.3 privilege model, D-114). It is privexec mode
+// nopasswd over a local executor: the deployment-time sudoers drop-in should
+// permit exactly the install binary into the cert directory, the config-test
+// commands and the reload command, nothing more.
 type SudoExecutor struct {
 	// SudoPath is the sudo binary; empty disables sudo (e.g. agent already root).
 	SudoPath string
@@ -27,6 +24,8 @@ type SudoExecutor struct {
 	// TempDir is an agent-writable directory for staging files before `install`.
 	TempDir string
 }
+
+var _ Executor = (*SudoExecutor)(nil)
 
 // NewSudoExecutor returns an executor that wraps privileged operations in sudo.
 func NewSudoExecutor() *SudoExecutor {
@@ -37,61 +36,33 @@ func NewSudoExecutor() *SudoExecutor {
 	}
 }
 
-func (e *SudoExecutor) Exists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+func (e *SudoExecutor) elevated() privexec.Executor {
+	cfg := privexec.Config{Mode: privexec.ModeNoPasswd, SudoPath: e.SudoPath, InstallPath: e.InstallPath, TempDir: e.TempDir}
+	if cfg.TempDir == "" {
+		cfg.TempDir = os.TempDir()
+	}
+	if e.SudoPath == "" {
+		cfg.Mode = privexec.ModeNone
+	}
+	x, err := privexec.Wrap(privexec.LocalExecutor{}, cfg)
+	if err != nil {
+		// Unreachable: nopasswd and none need nothing Wrap can reject.
+		panic(err)
+	}
+	return x
 }
+
+func (e *SudoExecutor) Exists(path string) bool { return e.elevated().Exists(path) }
 
 // ReadFile reads via sudo cat so root-owned certs/keys are readable for backup.
-func (e *SudoExecutor) ReadFile(path string) ([]byte, error) {
-	if e.SudoPath == "" {
-		return os.ReadFile(path)
-	}
-	out, err := e.Run(context.Background(), "cat", path)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
+func (e *SudoExecutor) ReadFile(path string) ([]byte, error) { return e.elevated().ReadFile(path) }
 
-// WriteFile stages content in TempDir then places it atomically with `install`
-// (which creates parent perms-correct and sets mode in one step), under sudo.
+// WriteFile stages content in TempDir then places it with an elevated `install`.
 func (e *SudoExecutor) WriteFile(path string, content []byte, mode os.FileMode) error {
-	tmp, err := os.CreateTemp(e.TempDir, "kk-install-*")
-	if err != nil {
-		return fmt.Errorf("stage temp: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(content); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write temp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp: %w", err)
-	}
-
-	modeArg := fmt.Sprintf("%#o", mode.Perm())
-	args := []string{e.InstallPath, "-m", modeArg, tmpName, filepath.Clean(path)}
-	if _, err := e.runRaw(context.Background(), args); err != nil {
-		return fmt.Errorf("install %s: %w", path, err)
-	}
-	return nil
+	return e.elevated().WriteFile(path, content, mode)
 }
 
-// Run executes name+args, prefixed with sudo when configured.
+// Run executes name+args, prefixed with `sudo -n --` when configured.
 func (e *SudoExecutor) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
-	return e.runRaw(ctx, append([]string{name}, args...))
-}
-
-func (e *SudoExecutor) runRaw(ctx context.Context, argv []string) ([]byte, error) {
-	if e.SudoPath != "" {
-		argv = append([]string{e.SudoPath, "-n"}, argv...)
-	}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
-	cmd.Stderr = &buf
-	err := cmd.Run()
-	return buf.Bytes(), err
+	return e.elevated().Run(ctx, name, args...)
 }

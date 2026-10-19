@@ -231,3 +231,10 @@ func TestAuditMultipleGradeCounters(t *testing.T) {
 		t.Errorf("expected 2 grade-F, got %d", result.GradeF)
 	}
 }
+
+func TestAuditEndpointRefusesMetadataAtDialTime(t *testing.T) {
+	res := NewAuditor(time.Second).AuditEndpoint("169.254.169.254", 443)
+	if res.Grade != "F" || len(res.Issues) == 0 || !strings.Contains(res.Issues[0], "blocked") {
+		t.Fatalf("metadata dial not refused by policy: %+v", res)
+	}
+}

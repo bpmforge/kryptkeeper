@@ -160,16 +160,18 @@ func TestPQCWaveHandlers_AutoDeriveListProgress(t *testing.T) {
 }
 
 func TestPQCWaveHandlers_ProgressReflectsMigration(t *testing.T) {
-	// c1 vulnerable, t1 already migrated (quantum_safe) — wave member t1 counts done.
+	// c1 vulnerable, t1 already migrated (quantum_safe) — only t1 counts.
 	certs := &reportCertProvider{items: []CertificateItem{
 		{FingerprintSHA256: "c1", CommonName: "shop.example.com", SubjectAltNames: []string{"shop.example.com"}, PQCReadiness: "vulnerable"},
+		{FingerprintSHA256: "t1", CommonName: "api.example.com", PQCReadiness: "quantum_safe"},
 	}}
 	mux, store := waveTestMux(t, certs)
 	ctx := context.Background()
 	_, _ = store.CreateWave(ctx, MigrationWave{
 		Name: "W", Members: []MigrationWaveMember{
 			{Fingerprint: "c1"},   // still vulnerable
-			{Fingerprint: "gone"}, // not in inventory → treated as migrated
+			{Fingerprint: "t1"},   // PQC today
+			{Fingerprint: "gone"}, // not in inventory → NOT migrated (D-105)
 		},
 	})
 
@@ -183,8 +185,8 @@ func TestPQCWaveHandlers_ProgressReflectsMigration(t *testing.T) {
 		t.Fatalf("expected 1 wave, got %d", len(resp.Data))
 	}
 	wp := resp.Data[0]
-	if wp.Total != 2 || wp.Migrated != 1 || wp.ProgressPercent != 50 {
-		t.Fatalf("expected 1/2 migrated (50%%), got %+v", wp)
+	if wp.Total != 3 || wp.Migrated != 1 || wp.ProgressPercent != 33 {
+		t.Fatalf("expected 1/3 migrated (33%%), got %+v", wp)
 	}
 }
 

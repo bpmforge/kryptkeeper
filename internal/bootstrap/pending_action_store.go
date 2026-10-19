@@ -31,6 +31,12 @@ type PendingAction struct {
 	// Tenant the proposer belonged to (v2.2). Stamped at creation so the queue
 	// can be scoped without re-resolving the action's target. "" => default.
 	Tenant string `json:"tenant,omitempty"`
+	// QuorumN approvals from distinct humans are required (of QuorumM
+	// eligible); stamped at proposal time from the per-class policy so a later
+	// policy change cannot weaken an action already in the queue (W22-10).
+	QuorumN        int `json:"quorum_n"`
+	QuorumM        int `json:"quorum_m"`
+	ApprovalsCount int `json:"approvals_count"`
 }
 
 // PendingActionStore persists proposed actions and their decisions.
@@ -42,13 +48,27 @@ type PendingActionStore interface {
 	Decide(ctx context.Context, id, status, approvedBy string, result json.RawMessage) error
 }
 
+// approvalDelegationSchema (W22-11) lives here, with the DDL the stores run on
+// open, because the delegation store borrows the pending-action or approval
+// store's DB handle rather than opening its own.
+const approvalDelegationSchema = `
+CREATE TABLE IF NOT EXISTS approval_delegations (
+    delegator TEXT NOT NULL, tenant TEXT NOT NULL DEFAULT 'default', delegate TEXT NOT NULL,
+    starts_at TEXT NOT NULL, ends_at TEXT NOT NULL, created_at TEXT NOT NULL,
+    PRIMARY KEY (delegator, tenant));`
+
 const pendingActionSchema = `
 CREATE TABLE IF NOT EXISTS pending_actions (
     id TEXT PRIMARY KEY, action_type TEXT NOT NULL, params_json TEXT NOT NULL,
     proposed_by TEXT NOT NULL, rationale TEXT, status TEXT NOT NULL DEFAULT 'pending',
     approved_by TEXT, decided_at TEXT, result_json TEXT, created_at TEXT NOT NULL,
-    tenant TEXT NOT NULL DEFAULT 'default');
-CREATE INDEX IF NOT EXISTS idx_pending_actions_status ON pending_actions(status);`
+    tenant TEXT NOT NULL DEFAULT 'default',
+    quorum_n INTEGER NOT NULL DEFAULT 1, quorum_m INTEGER NOT NULL DEFAULT 1);
+CREATE INDEX IF NOT EXISTS idx_pending_actions_status ON pending_actions(status);
+CREATE TABLE IF NOT EXISTS pending_action_approvals (
+    action_id TEXT NOT NULL, human TEXT NOT NULL, approver_id TEXT NOT NULL,
+    created_at TEXT NOT NULL, PRIMARY KEY (action_id, human));
+` + approvalDelegationSchema
 
 type dbPendingActionStore struct {
 	db *sql.DB
@@ -70,6 +90,9 @@ func (s *dbPendingActionStore) EnsureSchema(ctx context.Context) error {
 	// Best-effort upgrade for pre-v2.2 tables created without the tenant column.
 	// Ignore the error: a duplicate-column failure means it already exists.
 	_, _ = s.db.ExecContext(ctx, "ALTER TABLE pending_actions ADD COLUMN tenant TEXT NOT NULL DEFAULT 'default'") // best-effort upgrade: duplicate-column error = already migrated
+	// Same self-heal for the W22-10 quorum columns.
+	_, _ = s.db.ExecContext(ctx, "ALTER TABLE pending_actions ADD COLUMN quorum_n INTEGER NOT NULL DEFAULT 1") // best-effort upgrade: duplicate-column error = already migrated
+	_, _ = s.db.ExecContext(ctx, "ALTER TABLE pending_actions ADD COLUMN quorum_m INTEGER NOT NULL DEFAULT 1") // best-effort upgrade: duplicate-column error = already migrated
 	return nil
 }
 
@@ -87,14 +110,21 @@ func (s *dbPendingActionStore) Create(ctx context.Context, a PendingAction) (Pen
 	if a.Tenant == "" {
 		a.Tenant = DefaultTenant
 	}
+	if a.QuorumN == 0 {
+		a.QuorumN, a.QuorumM = quorumFor(a.ActionType)
+	}
+	if a.QuorumM < a.QuorumN {
+		a.QuorumM = a.QuorumN
+	}
 	q := fmt.Sprintf(`INSERT INTO pending_actions
-		(id, action_type, params_json, proposed_by, rationale, status, created_at, tenant)
-		VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s)`,
-		s.ph(1), s.ph(2), s.ph(3), s.ph(4), s.ph(5), s.ph(6), s.ph(7))
+		(id, action_type, params_json, proposed_by, rationale, status, created_at, tenant, quorum_n, quorum_m)
+		VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s)`,
+		s.ph(1), s.ph(2), s.ph(3), s.ph(4), s.ph(5), s.ph(6), s.ph(7), s.ph(8), s.ph(9))
 	if _, err := s.db.ExecContext(ctx, q, a.ID, a.ActionType, string(a.Params),
-		a.ProposedBy, a.Rationale, a.CreatedAt, a.Tenant); err != nil {
+		a.ProposedBy, a.Rationale, a.CreatedAt, a.Tenant, a.QuorumN, a.QuorumM); err != nil {
 		return PendingAction{}, err
 	}
+	notifyApprovalPending(pendingActionPendingEvent(a))
 	return a, nil
 }
 
@@ -103,7 +133,8 @@ func scanPendingAction(scan func(...any) error) (PendingAction, error) {
 	var params, result sql.NullString
 	var rationale, approvedBy, decidedAt, tenant sql.NullString
 	if err := scan(&a.ID, &a.ActionType, &params, &a.ProposedBy, &rationale,
-		&a.Status, &approvedBy, &decidedAt, &result, &a.CreatedAt, &tenant); err != nil {
+		&a.Status, &approvedBy, &decidedAt, &result, &a.CreatedAt, &tenant,
+		&a.QuorumN, &a.QuorumM, &a.ApprovalsCount); err != nil {
 		return PendingAction{}, err
 	}
 	a.Params = json.RawMessage(params.String)
@@ -121,7 +152,8 @@ func scanPendingAction(scan func(...any) error) (PendingAction, error) {
 }
 
 const pendingActionCols = `id, action_type, params_json, proposed_by, rationale,
-	status, approved_by, decided_at, result_json, created_at, tenant`
+	status, approved_by, decided_at, result_json, created_at, tenant, quorum_n, quorum_m,
+	(SELECT COUNT(*) FROM pending_action_approvals WHERE action_id = pending_actions.id) AS approvals_count`
 
 func (s *dbPendingActionStore) List(ctx context.Context, status string) ([]PendingAction, error) {
 	var rows *sql.Rows
@@ -184,6 +216,7 @@ func (s *dbPendingActionStore) Decide(ctx context.Context, id, status, approvedB
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("action not found or already decided")
 	}
+	notifyApprovalDecided(ctx, chatopsKindAction, id, status, approvedBy)
 	return nil
 }
 

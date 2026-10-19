@@ -6,6 +6,7 @@ package bootstrap
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 )
@@ -69,5 +70,48 @@ func TestFrameworkDisplayName(t *testing.T) {
 		if got := frameworkDisplayName(in); got != want {
 			t.Errorf("frameworkDisplayName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// pdfText returns the page text of an uncompressed fpdf document (tests set
+// pdfCompression=false) with fpdf's string escaping undone.
+func pdfText(b []byte) string {
+	return strings.NewReplacer(`\(`, "(", `\)`, ")", `\\`, `\`).Replace(string(b))
+}
+
+func TestAcceptedRisksInPDF(t *testing.T) {
+	prev := pdfCompression
+	pdfCompression = false
+	t.Cleanup(func() { pdfCompression = prev })
+	at := time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC)
+
+	rep := sampleEvidence()
+	rep.AcceptedRisks = []AcceptedRisk{
+		{ID: "exc-1", TargetType: "certificate", TargetID: "fp-1", FindingCode: "WEAK_RSA_KEY", JustificationCode: "compensating_control",
+			JustificationNote: "behind WAF", OwnerTeam: "payments", OwnerEmail: "pay@example.com", CreatedBy: "alice", ExpiresAt: "2026-12-31T00:00:00Z"},
+		{ID: "exc-2", TargetType: "ca", TargetID: "ca-1", FindingCode: "CA_ALGO", JustificationCode: "risk_accepted",
+			CreatedBy: "bob", ExpiresAt: "2027-01-15T00:00:00Z"},
+	}
+	b, err := renderComplianceEvidencePDF(rep, 10, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := pdfText(b)
+	for _, want := range []string{"Accepted risks (2)", "WEAK_RSA_KEY", "CA_ALGO", "payments", "pay@example.com", "2026-12-31", "2027-01-15", "compensating_control", "Owner: unowned", "Note: behind WAF"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("PDF lacks %q", want)
+		}
+	}
+	if !bytes.HasPrefix(b, []byte("%PDF-")) || !bytes.Contains(b, []byte("%%EOF")) {
+		t.Error("not a valid PDF")
+	}
+
+	none, err := renderComplianceEvidencePDF(sampleEvidence(), 10, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nt := pdfText(none)
+	if !strings.Contains(nt, "Accepted risks (0)") || !strings.Contains(nt, "No accepted risks are active.") {
+		t.Error("empty pack must say so")
 	}
 }

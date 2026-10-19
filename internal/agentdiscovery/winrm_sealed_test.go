@@ -34,7 +34,6 @@ type sealedWinRM struct {
 	sawBasic       bool
 	sawPlainSOAP   bool
 	handshakes     int
-	authedConns    map[string]bool
 	offerNegotiate bool
 	challenge      []byte // type-2 to send; tests may weaken it
 	plainReply     bool   // answer sealed requests with unsealed XML

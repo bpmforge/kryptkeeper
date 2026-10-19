@@ -574,3 +574,101 @@ func TestHandlerEnforcesTemplateNamePolicy(t *testing.T) {
 		})
 	}
 }
+
+// B5 (ADCS cutover rehearsal): WSTEP refuses a template the caller may not
+// enroll, as XCEP never offers it; a machine granted by host name enrolls.
+func TestHandlerRefusesTemplateCallerMayNotEnroll(t *testing.T) {
+	engine, caID := newTestCAEngine(t)
+	const oid = "1.3.6.1.4.1.311.21.8.66666"
+	ref := TemplateRef{Name: "KerberosAuthentication", OID: oid, Enrollee: EnrolleeMachine,
+		EnrollRoles: []string{"pki-admin", RestrictedRole, "protocol:wstep:dc01.corp.example"}, Policy: &ca.TemplatePolicy{ID: "tpl-k"}}
+	lookup := func(tokenType string) (TemplateRef, bool) { return ref, tokenType == oid }
+	for _, tc := range []struct {
+		name string
+		who  Identity
+		ok   bool
+	}{
+		{"workstation", IdentityForPrincipal("WS01$", "CORP.EXAMPLE"), false},
+		{"granted DC", IdentityForPrincipal("DC01$", "CORP.EXAMPLE"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var audited []AuditEvent
+			h := NewServer(engine, caID).WithAuthenticator(asIdentity(tc.who)).WithTemplateLookup(lookup).
+				WithAuditFunc(func(_ context.Context, ev AuditEvent) { audited = append(audited, ev) }).Handler()
+			csrDER, _ := newTestCSR(t)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/wstep", strings.NewReader(buildWSTEPRequestWithTokenType(csrDER, oid))))
+			if tc.ok {
+				if rec.Code != http.StatusOK {
+					t.Fatalf("got %d: %s", rec.Code, rec.Body.String())
+				}
+				return
+			}
+			if rec.Code == http.StatusOK || !strings.Contains(rec.Body.String(), "not permitted to enroll") {
+				t.Fatalf("expected a permission fault, got %d: %s", rec.Code, rec.Body.String())
+			}
+			if len(audited) != 1 || audited[0].Outcome != "denied" {
+				t.Fatalf("expected one denied audit row, got %+v", audited)
+			}
+		})
+	}
+}
+
+// D-291 (S-01): every non-empty enroll list is enforced over WSTEP, like EST,
+// SCEP and ACME. An API-role-only list never names a Windows caller; an empty
+// list stays open.
+func TestEnrollPermittedEnforcesEveryNonEmptyList(t *testing.T) {
+	ws := IdentityForPrincipal("WS01$", "CORP.EXAMPLE")
+	dc := IdentityForPrincipal("DC01$", "CORP.EXAMPLE")
+	for _, tc := range []struct {
+		enroll []string
+		who    Identity
+		want   bool
+	}{
+		{nil, ws, true},
+		{[]string{"pki-operator"}, ws, false},
+		{[]string{"pki-admin"}, dc, false},
+		{[]string{"pki-admin", RestrictedRole}, ws, false},
+		{[]string{"pki-admin", RestrictedRole}, dc, false},
+		{[]string{RestrictedRole, "protocol:wstep:dc01.corp.example"}, dc, true},
+		{[]string{RestrictedRole, "protocol:wstep:dc01.corp.example"}, ws, false},
+		{[]string{"pki-operator", ProtocolRole}, ws, true},
+		{[]string{"pki-admin", "protocol:wstep:WS01.corp.example"}, ws, true},
+	} {
+		if got := EnrollPermitted(tc.enroll, tc.who); got != tc.want {
+			t.Errorf("EnrollPermitted(%v, %s) = %v, want %v", tc.enroll, tc.who.Principal, got, tc.want)
+		}
+	}
+}
+
+// D-291 (S-01): a template listing only ["pki-admin"] is refused to a domain
+// machine over WSTEP; one with protocol:wstep, or an empty list, still issues.
+func TestHandlerEnforcesAPIRoleOnlyEnrollList(t *testing.T) {
+	engine, caID := newTestCAEngine(t)
+	const oid = "1.3.6.1.4.1.311.21.8.77777"
+	ws := IdentityForPrincipal("WS01$", "CORP.EXAMPLE")
+	for _, tc := range []struct {
+		name   string
+		enroll []string
+		ok     bool
+	}{
+		{"pki-admin only", []string{"pki-admin"}, false},
+		{"protocol:wstep entry", []string{"pki-admin", ProtocolRole}, true},
+		{"empty list", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ref := TemplateRef{Name: "T", OID: oid, Enrollee: EnrolleeMachine, EnrollRoles: tc.enroll, Policy: &ca.TemplatePolicy{ID: "tpl-t"}}
+			lookup := func(tokenType string) (TemplateRef, bool) { return ref, tokenType == oid }
+			h := NewServer(engine, caID).WithAuthenticator(asIdentity(ws)).WithTemplateLookup(lookup).Handler()
+			csrDER, _ := newTestCSR(t)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/wstep", strings.NewReader(buildWSTEPRequestWithTokenType(csrDER, oid))))
+			if tc.ok != (rec.Code == http.StatusOK) {
+				t.Fatalf("ok=%v but got %d: %s", tc.ok, rec.Code, rec.Body.String())
+			}
+			if !tc.ok && !strings.Contains(rec.Body.String(), "not permitted to enroll") {
+				t.Fatalf("expected permission fault: %s", rec.Body.String())
+			}
+		})
+	}
+}

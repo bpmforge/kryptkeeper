@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { api } from "../lib/api";
 import {
@@ -13,8 +13,10 @@ import {
 } from "../components/ops-ui";
 import { PageHeader } from "../components/PageHeader";
 import { canReadOperationalSummaries, useAuthz } from "../lib/auth";
-import { AUDIT_OUTCOMES, auditOutcomeTone } from "../lib/auditOutcome";
-import { isReadOnlyAction } from "../lib/auditActions";
+import { formatDateTime } from "../components/ui";
+import { scrollableProps } from "../lib/scrollable";
+import { AUDIT_OUTCOMES, auditOutcomeLabel, auditOutcomeTone } from "../lib/auditOutcome";
+import { auditActionLabel, isReadOnlyAction } from "../lib/auditActions";
 import { shortResourceId } from "../lib/auditResource";
 import type { AuditRow } from "../lib/models";
 
@@ -22,6 +24,7 @@ type AuditFilters = {
   action: string;
   actorType: string;
   resourceType: string;
+  resourceId: string;
   outcome: string;
   after: string;
   before: string;
@@ -31,6 +34,7 @@ const initialFilters: AuditFilters = {
   action: "",
   actorType: "",
   resourceType: "",
+  resourceId: "",
   outcome: "",
   after: "",
   before: "",
@@ -52,22 +56,34 @@ function ResourceCell({ row }: { row: AuditRow }) {
   );
 }
 
-function csvEscape(value: string) {
-  return `"${String(value ?? "").replace(/"/g, '""')}"`;
+// W28-21: report pages drill through with these query keys (D-141).
+function filtersFromSearch(sp: URLSearchParams): AuditFilters {
+  return {
+    ...initialFilters,
+    action: sp.get("action") ?? "",
+    actorType: sp.get("actor_type") ?? "",
+    resourceType: sp.get("resource_type") ?? "",
+    resourceId: sp.get("resource_id") ?? "",
+    outcome: sp.get("outcome") ?? "",
+  };
 }
 
 export default function Audit() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { id } = useParams();
   const authz = useAuthz();
   // Draft/applied split: the inputs edit the draft; only "Apply filters"
   // commits it into the query. Before this, every keystroke fired a request
   // — and each request emits its own audit.list event, so typing polluted
   // the very log being displayed.
-  const [filters, setFilters] = useState<AuditFilters>(initialFilters);
-  const [appliedFilters, setAppliedFilters] =
-    useState<AuditFilters>(initialFilters);
-  const [hideReadOnly, setHideReadOnly] = useState(false);
+  const [filters, setFilters] = useState<AuditFilters>(() =>
+    filtersFromSearch(searchParams),
+  );
+  const [appliedFilters, setAppliedFilters] = useState<AuditFilters>(() =>
+    filtersFromSearch(searchParams),
+  );
+  const [hideReadOnly, setHideReadOnly] = useState(true);
   const [cursor, setCursor] = useState<string | null | undefined>(undefined);
   const [selectedAuditId, setSelectedAuditId] = useState<string | null>(null);
 
@@ -78,6 +94,7 @@ export default function Audit() {
       action: appliedFilters.action,
       actor_type: appliedFilters.actorType,
       resource_type: appliedFilters.resourceType,
+      resource_id: appliedFilters.resourceId,
       outcome: appliedFilters.outcome,
       after: appliedFilters.after,
       before: appliedFilters.before,
@@ -92,8 +109,8 @@ export default function Audit() {
     enabled: canReadOperationalSummaries(authz.data?.role, authz.data?.scopes),
   });
   const allRows = (audit.data?.data ?? []) as AuditRow[];
-  // Client-side on purpose: GET /audit only takes an exact `action` match, so
-  // the server cannot express "everything except reads". Pages are therefore
+  // Client-side on purpose: GET /audit's `action` matches one action or its dotted family
+  // ("certificate" covers certificate.issue), so the server cannot express "everything except reads". Pages are therefore
   // filtered after fetch and may show fewer than 50 rows.
   // Only successful reads are hidden: a denied or failed read (e.g. an
   // authz.check that was refused) is security-relevant and stays visible.
@@ -103,6 +120,9 @@ export default function Audit() {
       )
     : allRows;
   const hiddenCount = allRows.length - rows.length;
+  const isFiltered = Object.entries(appliedFilters).some(
+    ([key, value]) => value !== "" && value !== initialFilters[key as keyof AuditFilters],
+  );
   const meta = audit.data?.meta;
   const selectedKey = id ?? selectedAuditId ?? null;
   const pageHit = selectedKey
@@ -139,81 +159,27 @@ export default function Audit() {
 
   const [exporting, setExporting] = useState(false);
 
-  // Export walks the cursor chain for the CURRENT filters (server caps each
-  // page at 100) — exporting only the visible page under a title like
-  // "Audit Evidence" quietly handed compliance 50 rows of a much larger log.
-  const EXPORT_CAP = 10_000;
-  const fetchAllFilteredRows = async (): Promise<AuditRow[]> => {
-    const all: AuditRow[] = [];
-    let nextCursor: string | undefined = undefined;
-    for (;;) {
-      const page = await api.auditList({
-        ...queryParams,
-        limit: 100,
-        cursor: nextCursor,
-      });
-      all.push(...((page.data ?? []) as AuditRow[]));
-      const next = (page.meta as { next_cursor?: string | null } | undefined)
-        ?.next_cursor;
-      if (!next || all.length >= EXPORT_CAP) break;
-      nextCursor = next;
-    }
-    // The export is evidence, so it stays complete regardless of the
-    // on-screen "Hide read-only events" toggle.
-    return all.slice(0, EXPORT_CAP);
-  };
-
+  // The server streams every matching row (W22-05); the old client-side
+  // walk was capped at 10k rows and could not carry the tenant column.
+  // The export is evidence, so it ignores the "Hide read-only events" toggle.
   const exportCsv = async () => {
     setExporting(true);
-    let exportRows: AuditRow[];
     try {
-      exportRows = await fetchAllFilteredRows();
+      await api.auditExport({
+        format: "csv",
+        action: queryParams.action,
+        actor_type: queryParams.actor_type,
+        resource_type: queryParams.resource_type,
+        resource_id: queryParams.resource_id,
+        outcome: queryParams.outcome,
+        after: queryParams.after,
+        before: queryParams.before,
+      });
     } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Audit export failed.");
+    } finally {
       setExporting(false);
-      toast.error(
-        err instanceof Error ? err.message : "Audit export failed.",
-      );
-      return;
     }
-    setExporting(false);
-    const header = [
-      "id",
-      "timestamp",
-      "action",
-      "actor_type",
-      "actor_id",
-      "resource_type",
-      "resource_id",
-      "trace_id",
-      "outcome",
-      "resource_name",
-    ];
-    const csv = [
-      header.join(","),
-      ...exportRows.map((row: AuditRow) =>
-        [
-          row.id,
-          row.timestamp,
-          row.action,
-          row.actor_type,
-          row.actor_id,
-          row.resource_type,
-          row.resource_id,
-          row.trace_id || "",
-          row.outcome,
-          row.resource_name || "",
-        ]
-          .map((value) => csvEscape(String(value ?? "")))
-          .join(","),
-      ),
-    ].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "audit-evidence.csv";
-    link.click();
-    URL.revokeObjectURL(url);
   };
 
   if (!canReadOperationalSummaries(authz.data?.role, authz.data?.scopes)) {
@@ -242,7 +208,7 @@ export default function Audit() {
             <span>Action</span>
             <Input
               aria-label="Filter audit action"
-              placeholder="Action"
+              placeholder="Action or prefix, e.g. certificate"
               value={filters.action}
               onChange={(e) =>
                 setFilters((curr) => ({ ...curr, action: e.target.value }))
@@ -295,7 +261,7 @@ export default function Audit() {
             <span>After</span>
             <Input
               aria-label="Filter after timestamp"
-              placeholder="After (RFC3339)"
+              placeholder="YYYY-MM-DD or RFC 3339"
               value={filters.after}
               onChange={(e) =>
                 setFilters((curr) => ({ ...curr, after: e.target.value }))
@@ -306,7 +272,7 @@ export default function Audit() {
             <span>Before</span>
             <Input
               aria-label="Filter before timestamp"
-              placeholder="Before (RFC3339)"
+              placeholder="YYYY-MM-DD or RFC 3339"
               value={filters.before}
               onChange={(e) =>
                 setFilters((curr) => ({ ...curr, before: e.target.value }))
@@ -326,6 +292,31 @@ export default function Audit() {
             visible)
           </span>
         </label>
+        {appliedFilters.resourceId && (
+          <div className="mt-4 flex items-center gap-2 text-sm">
+            <Badge tone="info">
+              Filtered to resource {appliedFilters.resourceId}
+            </Badge>
+            <Button
+              aria-label="Clear resource filter"
+              onClick={() => {
+                const next = { ...appliedFilters, resourceId: "" };
+                setFilters((curr) => ({ ...curr, resourceId: "" }));
+                setAppliedFilters(next);
+                setCursor(undefined);
+                setSearchParams(
+                  (sp) => {
+                    sp.delete("resource_id");
+                    return sp;
+                  },
+                  { replace: true },
+                );
+              }}
+            >
+              Clear
+            </Button>
+          </div>
+        )}
         <div className="mt-4 flex flex-wrap gap-2">
           <Button
             tone="primary"
@@ -341,6 +332,7 @@ export default function Audit() {
               setFilters(initialFilters);
               setAppliedFilters(initialFilters);
               setCursor(undefined);
+              setSearchParams({}, { replace: true });
             }}
           >
             Reset
@@ -381,16 +373,22 @@ export default function Audit() {
             <div className="grid gap-3 md:grid-cols-2 text-sm">
               <div>
                 <div className="text-muted-foreground">Timestamp</div>
-                <div className="text-foreground">{selected.timestamp}</div>
+                <div className="text-foreground">{formatDateTime(selected.timestamp)}</div>
               </div>
               <div>
                 <div className="text-muted-foreground">Action</div>
-                <div className="text-foreground">{selected.action}</div>
+                <div className="text-foreground">
+                  {auditActionLabel(selected.action)}
+                  {auditActionLabel(selected.action) !== selected.action ? (
+                    <span className="ml-2 text-xs text-muted-foreground">{selected.action}</span>
+                  ) : null}
+                </div>
               </div>
               <div>
                 <div className="text-muted-foreground">Actor</div>
                 <div className="text-foreground">
-                  {selected.actor_type}:{selected.actor_id}
+                  <span className="text-xs text-muted-foreground">{selected.actor_type}</span>{" "}
+                  {selected.actor_id}
                 </div>
               </div>
               <div>
@@ -410,9 +408,17 @@ export default function Audit() {
               </div>
               <div>
                 <div className="text-muted-foreground">Outcome</div>
-                <div className="text-foreground">{selected.outcome}</div>
+                <div className="text-foreground">{auditOutcomeLabel(selected.outcome)}</div>
               </div>
             </div>
+          </div>
+        ) : selectedKey && !resolvedById.isLoading && !audit.isLoading ? (
+          <div className="space-y-3">
+            <StateMessage
+              title="Audit record not found"
+              message="This record is not in the audit log, or it is outside your tenant."
+            />
+            <Button onClick={() => navigate("/audit")}>Back to list</Button>
           </div>
         ) : (
           <StateMessage
@@ -426,7 +432,7 @@ export default function Audit() {
         title="Audit log"
         subtitle="A compliance-ready trail of system events"
       >
-        <div className="overflow-hidden rounded-xl border border-border">
+        <div className="overflow-x-auto rounded-xl border border-border" {...scrollableProps}>
           <table className="min-w-full divide-y divide-border">
             <thead className="bg-background/80">
               <tr>
@@ -471,8 +477,8 @@ export default function Audit() {
             <tbody className="divide-y divide-border bg-background/40">
               {rows.map((row) => (
                 <tr key={row.id}>
-                  <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {row.timestamp}
+                  <td className="whitespace-nowrap px-4 py-3 text-sm text-muted-foreground">
+                    {formatDateTime(row.timestamp)}
                   </td>
                   <td className="px-4 py-3 text-sm text-foreground">
                     <button
@@ -487,7 +493,7 @@ export default function Audit() {
                     </button>
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
-                    {row.actor_type}:{row.actor_id}
+                    <span className="text-xs">{row.actor_type}</span> {row.actor_id}
                   </td>
                   <td className="px-4 py-3 text-sm text-muted-foreground">
                     <ResourceCell row={row} />
@@ -497,7 +503,7 @@ export default function Audit() {
                   </td>
                   <td className="px-4 py-3 text-sm">
                     <Badge tone={auditOutcomeTone(row.outcome)}>
-                      {row.outcome}
+                      {auditOutcomeLabel(row.outcome)}
                     </Badge>
                   </td>
                 </tr>
@@ -508,7 +514,9 @@ export default function Audit() {
                     colSpan={6}
                     className="px-4 py-10 text-center text-sm text-muted-foreground"
                   >
-                    No audit entries yet — every API action lands here as it happens. Adjust the filters if you expected results.
+                    {isFiltered
+                      ? "No entries match these filters. The action filter matches an exact action or everything under it (certificate matches certificate.issue)."
+                      : "No audit entries yet — every API action lands here as it happens."}
                   </td>
                 </tr>
               ) : null}

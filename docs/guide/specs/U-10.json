@@ -1,0 +1,385 @@
+{
+  "task": "U-10",
+  "title": "Create a certificate template",
+  "sourceStory": "STORIES.md#u-10",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/templates"
+      },
+      "caption": "Open /templates",
+      "slug": "templates-list",
+      "expect": {
+        "role": "button",
+        "name": "New template"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-10/01-templates-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New template"
+      },
+      "caption": "Click **New template**",
+      "slug": "new-template-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "New template"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-10/02-new-template-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Name (identifier)",
+        "within": "[role=dialog]"
+      },
+      "value": "web-server-30d",
+      "caption": "Fill **Name (identifier)** with \"web-server-30d\"",
+      "slug": "Name (identifier)",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-10/03-name-identifier.png",
+        "annotated": "docs/guide/screenshots/U-10/03-name-identifier-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 142,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Display name",
+        "within": "[role=dialog]"
+      },
+      "value": "Web Server (30 day)",
+      "caption": "Fill **Display name** with \"Web Server (30 day)\"",
+      "slug": "Display name",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-10/04-display-name.png",
+        "annotated": "docs/guide/screenshots/U-10/04-display-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 212,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Validity period",
+        "within": "[role=dialog]"
+      },
+      "value": "30d",
+      "caption": "Fill **Validity period** with \"30d\"",
+      "slug": "Validity period",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-10/05-validity-period.png",
+        "annotated": "docs/guide/screenshots/U-10/05-validity-period-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 282,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Extended key usage",
+        "within": "[role=dialog]"
+      },
+      "value": "serverAuth",
+      "caption": "Fill **Extended key usage** with \"serverAuth\"",
+      "slug": "Extended key usage",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-10/06-extended-key-usage.png",
+        "annotated": "docs/guide/screenshots/U-10/06-extended-key-usage-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 352,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Allowed algorithms",
+        "within": "[role=dialog]"
+      },
+      "value": "ECDSA-P256",
+      "caption": "Fill **Allowed algorithms** with \"ECDSA-P256\"",
+      "slug": "Allowed algorithms",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-10/07-allowed-algorithms.png",
+        "annotated": "docs/guide/screenshots/U-10/07-allowed-algorithms-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 422,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "pki-operator",
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **pki-operator**",
+      "slug": "toggle-role",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-10/08-toggle-role.png",
+        "annotated": "docs/guide/screenshots/U-10/08-toggle-role-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 505,
+          "y": 694,
+          "w": 112,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "label": "Restrict the names this template",
+        "within": "[role=dialog]"
+      },
+      "caption": "Further down the dialog: approval, SSH and name-restriction options",
+      "slug": "advanced-options",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-10/09-advanced-options.png",
+        "annotated": "docs/guide/screenshots/U-10/09-advanced-options-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 418,
+          "y": 771,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "screenshot",
+      "caption": "The filled **New template** dialog",
+      "slug": "new-template-filled",
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-10/10-new-template-filled.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Create",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "caption": "Click **Create**",
+      "slug": "template-created",
+      "expect": {
+        "text": "Template created"
+      },
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-10/11-template-created.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:39:34.118Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-10",
+    "steps": 11,
+    "shots": 11,
+    "annotated": 7,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/templates"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-10/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-10/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

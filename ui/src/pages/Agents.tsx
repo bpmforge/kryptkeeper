@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { scrollableProps } from "../lib/scrollable";
 import { Monitor, RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
 import type { AgentInfo, AgentStatus } from "../lib/models";
@@ -66,6 +67,61 @@ function AgentRow({ agent }: { agent: AgentInfo }) {
           </span>
         </span>
       </div>
+
+      <AgentHostReportView report={agent.host_report} />
+    </div>
+  );
+}
+
+// W34-09: what the agent could and could not read on its own host.
+export function AgentHostReportView({ report }: { report?: AgentInfo["host_report"] }) {
+  if (!report) return null;
+  if (!report.posture_known) {
+    return (
+      <p className="mt-3 text-xs text-muted-foreground" data-testid="agent-host-report">
+        Install posture unknown: this agent predates privilege reporting. Upgrade it to see
+        unreadable paths and file ownership.
+      </p>
+    );
+  }
+  const n = report.unreadable_count;
+  const mode = report.privilege_mode ?? "none";
+  const counts = report.posture_counts ?? {};
+  const nonStandard = (counts.privileged ?? 0) + (counts.root_service ?? 0);
+  return (
+    <div className="mt-3 space-y-1 text-xs" data-testid="agent-host-report">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={mode === "none" ? "neutral" : "info"}>
+          {mode === "none" ? "Unprivileged" : `Privilege: ${mode}`}
+        </Badge>
+        {n > 0 ? (
+          <Badge tone="warning">
+            Insufficient privilege: {n} path{n === 1 ? "" : "s"} unreadable
+          </Badge>
+        ) : (
+          <Badge tone="success">Every path readable</Badge>
+        )}
+        {nonStandard > 0 ? (
+          <Badge tone="warning">{nonStandard} file{nonStandard === 1 ? "" : "s"} need root to replace or run as root</Badge>
+        ) : null}
+        <span className="text-muted-foreground">
+          {report.listener_count} listener{report.listener_count === 1 ? "" : "s"}
+          {report.listeners_hidden > 0 ? ` (${report.listeners_hidden} hidden)` : ""}
+        </span>
+      </div>
+      {n > 0 ? (
+        <details>
+          <summary className="cursor-pointer text-muted-foreground">Unreadable paths and fix</summary>
+          <ul className="mt-1 list-disc pl-5 text-muted-foreground">
+            {(report.unreadable_paths ?? []).map((p) => (
+              <li key={p.path}>{p.path}</li>
+            ))}
+          </ul>
+          <p className="mt-1 text-muted-foreground">
+            {(report.findings ?? []).find((f) => f.startsWith("INSUFFICIENT_PRIVILEGE"))?.split("; fix=")[1]}
+          </p>
+        </details>
+      ) : null}
     </div>
   );
 }
@@ -148,7 +204,7 @@ export default function Agents() {
             <span className="font-mono text-primary">kryptkeeper-agent</span>{" "}
             binary and run with your Hub URL:
           </p>
-          <pre className="overflow-x-auto rounded-xl bg-card p-4 text-xs text-foreground">
+          <pre className="overflow-x-auto rounded-xl bg-card p-4 text-xs text-foreground" {...scrollableProps}>
             {`# Linux (amd64)
 curl -sL https://github.com/bpmforge/kryptkeeper/releases/latest/download/kryptkeeper-agent-linux-amd64 \\
   -o /usr/local/bin/kryptkeeper-agent

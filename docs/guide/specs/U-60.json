@@ -1,0 +1,417 @@
+{
+  "task": "U-60",
+  "title": "See empty, error and not-found states",
+  "sourceStory": "STORIES.md#u-60",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/certificates"
+      },
+      "caption": "Opening any page while signed out redirects to the sign-in page",
+      "slug": "signed-out-redirect",
+      "expect": {
+        "role": "button",
+        "name": "Sign in"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-60/01-signed-out-redirect.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Email"
+      },
+      "value": "ada.admin@acme.test",
+      "caption": "Fill **Email** with \"ada.admin@acme.test\"",
+      "slug": "Email",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-60/02-email.png",
+        "annotated": "docs/guide/screenshots/U-60/02-email-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 553,
+          "y": 420,
+          "w": 334,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Password"
+      },
+      "value": "not-the-password",
+      "caption": "Fill **Password** with \"not-the-password\"",
+      "slug": "Password",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-60/03-password.png",
+        "annotated": "docs/guide/screenshots/U-60/03-password-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 553,
+          "y": 494,
+          "w": 334,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Sign in"
+      },
+      "caption": "Click **Sign in**",
+      "slug": "wrong-password",
+      "expect": {
+        "text": "invalid credentials"
+      },
+      "allow": [
+        "401",
+        "invalid",
+        "credentials",
+        "Failed to load"
+      ],
+      "expectError": true,
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-60/04-wrong-password.png",
+        "annotated": "docs/guide/screenshots/U-60/04-wrong-password-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 553,
+          "y": 575,
+          "w": 73,
+          "h": 36
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Password"
+      },
+      "value": "GuideDemo!2026",
+      "caption": "Fill **Password** with \"GuideDemo!2026\"",
+      "slug": "Password",
+      "allow": [
+        "invalid credentials"
+      ],
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-60/05-password.png",
+        "annotated": "docs/guide/screenshots/U-60/05-password-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 553,
+          "y": 467,
+          "w": 334,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Sign in"
+      },
+      "caption": "Click **Sign in**",
+      "slug": "signed-in",
+      "expect": {
+        "role": "heading",
+        "name": "What needs a human"
+      },
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-60/06-signed-in.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/does-not-exist"
+      },
+      "caption": "Open /does-not-exist",
+      "slug": "not-found-404",
+      "allow": [
+        "404"
+      ],
+      "expectError": true,
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-60/07-not-found-404.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/history/abc"
+      },
+      "caption": "Open /history/abc",
+      "slug": "history-not-found",
+      "allow": [
+        "404",
+        "not found"
+      ],
+      "expectError": true,
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-60/08-history-not-found.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/tenants"
+      },
+      "caption": "Open /tenants",
+      "slug": "tenants-off",
+      "allow": [
+        "404"
+      ],
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-60/09-tenants-off.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/spiffe"
+      },
+      "caption": "Open /spiffe",
+      "slug": "spiffe-not-configured",
+      "allow": [
+        "404",
+        "503"
+      ],
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-60/10-spiffe-not-configured.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/inventory/keys"
+      },
+      "caption": "Open /inventory/keys",
+      "slug": "cloud-keys-empty",
+      "allow": [
+        "404",
+        "503"
+      ],
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-60/11-cloud-keys-empty.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/ct-findings"
+      },
+      "caption": "Open /ct-findings",
+      "slug": "ct-findings-empty",
+      "allow": [
+        "404",
+        "503"
+      ],
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-60/12-ct-findings-empty.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "signedOut": true,
+  "lastRun": {
+    "at": "2026-10-18T12:49:35.144Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-60",
+    "steps": 12,
+    "shots": 12,
+    "annotated": 4,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/ct-findings"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-60/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-60/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

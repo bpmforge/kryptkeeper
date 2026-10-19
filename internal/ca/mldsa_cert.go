@@ -241,13 +241,7 @@ func buildMLDSAExtensions(tmpl *x509.Certificate) ([]certExtension, error) {
 
 	// KeyUsage (critical).
 	if tmpl.KeyUsage != 0 {
-		ku := tmpl.KeyUsage
-		// KeyUsage is a named bit string; encode as 2 bytes with unused-bits prefix.
-		bits := asn1.BitString{
-			Bytes:     []byte{byte(ku >> 1), byte(ku << 7)},
-			BitLength: 9,
-		}
-		val, err := asn1.Marshal(bits)
+		val, err := asn1.Marshal(keyUsageBitString(tmpl.KeyUsage))
 		if err != nil {
 			return nil, err
 		}
@@ -349,3 +343,24 @@ func ekuOID(eku x509.ExtKeyUsage) (asn1.ObjectIdentifier, bool) {
 
 // suppress unused import warning — pkix is used by engine.go in this package
 var _ = pkix.Name{}
+
+// keyUsageBitString encodes x509.KeyUsage as the RFC 5280 named BIT STRING:
+// bit 0 (digitalSignature) is the MSB of the first byte, and DER drops
+// trailing zero bits. A plain shift of the Go bitmask puts keyCertSign on
+// keyEncipherment, so openssl rejects every ML-DSA CA ("invalid CA
+// certificate", W23-02).
+func keyUsageBitString(ku x509.KeyUsage) asn1.BitString {
+	var b [2]byte
+	last := -1
+	for i := 0; i < 9; i++ {
+		if ku&(1<<uint(i)) != 0 {
+			b[i/8] |= 0x80 >> uint(i%8)
+			last = i
+		}
+	}
+	n := 1
+	if last >= 8 {
+		n = 2
+	}
+	return asn1.BitString{Bytes: b[:n], BitLength: last + 1}
+}

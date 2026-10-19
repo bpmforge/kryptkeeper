@@ -31,9 +31,41 @@ const (
 	// (credentials included) is plaintext. Distinct from a failed handshake:
 	// nothing went wrong, TLS is simply off.
 	FindingPostgresTLSDisabled = "POSTGRES_TLS_DISABLED"
+	// FindingMSSQLTLSDisabled: SQL Server answered the TDS PRELOGIN with
+	// ENCRYPT_NOT_SUP -- it speaks TDS but offers no TLS, so logins are
+	// plaintext. FindingMySQLTLSDisabled is the same for a MySQL greeting that
+	// does not advertise the SSL capability.
+	FindingMSSQLTLSDisabled = "MSSQL_TLS_DISABLED"
+	FindingMySQLTLSDisabled = "MYSQL_TLS_DISABLED"
 	// FindingDeprecatedTLS: the server negotiates SSLv3, TLS 1.0 or TLS 1.1
 	// (RFC 8996).
 	FindingDeprecatedTLS = "DEPRECATED_TLS_VERSION"
+
+	// Install-posture findings (W34-08), produced from a host scan of the files
+	// a service uses. None is a substring of another flag or finding code: the
+	// risk SQL matches by LIKE.
+	//
+	// FindingPrivilegedInstallPath: a cert, key or keystore the service
+	// account cannot replace (root-owned, service not root). Medium; high when
+	// the target auto-renews and no privileged credential exists, which is
+	// marked in the detail (PrivilegedHighPrefix) because severity is not part
+	// of the code.
+	FindingPrivilegedInstallPath = "PRIVILEGED_INSTALL_PATH"
+	// FindingInsufficientPrivilege: the scan account could not read paths for
+	// lack of privilege. One per target, naming the uid, the privilege mode,
+	// the paths (capped, with the total) and the fix for that mode. Medium: it
+	// is a target finding, not a certificate one.
+	FindingInsufficientPrivilege = "INSUFFICIENT_PRIVILEGE"
+	// FindingServiceRunsAsRoot: an application server that runs as uid 0.
+	FindingServiceRunsAsRoot = "SERVICE_RUNS_AS_ROOT"
+	// FindingKeyWorldReadable: a private key whose mode grants group or other read.
+	FindingKeyWorldReadable = "KEY_WORLD_READABLE"
+	// FindingHomeDirKeystore: a keystore a service uses lives under /root or /home.
+	FindingHomeDirKeystore = "HOME_DIR_KEYSTORE"
+
+	// PrivilegedHighPrefix opens the detail of a PRIVILEGED_INSTALL_PATH that
+	// is high severity.
+	PrivilegedHighPrefix = FindingPrivilegedInstallPath + ": severity=high"
 )
 
 // FindingCode returns the code of an endpoint finding: everything before the
@@ -77,7 +109,25 @@ var FindingCertFlags = append(append(append([]string{}, HighSeverityCertFlags...
 // service answers here and no working TLS protects it". Scan targets are
 // ports expected to speak TLS (implicit or via STARTTLS/SSLRequest/X.224), so
 // a failed negotiation there is a finding, not noise.
-var HighSeverityEndpointFindings = []string{FindingDeprecatedTLS, FindingNotTLS, FindingTLSHandshakeFailed, FindingPostgresTLSDisabled}
+var HighSeverityEndpointFindings = []string{FindingDeprecatedTLS, FindingNotTLS, FindingTLSHandshakeFailed, FindingPostgresTLSDisabled, FindingMSSQLTLSDisabled, FindingMySQLTLSDisabled,
+	FindingServiceRunsAsRoot, FindingKeyWorldReadable}
+
+// IsHighSeverityFinding reports whether an endpoint finding makes its endpoint
+// risky: a code in HighSeverityEndpointFindings, or a PRIVILEGED_INSTALL_PATH
+// the hub marked high.
+func IsHighSeverityFinding(finding string) bool {
+	return slices.Contains(HighSeverityEndpointFindings, FindingCode(finding)) || strings.HasPrefix(finding, PrivilegedHighPrefix)
+}
+
+// MarkPrivilegedPathHigh rewrites a PRIVILEGED_INSTALL_PATH finding as high
+// severity; other findings are returned unchanged.
+func MarkPrivilegedPathHigh(finding string) string {
+	rest, ok := strings.CutPrefix(finding, FindingPrivilegedInstallPath+": ")
+	if !ok {
+		return finding
+	}
+	return PrivilegedHighPrefix + "; " + rest
+}
 
 // EndpointFindingScore is the risk score an endpoint earns from its own
 // findings, so that an endpoint with no certificate (and therefore no
@@ -88,7 +138,7 @@ const EndpointFindingScore = 20
 // high-severity endpoint finding, else 0.
 func EndpointFindingsScore(issues []string) int {
 	for _, i := range issues {
-		if slices.Contains(HighSeverityEndpointFindings, FindingCode(i)) {
+		if IsHighSeverityFinding(i) {
 			return EndpointFindingScore
 		}
 	}
@@ -139,7 +189,7 @@ func probeLegacyServerHello(ctx context.Context, host string, port int, timeout 
 	if err != nil {
 		return 0, false
 	}
-	d := net.Dialer{Timeout: timeout}
+	d := guardedDialer(timeout)
 	conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(host, fmt.Sprint(port)))
 	if err != nil {
 		return 0, false
@@ -149,17 +199,82 @@ func probeLegacyServerHello(ctx context.Context, host string, port int, timeout 
 	if _, err := conn.Write(hello); err != nil {
 		return 0, false
 	}
-	// record header (5) + handshake type (1) + handshake length (3) + version (2)
-	var head [11]byte
-	if _, err := io.ReadFull(conn, head[:]); err != nil {
+	sh, ok := readServerHello(conn)
+	if !ok {
 		return 0, false
 	}
-	if head[0] != 0x16 || head[5] != 0x02 {
-		return 0, false
-	}
-	switch v := binary.BigEndian.Uint16(head[9:11]); v {
+	switch sh.version {
 	case versionSSL30, versionTLS10, versionTLS11:
-		return v, true
+		return sh.version, true
 	}
 	return 0, false
+}
+
+// maxServerHelloRecord bounds what is read after the record header; a
+// ServerHello is a few hundred bytes and anything larger is not one.
+const maxServerHelloRecord = 16 << 10
+
+// serverHello is the part of a ServerHello the probes use.
+type serverHello struct {
+	version    uint16
+	suite      uint16
+	extensions []uint16 // in the order the server sent them
+	recordLen  int      // length of the handshake record carrying it
+	complete   bool     // suite and extensions were parsed; false when only the version was readable
+}
+
+// readServerHello reads one handshake record and parses a ServerHello from it.
+// ok is false for an alert, a non-handshake record or any message that is not
+// a ServerHello. A hello whose body is cut short still reports its version,
+// which is all the legacy-version probe needs.
+func readServerHello(r io.Reader) (serverHello, bool) {
+	// record header (5) + handshake type (1) + handshake length (3) + version (2)
+	var head [11]byte
+	if _, err := io.ReadFull(r, head[:]); err != nil {
+		return serverHello{}, false
+	}
+	if head[0] != 0x16 || head[5] != 0x02 {
+		return serverHello{}, false
+	}
+	sh := serverHello{version: binary.BigEndian.Uint16(head[9:11]), recordLen: int(binary.BigEndian.Uint16(head[3:5]))}
+	// Bytes of the record after the 6 consumed handshake bytes (type, length, version).
+	rest := sh.recordLen - 6
+	if rest < 0 || rest > maxServerHelloRecord {
+		return sh, true
+	}
+	body := make([]byte, rest)
+	if _, err := io.ReadFull(r, body); err != nil {
+		return sh, true
+	}
+	// random (32), session id (1+n), suite (2), compression (1), [extensions (2+n)]
+	off := 32
+	if off >= len(body) {
+		return sh, true
+	}
+	off += 1 + int(body[off])
+	if off+3 > len(body) {
+		return sh, true
+	}
+	sh.suite = binary.BigEndian.Uint16(body[off:])
+	off += 3
+	sh.complete = true
+	if off+2 > len(body) {
+		return sh, true
+	}
+	extLen := int(binary.BigEndian.Uint16(body[off:]))
+	off += 2
+	if off+extLen > len(body) {
+		sh.complete = false
+		return sh, true
+	}
+	ext := body[off : off+extLen]
+	for len(ext) >= 4 {
+		id, l := binary.BigEndian.Uint16(ext), int(binary.BigEndian.Uint16(ext[2:]))
+		sh.extensions = append(sh.extensions, id)
+		if 4+l > len(ext) {
+			break
+		}
+		ext = ext[4+l:]
+	}
+	return sh, true
 }

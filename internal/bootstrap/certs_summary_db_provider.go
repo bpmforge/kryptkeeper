@@ -9,7 +9,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,6 +17,8 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "modernc.org/sqlite"
+
+	"kryptkeeper/internal/logging"
 )
 
 const (
@@ -113,7 +114,7 @@ type postgresCertSummaryStore struct {
 }
 
 func newPostgresCertSummaryStore(dsn string) (*postgresCertSummaryStore, error) {
-	db, err := openConfiguredDB("pgx", dsn, 5, 2)
+	db, err := openPostgresDB(dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -130,16 +131,17 @@ SELECT
     COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND julianday(valid_until) >= julianday('now') AND julianday(valid_until) < julianday('now', '+30 days') THEN 1 ELSE 0 END), 0) AS expiring_30_days,
     COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND COALESCE(management_state, 'managed') = 'managed' THEN 1 ELSE 0 END), 0) AS managed,
     COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND management_state = 'external' THEN 1 ELSE 0 END), 0) AS external,
-    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND management_state = 'unmanaged' THEN 1 ELSE 0 END), 0) AS unmanaged
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND management_state = 'unmanaged' THEN 1 ELSE 0 END), 0) AS unmanaged,
+    COALESCE(SUM(CASE WHEN ` + unownedCertSQL + ` THEN 1 ELSE 0 END), 0) AS unowned
 FROM certificates
 WHERE COALESCE(is_ca, 0) = 0
 `
 	row := s.db.QueryRowContext(ctx, query)
-	var total, revoked, expired, expiring30Days, managed, external, unmanaged int
-	if err := row.Scan(&total, &revoked, &expired, &expiring30Days, &managed, &external, &unmanaged); err != nil {
+	var total, revoked, expired, expiring30Days, managed, external, unmanaged, unowned int
+	if err := row.Scan(&total, &revoked, &expired, &expiring30Days, &managed, &external, &unmanaged, &unowned); err != nil {
 		return CertSummarySnapshot{}, err
 	}
-	return CertSummarySnapshot{Total: total, Revoked: revoked, Expiring30Days: expiring30Days, Expired: expired, Managed: managed, External: external, Unmanaged: unmanaged, Source: dbCertSummarySQLiteSource}, nil
+	return CertSummarySnapshot{Total: total, Revoked: revoked, Expiring30Days: expiring30Days, Expired: expired, Managed: managed, External: external, Unmanaged: unmanaged, Unowned: unowned, Source: dbCertSummarySQLiteSource}, nil
 }
 
 func (s *postgresCertSummaryStore) LoadSummary(ctx context.Context) (CertSummarySnapshot, error) {
@@ -151,16 +153,17 @@ SELECT
     COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND valid_until >= CURRENT_TIMESTAMP AND valid_until < CURRENT_TIMESTAMP + INTERVAL '30 days' THEN 1 ELSE 0 END), 0) AS expiring_30_days,
     COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND COALESCE(management_state, 'managed') = 'managed' THEN 1 ELSE 0 END), 0) AS managed,
     COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND management_state = 'external' THEN 1 ELSE 0 END), 0) AS external,
-    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND management_state = 'unmanaged' THEN 1 ELSE 0 END), 0) AS unmanaged
+    COALESCE(SUM(CASE WHEN ` + activeCertSQL + ` AND management_state = 'unmanaged' THEN 1 ELSE 0 END), 0) AS unmanaged,
+    COALESCE(SUM(CASE WHEN ` + unownedCertSQL + ` THEN 1 ELSE 0 END), 0) AS unowned
 FROM certificates
 WHERE NOT is_ca
 `
 	row := s.db.QueryRowContext(ctx, query)
-	var total, revoked, expired, expiring30Days, managed, external, unmanaged int
-	if err := row.Scan(&total, &revoked, &expired, &expiring30Days, &managed, &external, &unmanaged); err != nil {
+	var total, revoked, expired, expiring30Days, managed, external, unmanaged, unowned int
+	if err := row.Scan(&total, &revoked, &expired, &expiring30Days, &managed, &external, &unmanaged, &unowned); err != nil {
 		return CertSummarySnapshot{}, err
 	}
-	return CertSummarySnapshot{Total: total, Revoked: revoked, Expiring30Days: expiring30Days, Expired: expired, Managed: managed, External: external, Unmanaged: unmanaged, Source: dbCertSummaryPGSource}, nil
+	return CertSummarySnapshot{Total: total, Revoked: revoked, Expiring30Days: expiring30Days, Expired: expired, Managed: managed, External: external, Unmanaged: unmanaged, Unowned: unowned, Source: dbCertSummaryPGSource}, nil
 }
 
 // certSummaryCacheTTL bounds how stale the dashboard counters may be. The
@@ -194,7 +197,7 @@ func newDBCertSummaryProvider(store dbCertSummaryStore) CertSummaryProvider {
 
 func (p *dbCertSummaryProvider) LoadSummary(ctx context.Context) (CertSummarySnapshot, error) {
 	if p.openErr != nil {
-		log.Printf("cert summary db mode unavailable: %v", p.openErr)
+		logging.Warnf("cert summary db mode unavailable: %v", p.openErr)
 		return CertSummarySnapshot{}, p.openErr
 	}
 	if p.store == nil {

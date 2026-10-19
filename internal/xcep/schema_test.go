@@ -320,3 +320,34 @@ func TestGetPoliciesOffersOnlyCallersEnrolleeType(t *testing.T) {
 		t.Errorf("user offered %v, want [KKUser]", got)
 	}
 }
+
+// B5 (ADCS cutover rehearsal): XCEP never offers a template to a caller who is
+// not permitted to enroll it. A workstation does not see the migrated DC,
+// Kerberos and RAS templates (restricted to pki-admin); a DC granted by host
+// name, or every Windows client granted by protocol:wstep, does.
+func TestGetPoliciesOffersOnlyPermittedTemplates(t *testing.T) {
+	srv := NewServer(func() ([]Template, error) {
+		return []Template{
+			{Name: "Workstation", OID: "1.2.3.1"},
+			{Name: "DomainControllerAuthentication", OID: "1.2.3.2", EnrollRoles: []string{"pki-admin", wstep.RestrictedRole}},
+			{Name: "KerberosAuthentication", OID: "1.2.3.3", EnrollRoles: []string{"pki-admin", wstep.RestrictedRole, "protocol:wstep:dc01.corp.example"}},
+			{Name: "RASAndIASServer", OID: "1.2.3.4", EnrollRoles: []string{"pki-admin", wstep.RestrictedRole}},
+			{Name: "Granted", OID: "1.2.3.5", EnrollRoles: []string{"protocol:wstep"}},
+			// D-291: API roles only never names a Windows caller; not offered.
+			{Name: "LegacyOperator", OID: "1.2.3.6", EnrollRoles: []string{"pki-operator"}},
+		}, nil
+	}, "p").WithIssuer(testCACert(t), "")
+	names := func(who wstep.Identity) string {
+		var out []string
+		for _, p := range fetchPolicies(t, srv, who, getPoliciesSOAP(getPoliciesAction2)).Body.Resp.Response.Policies.Policy {
+			out = append(out, p.Attrs.CommonName)
+		}
+		return strings.Join(out, ",")
+	}
+	if got := names(wstep.IdentityForPrincipal("WS01$", "CORP.EXAMPLE")); got != "Workstation,Granted" {
+		t.Errorf("workstation offered %s, want Workstation,Granted", got)
+	}
+	if got := names(wstep.IdentityForPrincipal("DC01$", "CORP.EXAMPLE")); got != "Workstation,KerberosAuthentication,Granted" {
+		t.Errorf("granted DC offered %s", got)
+	}
+}

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { scrollableProps } from "../lib/scrollable";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import {
@@ -21,6 +22,7 @@ const ROLES = [
   "pki-auditor",
   "discovery-operator",
   "notification-operator",
+  "requester",
 ];
 
 export default function Users() {
@@ -167,8 +169,8 @@ export default function Users() {
             message="Try again shortly."
           />
         ) : (
-          <div className="overflow-hidden rounded-xl border border-border">
-            <table className="min-w-full divide-y divide-border">
+          <div className="overflow-x-auto rounded-xl border border-border" {...scrollableProps}>
+            <table className="min-w-[44rem] divide-y divide-border">
               <thead className="bg-background/80">
                 <tr>
                   {["Email", "Role", "Status", "Last seen", "Actions"].map(
@@ -203,7 +205,7 @@ export default function Users() {
                     </td>
                     <td className="px-4 py-3 text-sm">
                       {canManage ? (
-                        <div className="flex flex-wrap gap-2">
+                        <div className="flex gap-2 whitespace-nowrap">
                           <Button onClick={() => openEdit(user)}>
                             Change role
                           </Button>

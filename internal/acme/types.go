@@ -79,7 +79,7 @@ type Directory struct {
 }
 
 // RenewalInfoResponse is the response body for GET /acme/renewalInfo/{certID}.
-// certID is base64url(issuerKeyHash) + "." + base64url(certSerial) per the ARI draft.
+// certID is base64url(AKI keyIdentifier) + "." + base64url(serial) per RFC 9773.
 type RenewalInfoResponse struct {
 	SuggestedWindow RenewalWindow `json:"suggestedWindow"`
 	// ExplanationURL provides a human-readable reason for the renewal window (optional).

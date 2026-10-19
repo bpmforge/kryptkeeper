@@ -7,6 +7,23 @@ issued, certificates other CAs issued, and certificates nobody was
 tracking — in one sitting. The companion script
 `scripts/day-one-estate.sh` runs the same path non-interactively.
 
+## Stage names and failure codes
+
+The script names each stage and exits with a distinct code so a CI
+wrapper can assert which stage failed without parsing text. On failure
+it prints `FAILED stage=<name> exit=<code>` to stderr. Set
+`KK_DAYONE_INJECT_FAIL=<name>` to force a stage to fail (fires before
+any network call, so it needs no running hub).
+
+| Guide stage | Name | Exit code | Fails when |
+|---|---|---|---|
+| 1 | `hub` | 10 | hub unreachable or token rejected (a wrong bootstrap token is a 401) |
+| 2 | `import` | 20 | bundle unreadable or bulk-import rejected |
+| 3 | `scan` | 30 | scan request rejected |
+| 4 | `sync` | 40 | source create or sync rejected |
+| 6 | `report` | 50 | any report or export download fails |
+| 6 | `verify` | 60 | estate report and dashboard disagree, or `EXPECT_*` not met |
+
 Every stage names the UI page and the API call it fronts, plus the
 failure modes you might hit and where they surface.
 
@@ -82,7 +99,45 @@ If you have time left in the sitting:
   imported and synced today.
 - Export for the meeting: `GET /api/v1/reports/export/inventory`
   (CSV or XLSX, documented column set) from the Reports surfaces.
+- Estate report: `GET /api/v1/reports/estate` (JSON) and
+  `GET /api/v1/reports/estate?format=pdf` (PDF) — origin x
+  management-state matrix, PQC and risk summary. The script saves both
+  as `kryptkeeper-estate-<date>.json` / `.pdf`.
+
+### Verify the numbers
+
+The final script stage (`verify`) compares `managed`, `external` and
+`unmanaged` from the saved estate JSON (`by_state`) with
+`GET /api/v1/dashboard/summary` (`data.certificates`); any difference
+exits 60. To check against what you seeded, set `EXPECT_TOTAL`,
+`EXPECT_MANAGED`, `EXPECT_EXTERNAL` and `EXPECT_UNMANAGED`; each that is
+set must equal the estate report. The token needs dashboard read access
+(the admin token the script already requires is enough).
 
 From here, the **takeover flow** (`POST /api/v1/estate/takeover`)
 turns any unmanaged row into a managed one with a renewal path — but
 that's day two's story.
+
+## Reading the inventory: what each row is, and how sure we are
+
+Discovery gives every certificate an **inventory class**, one of five buckets
+derived from who manages it and who issued it:
+
+| Class | Meaning |
+|---|---|
+| `managed` | A Kryptkeeper renewal path owns it (an agent task, or a target with auto-renew). |
+| `ours_unmanaged` | Issued by this hub's CAs, but nothing renews it. |
+| `authorized_external` | Issued by an issuer you declared as authorized (Discovery, **Authorize this issuer**). Public roots are not authorized by default. |
+| `unknown_issuer` | A public, unknown private, or unclassifiable issuer: a CA group you do not have. |
+| `self_signed` | Always a finding, never a CA group. |
+
+Next to the class, each endpoint shows what technology answers on it (for
+example nginx, Tomcat, MSSQL, an F5). **That is a guess with evidence**, not a
+fact: the evidence hover lists each signal (a Server header, a banner, a
+certificate field, a handshake detail), where it came from and how much it
+counted, so you can judge it. Fast and targeted scans only use signals from
+connections they already make; the active probes run only in full and deep scans.
+A low-confidence guess never produces an install recommendation.
+
+<!-- screenshot to add: the evidence hover on a Discovery row (capture from the W34-20 corpus hub). -->
+

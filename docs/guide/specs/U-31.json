@@ -1,0 +1,300 @@
+{
+  "task": "U-31",
+  "title": "Set renewal policy per target",
+  "sourceStory": "STORIES.md#u-31",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/targets/renewal-policy"
+      },
+      "caption": "Open /targets/renewal-policy",
+      "slug": "renewal-policy-list",
+      "expect": {
+        "role": "button",
+        "name": "Refresh"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-31/01-renewal-policy-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "web-01 renewal method"
+      },
+      "value": "ACME",
+      "caption": "Select \"ACME\" in **web-01 renewal method**",
+      "slug": "pick-method",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-31/02-pick-method.png",
+        "annotated": "docs/guide/screenshots/U-31/02-pick-method-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 482,
+          "w": 202,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "web-01 auto-renew threshold days"
+      },
+      "value": "21",
+      "caption": "Fill **web-01 auto-renew threshold days** with \"21\"",
+      "slug": "web-01 auto-renew threshold days",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-31/03-web-01-auto-renew-threshold-days.png",
+        "annotated": "docs/guide/screenshots/U-31/03-web-01-auto-renew-threshold-days-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 668,
+          "y": 482,
+          "w": 160,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "css": "xpath=//input[@aria-label=\"web-01 auto-renew threshold days\"]/following::button[normalize-space()=\"Save\"][1]"
+      },
+      "caption": "Click **xpath=//input[@aria-label=\"web-01 auto-renew threshold days\"]/following::button[normalize-space()=\"Save\"][1]**",
+      "slug": "saved",
+      "expect": {
+        "text": "Threshold: 21 days"
+      },
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-31/04-saved.png",
+        "annotated": "docs/guide/screenshots/U-31/04-saved-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 836,
+          "y": 476,
+          "w": 61,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "css": "xpath=//input[@aria-label=\"web-01 auto-renew threshold days\"]/following::button[normalize-space()=\"Clear override\"][1]"
+      },
+      "caption": "Click **xpath=//input[@aria-label=\"web-01 auto-renew threshold days\"]/following::button[normalize-space()=\"Clear override\"][1]**",
+      "slug": "cleared",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-31/05-cleared.png",
+        "annotated": "docs/guide/screenshots/U-31/05-cleared-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 906,
+          "y": 476,
+          "w": 141,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Group name"
+      },
+      "value": "prod-web-canary",
+      "caption": "Fill **Group name** with \"prod-web-canary\"",
+      "slug": "group-name",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-31/06-group-name.png",
+        "annotated": "docs/guide/screenshots/U-31/06-group-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 858,
+          "w": 274,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Group threshold days"
+      },
+      "value": "14",
+      "caption": "Fill **Group threshold days** with \"14\"",
+      "slug": "Group threshold days",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-31/07-group-threshold-days.png",
+        "annotated": "docs/guide/screenshots/U-31/07-group-threshold-days-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 547,
+          "y": 858,
+          "w": 160,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Save group"
+      },
+      "caption": "Click **Save group**",
+      "slug": "group-saved",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-31/08-group-saved.png",
+        "annotated": "docs/guide/screenshots/U-31/08-group-saved-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 799,
+          "w": 104,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:44:13.398Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-31",
+    "steps": 8,
+    "shots": 8,
+    "annotated": 7,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/targets/renewal-policy"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-31/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-31/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

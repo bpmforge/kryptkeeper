@@ -6,9 +6,10 @@ package bootstrap
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 func registerProtectedConfigHandler(auth *Authenticator, auditProvider AuditProvider) http.HandlerFunc {
@@ -46,7 +47,7 @@ func registerProtectedConfigHandler(auth *Authenticator, auditProvider AuditProv
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/protected/config response: %v", err)
+			logging.Warnf("failed to encode /api/v1/protected/config response: %v", err)
 		}
 	}
 }

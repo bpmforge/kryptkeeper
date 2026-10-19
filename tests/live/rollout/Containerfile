@@ -1,0 +1,6 @@
+# W27-16: the ssh-install image plus a fault-injecting nginx wrapper.
+# run.sh builds the base image from tests/live/ssh-install and passes it in.
+ARG BASE
+FROM ${BASE}
+COPY nginx-flipfail.sh /usr/local/bin/nginx
+RUN chmod 755 /usr/local/bin/nginx

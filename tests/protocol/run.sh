@@ -98,6 +98,11 @@ check_migration_dir() {
   return 0
 }
 
+check_template_parity() {
+  echo "[protocol] Running template policy parity (same CSR, six issuance paths)"
+  ( cd "$ROOT_DIR" && go test ./internal/bootstrap -run '^TestTemplatePolicyParity$' -count=1 ) || return 1
+}
+
 echo "[protocol] Running migration SQL integrity checks"
 
 protocol_failures=0
@@ -107,6 +112,10 @@ if ! check_migration_dir "$ROOT_DIR/internal/db/migrations/sqlite" "sqlite"; the
 fi
 
 if ! check_migration_dir "$ROOT_DIR/internal/db/migrations/postgres" "postgres"; then
+  protocol_failures=$((protocol_failures + 1))
+fi
+
+if ! check_template_parity; then
   protocol_failures=$((protocol_failures + 1))
 fi
 

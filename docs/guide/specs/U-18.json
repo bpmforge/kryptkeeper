@@ -1,0 +1,172 @@
+{
+  "task": "U-18",
+  "title": "Reject a request",
+  "sourceStory": "STORIES.md#u-18",
+  "persona": "marcus.webb (approver)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/inbox"
+      },
+      "caption": "Open /inbox",
+      "slug": "inbox",
+      "expect": {
+        "role": "heading",
+        "name": "Approvals inbox"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-18/01-inbox.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Reject",
+        "nth": 0
+      },
+      "caption": "Click **Reject**",
+      "slug": "reject-prompt",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-18/02-reject-prompt.png",
+        "annotated": "docs/guide/screenshots/U-18/02-reject-prompt-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1284,
+          "y": 340,
+          "w": 94,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "placeholder": "Rejection reason"
+      },
+      "value": "Wildcard scope is broader than the request needs",
+      "caption": "Fill **Rejection reason** with \"Wildcard scope is broader than the request needs\"",
+      "slug": "rejection-reason",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-18/03-rejection-reason.png",
+        "annotated": "docs/guide/screenshots/U-18/03-rejection-reason-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 282,
+          "y": 419,
+          "w": 945,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Confirm rejection"
+      },
+      "caption": "Click **Confirm rejection**",
+      "slug": "rejected",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-18/04-rejected.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "flags": "DESTRUCTIVE (irreversible decision; throwaway hub)",
+  "principal": "marcus",
+  "lastRun": {
+    "at": "2026-10-18T12:48:40.236Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-18",
+    "steps": 4,
+    "shots": 4,
+    "annotated": 2,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/inbox"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-18/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-18/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

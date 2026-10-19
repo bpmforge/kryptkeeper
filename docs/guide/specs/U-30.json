@@ -1,0 +1,305 @@
+{
+  "task": "U-30",
+  "title": "Bring an agentless target under management",
+  "sourceStory": "STORIES.md#u-30",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/targets/setup"
+      },
+      "caption": "Open /targets/setup",
+      "slug": "target-setup",
+      "expect": {
+        "role": "button",
+        "name": "Generate token"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-30/01-target-setup.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "radio",
+        "name": "Agentless"
+      },
+      "caption": "Click **Agentless**",
+      "slug": "agentless-wizard-step-1",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-30/02-agentless-wizard-step-1.png",
+        "annotated": "docs/guide/screenshots/U-30/02-agentless-wizard-step-1-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 836,
+          "y": 137,
+          "w": 580,
+          "h": 94
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Target name"
+      },
+      "value": "db-01",
+      "caption": "Fill **Target name** with \"db-01\"",
+      "slug": "Target name",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-30/03-target-name.png",
+        "annotated": "docs/guide/screenshots/U-30/03-target-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 418,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Host"
+      },
+      "value": "db-01.acme.test",
+      "caption": "Fill **Host** with \"db-01.acme.test\"",
+      "slug": "Host",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-30/04-host.png",
+        "annotated": "docs/guide/screenshots/U-30/04-host-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 488,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "step-2-discovery",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-30/05-step-2-discovery.png",
+        "annotated": "docs/guide/screenshots/U-30/05-step-2-discovery-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 337,
+          "y": 512,
+          "w": 60,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "step-3-install",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-30/06-step-3-install.png",
+        "annotated": "docs/guide/screenshots/U-30/06-step-3-install-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 337,
+          "y": 512,
+          "w": 60,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "step-4-credential",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-30/07-step-4-credential.png",
+        "annotated": "docs/guide/screenshots/U-30/07-step-4-credential-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 337,
+          "y": 710,
+          "w": 60,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Next is blocked until a credential reference is chosen",
+      "slug": "credential-required-validation",
+      "allow": [
+        "credential",
+        "400"
+      ],
+      "expectError": true,
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-30/08-credential-required-validation.png",
+        "annotated": "docs/guide/screenshots/U-30/08-credential-required-validation-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 337,
+          "y": 742,
+          "w": 60,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "flags": "CONFIG + LAB HOST (steps 5-6 need an SSH credential and reachable host)",
+  "lastRun": {
+    "at": "2026-10-18T12:44:02.613Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-30",
+    "steps": 8,
+    "shots": 8,
+    "annotated": 7,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/targets/setup"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-30/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-30/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

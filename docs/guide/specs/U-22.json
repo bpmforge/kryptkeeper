@@ -1,0 +1,403 @@
+{
+  "task": "U-22",
+  "title": "Renew certificates (single and bulk)",
+  "sourceStory": "STORIES.md#u-22",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/certificates"
+      },
+      "caption": "Open /certificates",
+      "slug": "certificates-list",
+      "expect": {
+        "role": "button",
+        "name": "Issue certificate"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-22/01-certificates-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Filter by certificate status"
+      },
+      "value": "Active",
+      "caption": "Select \"Active\" in **Filter by certificate status**",
+      "slug": "Filter by certificate status",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-22/02-filter-by-certificate-status.png",
+        "annotated": "docs/guide/screenshots/U-22/02-filter-by-certificate-status-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 836,
+          "y": 265,
+          "w": 178,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Apply filters"
+      },
+      "caption": "Click **Apply filters**",
+      "slug": "active-filter",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-22/03-active-filter.png",
+        "annotated": "docs/guide/screenshots/U-22/03-active-filter-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 389,
+          "w": 110,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "web.acme.test"
+      },
+      "caption": "Click **web.acme.test**",
+      "slug": "certificate-detail",
+      "expect": {
+        "role": "button",
+        "name": "Renew"
+      },
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-22/04-certificate-detail.png",
+        "annotated": "docs/guide/screenshots/U-22/04-certificate-detail-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 350,
+          "y": 846,
+          "w": 96,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Renew",
+        "exact": true
+      },
+      "caption": "Click **Renew**",
+      "slug": "renew-dialog",
+      "expect": {
+        "role": "heading",
+        "name": "Renew certificate"
+      },
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-22/05-renew-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "CSR PEM",
+        "within": "[role=dialog]"
+      },
+      "value": "-----BEGIN CERTIFICATE REQUEST-----\nMIH+MIGlAgEAMBgxFjAUBgNVBAMMDXdlYi5hY21lLnRlc3QwWTATBgcqhkjOPQIB\nBggqhkjOPQMBBwNCAATo+zcQuL20W/jHaObiwrvNmsbskfM8xUK0Qg8fywAASSJf\n6YJex6uInJstfKnINeXqPA8W0dv9rHkRRG8J0ywooCswKQYJKoZIhvcNAQkOMRww\nGjAYBgNVHREEETAPgg13ZWIuYWNtZS50ZXN0MAoGCCqGSM49BAMCA0gAMEUCIGcN\n3H/k8OYemJ/zHOMa4Q9t+d7sUIJINqcFuHBVm5eWAiEAuTrsJ5Qkdd4YPyxYLqVY\n6HreYD8ykgk1RW6fT3DZj6g=\n-----END CERTIFICATE REQUEST-----",
+      "caption": "Fill **CSR PEM** with \"-----BEGIN CERTIFICATE REQUEST-----\nMIH+MIGlAgEAMBgxFjAUBgNVBAMMDXdlYi5hY21lLnRlc3QwWTATBgcqhkjOPQIB\nBggqhkjOPQMBBwNCAATo+zcQuL20W/jHaObiwrvNmsbskfM8xUK0Qg8fywAASSJf\n6YJex6uInJstfKnINeXqPA8W0dv9rHkRRG8J0ywooCswKQYJKoZIhvcNAQkOMRww\nGjAYBgNVHREEETAPgg13ZWIuYWNtZS50ZXN0MAoGCCqGSM49BAMCA0gAMEUCIGcN\n3H/k8OYemJ/zHOMa4Q9t+d7sUIJINqcFuHBVm5eWAiEAuTrsJ5Qkdd4YPyxYLqVY\n6HreYD8ykgk1RW6fT3DZj6g=\n-----END CERTIFICATE REQUEST-----\"",
+      "slug": "csr-pasted",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-22/06-csr-pasted.png",
+        "annotated": "docs/guide/screenshots/U-22/06-csr-pasted-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 404,
+          "w": 630,
+          "h": 138
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Confirm renew"
+      },
+      "caption": "Click **Confirm renew**",
+      "slug": "renewed",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-22/07-renewed.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/certificates"
+      },
+      "caption": "Open /certificates",
+      "slug": "certificates-list-again",
+      "expect": {
+        "role": "button",
+        "name": "Bulk renew"
+      },
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-22/08-certificates-list-again.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "label": "Select feature-flags.svc.acme.test"
+      },
+      "caption": "Tick **Select feature-flags.svc.acme.test**",
+      "slug": "select-for-bulk",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-22/09-select-for-bulk.png",
+        "annotated": "docs/guide/screenshots/U-22/09-select-for-bulk-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 442,
+          "w": 16,
+          "h": 16
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "label": "Select ml-inference.svc.acme.test"
+      },
+      "caption": "Tick **Select ml-inference.svc.acme.test**",
+      "slug": "Select ml-inference.svc.acme.test",
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-22/10-select-ml-inference-svc-acme-test.png",
+        "annotated": "docs/guide/screenshots/U-22/10-select-ml-inference-svc-acme-test-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 442,
+          "w": 16,
+          "h": 16
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Bulk renew"
+      },
+      "caption": "Click **Bulk renew**",
+      "slug": "bulk-renew-result",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-22/11-bulk-renew-result.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/expiry-timeline"
+      },
+      "caption": "Open Expiry Timeline to confirm the distribution shifted",
+      "slug": "expiry-timeline",
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-22/12-expiry-timeline.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:42:29.037Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-22",
+    "steps": 12,
+    "shots": 12,
+    "annotated": 6,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/reports/expiry-timeline"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-22/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-22/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

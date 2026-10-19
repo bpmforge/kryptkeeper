@@ -44,7 +44,7 @@ HUB_BASE="http://127.0.0.1:${HUB_PORT}"
 TOKEN=uat-token
 DC_CTR=kk-uat-samba
 DC_VOL=kk-uat-samba-data
-DOMAIN=KKUAT.LOCAL
+DOMAIN=CORP.LOCAL
 LDAP_PORT=3389   # high port: 389 needs root on the host
 LDAPS_PORT=6636  # high port: 636 needs root on the host
 DOMAINPASS="$(openssl rand -base64 24 | tr -d '=+/' | cut -c1-20)Aa1!"

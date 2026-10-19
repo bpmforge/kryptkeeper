@@ -5,15 +5,22 @@
 package bootstrap
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"log"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"kryptkeeper/internal/egress"
+	"kryptkeeper/internal/logging"
 )
 
 type authValidatorConfig struct {
@@ -32,11 +39,14 @@ type authValidatorConfig struct {
 	loginSigning           string
 	loginTTL               time.Duration
 	refreshTTL             time.Duration
-	loginUser              loginCredential
-	loginPepper            string
-	apiKeyPepper           string
-	apiKeys                map[string]apiKeyRecord
-	apiKeyAuthEnabled      bool
+	// idleTimeout bounds how long a refresh token may sit unused: Refresh
+	// refuses a session whose last issue is older than this (0 disables).
+	idleTimeout       time.Duration
+	loginUser         loginCredential
+	loginPepper       string
+	apiKeyPepper      string
+	apiKeys           map[string]apiKeyRecord
+	apiKeyAuthEnabled bool
 	// tenantClaim is the JWT/OIDC claim name carrying a scoped principal's
 	// identity-bound tenant (W3-01). No standard claim exists across IdPs
 	// (tenant/tid/org all appear in the wild) so it's configurable rather
@@ -50,6 +60,9 @@ type authValidatorConfig struct {
 	roleClaim  string
 	roleMap    []roleMapEntry
 	roleMapErr string
+	// unmappedRole is APP_AUTH_UNMAPPED_ROLE: "read-only" opts into a viewer
+	// for identities whose groups map to nothing; anything else denies.
+	unmappedRole string
 
 	// OIDC SSO login (W6-02): the browser-facing authorization-code+PKCE
 	// flow, distinct from oidcIssuer/oidcAudience/oidcJWKSJSON above (which
@@ -121,13 +134,13 @@ func NewAuthenticatorFromEnv() *Authenticator {
 	bootstrapToken = strings.TrimSpace(bootstrapToken)
 	bootstrapTokenDisabled := envFlagTrue("KRYPTKEEPER_DISABLE_BOOTSTRAP_TOKEN")
 	if bootstrapTokenDisabled {
-		log.Printf("notice: KRYPTKEEPER_DISABLE_BOOTSTRAP_TOKEN is set; the raw bootstrap token will not authenticate (login sessions, API keys and bearer tokens still do)")
+		logging.Warnf("notice: KRYPTKEEPER_DISABLE_BOOTSTRAP_TOKEN is set; the raw bootstrap token will not authenticate (login sessions, API keys and bearer tokens still do)")
 	}
 	authMode := os.Getenv("AUTH_MODE")
 	if authMode == "" {
 		authMode = "bootstrap"
 	} else if authMode != "bootstrap" && authMode != "jwt" && authMode != "oidc" {
-		log.Printf("warning: unknown AUTH_MODE=%q; auth checks will fail closed", authMode)
+		logging.Warnf("unknown AUTH_MODE=%q; auth checks will fail closed", authMode)
 	}
 	jwtHS256Secret := os.Getenv("APP_JWT_HS256_SECRET")
 	jwtIssuer := os.Getenv("APP_JWT_ISSUER")
@@ -163,12 +176,12 @@ func NewAuthenticatorFromEnv() *Authenticator {
 	oidcPostLoginRedirectURL := firstNonEmpty(strings.TrimSpace(os.Getenv("APP_OIDC_POST_LOGIN_REDIRECT_URL")), "/")
 
 	scimBearerToken := strings.TrimSpace(os.Getenv("APP_SCIM_TOKEN"))
-	scimDefaultRole := firstNonEmpty(strings.TrimSpace(os.Getenv("APP_SCIM_DEFAULT_ROLE")), "pki-viewer")
+	scimDefaultRole := strings.TrimSpace(os.Getenv("APP_SCIM_DEFAULT_ROLE"))
 	scimGroupRoleMap := map[string]string{}
 	if raw := strings.TrimSpace(os.Getenv("APP_SCIM_GROUP_ROLE_MAP_JSON")); raw != "" {
 		var configured map[string]string
 		if err := json.Unmarshal([]byte(raw), &configured); err != nil {
-			log.Printf("warning: invalid APP_SCIM_GROUP_ROLE_MAP_JSON; SCIM group role mapping disabled: %v", err)
+			logging.Warnf("invalid APP_SCIM_GROUP_ROLE_MAP_JSON; SCIM group role mapping disabled: %v", err)
 		} else {
 			for group, role := range configured {
 				group = strings.TrimSpace(group)
@@ -193,11 +206,11 @@ func NewAuthenticatorFromEnv() *Authenticator {
 	samlIDPCertificates := parseSAMLIDPCertificatesPEM(os.Getenv("APP_SAML_IDP_CERTIFICATE"))
 	samlPostLoginRedirectURL := firstNonEmpty(strings.TrimSpace(os.Getenv("APP_SAML_POST_LOGIN_REDIRECT_URL")), "/")
 	if err := requireHTTPSURL(samlIDPSSOURL); samlIDPSSOURL != "" && err != nil {
-		log.Printf("warning: invalid APP_SAML_IDP_SSO_URL; saml login will fail closed: %v", err)
+		logging.Warnf("invalid APP_SAML_IDP_SSO_URL; saml login will fail closed: %v", err)
 		samlIDPSSOURL = ""
 	}
 	if err := requireHTTPSURL(samlACSURL); samlACSURL != "" && err != nil {
-		log.Printf("warning: invalid APP_SAML_ACS_URL; saml login will fail closed: %v", err)
+		logging.Warnf("invalid APP_SAML_ACS_URL; saml login will fail closed: %v", err)
 		samlACSURL = ""
 	}
 
@@ -210,7 +223,7 @@ func NewAuthenticatorFromEnv() *Authenticator {
 	if raw := strings.TrimSpace(os.Getenv("APP_API_KEYS_JSON")); raw != "" {
 		var configured []apiKeyRecord
 		if err := json.Unmarshal([]byte(raw), &configured); err != nil {
-			log.Printf("warning: invalid APP_API_KEYS_JSON; api key auth disabled: %v", err)
+			logging.Warnf("invalid APP_API_KEYS_JSON; api key auth disabled: %v", err)
 		} else {
 			for _, item := range configured {
 				kid := strings.TrimSpace(item.Kid)
@@ -245,6 +258,8 @@ func NewAuthenticatorFromEnv() *Authenticator {
 		loginSigning:           strings.TrimSpace(os.Getenv("APP_AUTH_LOGIN_SIGNING_SECRET")),
 		loginTTL:               readEnvSeconds("APP_AUTH_ACCESS_TTL_SEC", 900),
 		refreshTTL:             readEnvSeconds("APP_AUTH_REFRESH_TTL_SEC", 2592000),
+		idleTimeout:            readEnvSeconds("APP_AUTH_IDLE_TIMEOUT_SEC", 1800),
+		unmappedRole:           strings.ToLower(strings.TrimSpace(os.Getenv("APP_AUTH_UNMAPPED_ROLE"))),
 		loginUser:              loginUser,
 		loginPepper:            strings.TrimSpace(os.Getenv("APP_AUTH_LOGIN_PASSWORD_PEPPER")),
 		apiKeyPepper:           apiKeyPepper,
@@ -276,23 +291,23 @@ func NewAuthenticatorFromEnv() *Authenticator {
 		samlPostLoginRedirectURL: samlPostLoginRedirectURL,
 	}
 	if authMode == "bootstrap" && bootstrapToken == "" && !bootstrapTokenDisabled {
-		log.Printf("warning: AUTH_MODE=bootstrap but APP_BOOTSTRAP_TOKEN is not set; bootstrap auth will fail closed")
+		logging.Warnf("AUTH_MODE=bootstrap but APP_BOOTSTRAP_TOKEN is not set; bootstrap auth will fail closed")
 	}
 	if loginEnabled {
 		if loginUser.Email == "" || loginUser.PasswordHash == "" || loginUser.Subject == "" || config.loginSigning == "" {
-			log.Printf("warning: login enabled but required login env values are missing; login endpoint will fail closed")
+			logging.Warnf("login enabled but required login env values are missing; login endpoint will fail closed")
 		}
 	}
 	if samlLoginEnabled {
 		if samlIDPSSOURL == "" || samlIDPIssuer == "" || samlSPIssuer == "" || samlACSURL == "" || len(samlIDPCertificates) == 0 || config.loginSigning == "" {
-			log.Printf("warning: SAML login enabled but required configuration is incomplete; saml endpoints will fail closed")
+			logging.Warnf("SAML login enabled but required configuration is incomplete; saml endpoints will fail closed")
 		}
 	}
 	if len(apiKeys) > 0 && apiKeyPepper == "" {
-		log.Printf("warning: API keys configured without APP_API_KEY_PEPPER; api-key auth will fail closed")
+		logging.Warnf("API keys configured without APP_API_KEY_PEPPER; api-key auth will fail closed")
 	}
 	if len(apiKeys) > 0 && !apiKeyAuthEnabled {
-		log.Printf("warning: API keys configured but APP_API_KEY_AUTH_ENABLED is false; api-key auth path disabled")
+		logging.Warnf("API keys configured but APP_API_KEY_AUTH_ENABLED is false; api-key auth path disabled")
 	}
 
 	var oidcJWKSCache *managedOIDCJWKSCache
@@ -310,7 +325,7 @@ func NewAuthenticatorFromEnv() *Authenticator {
 			oidcJWKSTTL := readEnvSeconds("APP_OIDC_JWKS_TTL_SEC", 300)
 			cache, err := newManagedOIDCJWKSCache(oidcDiscoveryURL, oidcHTTPTimeout, oidcJWKSTTL)
 			if err != nil {
-				log.Printf("invalid OIDC managed JWKS configuration: %v", err)
+				logging.Infof("invalid OIDC managed JWKS configuration: %v", err)
 			} else {
 				oidcJWKSCache = cache
 			}
@@ -322,7 +337,7 @@ func NewAuthenticatorFromEnv() *Authenticator {
 			if oidcJWKSCache != nil {
 				resolvedAuthEndpoint, resolvedTokenEndpoint, err := discoverOIDCEndpoints(oidcJWKSCache)
 				if err != nil {
-					log.Printf("warning: OIDC login enabled but discovery endpoint lookup failed; login will fail closed: %v", err)
+					logging.Warnf("OIDC login enabled but discovery endpoint lookup failed; login will fail closed: %v", err)
 				} else {
 					if oidcAuthorizationEndpoint == "" {
 						oidcAuthorizationEndpoint = resolvedAuthEndpoint
@@ -334,15 +349,15 @@ func NewAuthenticatorFromEnv() *Authenticator {
 			}
 		}
 		if err := requireHTTPSURL(oidcAuthorizationEndpoint); oidcAuthorizationEndpoint != "" && err != nil {
-			log.Printf("warning: invalid APP_OIDC_AUTHORIZATION_ENDPOINT; login will fail closed: %v", err)
+			logging.Warnf("invalid APP_OIDC_AUTHORIZATION_ENDPOINT; login will fail closed: %v", err)
 			oidcAuthorizationEndpoint = ""
 		}
 		if err := requireHTTPSURL(oidcTokenEndpoint); oidcTokenEndpoint != "" && err != nil {
-			log.Printf("warning: invalid APP_OIDC_TOKEN_ENDPOINT; login will fail closed: %v", err)
+			logging.Warnf("invalid APP_OIDC_TOKEN_ENDPOINT; login will fail closed: %v", err)
 			oidcTokenEndpoint = ""
 		}
 		if oidcClientID == "" || oidcRedirectURL == "" || oidcAuthorizationEndpoint == "" || oidcTokenEndpoint == "" || config.loginSigning == "" {
-			log.Printf("warning: OIDC login enabled but required configuration is incomplete; login endpoint will fail closed")
+			logging.Warnf("OIDC login enabled but required configuration is incomplete; login endpoint will fail closed")
 		}
 		config.oidcAuthorizationEndpoint = oidcAuthorizationEndpoint
 		config.oidcTokenEndpoint = oidcTokenEndpoint
@@ -396,7 +411,7 @@ func readEnvSeconds(name string, defaultSeconds int) time.Duration {
 
 	seconds, err := strconv.Atoi(raw)
 	if err != nil || seconds <= 0 {
-		log.Printf("invalid %s=%q, using default %ds", name, raw, defaultSeconds)
+		logging.Infof("invalid %s=%q, using default %ds", name, raw, defaultSeconds)
 		return time.Duration(defaultSeconds) * time.Second
 	}
 
@@ -422,4 +437,165 @@ func requireHTTPSURL(raw string) error {
 	}
 
 	return fmt.Errorf("must be absolute https url")
+}
+
+// liveAuthConfig is the TTL-cached overlay of registry overrides for the
+// SAML and SCIM settings (W33-04), refreshed at most once per
+// ssoBearerConfigTTL, mirroring ssoBearerConfigSnapshot.
+type liveAuthConfig struct {
+	mu        sync.Mutex
+	checkedAt time.Time
+	saml      authValidatorConfig
+	scimToken string
+}
+
+// liveSnapshot returns the cached overlay, re-resolving it when stale.
+func (a *Authenticator) liveSnapshot(ctx context.Context) (authValidatorConfig, string) {
+	l := &a.liveCfg
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	if a.ssoConfigNow != nil {
+		now = a.ssoConfigNow()
+	}
+	if !l.checkedAt.IsZero() && now.Sub(l.checkedAt) < ssoBearerConfigTTL {
+		return l.saml, l.scimToken
+	}
+	l.checkedAt = now
+
+	cfg := a.config
+	s := a.configStore
+	cfg.samlIDPSSOURL = resolveSSOConfigString(ctx, s, "saml.idp_sso_url", cfg.samlIDPSSOURL)
+	cfg.samlIDPIssuer = resolveSSOConfigString(ctx, s, "saml.idp_issuer", cfg.samlIDPIssuer)
+	cfg.samlSPIssuer = resolveSSOConfigString(ctx, s, "saml.sp_entity_id", cfg.samlSPIssuer)
+	if pem := strings.TrimSpace(resolveSSOConfigString(ctx, s, "saml.idp_certificate", "")); pem != "" {
+		if certs := parseSAMLIDPCertificatesPEM(pem); len(certs) > 0 {
+			cfg.samlIDPCertificates = certs
+		}
+	}
+	// An override is held to the same https requirement as the env value.
+	if cfg.samlIDPSSOURL != a.config.samlIDPSSOURL && requireHTTPSURL(cfg.samlIDPSSOURL) != nil {
+		cfg.samlIDPSSOURL = ""
+	}
+	l.saml = cfg
+
+	token := strings.TrimSpace(resolveSSOConfigSecret(ctx, s, "scim.token", a.config.scimBearerToken))
+	enabled := token != ""
+	if raw := strings.TrimSpace(resolveSSOConfigString(ctx, s, "scim.enabled", os.Getenv("APP_SCIM_ENABLED"))); raw != "" {
+		enabled = strings.EqualFold(raw, "true") || raw == "1"
+	}
+	if !enabled || token == "" { // enabled with an empty token fails closed
+		token = ""
+	}
+	l.scimToken = token
+	return l.saml, l.scimToken
+}
+
+// samlEffectiveConfig is a.config with the registry's SAML overrides overlaid.
+func (a *Authenticator) samlEffectiveConfig(ctx context.Context) authValidatorConfig {
+	cfg, _ := a.liveSnapshot(ctx)
+	return cfg
+}
+
+// scimEffectiveToken is the SCIM bearer token in force, or "" when SCIM is
+// disabled or has no token.
+func (a *Authenticator) scimEffectiveToken(ctx context.Context) string {
+	_, tok := a.liveSnapshot(ctx)
+	return tok
+}
+
+// W33-06: break-glass guard for SSO overrides.
+
+var (
+	errSSOGuardNoLocalAdmin = errors.New("an enabled local admin is required before changing SSO settings (set APP_AUTH_LOGIN_* and APP_AUTH_BREAKGLASS_EMAIL)")
+	errSSOGuardDiscovery    = errors.New("OIDC discovery test failed; override not saved")
+)
+
+// oidcProbeClient fetches the admin-supplied discovery URL. The URL is
+// attacker-influenceable (an admin account takeover must not become an SSRF
+// primitive), so it runs on the egress-policy client: https only, link-local
+// and cloud-metadata addresses always refused, loopback refused, redirects
+// refused, 3 s timeout. Tests replace it.
+var oidcProbeClient = egress.NewClient(egress.PolicyFromEnv(egress.Policy{
+	AllowPrivate: true, // on-prem IdPs live on private space; KRYPTKEEPER_EGRESS_DENY_PRIVATE tightens it
+	RequireHTTPS: true,
+	MaxRedirects: 0,
+	Timeout:      3 * time.Second,
+}))
+
+// hasEnabledLocalAdmin reports whether the static local login user is an
+// enabled admin with a password verifier, i.e. an identity that does not
+// depend on the IdP.
+func (a *Authenticator) hasEnabledLocalAdmin() bool {
+	c := a.config
+	return c.loginEnabled && c.loginUser.Active && isAdminRole(c.loginUser.Role) &&
+		strings.TrimSpace(c.loginUser.Email) != "" && a.loginPasswordHash() != ""
+}
+
+// ssoOverrideGuard refuses a set of an SSO key that could lock every login
+// out. It runs before anything is persisted. Reset (DELETE) is never guarded.
+func (a *Authenticator) ssoOverrideGuard(ctx context.Context, key, value string) error {
+	if !ssoLockoutGuardedKeys[key] {
+		return nil
+	}
+	if !a.hasEnabledLocalAdmin() {
+		return errSSOGuardNoLocalAdmin
+	}
+	value = strings.TrimSpace(value)
+	switch key {
+	case "sso.oidc_issuer":
+		if value == "" {
+			return nil // clearing is a rollback
+		}
+		discovery := resolveSSOConfigString(ctx, a.configStore, "sso.oidc_discovery_url", os.Getenv("APP_OIDC_DISCOVERY_URL"))
+		if strings.TrimSpace(discovery) == "" {
+			discovery = strings.TrimRight(value, "/") + "/.well-known/openid-configuration"
+		}
+		return probeOIDCDiscovery(ctx, value, strings.TrimSpace(discovery))
+	case "sso.oidc_discovery_url":
+		if value == "" {
+			return nil
+		}
+		issuer := resolveSSOConfigString(ctx, a.configStore, "sso.oidc_issuer", a.config.oidcIssuer)
+		return probeOIDCDiscovery(ctx, strings.TrimSpace(issuer), value)
+	}
+	return nil
+}
+
+// probeOIDCDiscovery GETs discoveryURL and requires a 200 JSON document whose
+// issuer matches and which names a jwks_uri. Failure causes are deliberately
+// coarse: the response body is never reflected.
+func probeOIDCDiscovery(ctx context.Context, issuer, discoveryURL string) error {
+	if err := requireHTTPSURL(discoveryURL); err != nil {
+		return fmt.Errorf("%w: discovery url %v", errSSOGuardDiscovery, err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
+	if err != nil {
+		return fmt.Errorf("%w: invalid discovery url", errSSOGuardDiscovery)
+	}
+	req.Header.Set("Accept", "application/json")
+	resp, err := oidcProbeClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: discovery endpoint unreachable or blocked", errSSOGuardDiscovery)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%w: discovery endpoint returned HTTP %d", errSSOGuardDiscovery, resp.StatusCode)
+	}
+	var doc struct {
+		Issuer  string `json:"issuer"`
+		JWKSURI string `json:"jwks_uri"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc); err != nil {
+		return fmt.Errorf("%w: discovery document is not valid JSON", errSSOGuardDiscovery)
+	}
+	if strings.TrimSpace(doc.Issuer) == "" || strings.TrimRight(doc.Issuer, "/") != strings.TrimRight(issuer, "/") {
+		return fmt.Errorf("%w: discovery issuer does not match the configured issuer", errSSOGuardDiscovery)
+	}
+	if strings.TrimSpace(doc.JWKSURI) == "" {
+		return fmt.Errorf("%w: discovery document has no jwks_uri", errSSOGuardDiscovery)
+	}
+	return nil
 }

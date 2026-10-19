@@ -69,9 +69,12 @@ func signTestRS256JWT(t *testing.T, priv *rsa.PrivateKey, kid string, claims map
 // --- discoverOIDCEndpoints ---
 
 func TestDiscoverOIDCEndpoints_ResolvesFromDiscoveryDocument(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Endpoints must sit on the discovery host (M-2), so the document is
+	// built from the test server's own address.
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"authorization_endpoint":"https://idp.example.com/authorize","token_endpoint":"https://idp.example.com/token","jwks_uri":"https://idp.example.com/jwks"}`))
+		_, _ = w.Write([]byte(`{"authorization_endpoint":"https://idp.example.com/authorize","token_endpoint":"` + server.URL + `/token","jwks_uri":"` + server.URL + `/jwks"}`))
 	}))
 	defer server.Close()
 
@@ -87,7 +90,7 @@ func TestDiscoverOIDCEndpoints_ResolvesFromDiscoveryDocument(t *testing.T) {
 	if authEndpoint != "https://idp.example.com/authorize" {
 		t.Errorf("authorization_endpoint = %q", authEndpoint)
 	}
-	if tokenEndpoint != "https://idp.example.com/token" {
+	if tokenEndpoint != server.URL+"/token" {
 		t.Errorf("token_endpoint = %q", tokenEndpoint)
 	}
 }
@@ -161,14 +164,15 @@ func TestGenerateOIDCLoginStateToken_Unique(t *testing.T) {
 func TestOIDCLoginStateStore_SingleUse(t *testing.T) {
 	store := newOIDCLoginStateStore()
 	now := time.Now()
-	store.put("state-1", "verifier-1", now, now.Add(5*time.Minute))
+	store.putFlow("state-1", oidcLoginState{codeVerifier: "verifier-1", expiresAt: now.Add(5 * time.Minute)}, now)
 
-	verifier, ok := store.take("state-1", now)
+	flow, ok := store.takeFlow("state-1", now)
+	verifier := flow.codeVerifier
 	if !ok || verifier != "verifier-1" {
 		t.Fatalf("first take: got (%q, %v), want (\"verifier-1\", true)", verifier, ok)
 	}
 
-	if _, ok := store.take("state-1", now); ok {
+	if _, ok := store.takeFlow("state-1", now); ok {
 		t.Fatal("a replayed state must be rejected on the second take")
 	}
 }
@@ -176,16 +180,16 @@ func TestOIDCLoginStateStore_SingleUse(t *testing.T) {
 func TestOIDCLoginStateStore_Expired(t *testing.T) {
 	store := newOIDCLoginStateStore()
 	now := time.Now()
-	store.put("state-1", "verifier-1", now, now.Add(-time.Second))
+	store.putFlow("state-1", oidcLoginState{codeVerifier: "verifier-1", expiresAt: now.Add(-time.Second)}, now)
 
-	if _, ok := store.take("state-1", now); ok {
+	if _, ok := store.takeFlow("state-1", now); ok {
 		t.Fatal("an expired state must be rejected")
 	}
 }
 
 func TestOIDCLoginStateStore_UnknownState(t *testing.T) {
 	store := newOIDCLoginStateStore()
-	if _, ok := store.take("never-issued", time.Now()); ok {
+	if _, ok := store.takeFlow("never-issued", time.Now()); ok {
 		t.Fatal("an unknown state must be rejected")
 	}
 }

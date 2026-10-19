@@ -40,6 +40,9 @@ export function Horizon({
     );
   }
 
+  const peakDay = horizon.days.find((d) => d.total === horizon.peak);
+  const chartLabel = `Bar chart: certificates expiring per day over the next ${windowDays} days, ${horizon.totalInWindow} in total, peak ${horizon.peak}${peakDay ? ` on ${formatDay(peakDay.date)}` : ""}. A table with the same data follows.`;
+
   return (
     <section aria-labelledby="horizon-heading" className="space-y-3">
       <div className="flex items-baseline justify-between gap-4">
@@ -58,7 +61,11 @@ export function Horizon({
 
       {/* The chart is decorative for assistive tech — the table below it
           carries the same numbers, so nobody depends on reading colour. */}
-      <div className="rounded-lg border border-border bg-muted/40 p-3">
+      <div
+        role="img"
+        aria-label={chartLabel}
+        className="rounded-lg border border-border bg-muted/40 p-3"
+      >
         <div className="flex h-28 items-end gap-px" aria-hidden="true">
           {horizon.days.map((day) => (
             <div
@@ -111,30 +118,32 @@ export function Horizon({
 
       {/* Text equivalent. Visually hidden, but it is the same data — a
           screen reader gets the horizon, not a shrug. */}
-      <table className="sr-only">
-        <caption>
-          Certificates expiring in the next {windowDays} days: {horizon.totalInWindow} total,{" "}
-          {horizon.needsHuman} needing a human.
-        </caption>
-        <thead>
-          <tr>
-            <th scope="col">Date</th>
-            <th scope="col">Expiring</th>
-            <th scope="col">Needs a human</th>
-          </tr>
-        </thead>
-        <tbody>
-          {horizon.days
-            .filter((d) => d.total > 0)
-            .map((d) => (
-              <tr key={d.offset}>
-                <td>{formatDay(d.date)}</td>
-                <td>{d.total}</td>
-                <td>{d.counts.attn + d.counts.over}</td>
-              </tr>
-            ))}
-        </tbody>
-      </table>
+      <div className="sr-only">
+        <table>
+          <caption>
+            Certificates expiring in the next {windowDays} days: {horizon.totalInWindow} total,{" "}
+            {horizon.needsHuman} needing a human.
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col">Date</th>
+              <th scope="col">Expiring</th>
+              <th scope="col">Needs a human</th>
+            </tr>
+          </thead>
+          <tbody>
+            {horizon.days
+              .filter((d) => d.total > 0)
+              .map((d) => (
+                <tr key={d.offset}>
+                  <td>{formatDay(d.date)}</td>
+                  <td>{d.total}</td>
+                  <td>{d.counts.attn + d.counts.over}</td>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }

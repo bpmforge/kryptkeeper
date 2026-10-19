@@ -13,6 +13,7 @@ import (
 	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"math/big"
 	"net/http"
@@ -446,4 +447,209 @@ func riskScoreOf(t *testing.T, db *sql.DB, postgres bool, c *x509.Certificate) i
 		t.Fatal(err)
 	}
 	return n
+}
+
+// W34-06: issuer_class and inventory_class end to end on the migrated schema.
+func TestDiscoveryIssuerClassPersistence(t *testing.T) {
+	db := setupIntegrationDB(t)
+	store := migratedDiscoveryStore(t, db)
+	runIssuerClassCase(t, db, false, store, sqlitePlaceholder, func(f func() (*x509.CertPool, error)) { store.trust.systemRoots = f }, store.trust.SetAuthorizedSource)
+}
+
+func TestDiscoveryIssuerClassPersistence_Postgres(t *testing.T) {
+	dsn := os.Getenv("KRYPTKEEPER_TEST_POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("KRYPTKEEPER_TEST_POSTGRES_DSN not set — skipping live Postgres integration test")
+	}
+	freshPostgresForTest(t)
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open postgres: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := kkdb.RunMigrations(db, "postgres"); err != nil {
+		t.Fatalf("run migrations: %v", err)
+	}
+	store := &postgresDiscoveryStore{db: db}
+	if err := store.EnsureSchema(context.Background()); err != nil {
+		t.Fatalf("discovery EnsureSchema on migrated db: %v", err)
+	}
+	runIssuerClassCase(t, db, true, store, postgresPlaceholder, func(f func() (*x509.CertPool, error)) { store.trust.systemRoots = f }, store.trust.SetAuthorizedSource)
+}
+
+type issuerClassTestStore interface {
+	trustTestStore
+	ReclassifyIssuers(ctx context.Context, tenant string) error
+}
+
+func runIssuerClassCase(t *testing.T, db *sql.DB, postgres bool, store issuerClassTestStore, ph func(int) string, setSystem func(func() (*x509.CertPool, error)), setAuthorized func(authorizedIssuerSource)) {
+	t.Helper()
+	stubEndpointAudit(t)
+	ctx := context.Background()
+
+	hubRoot := trustIssue(t, nil, "Hub Root", true)
+	hubLeaf := trustIssue(t, hubRoot, "app.hub.test", false)
+	pubRoot := trustIssue(t, nil, "Test Public Root", true)
+	pubInt := trustIssue(t, pubRoot, "Test Public Issuing", true)
+	pubLeaf := trustIssue(t, pubInt, "www.public.test", false)
+	legacyRoot := trustIssue(t, nil, "Corp Legacy Root", true)
+	legacyLeaf := trustIssue(t, legacyRoot, "legacy.corp.test", false)
+	strangerRoot := trustIssue(t, nil, "Stranger Root", true)
+	strangerLeaf := trustIssue(t, strangerRoot, "stranger.test", false)
+	selfSigned := trustIssue(t, nil, "self.test", true)
+
+	sysPool := x509.NewCertPool()
+	sysPool.AddCert(pubRoot.cert)
+	setSystem(func() (*x509.CertPool, error) { return sysPool, nil })
+	store.SetHubCASource(func(context.Context) ([]*x509.Certificate, error) { return []*x509.Certificate{hubRoot.cert}, nil })
+
+	scan := func() {
+		t.Helper()
+		if _, err := store.upsertScanResults(ctx, []scanner.DiscoveredEndpoint{
+			servedEndpoint("app.hub.test", hubLeaf),
+			servedEndpoint("www.public.test", pubLeaf, pubInt),
+			servedEndpoint("legacy.corp.test", legacyLeaf),
+			servedEndpoint("stranger.test", strangerLeaf),
+			servedEndpoint("self.test", selfSigned),
+		}); err != nil {
+			t.Fatalf("upsert: %v", err)
+		}
+	}
+	issuerOf := func(c *x509.Certificate) string {
+		t.Helper()
+		var v sql.NullString
+		if err := db.QueryRow(`SELECT issuer_class FROM certificates WHERE fingerprint_sha256 = `+ph(1), fingerprintOf(c)).Scan(&v); err != nil {
+			t.Fatalf("read issuer_class: %v", err)
+		}
+		return v.String
+	}
+	authorize := func(kind, value string) {
+		t.Helper()
+		src := &dbAuthorizedIssuerStore{db: db, ph: ph}
+		if err := src.Create(ctx, AuthorizedIssuer{ID: newAuthorizedIssuerID(), Name: "n", Kind: kind, Value: value, CreatedBy: "t", CreatedAt: "2030-01-01T00:00:00Z"}); err != nil {
+			t.Fatalf("authorize: %v", err)
+		}
+	}
+
+	// Nothing declared: nothing is authorized, public roots included (D-205).
+	scan()
+	for c, want := range map[*x509.Certificate]string{
+		hubLeaf.cert: "hub", pubLeaf.cert: "public", legacyLeaf.cert: "private_unknown",
+		strangerLeaf.cert: "private_unknown", selfSigned.cert: "self_signed",
+	} {
+		if got := issuerOf(c); got != want {
+			t.Errorf("%s before authorizing: issuer_class %q, want %q", c.Subject.CommonName, got, want)
+		}
+	}
+	sum, err := store.GetSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (InventoryClassCounts{OursUnmanaged: 1, UnknownIssuer: 3, SelfSigned: 1}); sum.InventoryClasses != want {
+		t.Errorf("inventory counts = %+v, want %+v", sum.InventoryClasses, want)
+	}
+
+	// Declare the legacy CA by DN: reclassification is immediate for stored
+	// leaves and trust_class does not move.
+	authorize("issuer_dn", legacyRoot.cert.Subject.String())
+	if err := store.ReclassifyIssuers(ctx, ""); err != nil {
+		t.Fatalf("reclassify: %v", err)
+	}
+	if got := issuerOf(legacyLeaf.cert); got != "authorized" {
+		t.Errorf("legacy leaf after authorize+reclassify: %q", got)
+	}
+	if got := issuerOf(strangerLeaf.cert); got != "private_unknown" {
+		t.Errorf("an unrelated leaf must not be authorized: %q", got)
+	}
+	var trust string
+	if err := db.QueryRow(`SELECT trust_class FROM certificates WHERE fingerprint_sha256 = `+ph(1), fingerprintOf(legacyLeaf.cert)).Scan(&trust); err != nil || trust != "private_other" {
+		t.Errorf("trust_class must be untouched by authorization: %q err=%v", trust, err)
+	}
+	if got := issuerOf(hubLeaf.cert); got != "hub" {
+		t.Errorf("a hub verdict is never weakened by reclassification: %q", got)
+	}
+
+	// A public CA is authorized only when declared (here by CA certificate),
+	// and the next scan judges from the served chain.
+	authorize("ca_cert", string(pemOf(pubInt.cert)))
+	scan()
+	if got := issuerOf(pubLeaf.cert); got != "authorized" {
+		t.Errorf("declared public CA: %q", got)
+	}
+
+	sum, err = store.GetSummary(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (InventoryClassCounts{OursUnmanaged: 1, AuthorizedExternal: 2, UnknownIssuer: 1, SelfSigned: 1}); sum.InventoryClasses != want {
+		t.Errorf("inventory counts after authorizing = %+v, want %+v", sum.InventoryClasses, want)
+	}
+	if got := sum.InventoryClasses.Managed + sum.InventoryClasses.OursUnmanaged + sum.InventoryClasses.AuthorizedExternal + sum.InventoryClasses.UnknownIssuer + sum.InventoryClasses.SelfSigned; got != sum.MappedCertificates {
+		t.Errorf("classes sum to %d, mapped certificates %d", got, sum.MappedCertificates)
+	}
+
+	for class, host := range map[string]string{
+		"authorized_external": "legacy.corp.test", "unknown_issuer": "stranger.test",
+		"self_signed": "self.test", "ours_unmanaged": "app.hub.test",
+	} {
+		res, err := store.ListEndpoints(ctx, DiscoveryEndpointQuery{InventoryClass: class, Limit: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var found bool
+		for _, e := range res.Endpoints {
+			if e.Hostname == host {
+				found = e.InventoryClass == class
+			}
+		}
+		if !found {
+			t.Errorf("inventory_class=%s filter did not return %s as that class: %+v", class, host, res.Endpoints)
+		}
+	}
+	if res, err := store.ListEndpoints(ctx, DiscoveryEndpointQuery{InventoryClass: "managed", Limit: 100}); err != nil || len(res.Endpoints) != 0 {
+		t.Errorf("no managed certificate exists: %+v err=%v", res.Endpoints, err)
+	}
+	if res, err := store.ListEndpoints(ctx, DiscoveryEndpointQuery{InventoryClass: "bogus", Limit: 100}); err != nil || len(res.Endpoints) != 0 {
+		t.Errorf("an out-of-vocabulary class matches nothing: %+v err=%v", res.Endpoints, err)
+	}
+
+	// Removing the rule and rescanning demotes the certificate again.
+	if _, err := db.Exec(`DELETE FROM authorized_issuers WHERE kind = 'issuer_dn'`); err != nil {
+		t.Fatal(err)
+	}
+	scan()
+	if got := issuerOf(legacyLeaf.cert); got != "private_unknown" {
+		t.Errorf("after removing the rule and rescanning: %q", got)
+	}
+
+	// An unreadable declared set must not rewrite issuer_class from a guess.
+	setAuthorized(func(context.Context, string) ([]AuthorizedIssuer, error) {
+		return nil, errors.New("authorized issuers unavailable")
+	})
+	scan()
+	if got := issuerOf(pubLeaf.cert); got != "authorized" {
+		t.Errorf("issuer_class changed while the declared set was unreadable: %q", got)
+	}
+}
+
+func pemOf(c *x509.Certificate) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})
+}
+
+func TestEndpointInventoryClassIsTheLeastTrusted(t *testing.T) {
+	eps := []DiscoveryEndpoint{
+		{MappedCerts: []DiscoveryMappedCert{{InventoryClass: "managed"}, {InventoryClass: "unknown_issuer"}, {InventoryClass: "authorized_external"}}},
+		{MappedCerts: []DiscoveryMappedCert{{InventoryClass: "managed"}, {InventoryClass: "ours_unmanaged"}}},
+		{MappedCerts: []DiscoveryMappedCert{{InventoryClass: "unknown_issuer", ChainCA: true}}},
+		{},
+	}
+	setInventoryClasses(eps)
+	for i, want := range []string{"unknown_issuer", "ours_unmanaged", "", ""} {
+		if eps[i].InventoryClass != want {
+			t.Errorf("endpoint %d: %q, want %q", i, eps[i].InventoryClass, want)
+		}
+	}
+	if !IsInventoryClass("self_signed") || IsInventoryClass("public") {
+		t.Error("closed vocabulary")
+	}
 }

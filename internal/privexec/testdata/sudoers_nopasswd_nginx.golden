@@ -1,0 +1,13 @@
+# Kryptkeeper privilege for kkscan (mode nopasswd)
+# Install as /etc/sudoers.d/kryptkeeper-kkscan, chmod 0440, then: visudo -cf <file>
+# WARNING: cat/find/install on globbed paths is effectively root read/write of the
+# filesystem for anyone holding this account's SSH key ('*' in an argument also matches '/').
+# Prefer helper mode unless policy forbids installing the helper.
+Defaults:kkscan !requiretty
+Cmnd_Alias KK_LIST    = /usr/bin/find /etc/nginx/ssl *, /usr/bin/find /etc/ssl/private *
+Cmnd_Alias KK_STAT    = /usr/bin/stat -c * /etc/nginx/ssl/*, /usr/bin/stat -c * /etc/ssl/private/*
+Cmnd_Alias KK_READ    = /usr/bin/cat /etc/nginx/ssl/*, /usr/bin/cat /etc/ssl/private/*
+Cmnd_Alias KK_INSTALL = /usr/bin/install -m * /etc/nginx/ssl/*, /usr/bin/install -m * /etc/ssl/private/*
+Cmnd_Alias KK_LISTEN  = /usr/bin/ss -ltnp, /usr/sbin/ss -ltnp
+Cmnd_Alias KK_SERVER  = /usr/sbin/nginx -t, /usr/bin/systemctl reload nginx
+kkscan ALL=(root) NOPASSWD: KK_LIST, KK_STAT, KK_READ, KK_INSTALL, KK_LISTEN, KK_SERVER

@@ -66,7 +66,7 @@ func fipsApprovedFamily(algo Algorithm) bool {
 		return true
 	}
 	switch algo {
-	case RSA2048, RSA4096, ECDSAP256, ECDSAP384, Ed25519:
+	case RSA2048, RSA3072, RSA4096, ECDSAP256, ECDSAP384, Ed25519:
 		return true
 	}
 	return false
@@ -78,6 +78,11 @@ func fipsApprovedFamily(algo Algorithm) bool {
 func CheckFIPSAlgorithm(algo Algorithm) error {
 	if !fips140.Enabled() {
 		return nil
+	}
+	// ML-DSA comes from circl, outside the Go FIPS module; only enforced
+	// mode (fips140=only) forbids out-of-module algorithms, "on" keeps it.
+	if fips140.Enforced() && IsMLDSA(algo) {
+		return fmt.Errorf("FIPS 140-3 enforced mode (GODEBUG=fips140=only): %s is implemented outside the Go FIPS module and is refused; see docs/design/FIPS_POSTURE.md", algo)
 	}
 	if !fipsApprovedFamily(algo) {
 		return fmt.Errorf("FIPS 140-3 mode: algorithm %s is not FIPS-approved (hybrid composites have no NIST specification; see docs/design/FIPS_POSTURE.md)", algo)

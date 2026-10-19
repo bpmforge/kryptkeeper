@@ -4,9 +4,15 @@ import type {
   ApiDataResponse,
   ApiListResponse,
   ApprovalRequest,
+  BlastRadiusAction,
+  RotateCaKeyResult,
+  TemplateRevision,
+  BlastRadiusResult,
   AuditRow,
   AuthzCheck,
   CaRecord,
+  Ceremony,
+  StartCeremonyRequest,
   CertificateRecord,
   CryptoPostureReport,
   PostureTrendResponse,
@@ -24,6 +30,7 @@ import type {
   SIEMStatus,
   SIEMTestResult,
   DashboardSummary,
+  AuthorizedIssuer,
   DiscoveryEndpointRecord,
   DiscoveryScanJobRecord,
   DiscoverySummary,
@@ -38,9 +45,31 @@ import type {
   TenantContext,
   UserRecord,
 } from "./models";
-import type { components, paths } from "../generated/api-types";
+import type { components, operations, paths } from "../generated/api-types";
 import type { DeliveryPlugin, DeliveryPluginVersion } from "./plugins";
+
+type AgilityOp = operations["deriveCryptoAgilityRoadmap"];
+export type AgilityRoadmapRequest = NonNullable<
+  AgilityOp["requestBody"]
+>["content"]["application/json"];
+export type AgilityRoadmapResult = NonNullable<
+  AgilityOp["responses"][200]["content"]["application/json"]["data"]
+>;
 import { toast } from "sonner";
+
+// GET /certificates/quota (W33-21). remaining is null when the quota is
+// unlimited (limit 0); a team with no policy row reports limit 0 too.
+export type TeamQuota = {
+  team_id: string;
+  period: string;
+  limit: number;
+  used: number;
+  remaining: number | null;
+  warn: boolean;
+  resets_at: string;
+};
+
+export type TeamPolicy = components["schemas"]["TeamPolicy"];
 
 const API_BASE = import.meta.env.VITE_API_BASE || "/api/v1";
 
@@ -62,14 +91,144 @@ export type ManagedTarget = {
   // Per-target override (W8-15, FR-P33) for the renewal scheduler's
   // RENEWAL_THRESHOLD_DAYS env default. 0 or absent means "no override".
   renewal_threshold_days?: number;
+  // The scheduler renews onto this target only when set (and onto bound certificates only).
+  auto_renew?: boolean;
   credential_ref?: string;
   schedule?: string;
   // W20-20: install_mode "plugin" targets name their delivery plugin.
   plugin_id?: string;
   plugin_settings?: Record<string, string>;
+  // W24-09: operator-confirmed SSH host key pin (ssh/keychain install modes).
+  ssh_host_key?: string;
+  ssh_host_key_fingerprint?: string;
+  // W34-10/11: what the latest scan could do, and why renewal is Blocked.
+  credential_privileged?: boolean;
+  renewal_privilege_required?: boolean;
+  last_privilege_mode?: string;
+  unreadable_count?: number;
+  last_scanned_at?: string;
+  blocked?: { kind: "privilege" | "rollback"; reason: string; fix: string; since?: string };
+  install_cert_path?: string;
+  install_key_path?: string;
   tenant: string;
   created_at: string;
   updated_at: string;
+};
+
+// W27-24: per-domain DCV validation lifetime, from
+// GET /connectors/dcv-validations (docs/openapi.yaml listDcvValidations).
+export interface DcvValidationRow {
+  domain: string;
+  connector_id: string;
+  validated_at: string;
+  expires_at: string;
+  reuse_days: number;
+  days_remaining: number;
+  warn: boolean;
+}
+export interface DcvValidationsResponse {
+  data: DcvValidationRow[];
+  schedule: { effective: string; days: number }[];
+  current_reuse_days: number;
+}
+
+export type MigrationFieldReport = {
+  field: string;
+  status: "mapped" | "partial" | "unmapped";
+  target?: string;
+  note?: string;
+};
+export type MigrationDiffEntry = {
+  source_key: string;
+  name: string;
+  action: "create" | "skip" | "conflict" | "update";
+  reason?: string;
+  notes?: string[];
+  fields: MigrationFieldReport[];
+  template_id?: string;
+};
+export type MigrationDiff = {
+  source: string;
+  entries: MigrationDiffEntry[];
+  counts: { create: number; skip: number; conflict: number; update?: number };
+  unmapped: number;
+  unsupported: number;
+};
+export type MigrationBatch = {
+  id: string;
+  source: string;
+  status: "applied" | "rolled_back";
+  created_by: string;
+  created_at: string;
+  rolled_back_at?: string;
+  items?: number;
+};
+export type MigrationRequest = {
+  source: string;
+  content?: string;
+  credential_ref?: string;
+  options?: Record<string, string>;
+};
+export type MigrationRollback = {
+  batch_id: string;
+  already_rolled_back: boolean;
+  disabled: number;
+  // Templates the batch updated, put back to their pre-import state (S-05).
+  restored?: number;
+  kept: number;
+  items: {
+    name: string;
+    template_id: string;
+    outcome: string;
+    reason?: string;
+  }[];
+};
+
+export type BulkTakeoverRow = {
+  fingerprint: string;
+  status: "ok" | "error" | "skipped";
+  code?: string;
+  error?: string;
+  reason?: "already_managed" | "other_tenant" | "not_permitted";
+};
+
+export type TakeoverSuggestion = {
+  fingerprint: string;
+  owner_email: string;
+  owner_team: string;
+  service_name: string;
+  source: "existing_ownership" | "sibling_certificate" | "none" | "unavailable";
+  confidence: "high" | "medium" | "low" | "none";
+};
+
+// Fingerprints per suggestions request: keeps the query string well under
+// common proxy URL limits (the endpoint itself accepts up to 500).
+const SUGGESTION_CHUNK = 100;
+
+export type CertTargetBinding = components["schemas"]["CertTargetBinding"];
+export type UserPrefs = components["schemas"]["UserPrefs"];
+export type TargetGroup = components["schemas"]["TargetGroup"];
+export type TargetPolicyRow = components["schemas"]["TargetPolicyRow"];
+
+export type InventorySourceRecord = {
+  id: string;
+  name: string;
+  type: string;
+  config_json: string;
+  credential_ref?: string;
+  schedule_minutes: number;
+  tenant: string;
+  last_sync_at?: string;
+  last_sync_result?: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type InventorySyncResult = {
+  synced: number;
+  skipped: number;
+  revoked_marked: number;
+  failed?: string[];
 };
 
 export type CredentialMeta = {
@@ -79,6 +238,11 @@ export type CredentialMeta = {
   tenant: string;
   created_at: string;
   updated_at: string;
+  // W34-11: high-impact account on the hosts it reaches. Flag and audit only.
+  privileged?: boolean;
+  privileged_reason?: string;
+  privileged_set_by?: string;
+  privileged_set_at?: string;
 };
 
 // W18-11: what a windows_password credential can do on its host, decided
@@ -101,12 +265,50 @@ export type AgentRegistration = {
 // ticket's write_scope doesn't include models.ts; field names are the wire
 // contract from internal/bootstrap/config_store.go's EffectiveSetting, not
 // invented.
+export type PreflightRow = {
+  capability: string;
+  status: "ok" | "fail" | "skipped";
+  detail?: string;
+  fix?: string;
+};
+
+export type PrivilegePreflight = {
+  checked_at: string;
+  mode: "none" | "nopasswd" | "password" | "helper";
+  roles?: string[];
+  rows: PreflightRow[];
+  ok: boolean;
+  privileged_all: boolean;
+};
+
+export type PrivilegeBundle = {
+  mode: string;
+  user: string;
+  sudoers: string;
+  helper?: string;
+  helper_sha256?: string;
+  helper_path?: string;
+  checklist: string[];
+  warnings: string[];
+};
+
 export type EffectiveSetting = {
   key: string;
-  category: "notifications" | "renewal_policy" | "discovery" | "sso";
+  category:
+    | "notifications"
+    | "renewal_policy"
+    | "discovery"
+    | "sso"
+    | "saml"
+    | "scim"
+    | "key_backend"
+    | "slo"
+    | "agentless";
   env_var: string;
   secret: boolean;
   source: "database" | "env_default" | "unset";
+  effective_source: "env" | "override";
+  restart_required?: boolean;
   value?: string;
   configured: boolean;
   updated_at?: string;
@@ -351,10 +553,28 @@ async function fetchText(path: string): Promise<string> {
   return res.text();
 }
 
-async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
+// W29-06 shape (canonical since the W33/train merge). redeemed_at and
+// revoked_at are "" while unset.
+export interface AgentEnrollmentToken {
+  id: string;
+  label: string;
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  redeemed_at: string;
+  redeemed_agent_id: string;
+  revoked_at: string;
+}
+
+export async function fetchJSON<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<T> {
+  // Caller headers (e.g. If-Match) are merged over the auth/tenant headers.
+  const extraHeaders = init?.headers as Record<string, string> | undefined;
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: buildHeaders(),
+    headers: { ...buildHeaders(), ...extraHeaders },
     credentials: "include",
   });
 
@@ -363,7 +583,7 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
     if (outcome === "ok") {
       const retryRes = await fetch(`${API_BASE}${path}`, {
         ...init,
-        headers: buildHeaders(),
+        headers: { ...buildHeaders(), ...extraHeaders },
         credentials: "include",
       });
       return parseJSON<T>(retryRes);
@@ -380,7 +600,7 @@ async function fetchJSON<T>(path: string, init?: RequestInit): Promise<T> {
   return parseJSON<T>(res);
 }
 
-function queryString(
+export function queryString(
   params?: Record<string, string | number | boolean | undefined>,
 ) {
   if (!params) return "";
@@ -392,6 +612,88 @@ function queryString(
   const qs = sp.toString();
   return qs ? `?${qs}` : "";
 }
+
+export type KeyPolicy = {
+  key_id?: string;
+  owner?: string;
+  acl?: string[];
+  max_age_days?: number;
+  rotated_at?: string;
+  compromised_at?: string | null;
+};
+
+export type GrantResult<T> =
+  { state: "pending"; actionId: string } | { state: "done"; data: T };
+
+// Raw fetch (like exportKey): a 202 is a dual-control proposal, not a result.
+async function grantRequest<T>(
+  path: string,
+  body: unknown,
+  parse: (res: Response) => Promise<T>,
+): Promise<GrantResult<T>> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: buildHeaders(),
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let msg = `API error: ${res.status} ${res.statusText}`;
+    try {
+      const b = await res.json();
+      if (b?.message) msg = b.message;
+    } catch {
+      // ignore JSON parse errors
+    }
+    throw new Error(msg);
+  }
+  if (res.status === 202) {
+    const b = (await res.json()) as { data?: { action_id?: string } };
+    return { state: "pending", actionId: b?.data?.action_id ?? "" };
+  }
+  return { state: "done", data: await parse(res) };
+}
+
+export type CTFinding = {
+  id: string;
+  log_id: string;
+  domain: string;
+  common_name?: string;
+  dns_names?: string[];
+  ca: string;
+  serial: string;
+  not_before?: string;
+  not_after?: string;
+  source: string;
+  status: "open" | "acknowledged" | "known_issuer";
+  resolved_by?: string;
+  resolved_at?: string | null;
+  created_at?: string;
+  ours: boolean;
+  revoke_url?: string;
+};
+
+export type HostKeyProbe = {
+  host: string;
+  port: number;
+  algorithm: string;
+  ssh_host_key: string;
+  fingerprint_sha256: string;
+};
+
+export type DiscoverySchedule = {
+  key: string;
+  scan_type: string;
+  target: string;
+  name?: string;
+  source: "env" | "managed";
+  interval_seconds: number | null;
+  effective_interval_seconds: number | null;
+  last_run: string | null;
+  next_run: string | null;
+  running: boolean;
+  running_job_id?: string;
+};
 
 export const api = {
   // Auth
@@ -448,6 +750,26 @@ export const api = {
     fetchJSON<ApiListResponse<CertificateRecord>>(
       `/certificates${typeof params === "string" ? (params ? "?" + params : "") : queryString(params)}`,
     ),
+  // An admin's quota read must name the team (400 otherwise); other roles
+  // always get their own team and the server ignores team_id.
+  teamQuota: (teamId?: string) =>
+    fetchJSON<ApiDataResponse<TeamQuota>>(
+      teamId
+        ? `/certificates/quota?team_id=${encodeURIComponent(teamId)}`
+        : "/certificates/quota",
+    ),
+  // 404 means the team has no policy row, i.e. it is unrestricted (D-195).
+  teamPolicy: async (team: string): Promise<TeamPolicy | null> => {
+    try {
+      const res = await fetchJSON<ApiDataResponse<TeamPolicy>>(
+        `/team-policies/${encodeURIComponent(team)}`,
+      );
+      return res.data;
+    } catch (e) {
+      if ((e as { status?: number }).status === 404) return null;
+      throw e;
+    }
+  },
   issueCertificate: (body: Record<string, unknown>) =>
     fetchJSON<ApiDataResponse<CertificateRecord>>("/certificates", {
       method: "POST",
@@ -462,6 +784,8 @@ export const api = {
         health?: { status: string; detail?: string };
       }[];
     }>("/connectors"),
+  dcvValidations: () =>
+    fetchJSON<DcvValidationsResponse>("/connectors/dcv-validations"),
   estateTakeover: (body: {
     fingerprint: string;
     owner_email?: string;
@@ -472,6 +796,46 @@ export const api = {
     fetchJSON<ApiDataResponse<CertificateRecord>>("/estate/takeover", {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+  estateBulkTakeover: (body: {
+    items: {
+      fingerprint: string;
+      owner_email?: string;
+      owner_team?: string;
+      service_name?: string;
+      renewal_path: { mode: string; connector_id?: string };
+    }[];
+  }) =>
+    fetchJSON<
+      ApiDataResponse<{
+        total: number;
+        succeeded: number;
+        failed: number;
+        skipped: number;
+        results: BulkTakeoverRow[];
+      }>
+    >("/estate/takeover/bulk", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  estateTakeoverSuggestions: async (fingerprints: string[]) => {
+    const out: TakeoverSuggestion[] = [];
+    for (let i = 0; i < fingerprints.length; i += SUGGESTION_CHUNK) {
+      const qs = fingerprints
+        .slice(i, i + SUGGESTION_CHUNK)
+        .map((fp) => `fingerprint=${encodeURIComponent(fp)}`)
+        .join("&");
+      const res = await fetchJSON<ApiDataResponse<TakeoverSuggestion[]>>(
+        `/estate/takeover/suggestions?${qs}`,
+      );
+      out.push(...res.data);
+    }
+    return out;
+  },
+  estateRevert: (fingerprint: string) =>
+    fetchJSON<ApiDataResponse<CertificateRecord>>("/estate/revert", {
+      method: "POST",
+      body: JSON.stringify({ fingerprint }),
     }),
   bulkImportCertificates: (body: {
     format: string;
@@ -508,13 +872,12 @@ export const api = {
       },
     ),
   revokeCertificate: (fingerprint: string, body: Record<string, unknown>) =>
-    fetchJSON<ApiDataResponse<CertificateRecord>>(
-      `/certificates/${fingerprint}/revoke`,
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-      },
-    ),
+    fetchJSON<
+      ApiDataResponse<components["schemas"]["CertificateRevokeResult"]>
+    >(`/certificates/${fingerprint}/revoke`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   importCertificate: (body: Record<string, unknown>) =>
     fetchJSON<ApiDataResponse<CertificateRecord>>("/certificates/import", {
       method: "POST",
@@ -542,6 +905,51 @@ export const api = {
     fetchJSON<ApiDataResponse<CaRecord>>(`/cas/${id}/suspend`, {
       method: "POST",
     }),
+  // W23-36: revoke is always dual control -> 202 {action_id}; nothing is
+  // revoked until a different admin approves. No redeem step on this API.
+  revokeCa: async (
+    id: string,
+  ): Promise<{ proposed: true; actionId?: string }> => {
+    const r = await grantRequest(
+      `/cas/${encodeURIComponent(id)}/revoke`,
+      { reason: "cACompromise" },
+      async () => undefined,
+    );
+    if (r.state !== "pending") {
+      throw new Error("Unexpected non-pending response to CA revoke");
+    }
+    return { proposed: true, actionId: r.actionId || undefined };
+  },
+  // W23-05: offline-root workflow (import keyless root, CSR, signed cert).
+  importCa: (body: {
+    name: string;
+    type: "root";
+    key_storage_type: "external";
+    certificate_pem: string;
+    approved_action_id?: string;
+  }) =>
+    fetchJSON<{
+      data:
+        CaRecord | { status: "proposed"; action_id: string; message?: string };
+    }>("/cas/import", { method: "POST", body: JSON.stringify(body) }),
+  caCsr: (id: string) =>
+    fetchJSON<ApiDataResponse<{ ca_id: string; csr_pem: string }>>(
+      `/cas/${encodeURIComponent(id)}/csr`,
+    ),
+  completeCaCertificate: (id: string, certificate_pem: string) =>
+    fetchJSON<ApiDataResponse<CaRecord>>(
+      `/cas/${encodeURIComponent(id)}/certificate`,
+      { method: "POST", body: JSON.stringify({ certificate_pem }) },
+    ),
+  removeCaTrustAnchor: (id: string, approvedActionId?: string) =>
+    fetchJSON<{ data?: { status: "proposed"; action_id: string } } | undefined>(
+      `/cas/${encodeURIComponent(id)}${
+        approvedActionId
+          ? `?approved_action_id=${encodeURIComponent(approvedActionId)}`
+          : ""
+      }`,
+      { method: "DELETE" },
+    ),
 
   // Templates
   templates: (params?: Record<string, string | number | boolean | undefined>) =>
@@ -555,11 +963,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  updateTemplate: (id: string, body: Record<string, unknown>) =>
+  // PUT replaces the template and the server requires If-Match: <revision>.
+  updateTemplate: (
+    id: string,
+    body: Record<string, unknown>,
+    revision?: number,
+  ) =>
     fetchJSON<ApiDataResponse<TemplateRecord>>(`/templates/${id}`, {
       method: "PUT",
       body: JSON.stringify(body),
+      headers:
+        revision !== undefined ? { "If-Match": String(revision) } : undefined,
     }),
+  templateRevisions: (id: string) =>
+    fetchJSON<{ data: TemplateRevision[] }>(`/templates/${id}/revisions`),
   deleteTemplate: (id: string) =>
     fetchJSON<void>(`/templates/${id}`, { method: "DELETE" }),
 
@@ -578,6 +995,49 @@ export const api = {
     fetchJSON<ApiListResponse<DiscoveryScanJobRecord>>(
       `/discovery/scan-jobs${queryString(params)}`,
     ),
+  ctFindings: (status?: string) =>
+    fetchJSON<ApiDataResponse<{ findings: CTFinding[]; total: number }>>(
+      `/ct/findings${queryString({ status })}`,
+    ),
+  acknowledgeCTFinding: (id: string) =>
+    fetchJSON<ApiDataResponse<CTFinding>>(
+      `/ct/findings/${encodeURIComponent(id)}/acknowledge`,
+      { method: "POST" },
+    ),
+  markCTFindingKnownIssuer: (id: string) =>
+    fetchJSON<ApiDataResponse<CTFinding>>(
+      `/ct/findings/${encodeURIComponent(id)}/known-issuer`,
+      { method: "POST" },
+    ),
+  authorizedIssuers: () =>
+    fetchJSON<ApiDataResponse<AuthorizedIssuer[]>>(
+      "/discovery/authorized-issuers",
+    ),
+  createAuthorizedIssuer: (body: {
+    name: string;
+    kind: AuthorizedIssuer["kind"];
+    value: string;
+    notes?: string;
+  }) =>
+    fetchJSON<ApiDataResponse<AuthorizedIssuer>>(
+      "/discovery/authorized-issuers",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  deleteAuthorizedIssuer: (id: string) =>
+    fetchJSON<void>(
+      `/discovery/authorized-issuers/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+  discoverySchedules: () =>
+    fetchJSON<ApiDataResponse<DiscoverySchedule[]>>("/discovery/schedules"),
+  updateDiscoverySchedule: (body: {
+    key: string;
+    interval_seconds: number | null;
+  }) =>
+    fetchJSON<ApiDataResponse<DiscoverySchedule>>("/discovery/schedules", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
   createDiscoveryScan: (body: Record<string, unknown>) =>
     fetchJSON<ApiDataResponse<{ scan_job: DiscoveryScanJobRecord }>>(
       "/discovery/scans",
@@ -637,6 +1097,12 @@ export const api = {
       },
     ),
 
+  // ITSM connections (admin-only endpoint; a rule's itsm target is a connection id)
+  itsmConnections: () =>
+    fetchJSON<ApiListResponse<{ id: string; name: string; kind: string }>>(
+      "/itsm/connections",
+    ),
+
   // Notification rules
   notificationRules: () =>
     fetchJSON<ApiListResponse<NotificationRule>>("/notifications/rules"),
@@ -677,6 +1143,14 @@ export const api = {
     ),
   auditList: (params?: Record<string, string | number | boolean | undefined>) =>
     fetchJSON<ApiDataResponse<AuditRow[]>>(`/audit${queryString(params)}`),
+  // W22-05: server-streamed export of every matching row.
+  auditExport: (
+    params: Record<string, string | number | boolean | undefined>,
+  ) =>
+    downloadAuthedFile(
+      `/audit/export${queryString(params)}`,
+      params.format === "json" ? "audit-evidence.json" : "audit-evidence.csv",
+    ),
 
   // Search
   search: (q: string) =>
@@ -712,6 +1186,8 @@ export const api = {
     fetchJSON<ApiDataResponse<Record<string, unknown>>>(
       `/reports/compliance-evidence${framework ? `?framework=${framework}` : ""}`,
     ),
+  keyCustody: () =>
+    fetchJSON<ApiDataResponse<Record<string, unknown>>>("/reports/key-custody"),
   complianceEvidencePdfUrl: (framework: string) =>
     `${API_BASE}/reports/compliance-evidence?framework=${framework}&format=pdf`,
   executiveSummary: () =>
@@ -761,6 +1237,24 @@ export const api = {
       body: JSON.stringify({ spiffe_id: spiffeID }),
     }),
 
+  // Key ceremonies (M-of-N root CA activation)
+  ceremonies: () => fetchJSON<ApiDataResponse<Ceremony[]>>("/ceremonies"),
+  startCeremony: (body: StartCeremonyRequest) =>
+    fetchJSON<ApiDataResponse<Ceremony>>("/ceremonies", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  approveCeremony: (id: string) =>
+    fetchJSON<ApiDataResponse<Ceremony>>(
+      `/ceremonies/${encodeURIComponent(id)}/approve`,
+      { method: "POST" },
+    ),
+  abortCeremony: (id: string) =>
+    fetchJSON<ApiDataResponse<Ceremony>>(
+      `/ceremonies/${encodeURIComponent(id)}/abort`,
+      { method: "POST" },
+    ),
+
   // Pending actions (AI-proposed write queue)
   pendingActions: (status?: string) =>
     fetchJSON<ApiDataResponse<PendingAction[]>>(
@@ -791,6 +1285,11 @@ export const api = {
     fetchJSON<{ data: { status: string } }>(`/reports/pqc-waves/${id}`, {
       method: "DELETE",
     }),
+  cryptoAgilityRoadmap: (body: AgilityRoadmapRequest) =>
+    fetchJSON<ApiDataResponse<AgilityRoadmapResult>>(
+      "/crypto-agility/roadmap",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
   // W8-09 journey: create → add members → propose the W4-03 EXECUTE.
   createPqcWave: (body: {
     name: string;
@@ -876,6 +1375,41 @@ export const api = {
     }
     return { proposed: false, pem: await res.text() };
   },
+  // W23-40: key policy (owner/ACL/max-age) and the compromise flow.
+  keyPolicy: async (id: string): Promise<{ data: KeyPolicy | null }> => {
+    try {
+      return await fetchJSON<{ data: KeyPolicy }>(
+        `/keys/${encodeURIComponent(id)}/policy`,
+      );
+    } catch (e) {
+      if (e instanceof Error && /\b404\b|not found/i.test(e.message)) {
+        return { data: null };
+      }
+      throw e;
+    }
+  },
+  setKeyPolicy: (
+    id: string,
+    body: { owner: string; acl: string[]; max_age_days: number },
+  ) =>
+    fetchJSON<{ data: KeyPolicy }>(`/keys/${encodeURIComponent(id)}/policy`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  // Always dual control: 202 = proposal filed, nothing compromised yet.
+  compromiseKey: async (
+    id: string,
+  ): Promise<{ proposed: true; actionId?: string }> => {
+    const r = await grantRequest(
+      `/keys/${encodeURIComponent(id)}/compromise`,
+      {},
+      async () => undefined,
+    );
+    if (r.state !== "pending") {
+      throw new Error("Unexpected non-pending response to key compromise");
+    }
+    return { proposed: true, actionId: r.actionId || undefined };
+  },
   importKey: (body: { id: string; backup_pem: string; passphrase: string }) =>
     fetchJSON<{ data: unknown }>("/keys/import", {
       method: "POST",
@@ -883,6 +1417,42 @@ export const api = {
     }),
   deleteKey: (id: string) =>
     fetchJSON<void>(`/keys/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  cancelKeyDeletion: (id: string) =>
+    fetchJSON<{ data?: { status?: string; action_id?: string } } | undefined>(
+      `/keys/${encodeURIComponent(id)}/cancel-deletion`,
+      { method: "POST" },
+    ),
+  // W23-21: dual-control grant flow. First call -> 202 {action_id}; after a
+  // different admin approves, repeat with approved_action_id.
+  escrowKey: (b: {
+    key_id: string;
+    custodian_a_passphrase: string;
+    custodian_b_passphrase: string;
+    approved_action_id?: string;
+  }) => grantRequest<string>("/keys/escrow", b, (res) => res.text()),
+  recoverEscrowedKey: (b: {
+    bundle: unknown;
+    custodian_a_passphrase: string;
+    custodian_b_passphrase: string;
+    approved_action_id?: string;
+  }) =>
+    grantRequest<{ id: string }>("/keys/escrow/recover", b, async (res) => {
+      const body = (await res.json()) as { data?: { id?: string } };
+      return { id: body?.data?.id ?? "" };
+    }),
+  byokExport: (b: {
+    bundle: unknown;
+    custodian_a_passphrase: string;
+    custodian_b_passphrase: string;
+    provider: string;
+    region?: string;
+    key_id: string;
+    approved_action_id?: string;
+  }) =>
+    grantRequest<unknown>("/keys/byok/export", b, async (res) => {
+      const body = (await res.json()) as { data?: unknown };
+      return body?.data;
+    }),
 
   // Certificate ownership
   updateCertOwnership: (
@@ -918,6 +1488,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  setCredentialPrivileged: (id: string, privileged: boolean, reason?: string) =>
+    fetchJSON<ApiDataResponse<CredentialMeta>>(
+      `/credentials/${encodeURIComponent(id)}/privileged`,
+      { method: "PUT", body: JSON.stringify({ privileged, reason }) },
+    ),
   preflightCredential: (id: string) =>
     fetchJSON<ApiDataResponse<CredentialPreflight>>(
       `/credentials/${encodeURIComponent(id)}/preflight`,
@@ -933,6 +1508,11 @@ export const api = {
   // Renewal Autopilot SLO
   renewalSLO: () =>
     fetchJSON<ApiDataResponse<RenewalSLOReport>>("/reports/renewal-slo"),
+  renewalRetry: (fingerprint: string) =>
+    fetchJSON<ApiDataResponse<{ fingerprint: string; status: string }>>(
+      "/renewal/retry",
+      { method: "POST", body: JSON.stringify({ fingerprint }) },
+    ),
 
   // SIEM integration
   siemStatus: () =>
@@ -948,6 +1528,30 @@ export const api = {
     fetchJSON<AgentRegistration>("/agent/register", {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+
+  // Single-use agent enrollment tokens (W29-06 API, used by W33-25). The
+  // minted token is in this response only; callers must keep it in memory,
+  // never in storage.
+  mintAgentEnrollmentToken: (body?: { ttl_seconds?: number; label?: string }) =>
+    fetchJSON<
+      ApiDataResponse<{
+        id: string;
+        token: string;
+        expires_at: string;
+        label: string;
+      }>
+    >("/agent/enrollment-tokens", {
+      method: "POST",
+      body: JSON.stringify(body ?? {}),
+    }),
+  agentEnrollmentTokens: () =>
+    fetchJSON<ApiDataResponse<AgentEnrollmentToken[]>>(
+      "/agent/enrollment-tokens",
+    ),
+  revokeAgentEnrollmentToken: (id: string) =>
+    fetchJSON<void>(`/agent/enrollment-tokens/${encodeURIComponent(id)}`, {
+      method: "DELETE",
     }),
 
   // Delivery plugins (W20-20): install, enable (may go to Approvals),
@@ -989,8 +1593,126 @@ export const api = {
       method: "DELETE",
     }),
 
+  // Direct-CA inventory sources (W11-05 / W24-30)
+  inventorySources: () =>
+    fetchJSON<ApiDataResponse<InventorySourceRecord[]>>("/inventory-sources"),
+  createInventorySource: (body: {
+    name: string;
+    type: string;
+    config_json: string;
+    credential_ref?: string;
+    schedule_minutes: number;
+  }) =>
+    fetchJSON<ApiDataResponse<InventorySourceRecord>>("/inventory-sources", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  syncInventorySource: (id: string) =>
+    fetchJSON<ApiDataResponse<InventorySyncResult>>(
+      `/inventory-sources/${encodeURIComponent(id)}/sync`,
+      { method: "POST" },
+    ),
+  deleteInventorySource: (id: string) =>
+    fetchJSON<void>(`/inventory-sources/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+
+  // Template migration (W24-38/39/44)
+  migrationSources: () =>
+    fetchJSON<ApiDataResponse<string[]>>("/migration/sources"),
+  migrationDryRun: (body: MigrationRequest) =>
+    fetchJSON<ApiDataResponse<MigrationDiff>>("/migration/dryrun", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  migrationApply: (body: MigrationRequest) =>
+    fetchJSON<
+      ApiDataResponse<{
+        status: "pending_approval" | "nothing_to_apply";
+        pending_action_id?: string;
+        diff: MigrationDiff;
+      }>
+    >("/migration/apply", { method: "POST", body: JSON.stringify(body) }),
+  migrationBatches: () =>
+    fetchJSON<ApiDataResponse<MigrationBatch[]>>("/migration/batches"),
+  migrationReport: (id: string) =>
+    fetchJSON<
+      ApiDataResponse<{
+        batch: MigrationBatch;
+        report: {
+          batch_id: string;
+          created: number;
+          entries: MigrationDiffEntry[];
+        };
+      }>
+    >(`/migration/${encodeURIComponent(id)}/report`),
+  migrationRollback: (id: string) =>
+    fetchJSON<ApiDataResponse<MigrationRollback>>(
+      `/migration/${encodeURIComponent(id)}/rollback`,
+      { method: "POST" },
+    ),
+
   // Managed targets (W5-09, agentless mode)
   targets: () => fetchJSON<ApiDataResponse<ManagedTarget[]>>("/targets"),
+  unblockTarget: (id: string) =>
+    fetchJSON<void>(`/targets/${encodeURIComponent(id)}/unblock`, { method: "POST" }),
+  certTargetBindings: (targetId: string) =>
+    fetchJSON<ApiDataResponse<CertTargetBinding[]>>(
+      `/targets/${encodeURIComponent(targetId)}/bindings`,
+    ),
+  bindCertToTarget: (targetId: string, certFingerprint: string) =>
+    fetchJSON<ApiDataResponse<CertTargetBinding>>(
+      `/targets/${encodeURIComponent(targetId)}/bindings`,
+      {
+        method: "POST",
+        body: JSON.stringify({ cert_fingerprint: certFingerprint }),
+      },
+    ),
+  unbindCertFromTarget: (targetId: string, fingerprint: string) =>
+    fetchJSON<void>(
+      `/targets/${encodeURIComponent(targetId)}/bindings/${encodeURIComponent(fingerprint)}`,
+      { method: "DELETE" },
+    ),
+  targetPolicy: () =>
+    fetchJSON<ApiDataResponse<TargetPolicyRow[]>>("/target-policy"),
+  upsertTargetGroup: (
+    name: string,
+    body: { renewal_threshold_days: number; target_ids: string[] },
+  ) =>
+    fetchJSON<ApiDataResponse<TargetGroup>>(
+      `/target-groups/${encodeURIComponent(name)}`,
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
+  // W34-16: privilege bundle for a stored target (targetId) or, in the setup
+  // wizard before one exists, from the install profile alone.
+  privilegeBundle: (q: {
+    targetId?: string;
+    mode: string;
+    user?: string;
+    serverType?: string;
+    certPath?: string;
+    keyPath?: string;
+  }) => {
+    const p = new URLSearchParams({ mode: q.mode });
+    if (q.user) p.set("user", q.user);
+    if (!q.targetId) {
+      if (q.serverType) p.set("server_type", q.serverType);
+      if (q.certPath) p.set("cert_path", q.certPath);
+      if (q.keyPath) p.set("key_path", q.keyPath);
+    }
+    const base = q.targetId ? `/targets/${encodeURIComponent(q.targetId)}/privilege-bundle` : "/targets/privilege-bundle";
+    return fetchJSON<ApiDataResponse<PrivilegeBundle>>(`${base}?${p.toString()}`);
+  },
+  // W34-15: per-capability privilege preflight for an ssh target.
+  preflightTarget: (targetId: string) =>
+    fetchJSON<ApiDataResponse<PrivilegePreflight>>(`/targets/${encodeURIComponent(targetId)}/preflight`, { method: "POST" }),
+  targetPreflight: (targetId: string) =>
+    fetchJSON<ApiDataResponse<PrivilegePreflight>>(`/targets/${encodeURIComponent(targetId)}/preflight`),
+  probeTargetHostKey: (body: { host: string; port?: number }) =>
+    fetchJSON<ApiDataResponse<HostKeyProbe>>("/targets/hostkey", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   createTarget: (body: {
     name: string;
     host: string;
@@ -1005,6 +1727,7 @@ export const api = {
     install_key_path?: string;
     plugin_id?: string;
     plugin_settings?: Record<string, string>;
+    ssh_host_key?: string;
   }) =>
     fetchJSON<ApiDataResponse<ManagedTarget>>("/targets", {
       method: "POST",
@@ -1083,8 +1806,67 @@ export const api = {
       method: "DELETE",
     }),
 
+  // Per-user UI prefs (W33-03); the server keys on the caller, never a client id.
+  userPrefs: () => fetchJSON<ApiDataResponse<UserPrefs>>("/users/me/prefs"),
+  setUserPrefs: (body: UserPrefs) =>
+    fetchJSON<ApiDataResponse<UserPrefs>>("/users/me/prefs", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
   // Auth-mode flags actually in effect on the running server (diagnostic;
   // used to show whether a saved SSO override has taken effect yet — see
   // W8-13, config overrides for SSO are not re-read until a restart).
   protectedConfig: () => fetchJSON<ProtectedConfigFlags>("/protected/config"),
+
+  // Pre-flight impact preview (W23-17). The server accepts only
+  // revoke | retire_ca | deprecate_algorithm.
+  // POST /cas/{id}/rotate-key. A 202 is a dual-control proposal: NOTHING has
+  // been re-keyed yet. Redeem by repeating the same call (same mode and
+  // algorithm) with approvedActionId once a second admin has approved.
+  rotateCaKey: async (
+    id: string,
+    opts: {
+      mode?: "cross-sign";
+      algorithm?: string;
+      approvedActionId?: string;
+    },
+  ): Promise<
+    | { proposed: true; actionId: string }
+    | { proposed: false; result: RotateCaKeyResult }
+  > => {
+    const res = await fetch(
+      `${API_BASE}/cas/${encodeURIComponent(id)}/rotate-key${opts.mode ? "?mode=cross-sign" : ""}`,
+      {
+        method: "POST",
+        headers: buildHeaders(),
+        credentials: "include",
+        body: JSON.stringify({
+          algorithm: opts.algorithm || undefined,
+          approved_action_id: opts.approvedActionId || undefined,
+        }),
+      },
+    );
+    if (!res.ok) {
+      let msg = `API error: ${res.status} ${res.statusText}`;
+      try {
+        const b = await res.json();
+        if (b?.message) msg = b.message;
+      } catch {
+        // ignore JSON parse errors
+      }
+      throw new Error(msg);
+    }
+    const body = (await res.json()) as {
+      data?: RotateCaKeyResult & { action_id?: string };
+    };
+    if (res.status === 202) {
+      return { proposed: true, actionId: body?.data?.action_id ?? "" };
+    }
+    return { proposed: false, result: body?.data ?? {} };
+  },
+  blastRadius: (action: BlastRadiusAction, target: string) =>
+    fetchJSON<ApiDataResponse<BlastRadiusResult>>(
+      `/blast-radius${queryString({ action, target })}`,
+    ),
 };

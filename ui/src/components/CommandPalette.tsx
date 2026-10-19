@@ -13,6 +13,7 @@ import {
   Bell,
   BookOpen,
   Users,
+  Plug,
   Cpu,
   TrendingUp,
   Calendar,
@@ -58,7 +59,7 @@ const NAV_ITEMS: NavItem[] = [
   },
   { label: "Keys", to: "/keys", icon: KeyRound, section: "Pages" },
   { label: "Templates", to: "/templates", icon: FileCheck2, section: "Pages" },
-  { label: "Approvals", to: "/approvals", icon: Stamp, section: "Pages" },
+  { label: "Approvals inbox", to: "/inbox", icon: Stamp, section: "Pages" },
   { label: "Discovery", to: "/discovery", icon: Radar, section: "Pages" },
   { label: "Search", to: "/search", icon: Search, section: "Pages" },
   {
@@ -112,6 +113,13 @@ const NAV_ITEMS: NavItem[] = [
   { label: "Alerts", to: "/alerts", icon: Bell, section: "System" },
   { label: "Audit Log", to: "/audit", icon: BookOpen, section: "System" },
   { label: "Users", to: "/users", icon: Users, section: "System" },
+  { label: "ACME", to: "/acme", icon: Plug, section: "System" },
+  {
+    label: "Enrollment Protocols",
+    to: "/enrollment",
+    icon: Plug,
+    section: "System",
+  },
   { label: "Agents", to: "/agents", icon: Cpu, section: "System" },
 ];
 
@@ -159,6 +167,9 @@ export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [view, setView] = useState<View>({ kind: "browse" });
+  const focusOnMount = useCallback((el: HTMLInputElement | null) => {
+    el?.focus();
+  }, []);
   const [issueForm, setIssueForm] = useState(emptyIssueForm);
   const [renewForm, setRenewForm] = useState(emptyRenewForm);
   const [revokeForm, setRevokeForm] = useState(emptyRevokeForm);
@@ -254,9 +265,21 @@ export function CommandPalette() {
           : action === "renew"
             ? "Certificate renewal"
             : "Certificate revocation";
-      toast.success(
-        pendingApproval ? `${verb} submitted for approval` : `${verb} complete`,
-      );
+      const inventoryOnly =
+        action === "revoke" &&
+        (res as { data?: { revocation_scope?: string } } | undefined)?.data
+          ?.revocation_scope === "inventory_only";
+      const headline = pendingApproval
+        ? `${verb} submitted for approval`
+        : `${verb} complete`;
+      if (inventoryOnly) {
+        toast.success(headline, {
+          description:
+            "Marked revoked in inventory — revoke at the issuing CA.",
+        });
+      } else {
+        toast.success(headline);
+      }
       close();
     },
     onError: (e) => {
@@ -307,6 +330,7 @@ export function CommandPalette() {
 
   return (
     <div
+      role="presentation"
       className="fixed inset-0 z-[100] flex items-start justify-center pt-[15vh]"
       onClick={close}
     >
@@ -315,12 +339,13 @@ export function CommandPalette() {
 
       {/* Palette */}
       <div
-        className="relative w-full max-w-xl mx-4 rounded-2xl border border-white/[0.08] bg-[var(--surface-1)] shadow-2xl shadow-black/60 overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150"
+        role="presentation"
+        className="relative w-full max-w-xl mx-4 rounded-2xl border border-border bg-[var(--surface-1)] shadow-2xl shadow-black/60 overflow-hidden animate-in fade-in-0 zoom-in-95 duration-150"
         onClick={(e) => e.stopPropagation()}
       >
         <Command shouldFilter={false} className="flex flex-col">
           {/* Header */}
-          <div className="flex items-center gap-3 border-b border-white/[0.06] px-4 py-3.5">
+          <div className="flex items-center gap-3 border-b border-border px-4 py-3.5">
             {view.kind !== "browse" && (
               <button
                 type="button"
@@ -348,10 +373,12 @@ export function CommandPalette() {
                       : "Search pages, certificates, CAs…"
                   }
                   className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none"
-                  autoFocus
+                  ref={focusOnMount}
                 />
                 {query && (
                   <button
+                    type="button"
+                    aria-label="Clear search"
                     onClick={() => setQuery("")}
                     className="text-muted-foreground hover:text-foreground transition"
                   >
@@ -360,7 +387,7 @@ export function CommandPalette() {
                 )}
               </>
             )}
-            <kbd className="hidden sm:inline-flex items-center rounded border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+            <kbd className="hidden sm:inline-flex items-center rounded border border-border bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
               ESC
             </kbd>
           </div>
@@ -661,7 +688,7 @@ export function CommandPalette() {
           )}
 
           {/* Footer hint */}
-          <div className="border-t border-white/[0.06] px-4 py-2 flex items-center gap-3 text-[10px] text-muted-foreground">
+          <div className="border-t border-border px-4 py-2 flex items-center gap-3 text-[10px] text-muted-foreground">
             <span>
               <kbd className="font-mono">↑↓</kbd> navigate
             </span>
@@ -693,9 +720,9 @@ function PaletteItem({
   return (
     <Command.Item
       onSelect={onSelect}
-      className="flex items-center gap-3 px-4 py-2.5 text-sm text-foreground cursor-pointer data-[selected=true]:bg-white/[0.05] data-[selected=true]:text-foreground transition-colors outline-none"
+      className="flex items-center gap-3 px-4 py-2.5 text-sm text-foreground cursor-pointer data-[selected=true]:bg-accent data-[selected=true]:text-foreground transition-colors outline-none"
     >
-      <div className="w-6 h-6 rounded-md bg-white/[0.04] flex items-center justify-center shrink-0">
+      <div className="w-6 h-6 rounded-md bg-muted flex items-center justify-center shrink-0">
         <Icon size={13} className="text-muted-foreground" />
       </div>
       <span className="flex-1 truncate">{label}</span>

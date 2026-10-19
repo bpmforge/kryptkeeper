@@ -8,23 +8,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
+	"regexp"
 	"strings"
 	"time"
-)
 
-const defaultTemplateFilePath = "./var/bootstrap-templates.json"
+	"kryptkeeper/internal/logging"
+)
 
 type fileTemplateProvider struct {
 	filePath string
 }
 
 func NewFileTemplateProviderFromEnv() TemplateProvider {
-	path := strings.TrimSpace(os.Getenv("APP_TEMPLATE_FILE"))
-	if path == "" {
-		path = defaultTemplateFilePath
-	}
+	path := resolveStateFilePath(os.Getenv, "APP_TEMPLATE_FILE", "bootstrap-templates.json")
 	initStateDir(path)
 	return &fileTemplateProvider{filePath: path}
 }
@@ -87,6 +84,10 @@ func (p *fileTemplateProvider) CreateTemplate(_ context.Context, req TemplateUps
 	if err := validateTemplateUpsertRequest(req); err != nil {
 		return TemplateItem{}, err
 	}
+	enrollPerms, err := normalizeEnrollmentPermissions(req.EnrollmentPermissions)
+	if err != nil {
+		return TemplateItem{}, fmt.Errorf("%w: %v", errTemplateInvalidCreate, err)
+	}
 
 	items, ok := p.loadItems()
 	if !ok {
@@ -113,27 +114,33 @@ func (p *fileTemplateProvider) CreateTemplate(_ context.Context, req TemplateUps
 		Active:            req.Active,
 		// W-review: these two were silently dropped here — an admin could
 		// configure require_approval and issuance would never gate on it.
-		RequireApproval: req.RequireApproval,
-		ApprovalRoles:   req.ApprovalRoles,
-		EnrolleeType:    normalizeEnrolleeType(req.EnrolleeType),
-		SSHPolicy:       req.SSHPolicy,
-		NamePolicy:      req.NamePolicy,
-		Revision:        1,
-		SchemaVersion:   1,
-		IssuedCount:     0,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		RequireApproval:       req.RequireApproval,
+		ApprovalRoles:         req.ApprovalRoles,
+		EnrolleeType:          normalizeEnrolleeType(req.EnrolleeType),
+		SSHPolicy:             req.SSHPolicy,
+		NamePolicy:            req.NamePolicy,
+		EnrollmentPermissions: enrollPerms,
+		Revision:              1,
+		SchemaVersion:         1,
+		IssuedCount:           0,
+		CreatedAt:             now,
+		UpdatedAt:             now,
 	}
 	items = append(items, item)
 	if err := p.saveItems(items); err != nil {
 		return TemplateItem{}, err
 	}
+	p.startHistory(item)
 	return item, nil
 }
 
 func (p *fileTemplateProvider) ReplaceTemplate(_ context.Context, id string, req TemplateUpsertRequest, expectedRevision int) (TemplateItem, error) {
 	if err := validateTemplateUpsertRequest(req); err != nil {
 		return TemplateItem{}, err
+	}
+	enrollPerms, err := normalizeEnrollmentPermissions(req.EnrollmentPermissions)
+	if err != nil {
+		return TemplateItem{}, fmt.Errorf("%w: %v", errTemplateInvalidCreate, err)
 	}
 
 	items, ok := p.loadItems()
@@ -152,6 +159,7 @@ func (p *fileTemplateProvider) ReplaceTemplate(_ context.Context, id string, req
 			return TemplateItem{}, errTemplateConflict
 		}
 
+		before := items[i]
 		now := time.Now().UTC().Format(time.RFC3339)
 		items[i].Name = strings.TrimSpace(req.Name)
 		items[i].DisplayName = strings.TrimSpace(req.DisplayName)
@@ -169,12 +177,14 @@ func (p *fileTemplateProvider) ReplaceTemplate(_ context.Context, id string, req
 		items[i].EnrolleeType = normalizeEnrolleeType(req.EnrolleeType)
 		items[i].SSHPolicy = req.SSHPolicy
 		items[i].NamePolicy = req.NamePolicy
+		items[i].EnrollmentPermissions = enrollPerms
 		items[i].Revision++
 		items[i].UpdatedAt = now
 
 		if err := p.saveItems(items); err != nil {
 			return TemplateItem{}, err
 		}
+		p.appendHistory(before, items[i])
 		return items[i], nil
 	}
 
@@ -222,10 +232,19 @@ func (p *fileTemplateProvider) CloneTemplate(_ context.Context, id string, req T
 	if err := p.saveItems(items); err != nil {
 		return TemplateItem{}, err
 	}
+	// The clone is a new template: its history restarts at revision 1.
+	p.startHistory(clone)
 	return clone, nil
 }
 
 func (p *fileTemplateProvider) PatchTemplate(_ context.Context, id string, req TemplatePatchRequest) (TemplateItem, error) {
+	var patchPerms *EnrollmentPermissions
+	if req.EnrollmentPermissions != nil {
+		var err error
+		if patchPerms, err = normalizeEnrollmentPermissions(req.EnrollmentPermissions); err != nil {
+			return TemplateItem{}, fmt.Errorf("%w: %v", errTemplateInvalidPatch, err)
+		}
+	}
 	items, ok := p.loadItems()
 	if !ok {
 		return TemplateItem{}, errTemplateNotFound
@@ -237,6 +256,7 @@ func (p *fileTemplateProvider) PatchTemplate(_ context.Context, id string, req T
 			continue
 		}
 
+		before := items[i]
 		if req.DisplayName != nil {
 			items[i].DisplayName = *req.DisplayName
 		}
@@ -249,12 +269,16 @@ func (p *fileTemplateProvider) PatchTemplate(_ context.Context, id string, req T
 		if req.AllowedAlgorithms != nil {
 			items[i].AllowedAlgorithms = *req.AllowedAlgorithms
 		}
+		if req.EnrollmentPermissions != nil {
+			items[i].EnrollmentPermissions = patchPerms
+		}
 
 		items[i].Revision++
 		items[i].UpdatedAt = now
 		if err := p.saveItems(items); err != nil {
 			return TemplateItem{}, err
 		}
+		p.appendHistory(before, items[i])
 		return items[i], nil
 	}
 
@@ -285,18 +309,19 @@ func (p *fileTemplateProvider) DeleteTemplate(_ context.Context, id string) erro
 	if err := p.saveItems(items); err != nil {
 		return err
 	}
+	p.dropHistory(id)
 	return nil
 }
 
 func (p *fileTemplateProvider) loadItems() ([]TemplateItem, bool) {
 	body, err := os.ReadFile(p.filePath)
 	if err != nil {
-		log.Printf("template file fallback: unreadable %q: %v", p.filePath, err)
+		logging.Infof("template file fallback: unreadable %q: %v", p.filePath, err)
 		return nil, false
 	}
 	var items []TemplateItem
 	if err := json.Unmarshal(body, &items); err != nil {
-		log.Printf("template file fallback: invalid JSON")
+		logging.Infof("template file fallback: invalid JSON")
 		return nil, false
 	}
 	return items, true
@@ -369,4 +394,39 @@ func normalizeEnrolleeType(v string) string {
 		return templateEnrolleeUser
 	}
 	return templateEnrolleeMachine
+}
+
+var (
+	enrollRolePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.:-]{0,63}$`)
+	maxEnrollRoles    = 32
+)
+
+// normalizeEnrollmentPermissions trims, lowercases and dedupes the role list
+// and rejects malformed names. Roles are format-checked only: custom roles are
+// created at runtime so the known-role set is not a stable reference. An empty
+// list normalizes to nil (unrestricted) so the stored shape has one spelling.
+func normalizeEnrollmentPermissions(in *EnrollmentPermissions) (*EnrollmentPermissions, error) {
+	if in == nil {
+		return nil, nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in.Enroll))
+	for _, raw := range in.Enroll {
+		role := strings.ToLower(strings.TrimSpace(raw))
+		if role == "" || seen[role] {
+			continue
+		}
+		if !enrollRolePattern.MatchString(role) {
+			return nil, fmt.Errorf("enrollment_permissions: invalid role %q", raw)
+		}
+		seen[role] = true
+		out = append(out, role)
+	}
+	if len(out) > maxEnrollRoles {
+		return nil, fmt.Errorf("enrollment_permissions: at most %d roles", maxEnrollRoles)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return &EnrollmentPermissions{Enroll: out}, nil
 }

@@ -1,0 +1,444 @@
+{
+  "task": "U-36",
+  "title": "Send test deliveries, build alert rules, retry failures",
+  "sourceStory": "STORIES.md#u-36",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/alerts"
+      },
+      "caption": "Open /alerts",
+      "slug": "alerts-queue",
+      "expect": {
+        "role": "button",
+        "name": "Send test delivery"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-36/01-alerts-queue.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Notification test channel"
+      },
+      "value": "Email",
+      "caption": "Select \"Email\" in **Notification test channel**",
+      "slug": "channel",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-36/02-channel.png",
+        "annotated": "docs/guide/screenshots/U-36/02-channel-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 497,
+          "w": 475,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Notification test target"
+      },
+      "value": "ops@acme.test",
+      "caption": "Fill **Notification test target** with \"ops@acme.test\"",
+      "slug": "test-target",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-36/03-test-target.png",
+        "annotated": "docs/guide/screenshots/U-36/03-test-target-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 567,
+          "w": 475,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Send test delivery"
+      },
+      "caption": "Click **Send test delivery**",
+      "slug": "test-delivery-queued",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-36/04-test-delivery-queued.png",
+        "annotated": "docs/guide/screenshots/U-36/04-test-delivery-queued-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 687,
+          "w": 150,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "ops@acme.test",
+        "nth": 0
+      },
+      "caption": "Click a delivery row to open its detail, attempts and actions",
+      "slug": "delivery-detail",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-36/05-delivery-detail.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/alerts"
+      },
+      "caption": "Open /alerts",
+      "slug": "alerts-queue-again",
+      "expect": {
+        "role": "button",
+        "name": "Send test delivery"
+      },
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-36/06-alerts-queue-again.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Filter deliveries by channel"
+      },
+      "value": "Email",
+      "caption": "Select \"Email\" in **Filter deliveries by channel**",
+      "slug": "filter-email",
+      "optional": true,
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-36/07-filter-email.png",
+        "annotated": "docs/guide/screenshots/U-36/07-filter-email-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1106,
+          "y": 497,
+          "w": 289,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Alert rules"
+      },
+      "caption": "Click **Alert rules**",
+      "slug": "alert-rules-tab",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-36/08-alert-rules-tab.png",
+        "annotated": "docs/guide/screenshots/U-36/08-alert-rules-tab-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 383,
+          "y": 142,
+          "w": 100,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New rule"
+      },
+      "caption": "Click **New rule**",
+      "slug": "new-rule-dialog",
+      "expect": {
+        "role": "button",
+        "name": "Create rule"
+      },
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-36/09-new-rule-dialog.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Name",
+        "within": "[role=dialog]"
+      },
+      "value": "Expiry 14d to platform",
+      "caption": "Fill **Name** with \"Expiry 14d to platform\"",
+      "slug": "Name",
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-36/10-name.png",
+        "annotated": "docs/guide/screenshots/U-36/10-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 262,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Threshold",
+        "exact": true,
+        "within": "[role=dialog]"
+      },
+      "value": "14",
+      "caption": "Fill **Threshold** with \"14\"",
+      "slug": "Threshold",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-36/11-threshold.png",
+        "annotated": "docs/guide/screenshots/U-36/11-threshold-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 410,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Target",
+        "within": "[role=dialog]"
+      },
+      "value": "platform@acme.test",
+      "caption": "Fill **Target** with \"platform@acme.test\"",
+      "slug": "Target",
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-36/12-target.png",
+        "annotated": "docs/guide/screenshots/U-36/12-target-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 405,
+          "y": 650,
+          "w": 630,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Create rule"
+      },
+      "caption": "Click **Create rule**",
+      "slug": "rule-created",
+      "n": 13,
+      "capture": {
+        "file": "docs/guide/screenshots/U-36/13-rule-created.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "flags": "LOCAL SINK (Mailpit SMTP on the Mac LAN address, port 11025 (the hub egress policy refuses loopback))",
+  "lastRun": {
+    "at": "2026-10-18T12:47:24.588Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-36",
+    "steps": 13,
+    "shots": 13,
+    "annotated": 8,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/alerts?channel=email"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-36/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-36/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

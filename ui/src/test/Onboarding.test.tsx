@@ -75,7 +75,7 @@ describe("Onboarding wizard (W8-02)", () => {
     expect(await screen.findByText(/a reusable issuance policy/i)).toBeTruthy();
   });
 
-  it("walks all 4 steps end to end and calls onComplete", async () => {
+  it("walks all 5 steps end to end and calls onComplete", async () => {
     const user = userEvent.setup();
     vi.mocked(api.createCa).mockResolvedValue({ data: createdCa } as never);
     vi.mocked(api.createTemplate).mockResolvedValue({
@@ -117,7 +117,10 @@ describe("Onboarding wizard (W8-02)", () => {
     await screen.findByRole("button", { name: /certificate issued/i });
     await user.click(screen.getByRole("button", { name: "Next" }));
 
-    // Step 4: mode choice is the LAST step, so Wizard shows Finish, not
+    // Step 4 (W33-03): optional integrations step, skipped with Next.
+    await user.click(screen.getByRole("button", { name: "Next" }));
+
+    // Step 5: mode choice is the LAST step, so Wizard shows Finish, not
     // Next. Finish is blocked until a mode is chosen -- this exercises
     // S-18's fix to Wizard.tsx (Finish now validates the active step, same
     // as Next), which closed G-80.
@@ -149,5 +152,57 @@ describe("Onboarding wizard (W8-02)", () => {
     ).toBeInTheDocument();
     // Still on step 1 -- the CA step's own content, not step 2.
     expect(screen.getByLabelText(/subject common name/i)).toBeInTheDocument();
+  });
+
+  async function advanceToIntegrationsStep() {
+    const user = userEvent.setup();
+    vi.mocked(api.createCa).mockResolvedValue({ data: createdCa } as never);
+    vi.mocked(api.createTemplate).mockResolvedValue({
+      data: createdTemplate,
+    } as never);
+    vi.mocked(api.issueCertificate).mockResolvedValue({
+      data: issuedCert,
+    } as never);
+    renderOnboarding();
+    await user.type(screen.getByLabelText(/subject common name/i), "R");
+    await user.click(screen.getByRole("button", { name: "Create root CA" }));
+    await screen.findByText(/root ca created/i);
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.type(screen.getByLabelText(/^name$/i), "t");
+    await user.click(screen.getByRole("button", { name: "Create template" }));
+    await screen.findByText(/template created/i);
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.type(screen.getByLabelText(/csr pem/i), "CSR");
+    await user.click(screen.getByRole("button", { name: "Issue certificate" }));
+    await screen.findByRole("button", { name: /certificate issued/i });
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    return user;
+  }
+
+  it("optional step links to Integrations for SSO and notifications (continue)", async () => {
+    await advanceToIntegrationsStep();
+    expect(
+      screen.getByRole("heading", {
+        name: /connect sso or notifications \(optional\)/i,
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Set up SSO" })).toHaveAttribute(
+      "href",
+      "/integrations",
+    );
+    expect(
+      screen.getByRole("link", { name: "Set up notifications" }),
+    ).toHaveAttribute("href", "/integrations");
+    expect(
+      screen.getByText(/you can finish this later from integrations/i),
+    ).toBeInTheDocument();
+  });
+
+  it("optional step can be skipped: Next advances to Discovery & install", async () => {
+    const user = await advanceToIntegrationsStep();
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    expect(
+      screen.getByRole("button", { name: /choose agent mode/i }),
+    ).toBeInTheDocument();
   });
 });

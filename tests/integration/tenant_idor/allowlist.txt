@@ -1,0 +1,4 @@
+# METHOD path<TAB>reason. Design-global routes only; a real leak is NEVER listed here.
+GET /healthz	liveness probe, unauthenticated by design, returns no tenant data
+GET /readyz	readiness probe, unauthenticated by design, returns no tenant data
+GET /api/v1/ssh/ca	one hub-wide SSH CA public key by design (validation doc L-22), identical for every tenant

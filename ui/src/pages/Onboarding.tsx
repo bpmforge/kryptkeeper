@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { scrollableProps } from "../lib/scrollable";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
@@ -271,7 +272,7 @@ export default function Onboarding({ onComplete }: { onComplete: () => void }) {
             key. If you don't have one handy, generate a throwaway one to try
             the flow:
           </p>
-          <pre className="overflow-x-auto rounded-xl bg-card p-3 text-xs text-foreground">
+          <pre className="overflow-x-auto rounded-xl bg-card p-3 text-xs text-foreground" {...scrollableProps}>
             {CSR_HINT}
           </pre>
           <label className="block space-y-1 text-sm text-foreground">
@@ -311,6 +312,43 @@ export default function Onboarding({ onComplete }: { onComplete: () => void }) {
               ) : null}
             </div>
           )}
+        </div>
+      ),
+    },
+    {
+      id: "integrations",
+      title: "Connect SSO or notifications (optional)",
+      render: () => (
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Single sign-on and expiry notifications are optional here. Both open
+            in a new tab so this wizard keeps your progress.
+          </p>
+          <ul className="list-disc space-y-1 pl-5 text-sm">
+            <li>
+              <a
+                href="/integrations"
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary underline"
+              >
+                Set up SSO
+              </a>
+            </li>
+            <li>
+              <a
+                href="/integrations"
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary underline"
+              >
+                Set up notifications
+              </a>
+            </li>
+          </ul>
+          <p className="text-xs text-muted-foreground">
+            You can finish this later from Integrations.
+          </p>
         </div>
       ),
     },

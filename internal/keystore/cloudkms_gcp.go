@@ -20,7 +20,17 @@ import (
 	"time"
 )
 
-const gcpKMSBase = "https://cloudkms.googleapis.com/v1"
+// envGCPKMSEndpoint overrides the Cloud KMS base URL (emulators, private
+// endpoints). Read once at start-up; the bearer token is sent to whatever it
+// names, so it is operator configuration, never request data.
+const envGCPKMSEndpoint = "KRYPTKEEPER_GCP_KMS_ENDPOINT"
+
+var gcpKMSBase = func() string {
+	if v := strings.TrimRight(strings.TrimSpace(os.Getenv(envGCPKMSEndpoint)), "/"); v != "" {
+		return v
+	}
+	return "https://cloudkms.googleapis.com/v1"
+}()
 
 // signGCP calls Google Cloud KMS AsymmetricSign.
 // s.config.KeyURI must be the full resource name:
@@ -292,10 +302,12 @@ func gcpKeyAlgorithm(algo Algorithm) (string, error) {
 		return "EC_SIGN_P384_SHA384", nil
 	case RSA2048:
 		return "RSA_SIGN_PKCS1_2048_SHA256", nil
+	case RSA3072:
+		return "RSA_SIGN_PKCS1_3072_SHA256", nil
 	case RSA4096:
 		return "RSA_SIGN_PKCS1_4096_SHA256", nil
 	default:
-		return "", fmt.Errorf("unsupported algorithm %s for GCP KMS", algo)
+		return "", fmt.Errorf("%w: %s for GCP KMS", ErrUnsupportedAlgo, algo)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -63,6 +64,7 @@ func TestRenewalSchedulerRunScanRecordsStatus(t *testing.T) {
 // TestRenewalSchedulerHonoursPerTargetThreshold).
 type recordingNotificationProvider struct {
 	NotificationProvider
+	mu   sync.Mutex // the sweep's worker pool delivers concurrently
 	sent []string
 }
 
@@ -74,7 +76,9 @@ func (r *recordingNotificationProvider) ListRules(context.Context) ([]Notificati
 }
 
 func (r *recordingNotificationProvider) TestDelivery(_ context.Context, _ string, target string, _ string) (NotificationTestDeliveryResult, error) {
+	r.mu.Lock()
 	r.sent = append(r.sent, target)
+	r.mu.Unlock()
 	return NotificationTestDeliveryResult{Status: "sent"}, nil
 }
 

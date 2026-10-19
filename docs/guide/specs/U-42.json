@@ -1,0 +1,222 @@
+{
+  "task": "U-42",
+  "title": "Create issuance policies and dry-run a request",
+  "sourceStory": "STORIES.md#u-42",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/policies"
+      },
+      "caption": "Open /policies",
+      "slug": "policies-list",
+      "expect": {
+        "role": "button",
+        "name": "New policy"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-42/01-policies-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "New policy"
+      },
+      "caption": "Click **New policy**",
+      "slug": "new-policy-panel",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-42/02-new-policy-panel.png",
+        "annotated": "docs/guide/screenshots/U-42/02-new-policy-panel-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1292,
+          "y": 24,
+          "w": 124,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "screenshot",
+      "caption": "The new policy panel: name, CA, algorithms, RSA bits, validity, flags",
+      "slug": "new-policy-fields",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-42/03-new-policy-fields.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Edit Baseline"
+      },
+      "caption": "Click **Edit Baseline**",
+      "slug": "edit-policy",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-42/04-edit-policy.png",
+        "annotated": "docs/guide/screenshots/U-42/04-edit-policy-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1259,
+          "y": 688,
+          "w": 55,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "css": "select",
+        "nth": 0
+      },
+      "value": "RSA-2048",
+      "caption": "Pick **Algorithm** RSA-2048 in the Dry run card",
+      "slug": "dry-run-algorithm",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-42/05-dry-run-algorithm.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Run dry run"
+      },
+      "caption": "Click **Run dry run**",
+      "slug": "dry-run-refusal",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-42/06-dry-run-refusal.png",
+        "annotated": "docs/guide/screenshots/U-42/06-dry-run-refusal-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 471,
+          "y": 799,
+          "w": 105,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:45:26.798Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-42",
+    "steps": 6,
+    "shots": 6,
+    "annotated": 3,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/policies"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-42/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-42/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

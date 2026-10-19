@@ -30,7 +30,7 @@ func newNotifSilencesTestMux(t *testing.T) *http.ServeMux {
 	auth := NewAuthenticatorFromEnv()
 	mux := http.NewServeMux()
 	provider := newFileNotificationProvider()
-	registerNotificationHandlers(mux, auth, provider, stubAuditProvider{})
+	registerNotificationHandlers(mux, auth, provider, stubAuditProvider{}, nil)
 	return mux
 }
 
@@ -143,7 +143,7 @@ func TestNotificationSilences_ReadOnlyRoleCannotMutate(t *testing.T) {
 	t.Setenv("APP_API_KEY_AUTH_ENABLED", "true")
 	auth := NewAuthenticatorFromEnv()
 	mux := http.NewServeMux()
-	registerNotificationHandlers(mux, auth, newFileNotificationProvider(), stubAuditProvider{})
+	registerNotificationHandlers(mux, auth, newFileNotificationProvider(), stubAuditProvider{}, nil)
 
 	_, auditorKey, err := auth.CreateAPIKey("auditor-integration", "auditor-svc", "pki-auditor", nil, "", "", time.Now())
 	if err != nil {
@@ -205,7 +205,7 @@ func TestNotificationSilences_EndpointTakesEffectOnNextSchedulerScan(t *testing.
 	t.Setenv("KRYPTKEEPER_DATA_DIR", dataDir)
 	auth := NewAuthenticatorFromEnv()
 	mux := http.NewServeMux()
-	registerNotificationHandlers(mux, auth, newFileNotificationProvider(), stubAuditProvider{})
+	registerNotificationHandlers(mux, auth, newFileNotificationProvider(), stubAuditProvider{}, nil)
 
 	body, _ := json.Marshal(map[string]string{
 		"target_type": SilenceTargetCertificate,

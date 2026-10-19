@@ -93,51 +93,6 @@ func azureRawECDSAToASN1(raw []byte, pub *ecdsa.PublicKey) ([]byte, error) {
 	})
 }
 
-// azureKVGetPublicKey retrieves the public key for an Azure Key Vault key.
-// keyURI format: https://{vault}.vault.azure.net/keys/{key-name}[/{version}]
-func azureKVGetPublicKey(keyURI string) (crypto.PublicKey, error) {
-	token, err := azureKVToken(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("azure kv: get token: %w", err)
-	}
-
-	getURL := fmt.Sprintf("%s?api-version=%s", keyURI, azureKVAPIVersion)
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, getURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := azureHTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("azure kv: getKey: %w", err)
-	}
-	defer resp.Body.Close()
-
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("azure kv: getKey returned %d: %s", resp.StatusCode, azureTruncate(string(raw)))
-	}
-
-	var out struct {
-		Key struct {
-			Kty    string   `json:"kty"` // EC, RSA
-			N      string   `json:"n"`   // RSA modulus (base64url)
-			E      string   `json:"e"`   // RSA exponent (base64url)
-			X      string   `json:"x"`   // EC x coordinate
-			Y      string   `json:"y"`   // EC y coordinate
-			Crv    string   `json:"crv"` // EC curve name
-			Kid    string   `json:"kid"` // key ID (full URI)
-			KeyOps []string `json:"key_ops"`
-		} `json:"key"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("azure kv: parse key response: %w", err)
-	}
-
-	return azureParseJWK(out.Key.Kty, out.Key.N, out.Key.E, out.Key.X, out.Key.Y, out.Key.Crv)
-}
-
 // azureKVToken retrieves an Azure AD OAuth2 token for Key Vault via client credentials.
 func azureKVToken(ctx context.Context) (string, error) {
 	tenantID := os.Getenv("AZURE_TENANT_ID")
@@ -401,12 +356,7 @@ func generateKeyAzure(id string, algo Algorithm) (crypto.PublicKey, string, erro
 	}
 	cb := createBody{Kty: kty, Crv: crv, KeyOps: keyOps, Tags: tags}
 	if strings.HasPrefix(kty, "RSA") {
-		switch algo {
-		case RSA2048:
-			cb.KeySize = 2048
-		case RSA4096:
-			cb.KeySize = 4096
-		}
+		cb.KeySize = azureRSAKeySize(algo)
 	}
 	bodyBytes, _ := json.Marshal(cb)
 
@@ -463,10 +413,10 @@ func azureKeyParams(algo Algorithm) (kty, crv string, keyOps []string, err error
 		return "EC", "P-256", ops, nil
 	case ECDSAP384:
 		return "EC", "P-384", ops, nil
-	case RSA2048, RSA4096:
+	case RSA2048, RSA3072, RSA4096:
 		return "RSA", "", ops, nil
 	default:
-		return "", "", nil, fmt.Errorf("unsupported algorithm %s for Azure Key Vault", algo)
+		return "", "", nil, fmt.Errorf("%w: %s for Azure Key Vault", ErrUnsupportedAlgo, algo)
 	}
 }
 
@@ -477,4 +427,19 @@ func azureTruncate(s string) string {
 		return s[:200] + "..."
 	}
 	return s
+}
+
+// azureRSAKeySize returns the Key Vault key_size for an RSA algorithm, or 0
+// for a non-RSA algorithm.
+func azureRSAKeySize(algo Algorithm) int {
+	switch algo {
+	case RSA2048:
+		return 2048
+	case RSA3072:
+		return 3072
+	case RSA4096:
+		return 4096
+	default:
+		return 0
+	}
 }

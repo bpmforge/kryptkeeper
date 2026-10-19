@@ -15,10 +15,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"kryptkeeper/internal/privexec"
 )
 
 // startTestSSHServer runs a minimal in-process SSH server that executes any
@@ -448,4 +451,86 @@ func TestSSHExecutor_HostKeyAlgorithms_RequiredForMultiHostKeyServer(t *testing.
 		}
 		exec.Close()
 	})
+}
+
+func TestSSHExecutor_RunStdin_PipesBytes(t *testing.T) {
+	e := newTestSSHExecutor(t)
+	out, err := e.RunStdin(context.Background(), []byte("piped-bytes"), "cat")
+	if err != nil {
+		t.Fatalf("RunStdin: %v", err)
+	}
+	if string(out) != "piped-bytes" {
+		t.Fatalf("unexpected output: %q", out)
+	}
+}
+
+// fakeSudo stands in for sudo on the test "remote": in -S mode it requires the
+// password on the first stdin line, otherwise it only accepts -n.
+func installFakeSudo(t *testing.T, password string) {
+	t.Helper()
+	bin := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = -S ]; then read -r pw; [ \"$pw\" = '" + password + "' ] || { echo 'Sorry, try again.' >&2; exit 1; }; shift 5; " +
+		"else [ \"$1\" = -n ] || exit 1; shift 2; fi\n" +
+		"exec \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "sudo"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestPrivexecPasswordOverSSH(t *testing.T) {
+	const pw = "Sup3r-Secret-pw"
+	installFakeSudo(t, pw)
+	e := newTestSSHExecutor(t)
+
+	good, err := privexec.Wrap(e, privexec.Config{Mode: privexec.ModePassword, Password: []byte(pw)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "site.pem")
+	if err := good.WriteFile(dst, []byte("cert"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if b, err := good.ReadFile(dst); err != nil || string(b) != "cert" {
+		t.Fatalf("ReadFile: %q %v", b, err)
+	}
+
+	bad, _ := privexec.Wrap(e, privexec.Config{Mode: privexec.ModePassword, Password: []byte("wrong-pw")})
+	_, err = bad.Run(context.Background(), "true")
+	if err == nil {
+		t.Fatal("wrong password accepted")
+	}
+	if strings.Contains(err.Error(), pw) || strings.Contains(err.Error(), "wrong-pw") {
+		t.Fatalf("password leaked in error: %v", err)
+	}
+}
+
+// W34-20: a failed remote read keeps cat's own diagnostic, so the scan can tell
+// "this account may not read it" from "this file is broken".
+func TestSSHExecutor_ReadFileErrorCarriesStderr(t *testing.T) {
+	e := newTestSSHExecutor(t)
+	dir := t.TempDir()
+	_, err := e.ReadFile(filepath.Join(dir, "absent.jks"))
+	if err == nil || !strings.Contains(err.Error(), "No such file or directory") {
+		t.Fatalf("missing file error = %v", err)
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("permission bits do not bind root")
+	}
+	locked := filepath.Join(dir, "locked.jks")
+	if werr := os.WriteFile(locked, []byte("x"), 0o000); werr != nil {
+		t.Fatal(werr)
+	}
+	if _, err := e.ReadFile(locked); err == nil || !strings.Contains(strings.ToLower(err.Error()), "permission denied") {
+		t.Fatalf("unreadable file error = %v", err)
+	}
+}
+
+func TestCappedBufferKeepsTheFirstLineOnly(t *testing.T) {
+	c := &cappedBuffer{max: 16}
+	n, _ := c.Write([]byte("cat: /x: Permission denied\nsecond line\n"))
+	if n != 39 || c.firstLine() != "cat: /x: Permiss" {
+		t.Fatalf("n=%d line=%q", n, c.firstLine())
+	}
 }

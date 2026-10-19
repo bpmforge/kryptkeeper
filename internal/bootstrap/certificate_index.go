@@ -29,20 +29,22 @@ const forEachChunk = 1024
 type certFilter struct {
 	caID, templateID, teamID, status, origin, managementState, trustClass string
 	qLower                                                                string
+	owner                                                                 string
+	sunsetGroup                                                           string
 }
 
 func newCertFilter(q CertificateListQuery) certFilter {
 	return certFilter{
 		caID: q.CAID, templateID: q.TemplateID, teamID: q.TeamID, status: q.Status,
 		origin: q.Origin, managementState: q.ManagementState, trustClass: q.TrustClass,
-		qLower: strings.ToLower(q.Q),
+		qLower: strings.ToLower(q.Q), owner: q.Owner, sunsetGroup: q.SunsetGroup,
 	}
 }
 
 // matchesAll reports a filter that selects the whole inventory, which lets
 // a page be served from the order index without scanning.
 func (f certFilter) matchesAll() bool {
-	return f.caID == "" && f.templateID == "" && f.teamID == "" && f.origin == "" && f.managementState == "" && f.trustClass == "" &&
+	return f.caID == "" && f.templateID == "" && f.teamID == "" && f.origin == "" && f.managementState == "" && f.trustClass == "" && f.owner == "" && f.sunsetGroup == "" &&
 		f.qLower == "" && f.status != "active" && f.status != "revoked"
 }
 
@@ -78,7 +80,21 @@ func (f certFilter) matches(item *CertificateItem) bool {
 	if f.trustClass != "" && item.TrustClass != f.trustClass {
 		return false
 	}
+	if f.owner == ownerFilterUnassigned && !isUnownedCertificate(item) {
+		return false
+	}
+	if f.sunsetGroup != "" && !inSunsetGroup(item, f.sunsetGroup) {
+		return false
+	}
 	return true
+}
+
+// inSunsetGroup is the list-side twin of computeAlgorithmSunset: the report
+// counts active certificates per rule, so the filter must too or the count and
+// the drill-through list would disagree.
+func inSunsetGroup(item *CertificateItem, id string) bool {
+	rule, ok := sunsetRuleByID(id)
+	return ok && isActiveCertificate(item) && rule.match(*item)
 }
 
 // certOrderBefore is the total list order: newest first, fingerprint as the
@@ -147,7 +163,7 @@ func (p *caCertificateProvider) rebuildIndexLocked() {
 // them (a direct map write, as the package's own tests do). Production writes
 // all go through addLocked, so this is a length comparison in practice.
 func (p *caCertificateProvider) ensureIndex() {
-	p.refreshDiscovered()
+	p.refreshFromTable()
 	p.mu.RLock()
 	stale := len(p.order) != len(p.certs)
 	p.mu.RUnlock()

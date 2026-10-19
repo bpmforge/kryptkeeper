@@ -1,0 +1,9 @@
+{
+  "name": "kryptkeeper-sdk-smoke-ts",
+  "private": true,
+  "version": "0.0.0",
+  "description": "W32-03 TypeScript SDK contract smoke (run via npx tsx)",
+  "devDependencies": {
+    "tsx": "4.21.0"
+  }
+}

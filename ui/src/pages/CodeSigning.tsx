@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { scrollableProps } from "../lib/scrollable";
 import { RefreshCw } from "lucide-react";
 import { api } from "../lib/api";
 import {
@@ -7,6 +8,7 @@ import {
   MetricCard,
   Panel,
   StateMessage,
+  formatDateTime,
 } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
 
@@ -73,7 +75,7 @@ export default function CodeSigning() {
             <MetricCard
               label="Expired"
               value={inv.expired}
-              tone={inv.expired > 0 ? "danger" : "success"}
+              tone={inv.expired > 0 ? "danger" : "neutral"}
             />
             <MetricCard
               label="Revoked"
@@ -89,7 +91,7 @@ export default function CodeSigning() {
                 code-signing extended key usage to populate this inventory.
               </p>
             ) : (
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto" {...scrollableProps}>
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
@@ -117,9 +119,9 @@ export default function CodeSigning() {
                           {c.public_key_algorithm || "—"}
                           {c.key_size_bits ? ` ${c.key_size_bits}-bit` : ""}
                         </td>
-                        <td className="py-2 pr-4 text-foreground">
+                        <td className="py-2 pr-4 text-foreground whitespace-nowrap">
                           {c.valid_until
-                            ? new Date(c.valid_until).toLocaleDateString()
+                            ? formatDateTime(c.valid_until)
                             : "—"}
                         </td>
                         <td className="py-2 pr-4">

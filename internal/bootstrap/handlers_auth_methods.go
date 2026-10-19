@@ -6,9 +6,10 @@ package bootstrap
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"time"
+
+	"kryptkeeper/internal/logging"
 )
 
 // registerAuthMethodsHandler exposes WHICH sign-in methods this deployment
@@ -38,11 +39,11 @@ func registerAuthMethodsHandler(mux *http.ServeMux, auth *Authenticator) {
 		}{}
 		resp.Data.Password = cfg.loginEnabled
 		resp.Data.OIDC = cfg.oidcLoginEnabled && cfg.oidcClientID != "" && cfg.oidcRedirectURL != "" && cfg.oidcAuthorizationEndpoint != ""
-		resp.Data.SAML = cfg.samlLoginEnabled && samlServiceProviderFromConfig(cfg) != nil
+		resp.Data.SAML = cfg.samlLoginEnabled && samlServiceProviderFromConfig(auth.samlEffectiveConfig(r.Context())) != nil
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		if err := json.NewEncoder(w).Encode(resp); err != nil {
-			log.Printf("failed to encode /api/v1/auth/methods response: %v", err)
+			logging.Warnf("failed to encode /api/v1/auth/methods response: %v", err)
 		}
 	})
 }

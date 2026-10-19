@@ -6,9 +6,10 @@ package bootstrap
 
 import (
 	"context"
-	"log"
 	"os"
 	"strings"
+
+	"kryptkeeper/internal/logging"
 )
 
 const protocolProviderEnv = "APP_PROTOCOL_PROVIDER"
@@ -17,7 +18,7 @@ const (
 	protocolProviderFile = "file"
 )
 
-var protocolProviderWarnf = log.Printf
+var protocolProviderWarnf = logging.Warnf
 
 type ProtocolStatus struct {
 	ACME bool `json:"acme"`

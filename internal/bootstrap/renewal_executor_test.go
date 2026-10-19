@@ -30,6 +30,7 @@ import (
 	"encoding/base64"
 	"io"
 	"kryptkeeper/internal/agentinstall"
+	"kryptkeeper/internal/discovery/scanner"
 	"net/http"
 	"net/http/httptest"
 )
@@ -194,12 +195,20 @@ func TestRenewalExecutorEndToEnd(t *testing.T) {
 	fake := &renewalFakeExecutor{files: map[string][]byte{}}
 	exec := newRenewalTestEngine(t, provider, fake, testSSHCredentialJSON(t))
 
+	// W32-26: a verified renewal tells the ITSM hook which certificate was replaced.
+	var hooked []string
+	SetRenewalVerifiedHook(func(_ context.Context, pred, succ string) { hooked = append(hooked, pred+">"+succ) })
+	t.Cleanup(func() { SetRenewalVerifiedHook(nil) })
+
 	result, err := exec.ExecuteRenewal(ctx, predecessorFP, sshTestTarget(), sshTestProfile())
 	if err != nil {
 		t.Fatalf("ExecuteRenewal: %v", err)
 	}
 	if !result.Renewed || result.NewFingerprint == "" || result.NewFingerprint == predecessorFP {
 		t.Fatalf("expected a renewed successor, got %+v", result)
+	}
+	if len(hooked) != 1 || hooked[0] != predecessorFP+">"+result.NewFingerprint {
+		t.Fatalf("renewal-verified hook calls = %v", hooked)
 	}
 	if result.InstallOutcome != agentinstall.OutcomeInstalledVerified || !result.Verified {
 		t.Fatalf("expected installed_verified, got %+v", result)
@@ -878,5 +887,521 @@ func TestAutoRenewTargetsIncludePluginTargets(t *testing.T) {
 	}
 	if _, ok := got["vip.example.com"]; !ok {
 		t.Fatalf("an opted-in plugin target is not auto-renewed: %v", got)
+	}
+}
+
+// W27-07: a tomcat target builds the keystore hub-side from the credential's
+// keystore_password. The scheduler audits result.InstallOutcome verbatim as
+// "install=<outcome>", so asserting the outcome here pins the audit field; the
+// password must appear in neither the outcome nor the detail.
+func TestRenewalExecutorTomcatKeystore(t *testing.T) {
+	db := setupIntegrationDB(t)
+	provider, engine := newIntegrationCAProvider(t, db)
+	ctx := context.Background()
+	issued, err := provider.IssueCertificate(ctx, CertificateIssueRequest{
+		CAID:       getFirstCAID(t, engine),
+		CSRPEM:     generateTestCSRPEM(t, "renew-exec.example.com", "renew-exec.example.com"),
+		TemplateID: "file-backed-default",
+		TeamID:     "team-renew-exec",
+	})
+	if err != nil {
+		t.Fatalf("issue predecessor: %v", err)
+	}
+
+	const ksPassword = "Tomcat-ks-pw-123"
+	var cred sshCredentialPayload
+	if err := json.Unmarshal(testSSHCredentialJSON(t), &cred); err != nil {
+		t.Fatal(err)
+	}
+	cred.KeystorePassword = ksPassword
+	credJSON, _ := json.Marshal(cred)
+
+	const ksPath = "/opt/tomcat/conf/keystore.p12"
+	fake := &renewalFakeExecutor{files: map[string][]byte{}}
+	exec := newRenewalTestEngine(t, provider, fake, credJSON)
+	exec.verifier = func(context.Context, string) (string, error) {
+		_, leaf, _, err := pkcs12.DecodeChain(fake.files[ksPath], ksPassword)
+		if err != nil {
+			return "", err
+		}
+		return agentinstall.FingerprintSHA256(leaf.Raw), nil
+	}
+	profile := RenewalInstallProfile{ServerType: "tomcat", CertPath: ksPath, KeyPath: ksPath}
+
+	result, err := exec.ExecuteRenewal(ctx, issued.CertificateItem.FingerprintSHA256, sshTestTarget(), profile)
+	if err != nil {
+		t.Fatalf("ExecuteRenewal: %v", err)
+	}
+	if result.InstallOutcome != agentinstall.OutcomeInstalledVerified || !result.Verified {
+		t.Fatalf("want installed_verified, got %+v", result)
+	}
+	if strings.Contains(result.InstallOutcome+result.InstallDetail, ksPassword) {
+		t.Fatal("keystore password leaked into the result")
+	}
+	if _, ok := fake.files[ksPath]; !ok {
+		t.Fatal("keystore not installed")
+	}
+
+	// Without a keystore_password the install is refused, reported in the
+	// result (not an opaque error), and the first-install keystore is cleaned.
+	noPW := &renewalFakeExecutor{files: map[string][]byte{}}
+	cred.KeystorePassword = ""
+	credJSON, _ = json.Marshal(cred)
+	exec2 := newRenewalTestEngine(t, provider, noPW, credJSON)
+	issued2, err := provider.IssueCertificate(ctx, CertificateIssueRequest{
+		CAID:       getFirstCAID(t, engine),
+		CSRPEM:     generateTestCSRPEM(t, "renew-exec2.example.com", "renew-exec2.example.com"),
+		TemplateID: "file-backed-default",
+		TeamID:     "team-renew-exec",
+	})
+	if err != nil {
+		t.Fatalf("issue second predecessor: %v", err)
+	}
+	res2, err := exec2.ExecuteRenewal(ctx, issued2.CertificateItem.FingerprintSHA256, sshTestTarget(), profile)
+	if err != nil {
+		t.Fatalf("ExecuteRenewal (no password): %v", err)
+	}
+	if res2.InstallOutcome == agentinstall.OutcomeInstalledVerified || len(noPW.files) != 0 {
+		t.Fatalf("missing keystore password must not install: %+v", res2)
+	}
+}
+
+// ---- W34-14: sudo_mode on the ssh_key credential ----
+
+// privFakeExec emulates a host where one cert is root-only: plain ReadFile
+// cannot see it, `sudo ... cat` can. It records every command line so tests
+// can assert the sudo password never appears in argv.
+type privFakeExec struct {
+	sshDiscFakeExec
+	rootOnly map[string][]byte
+	password string
+	argv     []string
+}
+
+func (f *privFakeExec) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return f.RunStdin(ctx, nil, name, args...)
+}
+
+func (f *privFakeExec) RunStdin(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+	f.argv = append(f.argv, strings.TrimSpace(name+" "+strings.Join(args, " ")))
+	if name != "sudo" {
+		return f.sshDiscFakeExec.Run(ctx, name, args...)
+	}
+	if len(args) > 0 && args[0] == "-S" && string(stdin) != f.password+"\n" {
+		return []byte("Sorry, try again."), errors.New("exit status 1")
+	}
+	sep := -1
+	for i, a := range args {
+		if a == "--" {
+			sep = i
+			break
+		}
+	}
+	if sep < 0 || sep+1 >= len(args) {
+		return nil, errors.New("sudo: no command")
+	}
+	cmd, cargs := args[sep+1], args[sep+2:]
+	if cmd == "cat" && len(cargs) == 1 {
+		if b, ok := f.rootOnly[cargs[0]]; ok {
+			return b, nil
+		}
+		if b, ok := f.files[cargs[0]]; ok {
+			return b, nil
+		}
+		return nil, errors.New("no such file")
+	}
+	return f.sshDiscFakeExec.Run(ctx, cmd, cargs...)
+}
+
+func sshPayloadWithPrivilege(t *testing.T, extra map[string]string) []byte {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(sshCredentialJSONWithMarker(t, "PRIV-MARK"), &m); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range extra {
+		m[k] = v
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func runPrivScan(t *testing.T, extra map[string]string, exec *privFakeExec) scanner.ScanResult {
+	t.Helper()
+	targets, creds := winrmTestStores(t)
+	if _, err := creds.Create(context.Background(), "cred-priv", "kkscan", CredentialTypeSSHKey, "", sshPayloadWithPrivilege(t, extra)); err != nil {
+		t.Fatal(err)
+	}
+	tgt, err := targets.Create(context.Background(), ManagedTarget{ID: "t-priv", Name: "linux", Host: "192.0.2.30",
+		DiscoveryMode: "network", InstallMode: "ssh", RenewalMethod: "manual", CredentialRef: "cred-priv"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := newSSHTargetScanner(targets, creds, &sshRecordingAudit{}, func(context.Context, agentinstall.SSHTarget) (agentinstall.Executor, func() error, error) {
+		return exec, func() error { return nil }, nil
+	})
+	return run(context.Background(), tgt.ID)
+}
+
+func newPrivFake(t *testing.T, password string) *privFakeExec {
+	return &privFakeExec{
+		sshDiscFakeExec: sshDiscFakeExec{
+			files:   map[string][]byte{"/etc/ssl/certs/a.crt": certFilePEM(t, "a.example.com")},
+			findOut: map[string]string{"/etc/ssl/certs": "/etc/ssl/certs/a.crt\n/etc/ssl/certs/root.crt"},
+		},
+		rootOnly: map[string][]byte{"/etc/ssl/certs/root.crt": certFilePEM(t, "root.example.com")},
+		password: password,
+	}
+}
+
+func TestSSHDiscoveryHonoursSudoMode(t *testing.T) {
+	const pw = "Disc-Sudo-Pw-4412"
+	cases := []struct {
+		name      string
+		extra     map[string]string
+		wantCerts int
+		wantSudo  string
+	}{
+		{"unset is none", nil, 1, ""},
+		{"none", map[string]string{"sudo_mode": "none"}, 1, ""},
+		{"nopasswd", map[string]string{"sudo_mode": "nopasswd"}, 2, "sudo -n -- cat /etc/ssl/certs/root.crt"},
+		{"password", map[string]string{"sudo_mode": "password", "sudo_password": pw}, 2, "sudo -S -p  -k -- cat /etc/ssl/certs/root.crt"},
+	}
+	for _, c := range cases {
+		exec := newPrivFake(t, pw)
+		res := runPrivScan(t, c.extra, exec)
+		if res.CertsFound != c.wantCerts {
+			t.Errorf("%s: CertsFound %d, want %d (%+v)", c.name, res.CertsFound, c.wantCerts, res)
+		}
+		joined := strings.Join(exec.argv, "\n")
+		if c.wantSudo == "" && strings.Contains(joined, "sudo") {
+			t.Errorf("%s: sudo must not run:\n%s", c.name, joined)
+		}
+		if c.wantSudo != "" && !strings.Contains(joined, c.wantSudo) {
+			t.Errorf("%s: missing %q in:\n%s", c.name, c.wantSudo, joined)
+		}
+		if strings.Contains(joined, pw) {
+			t.Errorf("%s: sudo password in argv:\n%s", c.name, joined)
+		}
+		if b, _ := json.Marshal(res); strings.Contains(string(b), pw) {
+			t.Errorf("%s: sudo password in scan result", c.name)
+		}
+	}
+}
+
+func TestSSHDiscoveryWrongSudoPasswordDoesNotLeak(t *testing.T) {
+	const pw = "Stored-Wrong-Pw-9921"
+	exec := newPrivFake(t, "the-real-one")
+	res := runPrivScan(t, map[string]string{"sudo_mode": "password", "sudo_password": pw}, exec)
+	if b, _ := json.Marshal(res); strings.Contains(string(b), pw) {
+		t.Fatalf("scan result leaked the sudo password: %s", b)
+	}
+	if res.CertsFound != 0 || res.Status != "failed" {
+		t.Fatalf("a rejected password must surface as unreadable paths, not as certs: %+v", res)
+	}
+}
+
+func TestSSHDiscoveryInvalidPrivilegeFailsBeforeScan(t *testing.T) {
+	exec := newPrivFake(t, "x")
+	res := runPrivScan(t, map[string]string{"sudo_mode": "password"}, exec)
+	if res.Status != "failed" || len(exec.argv) != 0 {
+		t.Fatalf("invalid combination must fail the scan without running commands: %+v argv=%v", res, exec.argv)
+	}
+}
+
+func TestSSHCredentialElevate(t *testing.T) {
+	plain := &privFakeExec{}
+	got, done, err := sshCredentialPayload{}.elevate(plain)
+	if err != nil || got != agentinstall.Executor(plain) {
+		t.Fatalf("none must return the executor unchanged: %v", err)
+	}
+	done()
+	if _, _, err := (sshCredentialPayload{SudoMode: "password", SudoPassword: "x"}).elevate(&renewalFakeExecutor{}); err == nil {
+		t.Fatal("password mode over a transport without stdin (renewalFakeExecutor has no RunStdin, like WinRM) must be refused")
+	}
+	if _, _, err := (sshCredentialPayload{SudoMode: "helper"}).elevate(plain); err == nil {
+		t.Fatal("helper mode without a pinned sha must be refused")
+	}
+	if _, done, err := (sshCredentialPayload{SudoMode: "helper", HelperSHA256: strings.Repeat("0", 64)}).elevate(plain); err != nil {
+		t.Fatalf("helper: %v", err)
+	} else {
+		done()
+	}
+}
+
+// sudoInstallFake serves the privilege-elevated half of the installer: it
+// strips `sudo -n --` or `sudo -S -p ” -k --` and honours `install -m M src dst`
+// against its virtual filesystem, recording argv and refusing a wrong password.
+type sudoInstallFake struct {
+	renewalFakeExecutor
+	password string
+	argv     []string
+	// owners maps a path to "owner group mode" for the `stat -c` probe.
+	owners map[string]string
+	// failInstallsAfter, when > 0, makes every sudo install after that many fail.
+	failInstallsAfter int
+	installs          int
+}
+
+func (f *sudoInstallFake) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return f.RunStdin(ctx, nil, name, args...)
+}
+
+func (f *sudoInstallFake) RunStdin(ctx context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+	f.argv = append(f.argv, strings.TrimSpace(name+" "+strings.Join(args, " ")))
+	if name != "sudo" {
+		return f.renewalFakeExecutor.Run(ctx, name, args...)
+	}
+	if len(args) > 0 && args[0] == "-S" && string(stdin) != f.password+"\n" {
+		return []byte("Sorry, try again."), errors.New("exit status 1")
+	}
+	for i, a := range args {
+		if a != "--" {
+			continue
+		}
+		cmd, rest := args[i+1], args[i+2:]
+		if cmd == "cat" && len(rest) == 1 {
+			if b, ok := f.files[rest[0]]; ok {
+				return b, nil
+			}
+			return nil, errors.New("cat: no such file")
+		}
+		if cmd == "stat" && len(rest) == 3 && rest[0] == "-c" {
+			if o, ok := f.owners[rest[2]]; ok && rest[1] == "%U %G %a" {
+				return []byte(o + "\n"), nil
+			}
+			return nil, errors.New("stat: no such file")
+		}
+		if cmd == "install" && len(rest) >= 4 {
+			f.installs++
+			if f.failInstallsAfter > 0 && f.installs > f.failInstallsAfter {
+				return []byte("install: Permission denied"), errors.New("exit status 1")
+			}
+			b, ok := f.files[rest[len(rest)-2]]
+			if !ok {
+				return nil, errors.New("install: no such staged file")
+			}
+			f.files[rest[len(rest)-1]] = b
+			return nil, nil
+		}
+		return f.renewalFakeExecutor.Run(ctx, cmd, rest...)
+	}
+	return nil, errors.New("sudo: no command")
+}
+
+func TestRenewalExecutorInstallsThroughSudo(t *testing.T) {
+	const pw = "Renew-Sudo-Pw-3308"
+	for _, mode := range []string{"nopasswd", "password"} {
+		t.Run(mode, func(t *testing.T) {
+			db := setupIntegrationDB(t)
+			provider, engine := newIntegrationCAProvider(t, db)
+			ctx := context.Background()
+			issued, err := provider.IssueCertificate(ctx, CertificateIssueRequest{
+				CAID:       getFirstCAID(t, engine),
+				CSRPEM:     generateTestCSRPEM(t, "renew-exec.example.com", "renew-exec.example.com"),
+				TemplateID: "file-backed-default",
+				TeamID:     "team-renew-exec",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(testSSHCredentialJSON(t), &m); err != nil {
+				t.Fatal(err)
+			}
+			m["sudo_mode"] = mode
+			if mode == "password" {
+				m["sudo_password"] = pw
+			}
+			payload, _ := json.Marshal(m)
+
+			fake := &sudoInstallFake{renewalFakeExecutor: renewalFakeExecutor{files: map[string][]byte{}}, password: pw}
+			e := NewRenewalExecutor(provider, &renewalFakeCredStore{
+				meta: OutboundCredentialMeta{ID: "cred-1", CredentialType: CredentialTypeSSHKey}, payload: payload,
+			})
+			e.dial = func(context.Context, agentinstall.SSHTarget) (agentinstall.Executor, func() error, error) {
+				return fake, func() error { return nil }, nil
+			}
+			e.verifier = func(context.Context, string) (string, error) {
+				block, _ := pem.Decode(fake.files["/etc/nginx/tls/renewed.crt"])
+				if block == nil {
+					return "", errors.New("nothing installed")
+				}
+				return agentinstall.FingerprintSHA256(block.Bytes), nil
+			}
+			res, err := e.ExecuteRenewal(ctx, issued.CertificateItem.FingerprintSHA256, sshTestTarget(), sshTestProfile())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.InstallOutcome != agentinstall.OutcomeInstalledVerified {
+				t.Fatalf("install through sudo failed: %+v", res)
+			}
+			joined := strings.Join(fake.argv, "\n")
+			if !strings.Contains(joined, "install -m ") || !strings.Contains(joined, "sudo ") {
+				t.Fatalf("install must run under sudo:\n%s", joined)
+			}
+			if strings.Contains(joined, pw) || strings.Contains(res.InstallDetail, pw) {
+				t.Fatal("sudo password leaked into argv or the install detail")
+			}
+		})
+	}
+}
+
+type fakeBlocker struct{ blocked []string }
+
+func (b *fakeBlocker) BlockTarget(_ context.Context, id, reason string) error {
+	b.blocked = append(b.blocked, id+"|"+reason)
+	return nil
+}
+
+// privRenewal runs one nginx renewal through nopasswd sudo against fake, with
+// both certificate files already on the host.
+func privRenewal(t *testing.T, fake *sudoInstallFake) (RenewalExecuteResult, *sshRecordingAudit, *fakeBlocker) {
+	return privRenewalWith(t, fake, "nopasswd", context.Background())
+}
+
+func privRenewalWith(t *testing.T, fake *sudoInstallFake, sudoMode string, ctx context.Context) (RenewalExecuteResult, *sshRecordingAudit, *fakeBlocker) {
+	t.Helper()
+	db := setupIntegrationDB(t)
+	provider, engine := newIntegrationCAProvider(t, db)
+	issued, err := provider.IssueCertificate(ctx, CertificateIssueRequest{
+		CAID:       getFirstCAID(t, engine),
+		CSRPEM:     generateTestCSRPEM(t, "renew-exec.example.com", "renew-exec.example.com"),
+		TemplateID: "file-backed-default",
+		TeamID:     "team-renew-exec",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(testSSHCredentialJSON(t), &m); err != nil {
+		t.Fatal(err)
+	}
+	if sudoMode != "" {
+		m["sudo_mode"] = sudoMode
+	}
+	payload, _ := json.Marshal(m)
+	audit := &sshRecordingAudit{}
+	blocker := &fakeBlocker{}
+	e := NewRenewalExecutor(provider, &renewalFakeCredStore{
+		meta: OutboundCredentialMeta{ID: "cred-1", CredentialType: CredentialTypeSSHKey}, payload: payload,
+	}).WithTargetBlocker(blocker)
+	e.pluginAudit = audit
+	e.dial = func(context.Context, agentinstall.SSHTarget) (agentinstall.Executor, func() error, error) {
+		return fake, func() error { return nil }, nil
+	}
+	e.verifier = func(context.Context, string) (string, error) {
+		block, _ := pem.Decode(fake.files["/etc/nginx/tls/renewed.crt"])
+		if block == nil {
+			return "", errors.New("nothing installed")
+		}
+		return agentinstall.FingerprintSHA256(block.Bytes), nil
+	}
+	res, err := e.ExecuteRenewal(ctx, issued.CertificateItem.FingerprintSHA256, sshTestTarget(), sshTestProfile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res, audit, blocker
+}
+
+func newOwnedFake() *sudoInstallFake {
+	return &sudoInstallFake{
+		renewalFakeExecutor: renewalFakeExecutor{files: map[string][]byte{
+			"/etc/nginx/tls/renewed.crt": []byte("OLD-CERT"),
+			"/etc/nginx/tls/renewed.key": []byte("OLD-KEY"),
+		}},
+		owners: map[string]string{
+			"/etc/nginx/tls/renewed.crt": "www-data www-data 644",
+			"/etc/nginx/tls/renewed.key": "root ssl-cert 640",
+		},
+	}
+}
+
+// W34-18: a privileged push keeps owner, group and mode, and is audited with
+// the mode but never the password.
+func TestRenewalExecutorPrivilegedPushPreservesOwnershipAndAudits(t *testing.T) {
+	fake := newOwnedFake()
+	res, audit, blocker := privRenewal(t, fake)
+	if res.InstallOutcome != agentinstall.OutcomeInstalledVerified {
+		t.Fatalf("%+v", res)
+	}
+	joined := strings.Join(fake.argv, "\n")
+	for _, want := range []string{
+		"sudo -n -- install -m 0644 -o www-data -g www-data",
+		"sudo -n -- install -m 0640 -o root -g ssl-cert",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in:\n%s", want, joined)
+		}
+	}
+	audit.mu.Lock()
+	defer audit.mu.Unlock()
+	var found bool
+	for _, e := range audit.entries {
+		if e.Action == "target.renewal.privileged" && e.Outcome == AuditOutcomeSuccess && strings.Contains(e.ChangeSummary, "mode=nopasswd") && e.ResourceID == "tgt-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no target.renewal.privileged audit row: %+v", audit.entries)
+	}
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("a good push must not block: %v", blocker.blocked)
+	}
+}
+
+// A failed config test rolls back through the same privileged path (sudo
+// install again, with the original owner), and the old files come back.
+func TestRenewalExecutorPrivilegedRollbackUsesPrivilegedPath(t *testing.T) {
+	fake := newOwnedFake()
+	fake.failCommand = "nginx"
+	res, _, blocker := privRenewal(t, fake)
+	if res.InstallOutcome != agentinstall.OutcomeConfigTestFailed {
+		t.Fatalf("%+v", res)
+	}
+	if string(fake.files["/etc/nginx/tls/renewed.crt"]) != "OLD-CERT" || string(fake.files["/etc/nginx/tls/renewed.key"]) != "OLD-KEY" {
+		t.Fatal("old files must be back")
+	}
+	if fake.installs != 4 {
+		t.Fatalf("2 installs to push + 2 to roll back, got %d", fake.installs)
+	}
+	if len(blocker.blocked) != 0 {
+		t.Fatalf("a clean rollback must not block: %v", blocker.blocked)
+	}
+}
+
+func TestRenewalExecutorRollbackFailureBlocksTarget(t *testing.T) {
+	fake := newOwnedFake()
+	fake.failCommand = "nginx"
+	fake.failInstallsAfter = 2 // the push works, the rollback does not
+	res, audit, blocker := privRenewal(t, fake)
+	if res.InstallOutcome != agentinstall.OutcomeRollbackFailed {
+		t.Fatalf("want rollback_failed, got %+v", res)
+	}
+	if len(blocker.blocked) != 1 || !strings.HasPrefix(blocker.blocked[0], "tgt-1|") {
+		t.Fatalf("target must be blocked: %v", blocker.blocked)
+	}
+	assertAudit(t, audit, "target.renewal.rollback_failed", AuditOutcomeFailure)
+}
+
+// W34-17: a credential without sudo renews through a one-off password carried
+// on the context, and the secret is wiped afterwards by its owner.
+func TestRenewalExecutorUsesJITSudoPassword(t *testing.T) {
+	const pw = "Jit-Renew-Pw-2290"
+	fake := newOwnedFake()
+	fake.password = pw
+	res, _, _ := privRenewalWith(t, fake, "", withJITSudo(context.Background(), newJITSudo(pw)))
+	if res.InstallOutcome != agentinstall.OutcomeInstalledVerified {
+		t.Fatalf("%+v", res)
+	}
+	joined := strings.Join(fake.argv, "\n")
+	if !strings.Contains(joined, "sudo -S -p  -k -- install -m 0644 -o www-data") {
+		t.Fatalf("install must run under the one-off password:\n%s", joined)
+	}
+	if strings.Contains(joined, pw) || strings.Contains(res.InstallDetail, pw) {
+		t.Fatal("password leaked")
 	}
 }

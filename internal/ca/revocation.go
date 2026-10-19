@@ -5,13 +5,25 @@
 package ca
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"sync"
 	"time"
 )
+
+// RevocationPointersForSerialFunc is RevocationPointersFunc that also sees the
+// serial being issued (W23-50: CRL shard selection).
+type RevocationPointersForSerialFunc func(caID string, serial *big.Int) (crlURLs, ocspURLs []string)
+
+// SetRevocationPointersForSerial installs a serial-aware resolver; when set it
+// is used instead of the one from SetRevocationPointers. Set once at startup.
+func (e *Engine) SetRevocationPointersForSerial(fn RevocationPointersForSerialFunc) {
+	e.pointersForSerial = fn
+}
 
 // RevokedEntry is a single revocation record from the store.
 type RevokedEntry struct {
@@ -144,13 +156,6 @@ func NewDBRevocationStore(db *sql.DB, isPostgres bool) *DBRevocationStore {
 	return &DBRevocationStore{db: db, isPostgres: isPostgres}
 }
 
-func (s *DBRevocationStore) ph(n int) string {
-	if s.isPostgres {
-		return fmt.Sprintf("$%d", n)
-	}
-	return "?"
-}
-
 func (s *DBRevocationStore) Revoke(serial *big.Int, caID string, reasonCode int, when time.Time, meta ...CertMeta) error {
 	revokedAt := when.UTC().Format(time.RFC3339)
 	var query string
@@ -202,9 +207,7 @@ func (s *DBRevocationStore) insertRevokedCertificate(serial *big.Int, caID strin
 	if source == "" {
 		source = "acme"
 	}
-	sanJSON, _ := json.Marshal(meta.SubjectAltNames)
-	ekuJSON, _ := json.Marshal(meta.ExtendedKeyUsage)
-	kuJSON, _ := json.Marshal(meta.KeyUsage)
+	sanArg, ekuArg, kuArg := textArrayArg(s.isPostgres, meta.SubjectAltNames), textArrayArg(s.isPostgres, meta.ExtendedKeyUsage), textArrayArg(s.isPostgres, meta.KeyUsage)
 
 	var query string
 	if s.isPostgres {
@@ -226,10 +229,10 @@ func (s *DBRevocationStore) insertRevokedCertificate(serial *big.Int, caID strin
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'revoked',?,?,?,?,?,?)`
 	}
 	result, err := s.db.Exec(query,
-		meta.FingerprintSHA256, serial.String(), meta.SubjectDN, meta.CommonName, string(sanJSON),
+		meta.FingerprintSHA256, serial.String(), meta.SubjectDN, meta.CommonName, sanArg,
 		meta.IssuerDN, meta.IssuerCN, caID, validFrom, validUntil,
 		meta.PublicKeyAlgorithm, meta.KeySizeBits, meta.SignatureAlgorithm,
-		string(ekuJSON), string(kuJSON), source,
+		ekuArg, kuArg, source,
 		string(meta.CertPEM), revokedAt, reasonCode, now, now,
 	)
 	if err != nil {
@@ -243,6 +246,24 @@ func (s *DBRevocationStore) insertRevokedCertificate(serial *big.Int, caID strin
 		return fmt.Errorf("revoke: a certificates row for fingerprint=%s already exists under a different serial_number/ca_id than serial_number=%s ca_id=%s -- refusing to silently no-op", meta.FingerprintSHA256, serial.String(), caID)
 	}
 	return nil
+}
+
+// textArrayArg encodes a string list for the certificates TEXT[]-on-Postgres /
+// JSON-text-on-sqlite columns (subject_alt_names, extended_key_usage,
+// key_usage). Postgres gets the slice itself (pgx encodes it as a real array;
+// the JSON string "null" that json.Marshal gives a nil slice is a malformed
+// array literal there -- SQLSTATE 22P02); a nil slice becomes an empty one so
+// the row stays readable by loadCertsFromDB's non-nullable scans. Same
+// approach as bootstrap's writeCertToDB.
+func textArrayArg(isPostgres bool, v []string) any {
+	if v == nil {
+		v = []string{}
+	}
+	if isPostgres {
+		return v
+	}
+	b, _ := json.Marshal(v)
+	return string(b)
 }
 
 func (s *DBRevocationStore) IsRevoked(serial *big.Int, caID string) (bool, time.Time, int, error) {
@@ -310,4 +331,70 @@ func (s *DBRevocationStore) ListRevoked(caID string) ([]RevokedEntry, error) {
 		})
 	}
 	return result, rows.Err()
+}
+
+// CARevocation describes a CA revocation that RevokeCA recorded.
+type CARevocation struct {
+	CAID       string
+	ParentCAID string
+	Serial     *big.Int // the CA certificate's serial; nil when the CA has no certificate yet
+	// StatusOnly is true for a root: nobody above it can list it, so the
+	// revocation lives in the CA status (and a self-keyed timestamp record).
+	StatusOnly bool
+	RevokedAt  time.Time
+}
+
+// caCompromiseReason is RFC 5280 reasonCode cACompromise.
+const caCompromiseReason = 2
+
+// RevokeCA marks a CA revoked (irreversible, reason cACompromise). An
+// intermediate also gets a row in its parent's revocation list so the parent's
+// CRL and OCSP report it; a root is status-only and gets one self-keyed
+// timestamp record so OCSP for its children can report a stable revokedAt.
+// Callers must invalidate CRL/OCSP caches using the returned serial.
+func RevokeCA(svc Service, rs RevocationStore, caID string, when time.Time) (CARevocation, error) {
+	c, err := svc.GetCA(caID)
+	if err != nil {
+		return CARevocation{}, err
+	}
+	if c.Status == "revoked" {
+		return CARevocation{}, ErrCAAlreadyRevoked
+	}
+	out := CARevocation{CAID: caID, ParentCAID: c.ParentCAID, StatusOnly: c.ParentCAID == "", RevokedAt: when.UTC()}
+	if c.Certificate != nil && rs != nil {
+		out.Serial = new(big.Int).Set(c.Certificate.SerialNumber)
+		holder := c.ParentCAID
+		if holder == "" {
+			holder = caID
+		}
+		// Record first: a failure here leaves the CA active and retryable
+		// rather than revoked-but-unlisted.
+		if err := rs.Revoke(out.Serial, holder, caCompromiseReason, out.RevokedAt, caCertMeta(c)); err != nil {
+			return CARevocation{}, fmt.Errorf("record ca revocation: %w", err)
+		}
+	}
+	if err := svc.UpdateCAStatus(caID, "revoked"); err != nil {
+		return CARevocation{}, err
+	}
+	return out, nil
+}
+
+func caCertMeta(c *CA) CertMeta {
+	cert := c.Certificate
+	fp := sha256.Sum256(cert.Raw)
+	issuerDN, issuerCN := cert.Issuer.String(), cert.Issuer.CommonName
+	// "api" is the nearest value the certificates.source CHECK allows.
+	return CertMeta{
+		FingerprintSHA256:  hex.EncodeToString(fp[:]),
+		CommonName:         cert.Subject.CommonName,
+		SubjectDN:          cert.Subject.String(),
+		IssuerDN:           issuerDN,
+		IssuerCN:           issuerCN,
+		NotBefore:          cert.NotBefore,
+		NotAfter:           cert.NotAfter,
+		PublicKeyAlgorithm: StoredPublicKeyAlgorithm(cert),
+		SignatureAlgorithm: cert.SignatureAlgorithm.String(),
+		Source:             "api",
+		CertPEM:            c.CertPEM,
+	}
 }

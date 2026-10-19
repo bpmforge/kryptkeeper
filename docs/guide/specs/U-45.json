@@ -1,0 +1,330 @@
+{
+  "task": "U-45",
+  "title": "Check the blast radius before a destructive change",
+  "sourceStory": "STORIES.md#u-45",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/blast-radius"
+      },
+      "caption": "Open /blast-radius",
+      "slug": "blast-form",
+      "expect": {
+        "role": "button",
+        "name": "Simulate"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-45/01-blast-form.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "placeholder": "SHA-256 fingerprint"
+      },
+      "value": "{{fp:web.acme.test}}",
+      "caption": "Fill **Target** with the certificate's SHA-256 fingerprint",
+      "slug": "certificate-fingerprint",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-45/02-certificate-fingerprint.png",
+        "annotated": "docs/guide/screenshots/U-45/02-certificate-fingerprint-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 505,
+          "y": 190,
+          "w": 786,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Simulate"
+      },
+      "caption": "Click **Simulate**",
+      "slug": "revoke-impact",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-45/03-revoke-impact.png",
+        "annotated": "docs/guide/screenshots/U-45/03-revoke-impact-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1307,
+          "y": 194,
+          "w": 88,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Action"
+      },
+      "value": "Retire CA",
+      "caption": "Select \"Retire CA\" in **Action**",
+      "slug": "retire-ca-action",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-45/04-retire-ca-action.png",
+        "annotated": "docs/guide/screenshots/U-45/04-retire-ca-action-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 190,
+          "w": 224,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "placeholder": "CA id"
+      },
+      "value": "{{caid:Acme Issuing CA}}",
+      "caption": "Fill **Target** with the CA id",
+      "slug": "ca-id",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-45/05-ca-id.png",
+        "annotated": "docs/guide/screenshots/U-45/05-ca-id-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 505,
+          "y": 190,
+          "w": 786,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Simulate"
+      },
+      "caption": "Click **Simulate**",
+      "slug": "retire-ca-impact",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-45/06-retire-ca-impact.png",
+        "annotated": "docs/guide/screenshots/U-45/06-retire-ca-impact-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1307,
+          "y": 194,
+          "w": 88,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Action"
+      },
+      "value": "Deprecate algorithm",
+      "caption": "Select \"Deprecate algorithm\" in **Action**",
+      "slug": "Action",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-45/07-action.png",
+        "annotated": "docs/guide/screenshots/U-45/07-action-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 190,
+          "w": 224,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "placeholder": "Algorithm and size"
+      },
+      "value": "RSA-2048",
+      "caption": "Fill **Algorithm and size** with \"RSA-2048\"",
+      "slug": "fill",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-45/08-fill.png",
+        "annotated": "docs/guide/screenshots/U-45/08-fill-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 505,
+          "y": 190,
+          "w": 786,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Simulate"
+      },
+      "caption": "Click **Simulate**",
+      "slug": "algorithm-impact",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-45/09-algorithm-impact.png",
+        "annotated": "docs/guide/screenshots/U-45/09-algorithm-impact-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1307,
+          "y": 194,
+          "w": 88,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-18T12:49:05.442Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-45",
+    "steps": 9,
+    "shots": 9,
+    "annotated": 8,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/blast-radius"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-45/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-45/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

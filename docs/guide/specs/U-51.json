@@ -1,0 +1,166 @@
+{
+  "task": "U-51",
+  "title": "Sync certificates from another CA (inventory sources)",
+  "sourceStory": "STORIES.md#u-51",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/inventory-sources"
+      },
+      "caption": "Open /inventory-sources",
+      "slug": "sources-list",
+      "expect": {
+        "role": "button",
+        "name": "Sync ADCS enterprise CA export (demo) now"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-51/01-sources-list.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Sync ADCS enterprise CA export (demo) now"
+      },
+      "caption": "Click **Sync ADCS enterprise CA export (demo) now**",
+      "slug": "sync-result",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-51/02-sync-result.png",
+        "annotated": "docs/guide/screenshots/U-51/02-sync-result-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 1171,
+          "y": 256,
+          "w": 115,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Source name"
+      },
+      "value": "Partner DigiCert",
+      "caption": "Fill **Source name** with \"Partner DigiCert\"",
+      "slug": "Source name",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-51/03-source-name.png",
+        "annotated": "docs/guide/screenshots/U-51/03-source-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 493,
+          "w": 559,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "screenshot",
+      "caption": "The add-source form: name, type, credential, schedule, configuration JSON",
+      "slug": "add-source-form",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-51/04-add-source-form.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "flags": "EXTERNAL CA (live sources are not captured; the seeded demo export source is synced)",
+  "lastRun": {
+    "at": "2026-10-18T12:46:27.447Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-51",
+    "steps": 4,
+    "shots": 4,
+    "annotated": 2,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/inventory-sources"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-51/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-51/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

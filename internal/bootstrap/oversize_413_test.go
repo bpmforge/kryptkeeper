@@ -26,7 +26,7 @@ func TestOversizedBodiesAnswer413(t *testing.T) {
 	auth := newReportsTestAuth(t)
 	mux := http.NewServeMux()
 	registerCertificateHandlers(mux, auth, NewFileCertificateProviderFromEnv(), stubAuditProviderForCertificate{}, nil)
-	registerTemplateHandlers(mux, auth, stubTemplateProvider{}, stubAuditProvider{})
+	registerTemplateHandlers(mux, auth, stubTemplateProvider{}, stubAuditProvider{}, nil)
 
 	pad := func(n int64) string { return strings.Repeat("a", int(n)) }
 	cases := []struct {

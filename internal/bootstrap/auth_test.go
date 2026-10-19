@@ -242,6 +242,8 @@ func TestAuthenticatePrincipalDetails_SSOConfigStoreOverrideAppliesOnNextUse(t *
 			oidcAudience: "env-audience",
 			oidcJWKSJSON: jwks,
 			tenantClaim:  "tenant",
+			// These tests are about issuer/audience overrides, not roles.
+			unmappedRole: "read-only",
 		},
 		configStore:  store,
 		ssoConfigNow: func() time.Time { return clock },
@@ -301,6 +303,8 @@ func TestAuthenticatePrincipalDetails_SSOConfigBoundedReadsWithinTTL(t *testing.
 			oidcAudience: "env-audience",
 			oidcJWKSJSON: jwks,
 			tenantClaim:  "tenant",
+			// These tests are about issuer/audience overrides, not roles.
+			unmappedRole: "read-only",
 		},
 		configStore:  counting,
 		ssoConfigNow: func() time.Time { return clock },
@@ -340,6 +344,8 @@ func TestAuthenticatePrincipalDetails_SSOConfigStoreNilFallsBackToEnvDefault(t *
 			oidcAudience: "env-audience",
 			oidcJWKSJSON: jwks,
 			tenantClaim:  "tenant",
+			// These tests are about issuer/audience overrides, not roles.
+			unmappedRole: "read-only",
 		},
 		// configStore intentionally left nil.
 	}

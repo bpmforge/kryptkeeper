@@ -1,0 +1,135 @@
+{
+  "task": "U-09c",
+  "title": "Run a root key ceremony (M-of-N): second approver (bob) completes quorum",
+  "sourceStory": "STORIES.md#u-09c",
+  "persona": "bob (designated approver)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/ceremonies"
+      },
+      "caption": "Open /ceremonies",
+      "slug": "bob-sees-ceremony",
+      "expect": {
+        "role": "button",
+        "name": "Approve Root R3"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09c/01-bob-sees-ceremony.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Approve Root R3"
+      },
+      "caption": "Click **Approve Root R3**",
+      "slug": "bob-approved-quorum-met",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09c/02-bob-approved-quorum-met.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/cas"
+      },
+      "caption": "Open /cas",
+      "slug": "cas-list-new-root",
+      "expect": {
+        "text": "Root R3"
+      },
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-09c/03-cas-list-new-root.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "principal": "bob",
+  "lastRun": {
+    "at": "2026-10-18T12:48:48.168Z",
+    "base": "http://127.0.0.1:14180",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-09c",
+    "steps": 3,
+    "shots": 3,
+    "annotated": 0,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/cas"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-09c/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    },
+    "light-375": {
+      "file": "docs/guide/screenshots/U-09c/final-light-375.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 375,
+        "height": 812,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

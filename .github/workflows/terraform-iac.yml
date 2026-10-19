@@ -1,0 +1,51 @@
+# W25-15: gate PRs on Terraform formatting, validation and lint for
+# deploy/terraform. Not to be confused with terraform-provider.yml (the Go
+# provider). The `paths:` filter means this check never reports on PRs that
+# miss the path, so do not mark it a required status check unless a path-less
+# job is added.
+name: terraform-iac
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "deploy/terraform/**"
+      - ".github/workflows/terraform-iac.yml"
+  merge_group:
+permissions:
+  contents: read
+concurrency:
+  group: terraform-iac-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: deploy/terraform
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # 1.5.0 is the required_version floor in deploy/terraform/versions.tf.
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: "1.5.0"
+          terraform_wrapper: false
+
+      - uses: terraform-linters/setup-tflint@90f302c255ef959cbfb4bd10581afecdb7ece3e6 # v4.1.1
+        with:
+          tflint_version: v0.53.0
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive
+
+      - name: terraform init
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate
+        run: terraform validate
+
+      - name: tflint
+        run: |
+          tflint --init
+          tflint --recursive --format compact

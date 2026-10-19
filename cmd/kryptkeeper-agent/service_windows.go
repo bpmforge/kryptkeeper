@@ -9,13 +9,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/eventlog"
+
+	"kryptkeeper/internal/logging"
 )
 
 const serviceName = "KryptkeeperAgent"
@@ -36,7 +37,7 @@ func serviceEnvPath() string {
 
 // eventLogWriter sends the standard logger to the Windows Application log. A
 // service has no console: without this every log line -- including the reason
-// for a log.Fatalf exit -- is discarded and the operator sees only the SCM's
+// for a Fatalf exit -- is discarded and the operator sees only the SCM's
 // generic "terminated unexpectedly".
 type eventLogWriter struct{ el *eventlog.Log }
 
@@ -65,7 +66,7 @@ func (s *agentService) Execute(_ []string, req <-chan svc.ChangeRequest, status 
 		if s.el != nil {
 			_ = s.el.Error(1, msg)
 		} else {
-			log.Print(msg)
+			logging.Info(msg)
 		}
 		return true, exitBadConfig
 	}
@@ -104,11 +105,10 @@ func runAsWindowsService(run func(context.Context)) bool {
 	el, err := eventlog.Open(serviceName)
 	if err == nil {
 		defer el.Close()
-		log.SetFlags(0)
-		log.SetOutput(eventLogWriter{el})
+		logging.Setup(logging.Config{Writer: eventLogWriter{el}})
 	}
 	if err := svc.Run(serviceName, &agentService{run: run, el: el}); err != nil {
-		log.Fatalf("service run: %v", err)
+		logging.Fatalf("service run: %v", err)
 	}
 	return true
 }

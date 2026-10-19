@@ -13,12 +13,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"math/big"
 	"net/http"
+	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"kryptkeeper/internal/revsign"
 
 	goocsp "golang.org/x/crypto/ocsp"
 
@@ -26,6 +30,8 @@ import (
 	_ "crypto/sha1"   //nolint:gosec // SHA-1 CertIDs are what most clients send
 	_ "crypto/sha256" // SHA-256/384/512 (sha512 registers 384/512)
 	_ "crypto/sha512"
+
+	"kryptkeeper/internal/logging"
 )
 
 // ErrUnknownIssuer is what an IssuerLookupFunc returns when no CA this
@@ -45,14 +51,77 @@ type CertStatusFunc func(serial *big.Int, issuer *x509.Certificate) (revoked boo
 // IssuerLookupFunc resolves an issuer certificate by key hash.
 type IssuerLookupFunc func(keyHash []byte) (*x509.Certificate, crypto.Signer, error)
 
+// IssuerStatusFunc reports whether the issuer itself (or an ancestor) is
+// revoked. A revoked issuer makes every certificate under it read revoked.
+type IssuerStatusFunc func(issuer *x509.Certificate) (revoked bool, at time.Time, reason int, err error)
+
 // Responder is an OCSP responder that handles GET and POST requests.
 type Responder struct {
-	statusFunc CertStatusFunc
-	issuerFunc IssuerLookupFunc
-	validity   time.Duration // thisUpdate → nextUpdate window
-	mu         sync.RWMutex
-	cache      map[string]cachedResponse // keyed by hash alg | issuer name hash | issuer key hash | serial
-	cacheSize  int
+	statusFunc   CertStatusFunc
+	issuerStatus IssuerStatusFunc // optional (W23-35)
+	issuerFunc   IssuerLookupFunc
+	retiredFunc  IssuerLookupFunc // optional (W23-19)
+	validity     time.Duration    // thisUpdate → nextUpdate window
+	mu           sync.RWMutex
+	cache        map[string]cachedResponse // keyed by hash alg | issuer name hash | issuer key hash | serial
+	cacheSize    int
+	lastStamp    string        // last revocation version stamp seen (W23-26)
+	maxAge       time.Duration // Cache-Control max-age ceiling (W23-51)
+}
+
+// WithIssuerStatus installs the issuer-revoked check consulted before the
+// per-certificate lookup.
+func (r *Responder) WithIssuerStatus(fn IssuerStatusFunc) *Responder {
+	r.issuerStatus = fn
+	return r
+}
+
+// WithRetiredIssuers installs a second lookup for CA certificates a key
+// rotation retired (W23-19). It is consulted only when the live lookup answers
+// ErrUnknownIssuer, must resolve only while the retired key still exists, and
+// returns the OLD certificate with the OLD signer so the response verifies
+// against the issuer the CertID names. After the key is destroyed it returns
+// ErrUnknownIssuer and the request is answered "unauthorized" (RFC 6960 2.3).
+func (r *Responder) WithRetiredIssuers(fn IssuerLookupFunc) *Responder {
+	r.retiredFunc = fn
+	return r
+}
+
+// DefaultMaxAge is the default Cache-Control max-age on OCSP responses (US-047).
+const DefaultMaxAge = 4 * time.Hour
+
+// WithMaxAge sets the Cache-Control max-age. d < 0 is ignored (default kept).
+// d == 0 means clients must not cache: the header becomes "no-cache, no-store".
+func (r *Responder) WithMaxAge(d time.Duration) *Responder {
+	if d >= 0 {
+		r.maxAge = d
+	}
+	return r
+}
+
+// MaxAgeFromEnv reads KRYPTKEEPER_OCSP_MAX_AGE: a Go duration ("4h", "0s") or
+// a bare integer of seconds ("14400"). Unset -> DefaultMaxAge; invalid or
+// negative -> DefaultMaxAge, logged.
+func MaxAgeFromEnv() time.Duration {
+	const key = "KRYPTKEEPER_OCSP_MAX_AGE"
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return DefaultMaxAge
+	}
+	var d time.Duration
+	if n, err := strconv.Atoi(raw); err == nil {
+		d = time.Duration(n) * time.Second
+	} else if pd, perr := time.ParseDuration(raw); perr == nil {
+		d = pd
+	} else {
+		logging.Infof("ocsp: invalid %s %q, using default %s", key, raw, DefaultMaxAge)
+		return DefaultMaxAge
+	}
+	if d < 0 {
+		logging.Infof("ocsp: negative %s %q, using default %s", key, raw, DefaultMaxAge)
+		return DefaultMaxAge
+	}
+	return d
 }
 
 type cachedResponse struct {
@@ -75,6 +144,7 @@ func NewResponder(statusFunc CertStatusFunc, issuerFunc IssuerLookupFunc, validi
 		validity:   validity,
 		cache:      make(map[string]cachedResponse),
 		cacheSize:  cacheSize,
+		maxAge:     DefaultMaxAge,
 	}
 }
 
@@ -93,11 +163,14 @@ func (r *Responder) Handler() http.Handler {
 				return
 			}
 		case http.MethodGet:
-			// RFC 5019 §2.1: GET with base64url path suffix: /ocsp/<base64url(DER)>
-			// Trim the path prefix and any leading slash so we get just the encoded DER.
-			encoded := strings.TrimPrefix(req.URL.Path, "/")
-			if idx := strings.LastIndex(encoded, "/"); idx >= 0 {
-				encoded = encoded[idx+1:]
+			// RFC 6960 A.1 / RFC 5019 §2.1: GET {url}/{url-encoding of base64(DER)}.
+			// Standard base64 contains '/', which clients send either
+			// percent-encoded (%2F, e.g. nginx) or raw. Splitting the decoded
+			// path on its last '/' truncated both, so take everything after
+			// the /ocsp/ mount from the escaped path, then unescape once.
+			encoded := ocspGETPayload(req.URL.EscapedPath())
+			if unescaped, uerr := url.PathUnescape(encoded); uerr == nil {
+				encoded = unescaped
 			}
 			if encoded == "" {
 				w.WriteHeader(http.StatusBadRequest)
@@ -122,14 +195,14 @@ func (r *Responder) Handler() http.Handler {
 
 		ocspReq, err := goocsp.ParseRequest(reqBytes)
 		if err != nil {
-			log.Printf("ocsp: malformed request: %v", err)
+			logging.Infof("ocsp: malformed request: %v", err)
 			w.Header().Set("Content-Type", "application/ocsp-response")
 			w.WriteHeader(http.StatusOK)
 			w.Write(goocsp.MalformedRequestErrorResponse)
 			return
 		}
 
-		respBytes, err := r.respond(ocspReq)
+		respBytes, nextUpdate, err := r.respond(ocspReq)
 		if err != nil {
 			// Error responses are unsigned and carry no status for the
 			// certificate, so a client cannot mistake them for "good".
@@ -140,7 +213,7 @@ func (r *Responder) Handler() http.Handler {
 			case errors.Is(err, errSigning):
 				errResp = goocsp.InternalErrorErrorResponse
 			}
-			log.Printf("ocsp: no signed response (serial %s): %v", ocspReq.SerialNumber, err)
+			logging.Infof("ocsp: no signed response (serial %s): %v", ocspReq.SerialNumber, err)
 			w.Header().Set("Content-Type", "application/ocsp-response")
 			w.WriteHeader(http.StatusOK)
 			w.Write(errResp)
@@ -148,13 +221,39 @@ func (r *Responder) Handler() http.Handler {
 		}
 
 		w.Header().Set("Content-Type", "application/ocsp-response")
-		w.Header().Set("Cache-Control", fmt.Sprintf("max-age=%d, public", int(r.validity.Seconds())))
+		w.Header().Set("Cache-Control", r.cacheControl(nextUpdate))
 		w.WriteHeader(http.StatusOK)
 		w.Write(respBytes)
 	})
 }
 
-func (r *Responder) respond(req *goocsp.Request) ([]byte, error) {
+// cacheControl is the max-age ceiling clamped to the response's remaining
+// validity (RFC 5019 section 6.2): a cached response late in its life must not
+// tell proxies to keep it past its NextUpdate.
+func (r *Responder) cacheControl(nextUpdate time.Time) string {
+	if r.maxAge == 0 {
+		return "no-cache, no-store"
+	}
+	age := r.maxAge
+	if remaining := time.Until(nextUpdate); remaining < age {
+		age = remaining
+	}
+	if age < 0 {
+		age = 0
+	}
+	return fmt.Sprintf("max-age=%d, public", int(age.Seconds()))
+}
+
+// InvalidateAll empties the response cache. Called on CA key rotation: a
+// cached response is signed by the previous key and keyed by issuer hashes the
+// rotated CA no longer has.
+func (r *Responder) InvalidateAll() {
+	r.mu.Lock()
+	r.cache = make(map[string]cachedResponse)
+	r.mu.Unlock()
+}
+
+func (r *Responder) respond(req *goocsp.Request) (body []byte, nextUpdate time.Time, err error) {
 	// The serial alone is not an identity: two CAs may issue the same one.
 	cacheKey := fmt.Sprintf("%d|%x|%x|%s", req.HashAlgorithm, req.IssuerNameHash, req.IssuerKeyHash, req.SerialNumber)
 
@@ -162,26 +261,42 @@ func (r *Responder) respond(req *goocsp.Request) ([]byte, error) {
 	r.mu.RLock()
 	if cached, ok := r.cache[cacheKey]; ok && time.Now().Before(cached.expiresAt) {
 		r.mu.RUnlock()
-		return cached.body, nil
+		return cached.body, cached.expiresAt, nil
 	}
 	r.mu.RUnlock()
 
 	// Look up issuer by key hash.
 	issuerCert, signer, err := r.issuerFunc(req.IssuerKeyHash)
+	retired := false
+	if errors.Is(err, ErrUnknownIssuer) && r.retiredFunc != nil {
+		issuerCert, signer, err = r.retiredFunc(req.IssuerKeyHash)
+		retired = err == nil
+	}
 	if err != nil {
-		return nil, fmt.Errorf("issuer lookup: %w", err)
+		return nil, time.Time{}, fmt.Errorf("issuer lookup: %w", err)
 	}
 	// Do not trust the lookup to have matched: the CertID names an issuer by
 	// both hashes, and signing for any other CA than the one named would
 	// vouch for a certificate this responder knows nothing about.
 	if !issuerMatchesRequest(issuerCert, req) {
-		return nil, fmt.Errorf("%w: CertID hashes do not match the resolved issuer", ErrUnknownIssuer)
+		return nil, time.Time{}, fmt.Errorf("%w: CertID hashes do not match the resolved issuer", ErrUnknownIssuer)
 	}
 
-	// Look up certificate status.
-	revoked, revokedAt, reason, err := r.statusFunc(req.SerialNumber, issuerCert)
-	if err != nil {
-		return nil, fmt.Errorf("status lookup: %w", err)
+	// A revoked issuer revokes everything under it, whatever the store says.
+	var revoked bool
+	var revokedAt time.Time
+	var reason int
+	if r.issuerStatus != nil {
+		revoked, revokedAt, reason, err = r.issuerStatus(issuerCert)
+		if err != nil {
+			return nil, time.Time{}, fmt.Errorf("issuer status lookup: %w", err)
+		}
+	}
+	if !revoked {
+		revoked, revokedAt, reason, err = r.statusFunc(req.SerialNumber, issuerCert)
+		if err != nil {
+			return nil, time.Time{}, fmt.Errorf("status lookup: %w", err)
+		}
 	}
 
 	now := time.Now().UTC()
@@ -201,9 +316,15 @@ func (r *Responder) respond(req *goocsp.Request) ([]byte, error) {
 		template.Status = goocsp.Good
 	}
 
-	respBytes, err := goocsp.CreateResponse(issuerCert, issuerCert, template, signer)
+	respBytes, err := createResponse(issuerCert, signer, template)
 	if err != nil {
-		return nil, fmt.Errorf("%w: create OCSP response: %v", errSigning, err)
+		return nil, time.Time{}, fmt.Errorf("%w: create OCSP response: %v", errSigning, err)
+	}
+
+	// A response signed by a retired key is never cached: the cache would keep
+	// serving it after the key is destroyed, when the answer is "unauthorized".
+	if retired {
+		return respBytes, template.NextUpdate, nil
 	}
 
 	// Cache the response.
@@ -219,7 +340,26 @@ func (r *Responder) respond(req *goocsp.Request) ([]byte, error) {
 	}
 	r.mu.Unlock()
 
-	return respBytes, nil
+	return respBytes, template.NextUpdate, nil
+}
+
+// SyncVersion drops all cached responses when stamp differs from the last
+// stamp seen and returns true. The first call only records the stamp (false).
+// W23-26: replicas share one DB, so a revoke on another replica shows up as a
+// changed stamp here.
+func (r *Responder) SyncVersion(stamp string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.lastStamp == "" {
+		r.lastStamp = stamp
+		return false
+	}
+	if stamp == r.lastStamp {
+		return false
+	}
+	r.lastStamp = stamp
+	r.cache = make(map[string]cachedResponse)
+	return true
 }
 
 // InvalidateCache removes a cached response for the given serial number.
@@ -241,19 +381,69 @@ func (r *Responder) InvalidateCache(serial *big.Int) {
 // issuerMatchesRequest checks req's issuerNameHash and issuerKeyHash against
 // issuer, hashing with the algorithm the request names (RFC 6960 §4.1.1).
 func issuerMatchesRequest(issuer *x509.Certificate, req *goocsp.Request) bool {
-	if issuer == nil || !req.HashAlgorithm.Available() {
+	if issuer == nil {
 		return false
+	}
+	nameHash, keyHash, err := certIDHashes(req.HashAlgorithm, issuer)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(nameHash, req.IssuerNameHash) && bytes.Equal(keyHash, req.IssuerKeyHash)
+}
+
+// certIDHashes computes the RFC 6960 CertID issuerNameHash and issuerKeyHash.
+func certIDHashes(h crypto.Hash, issuer *x509.Certificate) (nameHash, keyHash []byte, err error) {
+	if !h.Available() {
+		return nil, nil, fmt.Errorf("CertID hash %d unavailable", h)
 	}
 	var spki struct {
 		Algorithm asn1.RawValue
 		PublicKey asn1.BitString
 	}
 	if _, err := asn1.Unmarshal(issuer.RawSubjectPublicKeyInfo, &spki); err != nil {
-		return false
+		return nil, nil, err
 	}
-	nameHash := req.HashAlgorithm.New()
-	nameHash.Write(issuer.RawSubject)
-	keyHash := req.HashAlgorithm.New()
-	keyHash.Write(spki.PublicKey.Bytes)
-	return bytes.Equal(nameHash.Sum(nil), req.IssuerNameHash) && bytes.Equal(keyHash.Sum(nil), req.IssuerKeyHash)
+	n := h.New()
+	n.Write(issuer.RawSubject)
+	k := h.New()
+	k.Write(spki.PublicKey.Bytes)
+	return n.Sum(nil), k.Sum(nil), nil
+}
+
+// ocspGETPayload returns the encoded request from an escaped GET path: the
+// remainder after the first "/ocsp/" segment, or the last segment when the
+// responder is mounted elsewhere.
+func ocspGETPayload(escapedPath string) string {
+	if _, after, ok := strings.Cut(escapedPath, "/ocsp/"); ok {
+		return after
+	}
+	p := strings.TrimPrefix(escapedPath, "/")
+	if idx := strings.LastIndex(p, "/"); idx >= 0 {
+		return p[idx+1:]
+	}
+	return p
+}
+
+// createResponse signs the status answer. ML-DSA issuers cannot go through
+// golang.org/x/crypto/ocsp (RSA/ECDSA only), so they use the hand-rolled
+// encoder in internal/ca (W31-05).
+func createResponse(issuer *x509.Certificate, signer crypto.Signer, t goocsp.Response) ([]byte, error) {
+	if !revsign.IsMLDSAIssuer(issuer) {
+		return goocsp.CreateResponse(issuer, issuer, t, signer)
+	}
+	nameHash, keyHash, err := certIDHashes(t.IssuerHash, issuer)
+	if err != nil {
+		return nil, err
+	}
+	return revsign.CreateOCSPResponseMLDSA(issuer, signer, revsign.OCSPResponseInput{
+		SerialNumber:   t.SerialNumber,
+		HashAlgorithm:  t.IssuerHash,
+		IssuerNameHash: nameHash,
+		IssuerKeyHash:  keyHash,
+		Revoked:        t.Status == goocsp.Revoked,
+		RevokedAt:      t.RevokedAt,
+		Reason:         t.RevocationReason,
+		ThisUpdate:     t.ThisUpdate,
+		NextUpdate:     t.NextUpdate,
+	})
 }

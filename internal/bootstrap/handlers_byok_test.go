@@ -20,7 +20,6 @@ import (
 
 type fakeBYOKTarget struct {
 	imported bool
-	priv     []byte
 }
 
 func (f *fakeBYOKTarget) Provider() string { return "aws-kms" }

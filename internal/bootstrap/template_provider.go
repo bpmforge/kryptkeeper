@@ -6,9 +6,12 @@ package bootstrap
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"log"
+	"kryptkeeper/internal/logging"
 	"os"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -22,7 +25,13 @@ const (
 	templateProviderFile = "file"
 )
 
-var templateProviderWarnf = log.Printf
+var templateProviderWarnf = logging.Warnf
+
+// EnrollmentPermissions lists the roles that may enroll from a template
+// (W23-42). A nil value or an empty Enroll list means unrestricted.
+type EnrollmentPermissions struct {
+	Enroll []string `json:"enroll"`
+}
 
 type TemplateItem struct {
 	ID                string   `json:"id"`
@@ -69,6 +78,18 @@ type TemplateItem struct {
 	// NamePolicy (SUP-A04-3) restricts the names certificates under this
 	// template may carry; absent = unrestricted.
 	NamePolicy *ca.NamePolicy `json:"name_policy,omitempty"`
+
+	// EnrollmentPermissions restricts which roles may issue from this
+	// template (W23-42); absent = unrestricted.
+	EnrollmentPermissions *EnrollmentPermissions `json:"enrollment_permissions,omitempty"`
+}
+
+// EnrollRoles returns the template's enroll list (nil = unrestricted).
+func (t TemplateItem) EnrollRoles() []string {
+	if t.EnrollmentPermissions == nil {
+		return nil
+	}
+	return t.EnrollmentPermissions.Enroll
 }
 
 // Enrollee returns the template's enrollee type, machine unless it says user.
@@ -104,6 +125,9 @@ type TemplatePatchRequest struct {
 	// AllowedAlgorithms is a policy knob, not identity — editable via PATCH
 	// with a revision bump like the other mutable fields (W18-15).
 	AllowedAlgorithms *[]string `json:"allowed_algorithms"`
+	// EnrollmentPermissions replaces the enroll list (W23-42); an empty list
+	// clears the restriction.
+	EnrollmentPermissions *EnrollmentPermissions `json:"enrollment_permissions"`
 }
 
 type TemplateUpsertRequest struct {
@@ -127,6 +151,8 @@ type TemplateUpsertRequest struct {
 	SSHPolicy *sshkeys.Policy `json:"ssh_policy,omitempty"`
 	// NamePolicy replaces the stored name policy (absent clears it).
 	NamePolicy *ca.NamePolicy `json:"name_policy,omitempty"`
+	// EnrollmentPermissions replaces the stored enroll list (absent clears it).
+	EnrollmentPermissions *EnrollmentPermissions `json:"enrollment_permissions,omitempty"`
 }
 
 type TemplateCloneRequest struct {
@@ -142,6 +168,74 @@ var (
 	errTemplateInvalidCreate  = errors.New("template invalid create")
 	errTemplatePrecondition   = errors.New("template precondition failed")
 )
+
+// TemplateFieldChange is one field that differs between two revisions.
+type TemplateFieldChange struct {
+	Field string `json:"field"`
+	Old   any    `json:"old"`
+	New   any    `json:"new"`
+}
+
+// TemplateRevision is one entry of a template's history (W23-44). Changes is
+// the diff against the previous revision, empty for the first one on record.
+type TemplateRevision struct {
+	Revision  int                   `json:"revision"`
+	ChangedAt string                `json:"changed_at"`
+	Snapshot  TemplateItem          `json:"snapshot"`
+	Changes   []TemplateFieldChange `json:"changes"`
+}
+
+// TemplateRevisionLister is an optional TemplateProvider capability, kept off
+// TemplateProvider so the many test doubles of it stay valid. The bool is
+// false when the template id is unknown.
+type TemplateRevisionLister interface {
+	ListTemplateRevisions(ctx context.Context, id string) ([]TemplateRevision, bool, error)
+}
+
+// diffIgnoredFields change on every save (or are counters), so listing them as
+// edits would bury the real change.
+var diffIgnoredFields = map[string]bool{
+	"revision": true, "updated_at": true, "created_at": true, "issued_count": true, "schema_version": true,
+}
+
+// diffTemplates lists the fields that differ, sorted by field name so the
+// output is deterministic.
+func diffTemplates(oldItem, newItem TemplateItem) []TemplateFieldChange {
+	oldMap, newMap := templateAsMap(oldItem), templateAsMap(newItem)
+	keys := map[string]bool{}
+	for k := range oldMap {
+		keys[k] = true
+	}
+	for k := range newMap {
+		keys[k] = true
+	}
+	fields := make([]string, 0, len(keys))
+	for k := range keys {
+		if !diffIgnoredFields[k] {
+			fields = append(fields, k)
+		}
+	}
+	sort.Strings(fields)
+	changes := []TemplateFieldChange{}
+	for _, f := range fields {
+		if !reflect.DeepEqual(oldMap[f], newMap[f]) {
+			changes = append(changes, TemplateFieldChange{Field: f, Old: oldMap[f], New: newMap[f]})
+		}
+	}
+	return changes
+}
+
+func templateAsMap(t TemplateItem) map[string]any {
+	raw, err := json.Marshal(t)
+	if err != nil {
+		return map[string]any{}
+	}
+	m := map[string]any{}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return map[string]any{}
+	}
+	return m
+}
 
 type TemplateProvider interface {
 	ListTemplates(context.Context, TemplateListQuery) (TemplateListResult, error)

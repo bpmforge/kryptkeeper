@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isReadOnlyAction } from "../lib/auditActions";
+import { AUDIT_ACTION_LABELS, auditActionLabel, isReadOnlyAction } from "../lib/auditActions";
 
 // Snapshot of every action name emitted by internal/ (emitAuditEvent*,
 // emitRenewalAudit, appendPluginAudit, ...). "key."+method and "nhi."+verb are
@@ -33,7 +33,7 @@ const READ_ONLY = [
   "integration.microsoft.get",
   "integration.siem.get",
   "inventory.code_signing",
-  "inventory.code_signing_policy",
+  "codesign.policy.check",
   "inventory.keys",
   "inventory_source.list",
   "key.get",
@@ -69,6 +69,19 @@ const READ_ONLY = [
   "template.get",
   "template.list",
   "users.list",
+  "access_review.get",
+  "access_review.list",
+  "access_review.report",
+  "approval.inbox.list",
+  "audit.transparency_checkpoint",
+  "audit.transparency_consistency",
+  "audit.transparency_inclusion",
+  "auth.role_map.preview",
+  "breakglass.reviews",
+  "breakglass.status",
+  "policy.dry_run",
+  "policy.get",
+  "policy.list",
 ];
 
 const VISIBLE = [
@@ -165,6 +178,10 @@ const VISIBLE = [
   "leaf_escrow.recover",
   "nhi.approve",
   "nhi.propose",
+  "migration.apply",
+  "migration.apply_requested",
+  "migration.dryrun",
+  "migration.rollback",
   "notification.delivery.ack",
   "notification.delivery.retry",
   "notification.rules",
@@ -230,6 +247,27 @@ const VISIBLE = [
   "users.invite",
   "users.update",
   "wstep.renew",
+  "access_review.close",
+  "access_review.decide",
+  "access_review.export",
+  "access_review.open",
+  "action.expire",
+  "approval.delegate",
+  "approval.expire",
+  "approval.expired",
+  "approval.override",
+  "audit.archive_propose",
+  "audit.export",
+  "auth.breakglass_login",
+  "breakglass.activate",
+  "breakglass.request",
+  "breakglass.review",
+  "breakglass.used",
+  "ownership.cmdb_import",
+  "policy.create",
+  "policy.delete",
+  "policy.update",
+  "policy.violation",
 ];
 
 describe("isReadOnlyAction", () => {
@@ -266,5 +304,15 @@ describe("isReadOnlyAction", () => {
     ]) {
       expect(isReadOnlyAction(a)).toBe(false);
     }
+  });
+
+  it("labels every W22 action and falls back to the raw name", () => {
+    for (const a of [...READ_ONLY, ...VISIBLE]) {
+      if (/^(access_review|approval\.(inbox|delegate|override|expire)|breakglass|policy|audit\.(transparency|archive_propose|export)|auth\.(breakglass|role_map)|ownership\.cmdb|action\.expire)/.test(a)) {
+        expect(AUDIT_ACTION_LABELS[a], a).toBeTruthy();
+      }
+    }
+    expect(auditActionLabel("policy.update")).toBe("Policy updated");
+    expect(auditActionLabel("certificate.issue")).toBe("certificate.issue");
   });
 });

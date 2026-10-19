@@ -42,6 +42,6 @@ describe("History page", () => {
     expect(await screen.findByRole("heading", { level: 1, name: /action history/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /refresh/i })).toBeInTheDocument();
     await waitFor(() => expect(api.dashboardActionsHistory).toHaveBeenCalled());
-    await waitFor(() => expect(screen.getByRole("button", { name: /certificate\.revoke/i })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: /certificate revoke/i })).toBeInTheDocument());
   });
 });

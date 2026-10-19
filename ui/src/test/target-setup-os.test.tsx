@@ -3,6 +3,9 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 vi.mock("../lib/api", () => ({
   api: {
     registerAgent: vi.fn(),
+    mintAgentEnrollmentToken: vi.fn(),
+    agentEnrollmentTokens: vi.fn().mockResolvedValue({ data: [] }),
+    revokeAgentEnrollmentToken: vi.fn(),
     agents: vi.fn(),
     createTarget: vi.fn(),
     credentials: vi.fn(),

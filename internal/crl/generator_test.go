@@ -377,3 +377,111 @@ func crlListsSerial(crl *x509.RevocationList, serial *big.Int) bool {
 	}
 	return false
 }
+
+// W23-26: a changed revocation stamp drops the cached CRLs; CRL numbers stay
+// monotonic across the reset.
+func TestGeneratorSyncVersionDropsCacheOnChange(t *testing.T) {
+	ca := newTestCRLCA(t)
+	gen := NewGenerator(
+		func(caID string) ([]RevokedCert, error) { return nil, nil },
+		func(caID string) (*x509.Certificate, crypto.Signer, error) { return ca.cert, ca.key, nil },
+		1*time.Hour,
+	)
+	first, err := gen.Generate(ca.id)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	if gen.SyncVersion("0|") {
+		t.Fatal("first call only records the stamp")
+	}
+	if gen.GetCRL(ca.id) == nil {
+		t.Fatal("first SyncVersion must keep the cache")
+	}
+	if gen.SyncVersion("0|") || gen.GetCRL(ca.id) == nil {
+		t.Fatal("an unchanged stamp must keep the cache")
+	}
+	if !gen.SyncVersion("1|2026-01-01") {
+		t.Fatal("a changed stamp must report true")
+	}
+	if gen.GetCRL(ca.id) != nil {
+		t.Fatal("a changed stamp must drop the cached CRL")
+	}
+	again, err := gen.Generate(ca.id)
+	if err != nil {
+		t.Fatalf("regenerate: %v", err)
+	}
+	if again.Number.Cmp(first.Number) <= 0 {
+		t.Fatalf("CRL number must keep increasing: %s <= %s", again.Number, first.Number)
+	}
+}
+
+// W23-35: a revoked child CA's serial is listed on its parent's CRL.
+func TestParentCRLListsRevokedChildCA(t *testing.T) {
+	parent := newTestCRLCA(t)
+	childSerial := big.NewInt(4242)
+	gen := NewGenerator(
+		func(string) ([]RevokedCert, error) {
+			return []RevokedCert{{SerialNumber: childSerial, RevokedAt: time.Now().Add(-time.Minute), ReasonCode: 2}}, nil
+		},
+		func(string) (*x509.Certificate, crypto.Signer, error) { return parent.cert, parent.key, nil },
+		time.Hour,
+	)
+	got, err := gen.Generate(parent.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := x509.ParseRevocationList(got.DER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !crlListsSerial(parsed, childSerial) {
+		t.Fatal("child CA serial missing from parent CRL")
+	}
+}
+
+// A revoked root keeps a self-keyed record; it must not appear in its own CRL.
+func TestCRLSkipsOwnSerial(t *testing.T) {
+	root := newTestCRLCA(t) // cert serial 1
+	other := big.NewInt(99)
+	gen := NewGenerator(
+		func(string) ([]RevokedCert, error) {
+			return []RevokedCert{
+				{SerialNumber: root.cert.SerialNumber, RevokedAt: time.Now(), ReasonCode: 2},
+				{SerialNumber: other, RevokedAt: time.Now(), ReasonCode: 1},
+			}, nil
+		},
+		func(string) (*x509.Certificate, crypto.Signer, error) { return root.cert, root.key, nil },
+		time.Hour,
+	)
+	got, err := gen.Generate(root.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, _ := x509.ParseRevocationList(got.DER)
+	if crlListsSerial(parsed, root.cert.SerialNumber) {
+		t.Fatal("root's own serial listed in its CRL")
+	}
+	if !crlListsSerial(parsed, other) {
+		t.Fatal("unrelated revoked serial dropped")
+	}
+}
+
+func TestCRLInvalidateAll(t *testing.T) {
+	ca := newTestCRLCA(t)
+	gen := NewGenerator(
+		func(string) ([]RevokedCert, error) { return nil, nil },
+		func(string) (*x509.Certificate, crypto.Signer, error) { return ca.cert, ca.key, nil },
+		time.Hour,
+	)
+	if _, err := gen.Generate(ca.id); err != nil {
+		t.Fatal(err)
+	}
+	if gen.GetCRL(ca.id) == nil {
+		t.Fatal("expected cached CRL")
+	}
+	gen.InvalidateAll()
+	if gen.GetCRL(ca.id) != nil {
+		t.Fatal("InvalidateAll left a cached CRL")
+	}
+}
