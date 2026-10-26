@@ -72,7 +72,7 @@ def main():
         if missing:
             fail(f"list: issued fingerprints not seen across pages: {sorted(missing)}")
 
-        res = api.revoke_certificate_with_http_info(first, RevokeCertificateRequest(reason_code=1))
+        res = api.revoke_certificate_with_http_info(first, revoke_certificate_request=RevokeCertificateRequest(reason_code=1))
         if res.status_code != 200:
             fail(f"revoke: status {res.status_code} (want 200, no approval gate expected): {body(res)}")
         res = api.get_certificate_with_http_info(first)

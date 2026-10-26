@@ -87,6 +87,8 @@ what 1.1.0 still does not do is on the public [roadmap](../ROADMAP.md).
   - Agent `KRYPTKEEPER_TRUST_STORE_PUSH`: off by default. Install the separate sudoers drop-in
     with `--generate-trust-store-sudoers` to opt in.
 - **Plugin `http` events** now log only the scheme and host, not the full URL.
+- **Python API SDK:** `revoke_certificate` gained an optional `scope` argument ahead of the
+  request body. Pass the body by keyword (`revoke_certificate_request=`) rather than position.
 
 ## Known limitations
 
