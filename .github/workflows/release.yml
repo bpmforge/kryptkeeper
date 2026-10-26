@@ -43,7 +43,8 @@ jobs:
           # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
           # setup-go's cache re-downloaded ~2.7 GB over them on every job.
           cache: false
-      - run: go test ./...
+      # internal/bootstrap alone runs past go test's 10m default on a hosted runner.
+      - run: go test -timeout 30m ./...
 
   # W32-03: a tag whose docs/openapi.yaml info.version differs from the tag
   # must not release. Release prep bumps info.version at every tag, so this
