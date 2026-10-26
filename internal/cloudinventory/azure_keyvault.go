@@ -6,7 +6,9 @@ package cloudinventory
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -146,10 +148,51 @@ func (c *AzureKVConnector) listPage(ctx context.Context, listURL string) ([]Clou
 		if item.Attributes.Expires != 0 {
 			cert.NotAfter = time.Unix(item.Attributes.Expires, 0).UTC()
 		}
+		cert.CertificatePEM = c.fetchPEM(ctx, item.ID)
 		certs = append(certs, cert)
 	}
 
 	return certs, page.NextLink, nil
+}
+
+// fetchPEM reads one certificate version's public DER ("cer") and returns it
+// as PEM, or "" when it cannot be had (a missing certificates/get permission
+// leaves the row metadata-only rather than failing the scan). id is the
+// versioned certificate id the list returned.
+// https://learn.microsoft.com/en-us/rest/api/keyvault/certificates/get-certificate/get-certificate
+func (c *AzureKVConnector) fetchPEM(ctx context.Context, id string) string {
+	u, err := url.Parse(id)
+	if err != nil || u.Scheme != "https" || !strings.HasPrefix(id, c.vaultURL+"/") {
+		return "" // never send the bearer token to a host the scope did not name
+	}
+	q := u.Query()
+	q.Set("api-version", c.apiVersion)
+	u.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return ""
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var bundle struct {
+		Cer string `json:"cer"`
+	}
+	if json.Unmarshal(body, &bundle) != nil || bundle.Cer == "" {
+		return ""
+	}
+	der, err := base64.StdEncoding.DecodeString(bundle.Cer)
+	if err != nil {
+		return ""
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
 // azureGetToken fetches an access token via the client credentials grant.

@@ -70,6 +70,7 @@ func constructAllSelfHealingStores(t *testing.T) {
 	_ = newTargetGroupStoreFromEnv()
 	_ = NewNHIStoreFromEnv()
 	_ = NewCodesignTrustStoreFromEnv()
+	_ = NewTrustBundleStoreFromEnv()
 	_ = NewMigrationWaveStoreFromEnv()
 	_ = NewTenantStoreFromEnv()
 	_, _ = NewPostureSnapshotStoreFromEnv()
@@ -81,6 +82,7 @@ func constructAllSelfHealingStores(t *testing.T) {
 	_, _ = newFindingIdentityStoreFromEnv()
 	_ = newSCIMGroupStoreFromEnv()
 	_ = newInventorySourceStoreFromEnv()
+	_ = newCredentialSourceStoreFromEnv()
 	_, _ = newRenewalAlertCooldownStoreFromEnv()
 	_, _ = newRenewalFailureStoreFromEnv()
 	_, _ = newNotificationSilenceStoreFromEnv()
@@ -194,12 +196,12 @@ func TestStoresSelfHealAfterMigrations(t *testing.T) {
 // missed the ssh-cert, custom-role and outbound-credential stores because
 // nothing forced the list to track the code.
 var selfHealingDDLFiles = map[string]bool{
-	"access_review_campaign.go": true, "agent_store_db.go": true, "approval_store.go": true, "chatops_approval_post.go": true, "breakglass.go": true, "codesign_oidc.go": true, "audit_archive.go": true, "audit_db_provider.go": true, "authorized_issuer_store.go": true,
+	"access_review_campaign.go": true, "agent_store_db.go": true, "approval_store.go": true, "chatops_approval_post.go": true, "breakglass.go": true, "codesign_oidc.go": true, "trust_bundle.go": true, "audit_archive.go": true, "audit_db_provider.go": true, "authorized_issuer_store.go": true,
 	"authz_custom_roles_handlers.go": true, "compliance_attestation.go": true, "config_store.go": true, "handlers_user_prefs.go": true, "connector_store.go": true, "dcv_tracker.go": true,
 	"discovery_db_provider.go": true, "discovery_schedule_store.go": true, "evidence_schedule_store.go": true, "finding_exception_store.go": true, "finding_identity.go": true, "report_schedule_store.go": true,
 	"ha_coordinator.go": true, "handlers_ssh_certs.go": true, "inventory_source.go": true,
 	"managed_target_store.go": true, "cert_target_binding_store.go": true, "target_group_store.go": true, "nhi_identity.go": true, "notification_dedup.go": true, "renewal_retry.go": true,
-	"notification_rule_store.go": true, "outbound_credential_store.go": true, "pending_action_store.go": true,
+	"notification_rule_store.go": true, "outbound_credential_store.go": true, "credential_source.go": true, "pending_action_store.go": true,
 	"posture_snapshot_store.go": true, "pqc_wave_store.go": true, "policy_versions.go": true, "scim.go": true, "tenant_store.go": true, "team_policy_store.go": true, "team_policy_enforce.go": true,
 	// db_core.go only mentions the phrase in a comment.
 	"db_core.go": true,

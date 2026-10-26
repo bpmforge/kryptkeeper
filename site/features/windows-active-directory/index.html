@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Windows and Active Directory · Kryptkeeper</title>
+<meta name="description" content="Autoenrollment for domain machines and users, without an ADCS server. Kryptkeeper serves MS-XCEP and MS-WSTEP natively, so domain-joined Windows machines and users enroll through Group Policy with Kerberos, exactly as they did with ADCS. Templates say whether they are offered to machines or users, A">
+<meta property="og:title" content="Windows and Active Directory · Kryptkeeper">
+<meta property="og:description" content="Autoenrollment for domain machines and users, without an ADCS server. Kryptkeeper serves MS-XCEP and MS-WSTEP natively, so domain-joined Windows machines and users enroll through Group Policy with Kerberos, exactly as they did with ADCS. Templates say whether they are offered to machines or users, A">
+<meta property="og:url" content="https://kryptkeeper.io/features/windows-active-directory/">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<div class="crumb-row"><nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/features/">Features</a></li><li aria-current="page">Windows and Active Directory</li></ol></nav></div>
+<header class="page-head">
+  <span class="label">Feature</span>
+  <h1>Windows and Active Directory</h1>
+  <p class="lede">Autoenrollment for domain machines and users, without an ADCS server.</p>
+  <p class="intro">Kryptkeeper serves MS-XCEP and MS-WSTEP natively, so domain-joined Windows machines and users enroll through Group Policy with Kerberos, exactly as they did with ADCS. Templates say whether they are offered to machines or users, ADCS templates can be imported, and a Windows agent and WinRM scanning cover the machine stores.</p>
+</header>
+<figure class="hub-hero"><div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/templates</span></div>
+    <a href="/features/windows-active-directory/" tabindex="-1" aria-hidden="true"><img src="/shots/U-10/cover-dark.webp" width="1220" height="762" alt="Windows and Active Directory screen in Kryptkeeper"></a>
+  </div></figure>
+<section aria-labelledby="points"><h2 id="points">What you get</h2><ul class="card-grid points"><li class="card"><h3>Group Policy autoenrollment</h3><p>Point the domain's enrollment policy at Kryptkeeper. Machines and users authenticate with Kerberos and enroll and renew on their own. Proven on Windows 11 and Server 2022.</p></li><li class="card"><h3>Templates for machines or users</h3><p>Each template says whether Windows offers it to computer accounts or to users, and which groups may enroll.</p></li><li class="card"><h3>Move off ADCS gradually</h3><p>Import your ADCS templates, run both CAs side by side, and let old certificates expire naturally.</p></li></ul></section>
+<p class="callout" role="note"><strong>Coming:</strong> Screens from the Windows side (the Group Policy setup, a client enrolling, the certificate in certlm.msc) are being captured on the lab domain and will be added here.</p>
+<section aria-labelledby="how"><h2 id="how">How it works</h2><ol class="card-grid wt-grid">
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-05/07-ca-created.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/windows-active-directory/issuing-ca-for-the-domain/">Create the issuing CA for the domain</a></h3><p>Create the intermediate CA that will sign your domain certificates.</p><span class="meta">7 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-10/11-template-created.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/windows-active-directory/machine-user-templates/">Create a certificate template</a></h3><p>Name the template, set its lifetime, key usage and algorithms, then create it.</p><span class="meta">8 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-52/05-submitted-for-approval.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/windows-active-directory/import-adcs-templates/">Import templates from ADCS</a></h3><p>Bring your existing ADCS templates across instead of rebuilding them.</p><span class="meta">5 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-29/07-agent-install-quickstart.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/windows-active-directory/windows-agent/">Enroll an agent on a server</a></h3><p>Name the agent, choose its host type, generate an enrollment token and find the install steps.</p><span class="meta">7 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-25/08-risky-only.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/windows-active-directory/scan-windows-stores/">Scan for certificates in use</a></h3><p>Scan a host or range for the TLS certificates its services present, then read the results.</p><span class="meta">8 steps</span></li>
+</ol></section>
+<section aria-labelledby="docs"><h2 id="docs">Docs</h2><ul class="link-list"><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/guides/replace-adcs.md">Replace ADCS with Kryptkeeper</a></li><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/ops/WSTEP_AUTOENROLLMENT.md">GPO autoenrollment runbook</a></li><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/ops/WINDOWS_AGENT.md">Windows agent</a></li><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/ops/WINRM_ENABLEMENT.md">Enable WinRM for agentless Windows</a></li><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/guides/intune-byoca.md">Intune BYOCA</a></li></ul></section>
+<section aria-labelledby="used-by"><h2 id="used-by">Paths that use this</h2><ul class="link-list"><li><a href="/paths/replace-adcs/">Replace ADCS for your Windows domain</a> <span class="muted">for Windows and AD administrator</span></li><li><a href="/paths/take-over-estate/">Take over an existing estate</a> <span class="muted">for Security lead</span></li></ul></section>
+
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

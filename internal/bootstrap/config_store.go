@@ -51,6 +51,7 @@ const (
 	configCategoryKeyBackend    = "key_backend"
 	configCategorySLO           = "slo"
 	configCategoryObservability = "observability"
+	configCategoryDemo          = "demo"
 )
 
 // configRegistry is the documented set of runtime settings this store
@@ -122,6 +123,9 @@ var configRegistry = []configKeyDef{
 	{Key: "slo.issuance_success_objective", EnvVar: "KRYPTKEEPER_SLO_ISSUANCE_OBJECTIVE", Category: configCategorySLO, Secret: false},
 	{Key: "metrics.bearer_token", EnvVar: "KRYPTKEEPER_METRICS_BEARER_TOKEN", Category: configCategoryObservability, Secret: true},
 	{Key: "slo.issuance_latency_p95_seconds", EnvVar: "KRYPTKEEPER_SLO_LATENCY_P95_SECONDS", Category: configCategorySLO, Secret: false},
+	// W37-07: the demo marker, set and cleared by `kryptkeeper demo seed|reset`
+	// through this API; GET /api/v1/demo/status reads it.
+	{Key: configKeyDemoSeededAt, EnvVar: "KRYPTKEEPER_DEMO_SEEDED_AT", Category: configCategoryDemo},
 	agentlessPrivilegeModeDef,
 }
 

@@ -101,6 +101,12 @@ func registerConfigHandlers(mux *http.ServeMux, auth *Authenticator, store Confi
 				return
 			}
 
+			if key == configKeyDemoSeededAt && demoSeedingForbidden() {
+				emitAuditEvent(r, auditProvider, pd.ID, "config.set", "config", key, AuditOutcomeDenied)
+				writeConflict(w, "demo data cannot be seeded when KRYPTKEEPER_ENV=production")
+				return
+			}
+
 			var req struct {
 				Value string `json:"value"`
 			}

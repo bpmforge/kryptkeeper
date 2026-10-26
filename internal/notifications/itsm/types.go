@@ -44,13 +44,24 @@ var (
 // Connector is one ticketing system. Implementations must wrap ErrTemporary
 // or ErrPermanent, and must never put credentials in an error.
 type Connector interface {
-	Kind() string // "servicenow" | "jira"
+	Kind() string // "servicenow" | "jira" | "plugin"
 	// Find looks a ticket up by correlation id; nil, nil when there is none.
 	Find(ctx context.Context, eventID string) (*TicketRef, error)
 	// Create MUST set the ticket's correlation id to ev.ID.
 	Create(ctx context.Context, ev Event) (TicketRef, error)
 	Exists(ctx context.Context, ref TicketRef) (bool, error)
 	Resolve(ctx context.Context, ref TicketRef, comment string) error
+}
+
+// KindPlugin is the connection kind whose tickets are made by a signed ticket
+// plugin (D-326). Everything above the connector (dedupe, reconcile, retries,
+// audit) is the same as for the native kinds.
+const KindPlugin = "plugin"
+
+// Prober is implemented by a connector that has a cheaper or safer "test
+// connection" than Find. TestConnection prefers it.
+type Prober interface {
+	Probe(ctx context.Context) error
 }
 
 // CredentialResolver is satisfied by the hub's outbound credential store.
@@ -92,16 +103,19 @@ const (
 // Connection is a configured ticketing system. CredentialRef names an entry in
 // the outbound credential store; the secret itself is never held here.
 type Connection struct {
-	ID            string       `json:"id"`
-	Kind          string       `json:"kind"`
-	Name          string       `json:"name"`
-	BaseURL       string       `json:"base_url"`
-	CredentialRef string       `json:"credential_ref"`
-	EventClasses  []EventClass `json:"event_classes"`
-	Enabled       bool         `json:"enabled"`
-	Tenant        string       `json:"tenant"`
-	CreatedAt     time.Time    `json:"created_at"`
-	UpdatedAt     time.Time    `json:"updated_at"`
+	ID            string `json:"id"`
+	Kind          string `json:"kind"`
+	Name          string `json:"name"`
+	BaseURL       string `json:"base_url"`
+	CredentialRef string `json:"credential_ref"`
+	// PluginID names the ticket plugin of a "plugin" connection (D-326); empty
+	// for the native kinds.
+	PluginID     string       `json:"plugin_id,omitempty"`
+	EventClasses []EventClass `json:"event_classes"`
+	Enabled      bool         `json:"enabled"`
+	Tenant       string       `json:"tenant"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
 }
 
 // EventRow is one event's ticket link and queue state.

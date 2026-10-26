@@ -36,7 +36,7 @@ func (m *mockChannel) Send(ctx context.Context, event Event) error {
 
 func TestDeliverSuccess(t *testing.T) {
 	ch := &mockChannel{name: "email"}
-	worker := NewWorker([]Channel{ch}, 3, 1*time.Millisecond)
+	worker := newSyncWorker([]Channel{ch}, 3)
 
 	result := worker.Deliver(context.Background(), Event{
 		ID:      "evt-1",
@@ -68,7 +68,7 @@ func TestDeliverRetryThenSuccess(t *testing.T) {
 			return nil
 		},
 	}
-	worker := NewWorker([]Channel{ch}, 3, 1*time.Millisecond)
+	worker := newSyncWorker([]Channel{ch}, 3)
 
 	result := worker.Deliver(context.Background(), Event{
 		ID:      "evt-retry",
@@ -91,7 +91,7 @@ func TestDeliverExhaustsRetries(t *testing.T) {
 			return fmt.Errorf("service unavailable")
 		},
 	}
-	worker := NewWorker([]Channel{ch}, 2, 1*time.Millisecond)
+	worker := newSyncWorker([]Channel{ch}, 2)
 
 	result := worker.Deliver(context.Background(), Event{
 		ID:      "evt-fail",
@@ -111,7 +111,7 @@ func TestDeliverExhaustsRetries(t *testing.T) {
 }
 
 func TestDeliverUnknownChannel(t *testing.T) {
-	worker := NewWorker(nil, 3, 1*time.Millisecond)
+	worker := newSyncWorker(nil, 3)
 
 	result := worker.Deliver(context.Background(), Event{
 		ID:      "evt-unknown",
@@ -128,7 +128,7 @@ func TestDeliverUnknownChannel(t *testing.T) {
 
 func TestDeliverResultsRecorded(t *testing.T) {
 	ch := &mockChannel{name: "email"}
-	worker := NewWorker([]Channel{ch}, 1, 1*time.Millisecond)
+	worker := newSyncWorker([]Channel{ch}, 1)
 
 	worker.Deliver(context.Background(), Event{ID: "evt-a", Channel: "email"})
 	worker.Deliver(context.Background(), Event{ID: "evt-b", Channel: "email"})
@@ -403,10 +403,9 @@ func TestWebhookChannelSendNon2xx(t *testing.T) {
 	}
 }
 
-func TestNewWorkerDefaults(t *testing.T) {
-	w := NewWorker(nil, 0, 0)
-	if w == nil {
-		t.Fatal("expected non-nil worker")
+func TestNewRetrierDefaults(t *testing.T) {
+	if NewRetrier(nil, Policy{}, nil, nil) == nil {
+		t.Fatal("expected non-nil retrier")
 	}
 }
 

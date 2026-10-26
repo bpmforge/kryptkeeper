@@ -134,7 +134,7 @@ func syncWaveStatuses(ctx context.Context, store MigrationWaveStore, waves []Mig
 func registerPQCWaveHandlers(mux *http.ServeMux, auth *Authenticator, certProvider CertificateProvider, templateProvider TemplateProvider, store MigrationWaveStore, keys keystore.Store, auditProvider AuditProvider) {
 	pendingStore := NewPendingActionStoreFromEnv()
 	targets := newManagedTargetStoreFromEnv()
-	deliver := unsupportedWaveDeliverer{}
+	deliver := newWaveDeliverer(keys, certProvider, newOutboundCredentialStoreFromEnv(), targets, auditProvider)
 	// Collection: GET list (with progress) / POST create.
 	mux.HandleFunc("/api/v1/reports/pqc-waves", func(w http.ResponseWriter, r *http.Request) {
 		principal, err := auth.AuthenticatePrincipalDetails(r, time.Now())

@@ -205,7 +205,7 @@ openssl verify -CAfile "$WORK/chain.pem" -purpose any "$WORK/leaf.pem" >"$WORK/l
 # osslsigncode 2.5 (Debian bookworm) cannot sign .ps1 (added in 2.6), so sign a
 # tiny Windows PE built with the image's Go toolchain.
 mkdir -p "$WORK/pe" && printf 'package main\nfunc main() {}\n' >"$WORK/pe/main.go" \
-  && (cd "$WORK/pe" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 GOFLAGS=-mod=mod go mod init kkuatpe >/dev/null 2>&1; GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o "$WORK/test.exe" .) \
+  && (cd "$WORK/pe" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 GOFLAGS=-mod=mod go mod init corppe >/dev/null 2>&1; GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -o "$WORK/test.exe" .) \
   || FAIL "could not build the test PE"
 SIGN_HELP="$(osslsigncode --help 2>&1 || true)"
 SIGN_FLAGS=()

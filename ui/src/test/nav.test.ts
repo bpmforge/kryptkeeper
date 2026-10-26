@@ -32,6 +32,7 @@ describe("navigation", () => {
       "/agents",
       "/nhi",
       "/integrations",
+      "/issuers",
       "/certificates",
       "/cas",
       "/ceremonies",

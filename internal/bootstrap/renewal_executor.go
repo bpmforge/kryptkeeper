@@ -174,6 +174,13 @@ type RenewalExecutor struct {
 	// verifier overrides the installer's TLS-dial verify step; nil uses the
 	// real one. Tests substitute one that reads the fake target's filesystem.
 	verifier agentinstall.Verifier
+	// tdsVerifier is the verify step for sqlserver targets. It is separate
+	// from verifier because SQL Server starts
+	// TLS inside TDS PRELOGIN, which the plain HubVerifier cannot read;
+	// tests substitute a stub. rdpVerifier is the same for the RDP listener,
+	// whose TLS starts after an X.224 negotiation.
+	tdsVerifier agentinstall.Verifier
+	rdpVerifier agentinstall.Verifier
 	// pushClient overrides the push-mode HTTP client (nil = default);
 	// tests point it at httptest fixtures.
 	pushClient *http.Client
@@ -243,7 +250,9 @@ func NewRenewalExecutor(certs CertificateProvider, creds OutboundCredentialStore
 		creds: creds,
 		// The hub drives these dials, so they go through the egress policy
 		// (RC1-A-04); tests substitute their own.
-		verifier: agentinstall.HubVerifier,
+		verifier:    agentinstall.HubVerifier,
+		tdsVerifier: agentinstall.NewTDSVerifier(),
+		rdpVerifier: agentinstall.NewRDPVerifier(),
 		dial: func(ctx context.Context, cfg agentinstall.SSHTarget) (agentinstall.Executor, func() error, error) {
 			exec, err := agentinstall.NewSSHExecutor(ctx, cfg)
 			if err != nil {
@@ -339,7 +348,7 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 	}()
 
 	switch target.InstallMode {
-	case "f5", "citrix", "k8s", "iis", "plugin":
+	case "f5", "citrix", "k8s", "iis", "sqlserver", "rdp", "exchange", "plugin":
 		// W12-05: push-mode targets renew through the agentinstall
 		// pushers. Same SLO accounting (the defer above), same result
 		// contract.
@@ -354,7 +363,7 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 	if mode, _ := effectiveKeyHandlingMode(target); mode == KeyModeClientCSR {
 		return result, errRenewalKeyModeMismatch
 	}
-	if target.InstallMode == "ssh" && (profile.ServerType == "" || profile.CertPath == "" || profile.KeyPath == "") {
+	if target.InstallMode == "ssh" && (profile.ServerType == "" || profile.CertPath == "" || (profile.KeyPath == "" && profile.ServerType != "haproxy")) {
 		return result, errRenewalInstallProfile
 	}
 	if strings.TrimSpace(target.CredentialRef) == "" {
@@ -424,6 +433,31 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 		return result, nil
 	}
 
+	e.installSSHMaterial(ctx, target, profile, sshInstallInput{
+		payload: payload, signer: signer, hostKey: hostKey,
+		chainPEM: chainPEM, keyPEM: keyPEM, leafFP: leafFP, caID: detail.CAID,
+	}, &result)
+	return result, nil
+}
+
+// sshInstallInput is everything installSSHMaterial needs beyond the target and
+// profile: the resolved credential and the already-issued material.
+type sshInstallInput struct {
+	payload  sshCredentialPayload
+	signer   ssh.Signer
+	hostKey  ssh.PublicKey
+	chainPEM []byte
+	keyPEM   []byte
+	leafFP   string
+	caID     string // keychain installs append this CA's issuer chain
+}
+
+// installSSHMaterial dials the target and installs in.chainPEM/in.keyPEM through
+// the agentinstall installer (backup, config test, reload, verify, rollback),
+// reporting the outcome IN result. Shared by ExecuteRenewal and InstallMaterial
+// so a PQC wave delivery cannot drift from the renewal install path.
+func (e *RenewalExecutor) installSSHMaterial(ctx context.Context, target ManagedTarget, profile RenewalInstallProfile, in sshInstallInput, result *RenewalExecuteResult) {
+	payload, signer, hostKey, chainPEM, keyPEM, leafFP := in.payload, in.signer, in.hostKey, in.chainPEM, in.keyPEM, in.leafFP
 	verifyHostPort := profile.VerifyHostPort
 	if verifyHostPort == "" {
 		verifyHostPort = net.JoinHostPort(target.Host, "443")
@@ -456,7 +490,7 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 		}
 		result.InstallOutcome = "connect_failed"
 		result.InstallDetail = boundInstallDetail(err.Error())
-		return result, nil
+		return
 	}
 	defer func() { _ = closeConn() }()
 
@@ -464,7 +498,7 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 	if err != nil {
 		result.InstallOutcome = "connect_failed"
 		result.InstallDetail = boundInstallDetail(err.Error(), payload.SudoPassword)
-		return result, nil
+		return
 	}
 	defer endPrivilege()
 
@@ -472,11 +506,11 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 		// The keychain must trust the issuing root, and the renewed
 		// certificate's download is the leaf alone: append the issuer chain
 		// when the provider can supply it (hub-issued certificates).
-		if ic, ok := e.certs.(issuerChainProvider); ok && detail.CAID != "" {
-			if issuer, err := ic.IssuerChainPEM(ctx, detail.CAID); err == nil {
+		if ic, ok := e.certs.(issuerChainProvider); ok && in.caID != "" {
+			if issuer, err := ic.IssuerChainPEM(ctx, in.caID); err == nil {
 				chainPEM = append(append([]byte(nil), chainPEM...), issuer...)
 			} else {
-				logging.Warnf("renewal: issuer chain for CA %s unavailable, keychain trust will fail: %v", detail.CAID, err)
+				logging.Warnf("renewal: issuer chain for CA %s unavailable, keychain trust will fail: %v", in.caID, err)
 			}
 		}
 		// Verify-after-install only when the operator named a TLS endpoint:
@@ -497,7 +531,7 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 		if err != nil && result.InstallDetail == "" {
 			result.InstallDetail = boundInstallDetail(err.Error())
 		}
-		return result, nil
+		return
 	}
 
 	installer := agentinstall.New(executor)
@@ -531,9 +565,98 @@ func (e *RenewalExecutor) ExecuteRenewal(ctx context.Context, fingerprint string
 		result.InstallDetail = boundInstallDetail(err.Error(), payload.KeystorePassword, payload.SudoPassword)
 	}
 	if (err != nil || !installSucceeded(installRes.Outcome)) && !keyExisted {
-		e.cleanupFailedInstallKey(ctx, executor, target, keyPath, &result)
+		e.cleanupFailedInstallKey(ctx, executor, target, keyPath, result)
 	}
-	e.reportPrivilegedInstall(ctx, target, payload.SudoMode, &result)
+	e.reportPrivilegedInstall(ctx, target, payload.SudoMode, result)
+}
+
+// InstallMaterial installs ALREADY-ISSUED chain and key on one ssh-mode target
+// through the same install code as ExecuteRenewal (backup, config test, reload,
+// verify the served leaf, rollback). It renews nothing and does not take
+// ownership of keyPEM: the caller zeroizes it. A returned error means nothing
+// was attempted on the host (refused profile, missing credential, unparseable
+// material); an attempted install reports its outcome in the result.
+func (e *RenewalExecutor) InstallMaterial(ctx context.Context, target ManagedTarget, profile RenewalInstallProfile, chainPEM, keyPEM []byte, caID string) (RenewalExecuteResult, error) {
+	var result RenewalExecuteResult
+	if target.InstallMode != "ssh" {
+		return result, errRenewalTargetNotSSH
+	}
+	if mode, _ := effectiveKeyHandlingMode(target); mode == KeyModeClientCSR {
+		return result, errRenewalKeyModeMismatch
+	}
+	// haproxy reads one combined chain+key file (CertPath), so it has no key path.
+	if profile.ServerType == "" || profile.CertPath == "" || (profile.KeyPath == "" && profile.ServerType != "haproxy") {
+		return result, errRenewalInstallProfile
+	}
+	if strings.TrimSpace(target.CredentialRef) == "" {
+		return result, errRenewalNoCredential
+	}
+	if e.creds == nil {
+		return result, errors.New("outbound credential store not configured (set APP_CREDENTIAL_STORE_PASSPHRASE or KRYPTKEEPER_KEYSTORE_PASSPHRASE)")
+	}
+	leafFP, err := leafFingerprint(chainPEM)
+	if err != nil {
+		return result, fmt.Errorf("certificate bytes unparseable: %w", err)
+	}
+	payload, err := e.resolveSSHCredential(ctx, target.CredentialRef)
+	if err != nil {
+		return result, err
+	}
+	payload = payload.withJIT(jitSudoFrom(ctx))
+	signer, hostKey, err := payload.parse()
+	if err != nil {
+		return result, err
+	}
+	result.NewFingerprint = leafFP
+	e.installSSHMaterial(ctx, target, profile, sshInstallInput{
+		payload: payload, signer: signer, hostKey: hostKey,
+		chainPEM: chainPEM, keyPEM: keyPEM, leafFP: leafFP, caID: caID,
+	}, &result)
+	return result, nil
+}
+
+// PushMaterial installs ALREADY-ISSUED chain and key into a Kubernetes TLS
+// Secret (D-315). It is InstallMaterial's counterpart for the k8s push mode
+// and reuses pushMaterialToTarget, so a PQC wave delivery gets the same
+// backup (prior Secret manifest), verify and restore as a renewal push. Only
+// k8s is accepted: the other push modes either import a PFX the hub cannot
+// build for an ML-DSA key (Windows) or are device APIs with no proven
+// ML-DSA support (F5, Citrix). The caller zeroizes keyPEM. A returned error
+// means nothing was attempted on the cluster.
+func (e *RenewalExecutor) PushMaterial(ctx context.Context, target ManagedTarget, profile RenewalInstallProfile, chainPEM, keyPEM []byte) (RenewalExecuteResult, error) {
+	var result RenewalExecuteResult
+	if target.InstallMode != "k8s" {
+		return result, fmt.Errorf("install_mode %q is not delivered by PushMaterial", target.InstallMode)
+	}
+	if mode, _ := effectiveKeyHandlingMode(target); mode == KeyModeClientCSR {
+		return result, errRenewalKeyModeMismatch
+	}
+	if strings.TrimSpace(target.CredentialRef) == "" {
+		return result, errRenewalNoCredential
+	}
+	if e.creds == nil {
+		return result, errors.New("outbound credential store not configured (set APP_CREDENTIAL_STORE_PASSPHRASE or KRYPTKEEPER_KEYSTORE_PASSPHRASE)")
+	}
+	leafFP, err := leafFingerprint(chainPEM)
+	if err != nil {
+		return result, fmt.Errorf("certificate bytes unparseable: %w", err)
+	}
+	result.NewFingerprint = leafFP
+	res, pushErr := e.pushMaterialToTarget(ctx, target, profile, chainPEM, keyPEM, leafFP)
+	result.InstallOutcome = res.Outcome
+	result.InstallDetail = boundInstallDetail(res.Detail)
+	result.Verified = res.Verified
+	// The pusher reports verify_failed for a failed verify even when its
+	// restore also failed; only RolledBack tells the two apart.
+	if res.Outcome == agentinstall.OutcomeVerifyFailed && !res.RolledBack {
+		result.InstallOutcome = agentinstall.OutcomeRollbackFailed
+	}
+	if pushErr != nil && result.InstallOutcome == "" {
+		return result, pushErr // refused before the cluster was touched
+	}
+	if pushErr != nil && result.InstallDetail == "" {
+		result.InstallDetail = boundInstallDetail(pushErr.Error())
+	}
 	return result, nil
 }
 
@@ -816,6 +939,44 @@ type pushCredentialPayload struct {
 	IPPort    string `json:"ipport,omitempty"`     // e.g. 0.0.0.0:443
 	AppID     string `json:"app_id,omitempty"`     // netsh appid GUID
 	StoreName string `json:"store_name,omitempty"` // default MY
+	// sqlserver (W35-02): instance name (default MSSQLSERVER) and its TCP
+	// port (default 1433), used for the TDS verify dial. A named instance on
+	// a dynamic port needs the port stated here or via verify_host_port.
+	SQLInstance string   `json:"sql_instance,omitempty"`
+	SQLPort     flexPort `json:"sql_port,omitempty"`
+	// exchange: services to enable the certificate for (default IIS,SMTP) and
+	// the SMTP ports probed with STARTTLS afterwards (default 25 and 587).
+	Services  []string `json:"services,omitempty"`
+	SMTPPorts []int    `json:"smtp_ports,omitempty"`
+}
+
+// flexPort reads a port given as a JSON number or as a string: the wizard's
+// credential form submits every field as text, API callers send numbers.
+type flexPort int
+
+func (p *flexPort) UnmarshalJSON(b []byte) error {
+	t := strings.Trim(strings.TrimSpace(string(b)), `"`)
+	if t == "" || t == "null" {
+		*p = 0
+		return nil
+	}
+	n, err := strconv.Atoi(t)
+	if err != nil || n < 1 || n > 65535 {
+		return errors.New("sql_port must be a TCP port number")
+	}
+	*p = flexPort(n)
+	return nil
+}
+
+// isWinRMPushMode reports the install modes that drive a Windows host over
+// WinRM with a windows_password credential: their base_url is a WinRM
+// endpoint (validated by the WinRM client), not an https device API.
+func isWinRMPushMode(installMode string) bool {
+	switch installMode {
+	case "iis", "sqlserver", "rdp", "exchange":
+		return true
+	}
+	return false
 }
 
 // resolveK8sCACert returns the credential-carried CA bundle if present,
@@ -867,7 +1028,7 @@ func (e *RenewalExecutor) resolvePushCredential(ctx context.Context, ref, instal
 	// no IIS target could ever be pushed to — the credential existed but the
 	// consumer refused it.
 	wantType := CredentialTypeAPIToken
-	if installMode == "iis" {
+	if isWinRMPushMode(installMode) {
 		wantType = CredentialTypeWindowsPassword
 	}
 	if meta.CredentialType != wantType {
@@ -885,12 +1046,19 @@ func (e *RenewalExecutor) resolvePushCredential(ctx context.Context, ref, instal
 	if payload.BaseURL == "" {
 		return pushCredentialPayload{}, fmt.Errorf("%w: base_url is required", errRenewalBadCredential)
 	}
+	// Refuse a bad service list now: the push runs after the renewal, and a
+	// typo here must not burn a serial.
+	if installMode == "exchange" {
+		if _, err := agentinstall.NormalizeExchangeServices(payload.Services); err != nil {
+			return pushCredentialPayload{}, fmt.Errorf("%w: %v", errRenewalBadCredential, err)
+		}
+	}
 	// The F5/Citrix/Kubernetes push sends device credentials and the renewed
 	// private key to base_url, so plain http would put them on the wire in
 	// clear. (IIS is a WinRM endpoint with its own transport message
 	// encryption and is validated by its own client.) The egress client
 	// enforces the same rule at dial time; this fails early with a clear error.
-	if installMode != "iis" {
+	if !isWinRMPushMode(installMode) {
 		if err := requireHTTPSPushURL(payload.BaseURL); err != nil {
 			return pushCredentialPayload{}, fmt.Errorf("%w: base_url: %v", errRenewalBadCredential, err)
 		}
@@ -991,7 +1159,7 @@ func (e *RenewalExecutor) pushMaterialToTarget(ctx context.Context, target Manag
 	}
 	verifyHostPort := profile.VerifyHostPort
 	if verifyHostPort == "" {
-		verifyHostPort = net.JoinHostPort(target.Host, "443")
+		verifyHostPort = net.JoinHostPort(target.Host, defaultVerifyPort(target.InstallMode, payload))
 	}
 	req := agentinstall.PushRequest{
 		Name:                pushObjectName(target.Name),
@@ -1033,17 +1201,11 @@ func (e *RenewalExecutor) pushMaterialToTarget(ctx context.Context, target Manag
 		// A bad bundle fails the install rather than quietly downgrading
 		// to system roots — misconfigured trust must not look like a
 		// healthy install that happens to verify differently.
-		winrmRoots, rootsErr := agentdiscovery.WinRMRootCAsFromEnv()
-		if rootsErr != nil {
-			return agentinstall.InstallResult{}, rootsErr
+		winExec, werr := e.winRMExecutor(payload)
+		if werr != nil {
+			return agentinstall.InstallResult{}, werr
 		}
-		shell := agentdiscovery.NewWSManShell(agentdiscovery.WinRMConfig{
-			EndpointURL: payload.BaseURL,
-			Username:    payload.Username,
-			Password:    payload.Password,
-			RootCAs:     winrmRoots,
-		}, e.pushClient)
-		inst := agentinstall.NewIISInstaller(agentinstall.NewWinRMExecutor(shell))
+		inst := agentinstall.NewIISInstaller(winExec)
 		if e.verifier != nil {
 			inst = inst.WithVerifier(e.verifier)
 		}
@@ -1054,6 +1216,59 @@ func (e *RenewalExecutor) pushMaterialToTarget(ctx context.Context, target Manag
 			CertPEM:             chainPEM,
 			KeyPEM:              keyPEM,
 			VerifyHostPort:      verifyHostPort,
+			ExpectedFingerprint: leafFP,
+		})
+	case "sqlserver":
+		// W35-02. A plain TLS dial never reaches SQL Server's certificate,
+		// so verification uses the TDS-aware verifier, not e.verifier.
+		winExec, werr := e.winRMExecutor(payload)
+		if werr != nil {
+			return agentinstall.InstallResult{}, werr
+		}
+		inst := agentinstall.NewSQLServerInstaller(winExec)
+		if e.tdsVerifier != nil {
+			inst = inst.WithVerifier(e.tdsVerifier)
+		}
+		installRes, pushErr = inst.Install(ctx, agentinstall.SQLServerInstallRequest{
+			Instance:            payload.SQLInstance,
+			CertPEM:             chainPEM,
+			KeyPEM:              keyPEM,
+			VerifyHostPort:      verifyHostPort,
+			ExpectedFingerprint: leafFP,
+		})
+	case "rdp":
+		// W35-04. The verifier negotiates X.224 before TLS, so it is not
+		// e.verifier either.
+		winExec, werr := e.winRMExecutor(payload)
+		if werr != nil {
+			return agentinstall.InstallResult{}, werr
+		}
+		inst := agentinstall.NewRDPInstaller(winExec)
+		if e.rdpVerifier != nil {
+			inst = inst.WithVerifier(e.rdpVerifier)
+		}
+		installRes, pushErr = inst.Install(ctx, agentinstall.RDPInstallRequest{
+			CertPEM:             chainPEM,
+			KeyPEM:              keyPEM,
+			VerifyHostPort:      verifyHostPort,
+			ExpectedFingerprint: leafFP,
+		})
+	case "exchange":
+		// W35-03: HTTPS (OWA) and SMTP STARTTLS are both verified.
+		winExec, werr := e.winRMExecutor(payload)
+		if werr != nil {
+			return agentinstall.InstallResult{}, werr
+		}
+		inst := agentinstall.NewExchangeInstaller(winExec)
+		if e.verifier != nil {
+			inst = inst.WithVerifiers(e.verifier, e.verifier)
+		}
+		installRes, pushErr = inst.Install(ctx, agentinstall.ExchangeInstallRequest{
+			Services:            payload.Services,
+			CertPEM:             chainPEM,
+			KeyPEM:              keyPEM,
+			VerifyHostPort:      verifyHostPort,
+			SMTPVerifyHostPorts: smtpVerifyHostPorts(target.Host, payload.SMTPPorts),
 			ExpectedFingerprint: leafFP,
 		})
 	case "k8s":
@@ -1082,6 +1297,56 @@ func (e *RenewalExecutor) pushMaterialToTarget(ctx context.Context, target Manag
 		installRes, pushErr = p.Push(ctx, req)
 	}
 	return installRes, pushErr
+}
+
+// winRMExecutor builds the WinRM-backed Executor for a Windows push target.
+// W18-06: a WinRM listener is commonly fronted by a certificate this product
+// issued, which the system roots do not know about. A bad trust bundle fails
+// the install rather than quietly downgrading to system roots -- misconfigured
+// trust must not look like a healthy install that happens to verify
+// differently.
+func (e *RenewalExecutor) winRMExecutor(payload pushCredentialPayload) (*agentinstall.WinRMExecutor, error) {
+	winrmRoots, err := agentdiscovery.WinRMRootCAsFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	shell := agentdiscovery.NewWSManShell(agentdiscovery.WinRMConfig{
+		EndpointURL: payload.BaseURL,
+		Username:    payload.Username,
+		Password:    payload.Password,
+		RootCAs:     winrmRoots,
+	}, e.pushClient)
+	return agentinstall.NewWinRMExecutor(shell), nil
+}
+
+// defaultVerifyPort is the port the verify-after-install dial uses when the
+// target states none: the service's own listener, not 443.
+func defaultVerifyPort(installMode string, payload pushCredentialPayload) string {
+	switch installMode {
+	case "sqlserver":
+		if payload.SQLPort > 0 {
+			return strconv.Itoa(int(payload.SQLPort))
+		}
+		return "1433"
+	case "rdp":
+		return "3389"
+	}
+	return "443"
+}
+
+// smtpVerifyHostPorts lists host:port probes for the SMTP STARTTLS check:
+// the configured ports, else the MTA port and the client submission port.
+func smtpVerifyHostPorts(host string, ports []int) []string {
+	if len(ports) == 0 {
+		ports = []int{25, 587}
+	}
+	out := make([]string, 0, len(ports))
+	for _, p := range ports {
+		if p >= 1 && p <= 65535 {
+			out = append(out, net.JoinHostPort(host, strconv.Itoa(p)))
+		}
+	}
+	return out
 }
 
 // pushObjectName sanitizes a target name into a device-safe object name.

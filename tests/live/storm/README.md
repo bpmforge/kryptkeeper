@@ -170,9 +170,8 @@ deadline".
 Smoke profile on this runner (N=100, SCALE=120): 5 runs, all legs finalize 100/100 in 87-98 s except one run whose leg A
 finalized 99/100 (cause 2 above); strict violations 0-6 per leg. Seeding no longer limits it.
 
-## Known limitation (v1): Retry-After is not persisted across restarts
+## Retry-After across restarts (W35-01)
 
-Late violations in leg B are this effect, not a scheduler bug: the connector backoff and upstream Retry-After gate
-live in process memory, so a hub restarted inside a CA 429 window orders early (3 orders, up to 2.8 s early in the
-full profile). The CA answers 429 again. Documented for v1 in `docs/ops/ACME_UPSTREAM.md`; fix tracked as W35-01
-("persist connector Retry-After gate across restarts and replicas").
+The Retry-After gate is persisted (`connector_retry_gate`), so a hub restarted inside a CA 429 window orders
+nothing before `retry_at`. The v1 late violations in leg B (3 orders up to 2.8 s early) came from the gate living
+in process memory; a live leg B run should now report 0 late violations. See `docs/ops/ACME_UPSTREAM.md`.

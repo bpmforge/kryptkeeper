@@ -2,7 +2,7 @@ name: ui-e2e
 
 # Needs a runner whose job container can reach a Docker-compatible engine
 # (docker.sock or a podman socket) to run `docker compose`. The the self-hosted forge runner
-# (the self-hosted runner) does not expose one to jobs today, so this runs on demand
+# (kk-m4max-podman) does not expose one to jobs today, so this runs on demand
 # and nightly instead of on every PR; the "Check container engine" step fails
 # loudly rather than silently skipping. Locally: see ui/e2e/*/README.md.
 on:

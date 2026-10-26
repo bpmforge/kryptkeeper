@@ -24,15 +24,6 @@ const (
 	maxReportScheduleRecipients = 20
 )
 
-// reportScheduleFormats is the allowed report/format matrix: the PDF layout
-// exists only for the executive summary and the tabular exports only as
-// CSV/XLSX.
-var reportScheduleFormats = map[string][]string{
-	reportExecutiveSummary: {"pdf"},
-	reportInventory:        {"csv", "xlsx"},
-	reportFindings:         {"csv", "xlsx"},
-}
-
 // errReportScheduleNotFound is returned by Delete when no row matched.
 var errReportScheduleNotFound = errors.New("report schedule not found")
 
@@ -41,7 +32,7 @@ type ReportSchedule struct {
 	ID         string   `json:"id"`
 	Report     string   `json:"report"`  // executive-summary | inventory | findings
 	Format     string   `json:"format"`  // csv | xlsx | pdf
-	Cadence    string   `json:"cadence"` // weekly | monthly (default monthly)
+	Cadence    string   `json:"cadence"` // daily | weekly | monthly (default monthly)
 	Recipients []string `json:"recipients"`
 	Enabled    bool     `json:"enabled"`
 	LastSentAt string   `json:"last_sent_at,omitempty"`
@@ -55,9 +46,10 @@ func validateReportSchedule(s *ReportSchedule) error {
 	if s.Cadence == "" {
 		s.Cadence = "monthly"
 	}
-	formats, ok := reportScheduleFormats[s.Report]
+	def, ok := reportScheduleCatalog[s.Report]
+	formats := def.Formats
 	if !ok {
-		return fmt.Errorf("report must be one of executive-summary, inventory, findings")
+		return fmt.Errorf("report must be one of %s", scheduledReportNameList())
 	}
 	allowed := false
 	for _, f := range formats {
@@ -68,8 +60,8 @@ func validateReportSchedule(s *ReportSchedule) error {
 	if !allowed {
 		return fmt.Errorf("format %q is not available for report %q (allowed: %s)", s.Format, s.Report, strings.Join(formats, ", "))
 	}
-	if s.Cadence != "weekly" && s.Cadence != "monthly" {
-		return fmt.Errorf("cadence must be weekly or monthly")
+	if s.Cadence != "daily" && s.Cadence != "weekly" && s.Cadence != "monthly" {
+		return fmt.Errorf("cadence must be daily, weekly or monthly")
 	}
 	if n := len(s.Recipients); n < 1 || n > maxReportScheduleRecipients {
 		return fmt.Errorf("recipients must contain 1 to %d addresses", maxReportScheduleRecipients)

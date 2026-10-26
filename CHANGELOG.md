@@ -8,6 +8,28 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-26
+
+Release notes: [docs/release/RELEASE_NOTES_v1.1.0.md](docs/release/RELEASE_NOTES_v1.1.0.md).
+
+### Added
+
+- External CAs behind every protocol (Vault PKI, EJBCA, AWS Private CA, Google CAS, Sectigo, GlobalSign, Entrust, DigiCert, any ACME CA), verified responses and upstream-first revocation; Issuers page and wizard (W36).
+- Five-minute trial with demo data, signed OCI Helm chart, post-release verification, Ansible collection (W37).
+- Plugin kinds (notify, ticket, dns01, credentials) with Teams, PagerDuty, Opsgenie, Zendesk, Freshservice, DigitalOcean, GoDaddy, NS1, Akamai, CyberArk and Delinea plugins; signed plugin catalogue; Vault/OpenBao credential sources; owner routing, durable retries, ITSM ticket on failed renewal; cloud certificates in inventory; scheduled reports; Intune SCEP (W38).
+- SQL Server, RDP and Exchange install modes, domain-account installs, NLA RDP discovery, persisted CA rate-limit hold and rolling issuance budget (W39).
+- PQC delivery to HAProxy and Kubernetes, ACME device attestation, trust store push (W40).
+
+### Changed
+
+- Notification retries: 8 attempts with exponential backoff (were 3).
+- Go toolchain 1.26.10 (GO-2026-6809).
+
+### Fixed
+
+- External-CA failures answer with their reason instead of a bare 503.
+- Plugin http events no longer log full URLs (webhook signatures).
+
 ## [1.0.0] - 2026-10-18
 
 Release notes: [docs/release/RELEASE_NOTES_v1.0.0.md](docs/release/RELEASE_NOTES_v1.0.0.md).

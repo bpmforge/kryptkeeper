@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Suspend, re-key or revoke a CA · Certificate authorities · Kryptkeeper</title>
+<meta name="description" content="Change a CA's state through guarded actions that show what they affect.">
+<meta property="og:title" content="Suspend, re-key or revoke a CA · Certificate authorities · Kryptkeeper">
+<meta property="og:description" content="Change a CA's state through guarded actions that show what they affect.">
+<meta property="og:url" content="https://kryptkeeper.io/features/certificate-authorities/guarded-operations/">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<div class="crumb-row"><nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/features/">Features</a></li><li><a href="/features/certificate-authorities/">Certificate authorities</a></li><li aria-current="page">Suspend, re-key or revoke a CA</li></ol></nav></div>
+<header class="page-head">
+  <span class="label">Walkthrough · 13 steps</span>
+  <h1>Suspend, re-key or revoke a CA</h1>
+  <p class="lede">Change a CA's state through guarded actions that show what they affect.</p>
+  <p class="as">As <span class="pill role">pki-admin</span></p>
+</header>
+<ol class="steps">
+  <li class="step"><div class="step-head"><span class="label">Step <b>1</b></span><p>Open /cas</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-08/01-cas-list.webp"><img src="/shots/U-08/01-cas-list.webp" width="1440" height="900" alt="Open /cas" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>2</b></span><p>Click <strong>Lab Issuing CA</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-08/02-ca-detail.webp"><img src="/shots/U-08/02-ca-detail.webp" width="1440" height="900" alt="Click Lab Issuing CA" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>3</b></span><p>Click <strong>Update</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-08/03-update-dialog.webp"><img src="/shots/U-08/03-update-dialog.webp" width="1440" height="900" alt="Click Update" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>4</b></span><p>Fill <strong>Display name</strong> with &quot;Lab Issuing CA (renamed)&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-08/04-Display name.webp"><img src="/shots/U-08/04-Display name.webp" width="1440" height="900" alt="Fill Display name with &quot;Lab Issuing CA (renamed)&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>5</b></span><p>Click <strong>Re-key</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-08/06-rekey-step-1-blast-radius.webp"><img src="/shots/U-08/06-rekey-step-1-blast-radius.webp" width="1440" height="900" alt="Click Re-key" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>6</b></span><p>Click <strong>Acknowledge impact</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-08/07-impact-acknowledged.webp"><img src="/shots/U-08/07-impact-acknowledged.webp" width="1440" height="900" alt="Click Acknowledge impact" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>7</b></span><p>Click <strong>Next</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-08/08-rekey-step-2-options.webp"><img src="/shots/U-08/08-rekey-step-2-options.webp" width="1440" height="900" alt="Click Next" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>8</b></span><p>Click <strong>Suspend</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-08/11-suspend-confirm.webp"><img src="/shots/U-08/11-suspend-confirm.webp" width="1440" height="900" alt="Click Suspend" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>9</b></span><p>Fill <strong>CA name</strong> with &quot;Lab Issuing CA&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-08/12-type-ca-name.webp"><img src="/shots/U-08/12-type-ca-name.webp" width="1440" height="900" alt="Fill CA name with &quot;Lab Issuing CA&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>10</b></span><p>Click <strong>Confirm suspend</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-08/13-ca-suspended.webp"><img src="/shots/U-08/13-ca-suspended.webp" width="1440" height="900" alt="Click Confirm suspend" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>11</b></span><p>Click <strong>Activate</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-08/14-ca-reactivated.webp"><img src="/shots/U-08/14-ca-reactivated.webp" width="1440" height="900" alt="Click Activate" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>12</b></span><p>Click <strong>Confirm activate</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-08/15-ca-active-again.webp"><img src="/shots/U-08/15-ca-active-again.webp" width="1440" height="900" alt="Click Confirm activate" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>13</b></span><p>Click <strong>Revoke CA</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-08/17-revoke-ca-confirm.webp"><img src="/shots/U-08/17-revoke-ca-confirm.webp" width="1440" height="900" alt="Click Revoke CA" loading="lazy" decoding="async"></a></figure></li>
+</ol>
+<nav class="pager" aria-label="More in Certificate authorities"><a class="prev" href="/features/certificate-authorities/hierarchy/"><span class="label">Previous</span>Inspect a CA and its hierarchy</a><a class="next" href="/features/certificate-authorities/key-ceremony/"><span class="label">Next</span>Run a root key ceremony (M-of-N)</a></nav>
+<aside class="path-box" aria-labelledby="hub-docs"><h2 id="hub-docs">Docs for Certificate authorities</h2><ul class="link-list"><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/guides/getting-started.md">Getting started</a></li></ul></aside>
+
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

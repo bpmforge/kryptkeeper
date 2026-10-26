@@ -77,6 +77,7 @@ var auditMatrixExceptions = []auditMatrixException{
 	// the refusal itself is audited as denied.
 	{"POST", "/agent/heartbeat", "denial", "agent-token auth, outside RBAC; missing credentials answer 400 and are audited as denied"},
 	{"POST", "/agent/inventory", "denial", "agent-token auth, outside RBAC; missing credentials answer 400 and are audited as denied"},
+	{"POST", "/agent/trust-result", "denial", "agent-token auth, outside RBAC; missing credentials answer 400 and are audited as denied"},
 	{"POST", "/agent/renewal-result", "denial", "agent-token auth, outside RBAC; missing credentials answer 400 and are audited as denied"},
 
 	// The CI OIDC token is the credential: nobody holds a hub role, so a viewer
@@ -243,8 +244,10 @@ func TestAuditRouteMatrix(t *testing.T) {
 		WithExtraHandlers(func(m *http.ServeMux) {
 			RegisterSCEPChallengeHandlers(m, auth, scep.NewDBChallengeStore(db, false), "matrix-ca", audit)
 			RegisterACMEEABHandlers(m, auth, acme.NewMemEABAdmin(), ACMEEABOptions{Passphrase: []byte("matrix-passphrase")}, audit)
+			RegisterACMEDeviceHandlers(m, auth, acme.NewMemDeviceAllowlist(), audit)
 			RegisterACMEProvisionerHandlers(m, auth, acme.NewMemProvisionerStore(), func(string) bool { return true }, nil, "https://hub.example", audit)
 			RegisterESTUserHandlers(m, auth, est.NewDBUserStore(db, false), nil, audit)
+			RegisterSCEPLabelHandlers(m, auth, scep.NewMemLabelStore(), NewFileTemplateProviderFromEnv(), &renewalFakeCredStore{meta: OutboundCredentialMeta{ID: "cred-1", CredentialType: CredentialTypeAPIToken}}, audit)
 			RegisterESTLabelHandlers(m, auth, est.NewMemLabelStore(), NewFileTemplateProviderFromEnv(), audit)
 			RegisterCMPCredentialHandlers(m, auth, cmp.NewDBCredentialStore(db, false, nil), func() []byte { return []byte("matrix-passphrase") }, audit)
 			RegisterAuditArchiveHandlers(m, auth, archive, audit)

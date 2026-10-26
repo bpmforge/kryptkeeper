@@ -70,6 +70,10 @@ type Policy struct {
 	// RootCAs, when non-nil, replaces the system roots for TLS verification
 	// (devices fronted by an internal CA). The address policy still applies.
 	RootCAs *x509.CertPool
+	// ClientCertificates are presented for mutual TLS (upstream CA APIs such
+	// as EJBCA, GlobalSign Atlas and Entrust authenticate the hub this way).
+	// Setting them never relaxes the address policy (W36-11).
+	ClientCertificates []tls.Certificate
 }
 
 // PolicyFromEnv returns p with AllowPrivate switched off when
@@ -207,8 +211,8 @@ func NewClient(policy Policy) *http.Client {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: timeout,
 	}
-	if policy.RootCAs != nil {
-		base.TLSClientConfig = &tls.Config{RootCAs: policy.RootCAs, MinVersion: tls.VersionTLS12}
+	if policy.RootCAs != nil || len(policy.ClientCertificates) > 0 {
+		base.TLSClientConfig = &tls.Config{RootCAs: policy.RootCAs, Certificates: policy.ClientCertificates, MinVersion: tls.VersionTLS12}
 	}
 	return &http.Client{
 		Timeout:   timeout,

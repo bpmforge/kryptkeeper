@@ -25,6 +25,9 @@ type escRecChannel struct {
 	n    int
 	// mutable lets a test flip behavior between sends.
 	err error
+	// failFirst fails only the first N sends, so a recovery test does not
+	// race the retry timer flipping fail by hand.
+	failFirst int
 }
 
 func (c *escRecChannel) Name() string { return c.name }
@@ -33,6 +36,9 @@ func (c *escRecChannel) Send(_ context.Context, ev delivery.Event) error {
 	defer c.mu.Unlock()
 	c.n++
 	c.got = append(c.got, ev)
+	if c.failFirst > 0 && c.n <= c.failFirst {
+		return errors.New("boom")
+	}
 	if c.fail {
 		if c.err != nil {
 			return c.err

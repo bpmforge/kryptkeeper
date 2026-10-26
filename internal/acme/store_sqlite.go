@@ -61,7 +61,9 @@ func (s *SQLiteStore) EnsureSchema() error {
 			identifier  TEXT NOT NULL DEFAULT '{}',
 			status      TEXT NOT NULL DEFAULT 'pending',
 			challenges  TEXT NOT NULL DEFAULT '[]',
-			expires     TEXT NOT NULL
+			expires     TEXT NOT NULL,
+			attested_key_thumbprint TEXT NOT NULL DEFAULT '',
+			attestation_format      TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS acme_certs (
 			id       TEXT PRIMARY KEY,
@@ -96,7 +98,28 @@ func (s *SQLiteStore) EnsureSchema() error {
 	if err := ensureAccountJWKColumn(s.db); err != nil {
 		return fmt.Errorf("acme schema: %w", err)
 	}
+	// W40-02: acme_authzs predates the device-attestation columns, and exists
+	// only through this function (no migration creates it), so widening it
+	// belongs here too.
+	for _, col := range []string{"attested_key_thumbprint", "attestation_format"} {
+		if err := ensureColumn(s.db, "acme_authzs", col, "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return fmt.Errorf("acme schema: %w", err)
+		}
+	}
 	return nil
+}
+
+// ensureColumn adds a column, tolerating "already exists" (see
+// ensureAccountJWKColumn for the driver messages).
+func ensureColumn(db *sql.DB, table, column, decl string) error {
+	_, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + decl)
+	if err == nil {
+		return nil
+	}
+	if msg := err.Error(); strings.Contains(msg, "duplicate column name") || strings.Contains(msg, "already exists") {
+		return nil
+	}
+	return err
 }
 
 // ensureAccountJWKColumn adds acme_accounts.jwk to a table that already
@@ -373,23 +396,24 @@ func (s *SQLiteStore) SaveAuthz(authz *Authorization) error {
 
 	var q string
 	if s.isPostgres {
-		q = `INSERT INTO acme_authzs (id,account_id,identifier,status,challenges,expires)
-		     VALUES ($1,$2,$3,$4,$5,$6)
-		     ON CONFLICT (id) DO UPDATE SET status=$4, challenges=$5`
+		q = `INSERT INTO acme_authzs (id,account_id,identifier,status,challenges,expires,attested_key_thumbprint,attestation_format)
+		     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+		     ON CONFLICT (id) DO UPDATE SET status=$4, challenges=$5, attested_key_thumbprint=$7, attestation_format=$8`
 	} else {
-		q = `INSERT OR REPLACE INTO acme_authzs (id,account_id,identifier,status,challenges,expires)
-		     VALUES (?,?,?,?,?,?)`
+		q = `INSERT OR REPLACE INTO acme_authzs (id,account_id,identifier,status,challenges,expires,attested_key_thumbprint,attestation_format)
+		     VALUES (?,?,?,?,?,?,?,?)`
 	}
 	_, err := s.db.Exec(q,
 		authz.ID, authz.AccountID, string(ident), authz.Status,
 		string(challenges), authz.Expires.UTC().Format(time.RFC3339),
+		authz.AttestedKeyThumbprint, authz.AttestationFormat,
 	)
 	return err
 }
 
 func (s *SQLiteStore) LoadAuthz(id string) (*Authorization, bool) {
 	row := s.db.QueryRow(
-		`SELECT id,account_id,identifier,status,challenges,expires FROM acme_authzs WHERE id = `+s.ph(1), id)
+		`SELECT id,account_id,identifier,status,challenges,expires,attested_key_thumbprint,attestation_format FROM acme_authzs WHERE id = `+s.ph(1), id)
 	return scanAuthz(row)
 }
 
@@ -398,8 +422,8 @@ type authzScanner interface {
 }
 
 func scanAuthz(row authzScanner) (*Authorization, bool) {
-	var id, accountID, identJSON, status, challengesJSON, expires string
-	if err := row.Scan(&id, &accountID, &identJSON, &status, &challengesJSON, &expires); err != nil {
+	var id, accountID, identJSON, status, challengesJSON, expires, thumb, format string
+	if err := row.Scan(&id, &accountID, &identJSON, &status, &challengesJSON, &expires, &thumb, &format); err != nil {
 		return nil, false
 	}
 	var ident Identifier
@@ -414,6 +438,9 @@ func scanAuthz(row authzScanner) (*Authorization, bool) {
 		Status:     status,
 		Challenges: challenges,
 		Expires:    exp,
+
+		AttestedKeyThumbprint: thumb,
+		AttestationFormat:     format,
 	}, true
 }
 

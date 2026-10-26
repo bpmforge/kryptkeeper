@@ -32,8 +32,8 @@ import (
 
 var (
 	errInventorySourceNotFound = errors.New("inventory source not found")
-	errInventorySourceInvalid  = errors.New("inventory source name and a type of adcs_export|adcs_live|digicert|sectigo|entrust|aws_pca|gcp_cas are required")
-	validInventorySourceTypes  = map[string]bool{"adcs_export": true, "adcs_live": true, "digicert": true, "sectigo": true, "entrust": true, "aws_pca": true, "gcp_cas": true}
+	errInventorySourceInvalid  = errors.New("inventory source name and a type of adcs_export|adcs_live|digicert|sectigo|entrust|aws_pca|gcp_cas|globalsign|vault_pki|ejbca are required")
+	validInventorySourceTypes  = map[string]bool{"adcs_export": true, "adcs_live": true, "digicert": true, "sectigo": true, "entrust": true, "aws_pca": true, "gcp_cas": true, "globalsign": true, "vault_pki": true, "ejbca": true}
 )
 
 // SyncedCertificate is one certificate as reported by an external CA.
@@ -257,6 +257,12 @@ func buildInventorySource(ctx context.Context, rec InventorySourceRecord, creds 
 		return newAWSPCASource(ctx, rec.ConfigJSON, rec.CredentialRef, creds)
 	case "gcp_cas":
 		return newGCPCASSource(ctx, rec.ConfigJSON, rec.CredentialRef, creds)
+	case "globalsign":
+		return newGlobalSignSource(ctx, rec.ConfigJSON, rec.CredentialRef, creds)
+	case "vault_pki":
+		return newVaultPKISource(ctx, rec.ConfigJSON, rec.CredentialRef, creds)
+	case "ejbca":
+		return newEJBCASource(ctx, rec.ConfigJSON, rec.CredentialRef, creds)
 	default:
 		return nil, fmt.Errorf("inventory source type %q has no implementation", rec.Type)
 	}
@@ -331,7 +337,7 @@ const inventorySourceSchema = `
 CREATE TABLE IF NOT EXISTS inventory_sources (
     id               TEXT PRIMARY KEY,
     name             TEXT NOT NULL,
-    type             TEXT NOT NULL CHECK (type IN ('adcs_export', 'adcs_live', 'digicert', 'sectigo', 'entrust', 'aws_pca', 'gcp_cas')),
+    type             TEXT NOT NULL CHECK (type IN ('adcs_export', 'adcs_live', 'digicert', 'sectigo', 'entrust', 'aws_pca', 'gcp_cas', 'globalsign', 'vault_pki', 'ejbca')),
     config_json      TEXT NOT NULL DEFAULT '{}',
     credential_ref   TEXT,
     schedule_minutes INTEGER NOT NULL DEFAULT 0

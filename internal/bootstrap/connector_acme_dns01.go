@@ -106,6 +106,9 @@ func validateACMEConnectorConfig(configJSON string) error {
 		if _, ok := dnsProviderRegistry[cfg.DNSProvider]; !ok {
 			return fmt.Errorf("dns_provider %q is not supported (%s)", cfg.DNSProvider, strings.Join(supportedDNSProviders(), ", "))
 		}
+		if cfg.DNSProvider == "plugin" {
+			return validateDNSPluginConfig(cfg)
+		}
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ import {
   StateMessage,
 } from "../components/ops-ui";
 import { PageHeader } from "../components/PageHeader";
+import OwnerRouting from "../components/OwnerRouting";
 import { formatDateTime } from "../components/ui";
 import { scrollableProps } from "../lib/scrollable";
 import { humanizeEnum } from "../lib/utils";
@@ -561,6 +562,8 @@ export default function Alerts() {
           )}
         </Panel>
       ) : null}
+
+      {tab === "rules" ? <OwnerRouting canManage={canManage} /> : null}
 
       {tab === "deliveries" ? (
         <>

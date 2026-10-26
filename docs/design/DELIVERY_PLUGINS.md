@@ -178,6 +178,7 @@ that sentence; manifests cannot supply their own wording.
 
 | Capability | Tier | What the operator is told |
 |---|---|---|
+| `provide_credentials` | **Critical** | "This plugin returns credentials the hub uses to log in to your systems." |
 | `receive_private_key` | **Critical** | "This plugin receives the private key of every certificate it delivers." |
 | `trust_store` | **Critical** | "This plugin can add certificate authorities to the trust store of the hosts it delivers to." |
 | `elevated_exec` | **High** | "This plugin runs commands as an administrator (root/sudo or Windows administrator) on target hosts." |
@@ -186,6 +187,11 @@ that sentence; manifests cannot supply their own wording.
 | `network` (credential host only) | High (SUP-A08-1: any network access is at least High) | "This plugin connects to the device address you configure, so it has network access." |
 | `file_write` | Standard | "This plugin writes files on target hosts under: <paths>." |
 | `tls_verify` | Standard | "This plugin checks which certificate the service presents." |
+
+`provide_credentials` (D-321, D-324) belongs to the `credentials` plugin kind: a
+credentials plugin must declare it and no other kind may, so enabling one always
+needs a second person. The kind runs since W38-07; see docs/ops/CREDENTIAL_SOURCES.md. Plugin kinds (D-321) extend this design beyond
+delivery without changing it; see `docs/plugins/README.md`.
 
 `receive_private_key` is Critical because of the repository's first law:
 private keys never leave their boundary without someone deciding they

@@ -15,15 +15,14 @@ No host OpenSSL >= 3.5 is needed: the ML-DSA-capable OpenSSL is the one in the e
 
 Writes `RESULTS.md` here. Containers are prefixed `kkw31-11-` and removed on exit.
 
-## What PASS means today
-The production wave deliverer is `unsupportedWaveDeliverer` (D-103 generate-without-deliver;
-ML-DSA private-key export does not exist). So the harness asserts the real behaviour:
-two-principal propose/approve (self-approval refused), ML-DSA-65 successors issued, every member
-bound to a target reported `delivery_unsupported` citing D-103, the unbound member `migrated`
-with `delivery=none`, every endpoint still serving its previous serial, wave not `done`, audit rows.
+## What PASS means
+The production deliverer is `keystoreWaveDeliverer` (W31F-06): the ML-DSA successor key is exported
+as PKCS#8, installed over ssh through the renewal install path, and verified by the hub's TLS dial.
+The run asserts two-principal propose/approve (self-approval refused), ep-a and ep-b serving the
+ML-DSA-65 successor serial (read by `openssl s_client` in the endpoint container), ep-fail (its
+target's `verify_host_port` set to ep-a:443) rolled back with its old serial and key file intact,
+the wave `regressed`, and audit rows including `key.export_for_delivery` with no key material.
+Only ssh targets with nginx/apache profiles are delivered; other modes report `delivery_unsupported`.
 
-## What PENDING means
-`PENDING` lines are legs that need a real deliverer: the served serial changing to the ML-DSA
-cert (`ep-a`, `ep-b`) and the injected-failure rollback (`ep-fail`). They are never printed as
-PASS. Once the export follow-up lands, replace them with the spec's serial-change and rollback
-assertions (set the failing target's `verify_host_port` to `ep-a:443`).
+## W40-01: haproxy and Kubernetes legs
+`bash tests/live/pqc-wave/run-w40.sh` (needs kind) delivers to two ssh haproxy endpoints (one misdirected, rolls back) and a kind TLS Secret; see `docs/release/LIVE_RESULTS_PQC_W40_v1.1.md`.

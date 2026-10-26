@@ -34,9 +34,10 @@ type Order struct {
 	CreatedAt      time.Time    `json:"created_at"`
 }
 
-// Identifier is an identifier in an ACME order; only type "dns" is accepted.
+// Identifier is an identifier in an ACME order: "dns", or "permanent-identifier"
+// when device attestation is configured (W40-02).
 type Identifier struct {
-	Type  string `json:"type"` // dns, ip
+	Type  string `json:"type"` // dns, permanent-identifier
 	Value string `json:"value"`
 }
 
@@ -49,11 +50,15 @@ type Authorization struct {
 	Status     string      `json:"status"`             // pending, valid, invalid, deactivated, expired, revoked
 	Challenges []Challenge `json:"challenges"`
 	Expires    time.Time   `json:"expires"`
+	// AttestedKeyThumbprint and AttestationFormat are set when a device-attest-01
+	// challenge verified (D-316). They are server state, never sent to clients.
+	AttestedKeyThumbprint string `json:"-"`
+	AttestationFormat     string `json:"-"`
 }
 
 // Challenge represents an ACME challenge.
 type Challenge struct {
-	Type      string     `json:"type"` // http-01, dns-01, tls-alpn-01
+	Type      string     `json:"type"` // http-01, dns-01, tls-alpn-01, device-attest-01
 	URL       string     `json:"url"`
 	Token     string     `json:"token"`
 	Status    string     `json:"status"` // pending, processing, valid, invalid

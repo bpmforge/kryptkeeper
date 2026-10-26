@@ -104,7 +104,10 @@ func (w *stubWorld) find(sub string) []hit {
 
 func chatopsPostEnv(t *testing.T, cfg map[string]string) (*chatopsApprovalNotifier, *stubWorld, *sqliteApprovalStore, *dbPendingActionStore) {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "post.db"))
+	// busy_timeout as production DSNs set it: the notifier writes message refs
+	// from its own goroutine while the test decides, and SQLite's default of 0
+	// turns that overlap into SQLITE_BUSY on a loaded runner.
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "post.db")+"?_busy_timeout=5000")
 	if err != nil {
 		t.Fatal(err)
 	}

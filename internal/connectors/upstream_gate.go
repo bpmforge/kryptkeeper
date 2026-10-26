@@ -57,7 +57,8 @@ func (g *UpstreamGate) NoteRetryAfter(d time.Duration) {
 	if g == nil || d <= 0 {
 		return
 	}
-	g.t.hold(g.id, d)
+	until := g.t.hold(g.id, d)
+	g.t.persistGate(g.id, until, gateReasonRetryAfter)
 }
 
 // Draining reports whether the process is shutting down.
@@ -81,6 +82,7 @@ func (g *UpstreamGate) Wait(ctx context.Context) error {
 		return nil
 	}
 	for {
+		g.t.syncGate(ctx, g.id)
 		rem := g.t.holdRemaining(g.id)
 		if rem <= 0 {
 			return nil
@@ -100,7 +102,7 @@ func (g *UpstreamGate) Wait(ctx context.Context) error {
 	}
 }
 
-func (t *Throttle) hold(id string, d time.Duration) {
+func (t *Throttle) hold(id string, d time.Duration) time.Time {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	now := t.now()
@@ -108,6 +110,7 @@ func (t *Throttle) hold(id string, d time.Duration) {
 	if until := now.Add(d); until.After(s.holdUntil) {
 		s.holdUntil = until
 	}
+	return s.holdUntil
 }
 
 func (t *Throttle) holdRemaining(id string) time.Duration {

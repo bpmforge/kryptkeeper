@@ -132,7 +132,10 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	registerDiscoveryHandlers(mux, auth, discoveryProvider, eventBus, auditProvider)
 	// W6-05: the always-current CycloneDX CBOM export.
 	RegisterCBOMHandlers(mux, auth, certificateProvider, keys, discoveryProvider, auditProvider)
-	registerNotificationHandlers(mux, auth, notificationProvider, auditProvider, newITSMConnectionVisible(cfg.itsm), newSilenceTargetVisible(certificateProvider, caProvider, templateProvider))
+	registerNotificationHandlersWithPlugins(mux, auth, notificationProvider, auditProvider, newITSMConnectionVisible(cfg.itsm),
+		newPluginChannelTarget(NewPluginNotifyChannel(func() *DeliveryPluginManager { return cfg.plugins }, nil)),
+		newSilenceTargetVisible(certificateProvider, caProvider, templateProvider))
+	registerOwnerlessHandler(mux, auth, certificateProvider, auditProvider) // W32-30
 	registerDashboardHandlers(mux, auth, certSummaryProvider, discoveryProvider, notificationProvider, dashboardActionProvider, auditProvider)
 	registerAuditHandlers(mux, auth, roleStore, auditProvider, auditNameSources{
 		certs: certificateProvider, cas: caProvider, templates: templateProvider,
@@ -169,7 +172,7 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 		s.SetScanDiffNotifier(newProviderScanDiffNotifier(notificationProvider, auditProvider))
 	}
 	// W5-13: hub-side renewal execution — key/CSR hub-side, renew, SSH install.
-	registerRenewalExecuteHandler(mux, auth, certificateProvider, managedTargetStore, newOutboundCredentialStoreFromEnv(), auditProvider, cfg.plugins)
+	registerRenewalExecuteHandler(mux, auth, certificateProvider, managedTargetStore, newOutboundCredentialStoreFromEnv(), auditProvider, cfg.plugins, notificationProvider)
 	registerTemplateHandlers(mux, auth, templateProvider, auditProvider, approvalStore)
 	if activeTeamEnforcer != nil {
 		activeTeamEnforcer.templates = templateProvider // W33-21
@@ -181,7 +184,11 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	RegisterBulkImportHandler(mux, auth, certificateProvider, auditProvider)
 	// W11-03/W11-04: issuer connectors + the estate takeover API.
 	connectorStore := newConnectorStoreFromEnv()
-	RegisterConnectorHandlers(mux, auth, connectorStore, certificateProvider, newOutboundCredentialStoreFromEnv(), auditProvider)
+	connectorCreds := newOutboundCredentialStoreFromEnv()
+	registerConnectorHandlers(mux, auth, connectorStore, certificateProvider, connectorCreds, auditProvider, caProvider)
+	// W36-02: external CAs sign through these connectors.
+	registerExternalCAHandlers(mux, auth, caProvider, connectorStore, connectorCreds, tenantStore, auditProvider)
+	wireExternalCA(caProvider, certificateProvider, connectorStore, connectorCreds, tenantStore, auditProvider)
 	RegisterEstateHandlers(mux, auth, certificateProvider, connectorStore, auditProvider)
 	// W11-05: direct-CA inventory sources (ADCS export, DigiCert).
 	RegisterInventorySourceHandlers(mux, auth, newInventorySourceStoreFromEnv(), certificateProvider, newOutboundCredentialStoreFromEnv(), auditProvider)
@@ -203,7 +210,9 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	}
 	registerUserHandlers(mux, auth, userProvider, roleStore, auditProvider)
 	registerIntegrationsHandlers(mux, auth, auditProvider, siemRouter, cfg.scepOffReason)
-	registerConfigHandlers(mux, auth, newConfigStoreFromEnv(), auditProvider)
+	configStore := newConfigStoreFromEnv()
+	registerConfigHandlers(mux, auth, configStore, auditProvider)
+	registerDemoStatusHandler(mux, auth, configStore)
 	registerUserPrefsHandlers(mux, auth, newUserPrefsStoreFromEnv(), auditProvider)
 	registerReportsHandlers(mux, auth, certificateProvider, caProvider, templateProvider, keys, auditProvider)
 	registerPostureTrendHandler(mux, auth, postureSnapshotStore, auditProvider)
@@ -233,6 +242,8 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	auth.requireStore(agentStore)
 	agentRoutes := gateRoutes(mux, agentStore)
 	registerAgentHandlers(agentRoutes, auth, agentStore, auditProvider)
+	// W40-03: trust bundles; registers its approval executor, so it runs before the queue.
+	registerTrustBundleHandlers(cfg, mux, agentRoutes, auth, agentStore, NewTrustBundleStoreFromEnv(), NewPendingActionStoreFromEnv(), certificateProvider, caProvider, auditProvider)
 	registerRenewalSLOHandler(agentRoutes, auth, agentStore, certificateProvider, auditProvider)
 	registerEvidenceHandlers(mux, auth, certificateProvider, caProvider, NewEvidenceScheduleStoreFromEnv(), NewEvidenceMailerFromEnv(), auditProvider)
 	RegisterComplianceAttestationHandlers(mux, auth, NewComplianceAttestationStoreFromEnv(), auditProvider)
@@ -243,6 +254,8 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	registerPendingActionHandlers(mux, auth, certificateProvider, NewPendingActionStoreFromEnv(), auditProvider, cfg.actionExecutors, keys)
 	// W20-20: community certificate delivery plugins.
 	registerDeliveryPluginHandlers(mux, auth, cfg.plugins, auditProvider)
+	// W38-11: install first-party plugins from the signed catalogue.
+	registerPluginCatalogueHandlers(mux, auth, cfg.plugins, auditProvider)
 	// v2.1: SPIFFE SVID mint + trust bundle (enabled when a CA engine + trust domain are set).
 	registerSPIFFEHandlers(mux, auth, caProvider, auditProvider)
 	// W7-01: workload attestation (join-token) extending the SVID mint.
@@ -275,8 +288,11 @@ func registerHandlers(cfg *ServerConfig, auth *Authenticator, certSummaryProvide
 	// CREATE one outside tests, which dead-ended every credential_ref
 	// consumer (push installs, adcs_live, AD sync) for real deployments.
 	registerCredentialHandlers(mux, auth, newOutboundCredentialStoreFromEnv(), auditProvider, ProductionWinRMPreflighter)
+	// W38-07: where external credentials fetch their secrets from.
+	registerCredentialSourceHandlers(mux, auth, newCredentialSourceStoreFromEnv(), newOutboundCredentialStoreFromEnv(), auditProvider, cfg.plugins)
 	// W32-10: ITSM connections and ticket-link queue.
-	registerITSMHandlers(mux, auth, cfg.itsm, newOutboundCredentialStoreFromEnv(), auditProvider)
+	registerITSMHandlers(mux, auth, cfg.itsm, newOutboundCredentialStoreFromEnv(), auditProvider,
+		newITSMPluginCheck(NewITSMPluginConnectors(func() *DeliveryPluginManager { return cfg.plugins }, nil)))
 	// W32-12: approve via ITSM ticket; maps external approvers to hub users.
 	registerITSMApprovalHandlers(mux, auth, cfg.itsm, auditProvider)
 }

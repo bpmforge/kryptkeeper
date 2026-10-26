@@ -336,6 +336,6 @@ func BenchmarkCloudScan500(b *testing.B) {
 	b.Cleanup(func() { loadCloudScopes, newCloudScopeConnector = origLoad, origScope })
 	noop := func(string, string, string) {}
 	for i := 0; i < b.N; i++ {
-		runCloudScopeFanOut(context.Background(), noop, "bench", scanTypeCloudACM, scopes)
+		runCloudScopeFanOut(context.Background(), nil, false, noop, "bench", scanTypeCloudACM, scopes)
 	}
 }

@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
-# W31-11: live PQC wave harness against real TLS endpoints (nginx on OpenSSL >= 3.5).
+# W31-11 / W31F-06: live PQC wave harness against real TLS endpoints (nginx on OpenSSL >= 3.5).
 #
-# WHAT IT PROVES TODAY (W31-08 ships unsupportedWaveDeliverer, D-103 generate-without-deliver,
-# because ML-DSA PKCS#8 export does not exist): a real hub runs a two-principal wave -- propose,
-# separation-of-duties refusal, approve -- issues ML-DSA-65 successors, reports every member
-# bound to a target as delivery_unsupported with the reason, and the endpoints keep serving
-# their OLD certificate (observed by openssl s_client inside the endpoint container, not by the
-# hub). The wave is not reported done and the audit trail carries the approve and per-member rows.
+# WHAT IT PROVES: a real hub runs a two-principal wave -- propose, separation-of-duties refusal,
+# approve -- issues ML-DSA-65 successors and DELIVERS them over ssh (keystoreWaveDeliverer,
+# W31F-06: PKCS#8 key export + the renewal install path). The served serial on ep-a and ep-b
+# changes to the ML-DSA cert, observed by openssl s_client inside the endpoint container, not by
+# the hub. ep-fail has its target's verify_host_port pointed at ep-a:443, so the post-install
+# verify sees the wrong fingerprint, the install rolls back, ep-fail still serves its OLD serial
+# and key, and the wave is reported regressed. Audit carries the approve row and one
+# key.export_for_delivery row per exported key (no key bytes).
 #
-# WHAT IT CANNOT PROVE YET (reported PENDING, never PASS): the served serial changing to the
-# ML-DSA cert, and the failing-endpoint rollback. Both need a real deliverer (blocked on the
-# ML-DSA private-key export follow-up).
-#
-# PASS/FAIL/PENDING per step; stops at the first FAIL (KK_KEEP_GOING=1 runs on). Writes
-# RESULTS.md next to this script. Containers are prefixed kkw31-11-; all removed on exit.
+# PASS/FAIL per step; stops at the first FAIL (KK_KEEP_GOING=1 runs on). Writes RESULTS.md next
+# to this script. Containers are prefixed kkw31-11-; all removed on exit.
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FX_PREFIX=kkw31-11
@@ -24,7 +22,6 @@ FX_EXTRA_CONTAINERS="kkw31-11-ep-a kkw31-11-ep-b kkw31-11-ep-fail"
 IMAGE="localhost/kkw31-11-ep:$(openssl rand -hex 3)"
 cleanup() { fx_cleanup; podman rmi -f "$IMAGE" >/dev/null 2>&1; }
 trap cleanup EXIT
-PENDING() { say "PENDING: $*"; }
 
 fx_header "# W31-11 live test: PQC wave against real TLS endpoints"
 say "endpoint image: $IMAGE (alpine:3.22, nginx + sshd)"
@@ -83,7 +80,7 @@ PASS "all three endpoints serve TLS (placeholder ECDSA leaf) and sshd listens"
 
 STEP "3. credentials, targets, install a hub-issued ECDSA leaf on each endpoint"
 PRIV="$(python3 -c "print(open('$FX_RUN/id').read().replace(chr(10), chr(92)+'n'), end='')")"
-declare -A OLD_FP SERIAL_BEFORE TGT
+declare -A OLD_FP SERIAL_BEFORE TGT KEYHASH_BEFORE NFP NSER
 for e in $EPS; do
   host="kkw31-11-ep-$e"
   hk="$(podman exec "$host" cat /etc/ssh/ssh_host_ed25519_key.pub | awk '{print $1" "$2}')"
@@ -124,6 +121,10 @@ for fp in "${OLD_FP[a]}" "${OLD_FP[b]}" "${OLD_FP[fail]}" "$U_FP"; do
 done
 check "accept wave" 200 "$(code "$T_alice" -X POST "$HUBURL/api/v1/reports/pqc-waves/$WAVE/accept")"
 
+STEP "4b. inject the failure: ep-fail's verify address points at ep-a (wrong fingerprint after install)"
+for e in $EPS; do KEYHASH_BEFORE[$e]="$(podman exec "kkw31-11-ep-$e" sha256sum /etc/ssl/kk/server.key | cut -d' ' -f1)"; done
+check "[ep-fail] PATCH verify_host_port -> ep-a:443" 200 "$(code "$T_alice" -X PATCH "$HUBURL/api/v1/targets/${TGT[fail]}" -d '{"verify_host_port":"kkw31-11-ep-a:443"}')"
+
 STEP "5. two-principal execute: alice proposes, alice may not approve, bob approves"
 check "alice proposes execute" 201 "$(code "$T_alice" -X POST "$HUBURL/api/v1/reports/pqc-waves/$WAVE/execute" -d "{\"template_id\":\"$TPL_ID\"}")"
 ACT="$(jget 'd["data"]["id"]' <"$FX_RUN/last.json")"
@@ -138,13 +139,19 @@ for e in $EPS; do
 import json, sys
 for r in json.load(open(sys.argv[1]))["data"]["results"]:
     if r["fingerprint"] == sys.argv[2]:
-        print(r.get("status",""), r.get("delivery",""), r.get("new_fingerprint",""), r.get("reason",""), sep="\t")
+        print(r.get("status",""), r.get("delivery",""), r.get("new_fingerprint",""), str(r.get("old_serial_served","")), r.get("reason","").replace("\t"," ").replace("\n"," "), sep="\t")
 PY
-  IFS=$'\t' read -r st dl nfp why <"$W/m-$e.txt"
-  [ "$st" = delivery_unsupported ] && [ "$dl" = unsupported ] && PASS "[ep-$e] member status=delivery_unsupported delivery=unsupported" || FAIL "[ep-$e] member status=$st delivery=$dl reason=$why"
-  case "$why" in *D-103*) PASS "[ep-$e] reason cites D-103: $why";; *) FAIL "[ep-$e] reason does not cite D-103: $why";; esac
+  IFS=$'\t' read -r st dl nfp oldserved why <"$W/m-$e.txt"
+  NFP[$e]="$nfp"
+  if [ "$e" = fail ]; then
+    [ "$st" = failed ] && [ "$dl" = failed ] && [ "$oldserved" = True ] && PASS "[ep-$e] member status=failed delivery=failed old_serial_served=true" || FAIL "[ep-$e] member status=$st delivery=$dl old_serial_served=$oldserved reason=$why"
+    case "$why" in *"rolled back"*) PASS "[ep-$e] reason reports the rollback: ${why:0:160}";; *) FAIL "[ep-$e] reason does not report a rollback: $why";; esac
+  else
+    [ "$st" = migrated ] && [ "$dl" = verified ] && PASS "[ep-$e] member status=migrated delivery=verified" || FAIL "[ep-$e] member status=$st delivery=$dl reason=$why"
+  fi
   code "$T_alice" "$HUBURL/api/v1/certificates/$nfp" >/dev/null
   alg="$(jget 'd["data"].get("key_algorithm_display","")' <"$FX_RUN/last.json")"
+  NSER[$e]="$(jget 'format(int(d["data"]["serial_number"]),"X")' <"$FX_RUN/last.json")"
   [ "$alg" = ML-DSA-65 ] && PASS "[ep-$e] successor ${nfp:0:12} was issued as ML-DSA-65 (hub inventory)" || FAIL "[ep-$e] successor key algorithm '$alg', want ML-DSA-65"
 done
 python3 - "$W/exec.json" "$U_FP" >"$W/m-u.txt" <<'PY'
@@ -156,31 +163,40 @@ PY
 IFS=$'\t' read -r ust udl unfp <"$W/m-u.txt"
 [ "$ust" = migrated ] && [ "$udl" = none ] && [ -n "$unfp" ] && PASS "unbound member status=migrated delivery=none (no target, nothing to deliver)" || FAIL "unbound member status=$ust delivery=$udl"
 
-STEP "7. endpoints still serve the OLD certificate (no outage), observed by openssl s_client"
-for e in $EPS; do
-  host="kkw31-11-ep-$e"; now="$(probe a "$host")"
-  if [ -n "$now" ] && [ "$now" = "${SERIAL_BEFORE[$e]}" ]; then PASS "[ep-$e] served serial unchanged (${SERIAL_BEFORE[$e]}): old cert still served"; else FAIL "[ep-$e] served serial '$now' != before '${SERIAL_BEFORE[$e]}'"; fi
-  podman exec kkw31-11-ep-a sh -c "echo | openssl s_client -connect $host:443 -servername $host 2>/dev/null | openssl x509 -noout -text" | grep -q 'ML-DSA' \
-    && FAIL "[ep-$e] endpoint unexpectedly serves an ML-DSA cert" || PASS "[ep-$e] served certificate is not ML-DSA (as expected while delivery is unsupported)"
+STEP "7. what the endpoints actually serve, observed by openssl s_client (not the hub)"
+for e in a b; do
+  host="kkw31-11-ep-$e"
+  if wait_serial a "$host" "$(echo "${NSER[$e]}" | norm)" 30; then
+    now="$(probe a "$host")"
+    [ "$now" != "${SERIAL_BEFORE[$e]}" ] && PASS "[ep-$e] serial changed ${SERIAL_BEFORE[$e]} -> $now (the successor's serial)" || FAIL "[ep-$e] serial did not change"
+  else
+    FAIL "[ep-$e] served serial '$(probe a "$host")' != successor serial ${NSER[$e]}"
+  fi
+  podman exec kkw31-11-ep-a sh -c "echo | openssl s_client -connect $host:443 -servername $host 2>/dev/null | openssl x509 -noout -text" | grep -q 'Public Key Algorithm: ML-DSA-65' \
+    && PASS "[ep-$e] served certificate is ML-DSA-65" || FAIL "[ep-$e] served certificate is not ML-DSA-65"
 done
+host=kkw31-11-ep-fail
+if wait_serial a "$host" "${SERIAL_BEFORE[fail]}" 30; then PASS "[ep-fail] rolled back: old serial ${SERIAL_BEFORE[fail]} still served"; else FAIL "[ep-fail] served serial '$(probe a "$host")' != old ${SERIAL_BEFORE[fail]}"; fi
+podman exec kkw31-11-ep-a sh -c "echo | openssl s_client -connect $host:443 -servername $host 2>/dev/null | openssl x509 -noout -text" | grep -q 'ML-DSA' \
+  && FAIL "[ep-fail] still serves an ML-DSA cert" || PASS "[ep-fail] served certificate is still the ECDSA leaf"
+kh="$(podman exec kkw31-11-ep-fail sha256sum /etc/ssl/kk/server.key | cut -d' ' -f1)"
+[ "$kh" = "${KEYHASH_BEFORE[fail]}" ] && PASS "[ep-fail] private key file restored byte-for-byte" || FAIL "[ep-fail] key file differs from before the wave"
 
 STEP "8. wave status and audit trail"
 code "$T_alice" "$HUBURL/api/v1/reports/pqc-waves" >/dev/null
 WSTAT="$(python3 -c "import json;d=json.load(open('$FX_RUN/last.json'))['data'];w=[x for x in d if x['id']=='$WAVE'][0];print(w['status'],w['migrated'],w['total'],w.get('leaf_only'))")"
 say "wave: status migrated total leaf_only = $WSTAT"
-[ "${WSTAT%% *}" != done ] && PASS "wave not reported done (status ${WSTAT%% *})" || FAIL "wave reported done though no endpoint serves a PQC cert"
+[ "${WSTAT%% *}" = regressed ] && PASS "wave reported regressed (not done)" || FAIL "wave status '${WSTAT%% *}', want regressed"
 code "$T_alice" "$HUBURL/api/v1/audit?limit=1000" >/dev/null
 AUD="$(cat "$FX_RUN/last.json")"
 echo "$AUD" | grep -q 'pqc.wave_execute_approve' && PASS "audit has pqc.wave_execute_approve" || FAIL "audit lacks pqc.wave_execute_approve"
 echo "$AUD" | grep -q 'pqc.wave_execute_propose' && PASS "audit has pqc.wave_execute_propose" || FAIL "audit lacks pqc.wave_execute_propose"
 N="$(echo "$AUD" | grep -o 'pqc.wave_member_result' | wc -l | tr -d ' ')"
 [ "$N" -ge 4 ] && PASS "audit has $N pqc.wave_member_result rows (one per member)" || FAIL "audit has only $N pqc.wave_member_result rows"
+N="$(echo "$AUD" | grep -o 'key.export_for_delivery' | wc -l | tr -d ' ')"
+[ "$N" -ge 3 ] && PASS "audit has $N key.export_for_delivery rows (one per exported successor key)" || FAIL "audit has only $N key.export_for_delivery rows"
+echo "$AUD" | grep -q 'PRIVATE KEY' && FAIL "audit trail contains key material" || PASS "audit trail contains no private-key PEM"
 
-STEP "9. legs this harness cannot honestly run yet"
-PENDING "[ep-a] served serial changes to the ML-DSA cert -- blocked on the ML-DSA private-key export follow-up (production deliverer is unsupportedWaveDeliverer, D-103)"
-PENDING "[ep-b] served serial changes to the ML-DSA cert -- same blocker"
-PENDING "[ep-fail] injected verify failure is rolled back and the old serial is still served -- same blocker (no Deliver is ever attempted, so there is nothing to roll back)"
-
-STEP "10. summary"
-if [ "$FAILED" = 0 ]; then say "ALL RUN STEPS PASSED (3 legs PENDING, nothing claimed for them)"; else say "ONE OR MORE STEPS FAILED"; fi
+STEP "9. summary"
+if [ "$FAILED" = 0 ]; then say "ALL PASS"; else say "ONE OR MORE STEPS FAILED"; fi
 exit "$FAILED"

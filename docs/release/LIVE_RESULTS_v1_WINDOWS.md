@@ -1,25 +1,25 @@
 # Live results v1: Windows (GPO autoenroll, IIS push)
 
 Date: 2026-10-18. Hub: `lab-hub` 192.0.2.106 on `qa/v1-final` `936b3c7b`. Lab: `corp.example.test`.
-Evidence: the lab evidence pack (not published). Matrix detail: `LIVE_RESULTS_FG2_WSTEP_MATRIX_v0.14.md`.
+Evidence: `docs/release/proof-pack/windows-v1/`. Matrix detail: `LIVE_RESULTS_FG2_WSTEP_MATRIX_v0.14.md`.
 
 ## Verdict: GPO autoenroll PASS on fixed hub (first pass FAIL, defect fixed); IIS push FAIL on discovery and install (defect in cmdQuote, 2026-10-18)
 
 ## Machine-context GPO autoenrollment
 
-- First pass 12:15Z on `936b3c7b`: lab-win11 (VM 122, Windows 11 Enterprise 26200, 192.0.2.102) and LAB-WS22 (VM 125, Server 2022, 192.0.2.104)
+- First pass 12:15Z on `936b3c7b`: lab-win11 (VM 122, Windows 11 Enterprise 26200, 192.0.2.102) and lab-ws22 (VM 125, Server 2022, 192.0.2.104)
   authenticated by Kerberos and fetched XCEP policy, but issuance was refused: RSA-2048 vs `Baseline` (`min_rsa_bits` 3072). Regression
   since the 2026-10-08 proof; fixed by `eb765c4d` + `11faa7c4`.
 - Second pass ~13:03Z on `11faa7c4`: after clearing `X509Enrollment` and `gpupdate /target:computer` + `certutil -pulse`, both enrolled
   `CN=<host>.corp.example.test`, RSA-3072, template KKMachine major 3, issuer `CN=KK UAT Lab Root CA`, in 6 s. Audit shows `wstep.enroll success` and
-  `xcep.policy success` rows. Thumbprints 782D4CE3... (lab-win11), 3E988FB4... (LAB-WS22). Evidence: the lab evidence pack (not published).
+  `xcep.policy success` rows. Thumbprints 782D4CE3... (lab-win11), 3E988FB4... (lab-ws22). Evidence: `proof-pack/windows-v1/kk-*-enroll-ok/`.
 - Result: PASS.
 
 ## IIS push (agentless, install_mode=iis over WinRM HTTPS), 2026-10-18
 
 **Verdict: PASS on hub `82cdcb5b` (run 3).** Runs 1 and 2 failed on defects since fixed (kept below as history).
 
-Setup: LAB-WS22 (192.0.2.104, Server 2022, IIS role). Hub run locally on 127.0.0.1 only (nothing exposed on the LAN), fresh data dir,
+Setup: lab-ws22 (192.0.2.104, Server 2022, IIS role). Hub run locally on 127.0.0.1 only (nothing exposed on the LAN), fresh data dir,
 `KRYPTKEEPER_WINRM_CA_CERT_FILE` = the exported listener certificate, temp local admin `kk-iis-test`, HTTPS listener per WINRM_ENABLEMENT steps
 1-5 (IP SAN `192.0.2.104` confirmed, `AllowUnencrypted` false). The egress guard needed no allowlist. IIS had only `http *:80`, so a self-signed
 `https *:443` binding was added as the prior binding to replace (its served leaf: sha256 F7:61:CB:9C:...).
@@ -28,8 +28,8 @@ Setup: LAB-WS22 (192.0.2.104, Server 2022, IIS role). Hub run locally on 127.0.0
 |---|---|
 | `POST /credentials/{id}/preflight` (windows_password, `ipport=0.0.0.0:443`) | PASS: `level=install`, can_discover and can_install true |
 | `POST /discovery/scans` `winrm` | PASS: completed, 24 mapped certs, `server_tech=iis`, `recommended_install_mode=iis` |
-| Issue leaf `CN=LAB-WS22.corp.example.test` (SAN DNS+IP) from the hub CA, `POST /renewal/execute` | PASS: `install_outcome=installed_verified`, `verified=true`, `new_fingerprint` 3c39449c...c3fd |
-| Independent `openssl s_client -connect 192.0.2.104:443 -servername LAB-WS22.corp.example.test` from the Mac | PASS: leaf sha256 3C:39:44:9C:...:C3:FD equals `new_fingerprint`; issuer `O=Kryptkeeper, CN=IIS Test Root CA`; SAN `DNS:LAB-WS22.corp.example.test, DNS:LAB-WS22, IP:192.0.2.104` |
+| Issue leaf `CN=lab-ws22.corp.example.test` (SAN DNS+IP) from the hub CA, `POST /renewal/execute` | PASS: `install_outcome=installed_verified`, `verified=true`, `new_fingerprint` 3c39449c...c3fd |
+| Independent `openssl s_client -connect 192.0.2.104:443 -servername lab-ws22.corp.example.test` from the Mac | PASS: leaf sha256 3C:39:44:9C:...:C3:FD equals `new_fingerprint`; issuer `O=Kryptkeeper, CN=IIS Test Root CA`; SAN `DNS:lab-ws22.corp.example.test, DNS:LAB-WS22, IP:192.0.2.104` |
 | Audit | `certificate.renew_execute` outcome success with `key.generate_for_renewal` and `key.zeroize` rows. The `install_outcome` value is carried in the API response; the success row's change summary does not repeat `installed_verified` |
 | Rollback: second renewal with `install.verify_host_port` pointed at `192.0.2.104:5986` (serves a different cert) | PASS: `install_outcome=verify_failed`, "served fingerprint does not match renewed cert", audit row `outcome=partial`, `install_outcome=verify_failed`. Port 443 still served 3C:39:...:C3:FD and the HTTP.sys binding kept hash a84b816f... (SHA-1 of that leaf); the rolled-back certificate was not left in `LocalMachine\My` |
 
@@ -50,7 +50,7 @@ running with `http *:80` only. (My first cleanup script's thumbprint filter miss
 ## Other
 
 - Server 2025 row BLOCKED, Windows 10 and Server 2019 BLOCKED (no ISO): reasons in the matrix doc.
-- VMs created: 125 LAB-WS22 (192.0.2.104, domain-joined, IIS role, hub root added to `LocalMachine\Root`). Nothing else created.
+- VMs created: 125 lab-ws22 (192.0.2.104, domain-joined, IIS role, hub root added to `LocalMachine\Root`). Nothing else created.
 - Kit fixes: `capture.ps1` pktmon stderr under WinRM; README notes.
 
 ## Windows agent (MSI, enrolled to lab-hub), 2026-10-18
@@ -59,7 +59,7 @@ running with `http *:80` only. (My first cleanup script's thumbprint filter miss
 
 Hub: `lab-hub` 192.0.2.106, binary `v0.21.0-qa-11faa7c4e1` (older than branch head, not upgraded). Agent: built from `qa/v1-final` HEAD `b26b6d8a`
 with `make agent-windows-msi VERSION=v1.0.0` (sha256 `dbfc8ed4...304ad0`; `--version` prints `kryptkeeper-agent v1.0.0 (commit unknown, built unknown)`,
-since the Makefile only passes the version). VM: LAB-WS22 (Server 2022, 192.0.2.104). Nothing was exposed on the LAN: the MSI went over WinRM
+since the Makefile only passes the version). VM: lab-ws22 (Server 2022, 192.0.2.104). Nothing was exposed on the LAN: the MSI went over WinRM
 (base64-style chunks, 1581 parts, no file server) and its SHA-256 on the VM matched the Mac's. The hub's TLS chain is trusted by the VM's system store, so no
 `KRYPTKEEPER_HUB_CA_CERT_FILE` was needed.
 
@@ -69,7 +69,7 @@ since the Makefile only passes the version). VM: LAB-WS22 (Server 2022, 192.0.2.
 | Mint per-agent token `POST /api/v1/agent/enrollment-tokens` (bootstrap token, ttl 4h) | PASS (201; gate did not refuse) |
 | `msiexec /i /qn` exit 0; service Auto, LocalSystem, Stopped after install | PASS |
 | `agent.env` with `KRYPTKEEPER_ENROLL_TOKEN`, ACL SYSTEM+Administrators; `Start-Service` | PASS: registered, ID/token persisted, spent enrollment token scrubbed from `agent.env` |
-| Hub `GET /api/v1/agents`: `LAB-WS22-v1qa`, type windows, `active`, `last_seen` advancing every 20 s, `version "v1.0.0"` | PASS (v0.9.4 N1 is fixed: version is now in the API) |
+| Hub `GET /api/v1/agents`: `lab-ws22-v1qa`, type windows, `active`, `last_seen` advancing every 20 s, `version "v1.0.0"` | PASS (v0.9.4 N1 is fixed: version is now in the API) |
 | File discovery with `KRYPTKEEPER_SCAN_PATHS=C:\kkscan` | PASS: PEM and PFX (password `changeit`) reported; PFX with a non-default password skipped, logged "keystore, password unknown" |
 | Machine store discovery | `windows-store:ROOT` 16 and `CA` reported; **`LocalMachine\My` NOT reported (F1)** |
 | Private key bytes reach the hub | PASS: wire capture below |
@@ -121,7 +121,7 @@ and already redeemed at registration. Local token file deleted. A PFX password s
 **Verdict: PASS.** Agent rebuilt from the fix tree (`make agent-windows-msi VERSION=v1.0.1`, sha256 `6ca86eed...7ceb2f`, matched on the VM after the WinRM
 chunk copy; `--version` now prints `kryptkeeper-agent v1.0.1 (commit 7ff9ab2811e1, built 2026-10-18T15:05:17Z)`: the Makefile passes commit and date; the
 commit shown is the parent because the MSI was built just before the fix was committed). Hub unchanged (`v0.21.0-qa-11faa7c4e1`), new per-agent token, agent
-`LAB-WS22-v1qa` enrolled with no `KRYPTKEEPER_SCAN_PATHS` set, `inventory_count 27`, `version v1.0.1`, heartbeating.
+`lab-ws22-v1qa` enrolled with no `KRYPTKEEPER_SCAN_PATHS` set, `inventory_count 27`, `version v1.0.1`, heartbeating.
 
 - **F1 fixed:** stores are opened with `CertOpenStore(CERT_STORE_PROV_SYSTEM, ... CERT_SYSTEM_STORE_LOCAL_MACHINE|READONLY|OPEN_EXISTING)`. Captured inventory
   body (loopback mock hub, 27 certs): `windows-store:MY` 1 (`CN=kk-qa-store-my.corp.example.test`, the `LocalMachine\My` cert), `ROOT` 16, `CA` 8, files 2. Source label `windows-store:MY` kept.

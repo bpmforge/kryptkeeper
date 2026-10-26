@@ -12,6 +12,10 @@ vi.mock("../lib/api", () => ({
     createEvidenceSchedule: vi.fn(),
     deleteEvidenceSchedule: vi.fn(),
     sendEvidenceNow: vi.fn(),
+    reportScheduleCatalog: vi.fn(),
+    reportSchedules: vi.fn(),
+    createReportSchedule: vi.fn(),
+    deleteReportSchedule: vi.fn(),
     runtimeConfig: vi.fn(),
     setRuntimeConfig: vi.fn(),
     resetRuntimeConfig: vi.fn(),
@@ -67,6 +71,8 @@ beforeEach(() => {
     data: { enabled: false, webhook_enabled: false, webhook_has_token: false, syslog_enabled: false },
   } as never);
   vi.mocked(api.evidenceSchedules).mockResolvedValue({ data: [] } as never);
+  vi.mocked(api.reportScheduleCatalog).mockResolvedValue({ data: [] } as never);
+  vi.mocked(api.reportSchedules).mockResolvedValue({ data: [] } as never);
   vi.mocked(api.setRuntimeConfig).mockResolvedValue(undefined as never);
   vi.mocked(api.resetRuntimeConfig).mockResolvedValue(undefined as never);
   vi.mocked(api.credentials).mockResolvedValue({

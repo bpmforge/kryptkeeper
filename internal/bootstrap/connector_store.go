@@ -22,7 +22,8 @@ import (
 var (
 	errConnectorNotFound = errors.New("connector not found")
 	errConnectorInvalid  = errors.New("connector name and a type of internal|acme|digicert|scep|est|wstep are required")
-	validConnectorTypes  = map[string]bool{"internal": true, "acme": true, "digicert": true, "scep": true, "est": true, "wstep": true}
+	validConnectorTypes  = map[string]bool{"internal": true, "acme": true, "digicert": true, "scep": true, "est": true, "wstep": true,
+		"vault_pki": true, "ejbca": true, "aws_pca": true, "gcp_cas": true, "sectigo": true, "globalsign": true, "entrust": true}
 )
 
 type ConnectorRecord struct {
@@ -44,13 +45,13 @@ type ConnectorStore interface {
 	Delete(ctx context.Context, id string) error
 }
 
-// connectorSchema mirrors migration 000044 as widened by 000205 — every DB-backed store
+// connectorSchema mirrors migration 000044 as widened by 000205 and 000351 — every DB-backed store
 // self-heals its schema (G-33 discipline).
 const connectorSchema = `
 CREATE TABLE IF NOT EXISTS connectors (
     id             TEXT PRIMARY KEY,
     name           TEXT NOT NULL,
-    type           TEXT NOT NULL CHECK (type IN ('internal', 'acme', 'digicert', 'scep', 'est', 'wstep')),
+    type           TEXT NOT NULL CHECK (type IN ('internal', 'acme', 'digicert', 'scep', 'est', 'wstep', 'vault_pki', 'ejbca', 'aws_pca', 'gcp_cas', 'sectigo', 'globalsign', 'entrust')),
     config_json    TEXT NOT NULL DEFAULT '{}',
     credential_ref TEXT,
     tenant         TEXT NOT NULL DEFAULT 'default',

@@ -8,11 +8,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 
+	"kryptkeeper/internal/ca"
 	"kryptkeeper/internal/connectors"
 )
 
@@ -24,6 +26,7 @@ import (
 // buildRuntimeConnector materializes a stored row into a runtime connector.
 // Returns nil when the type has no implementation yet.
 func buildRuntimeConnector(rec ConnectorRecord, provider CertificateProvider, creds OutboundCredentialStore) connectors.IssuerConnector {
+	applyConnectorWindowConfig(connectors.DefaultThrottle, rec)
 	switch rec.Type {
 	case "internal":
 		var cfg struct {
@@ -34,7 +37,7 @@ func buildRuntimeConnector(rec ConnectorRecord, provider CertificateProvider, cr
 	case "acme":
 		// W11-04: the upstream RFC 8555 client.
 		return wrapWithDCVTracking(NewACMEIssuerConnector(rec, provider, creds), rec.Tenant, sharedDCVTracker())
-	case "digicert", "scep", "est", "wstep":
+	case "digicert", "scep", "est", "wstep", "vault_pki", "ejbca", "aws_pca", "gcp_cas", "sectigo", "globalsign", "entrust":
 		// W27-35: credentials resolve lazily per call from credential_ref.
 		return NewUpstreamIssuerConnector(rec, creds)
 	default:
@@ -70,6 +73,13 @@ type connectorListEntry struct {
 // RegisterConnectorHandlers mounts /api/v1/connectors (GET list+health,
 // POST create) and /api/v1/connectors/{id} (DELETE).
 func RegisterConnectorHandlers(mux *http.ServeMux, auth *Authenticator, store ConnectorStore, provider CertificateProvider, creds OutboundCredentialStore, auditProvider AuditProvider) {
+	registerConnectorHandlers(mux, auth, store, provider, creds, auditProvider, nil)
+}
+
+// registerConnectorHandlers is RegisterConnectorHandlers plus the CA provider
+// the DELETE guard consults: a connector behind an external CA cannot be
+// removed (W36-02). A nil caProvider skips the guard.
+func registerConnectorHandlers(mux *http.ServeMux, auth *Authenticator, store ConnectorStore, provider CertificateProvider, creds OutboundCredentialStore, auditProvider AuditProvider, caProvider CAProvider) {
 	registerDCVHandlers(mux, auth, sharedDCVTracker, auditProvider)
 	if store != nil {
 		startDCVWarnLoop(dcvWarnInterval(), sharedDCVTracker, auditProvider)
@@ -164,6 +174,10 @@ func RegisterConnectorHandlers(mux *http.ServeMux, auth *Authenticator, store Co
 			return
 		}
 		id := strings.TrimPrefix(r.URL.Path, "/api/v1/connectors/")
+		if testID, ok := strings.CutSuffix(id, "/test"); ok && testID != "" && !strings.Contains(testID, "/") {
+			handleConnectorTest(w, r, pd, testID, store, provider, creds, auditProvider)
+			return
+		}
 		if id == "" || strings.Contains(id, "/") {
 			writeNotFound(w, "connector not found")
 			return
@@ -185,6 +199,23 @@ func RegisterConnectorHandlers(mux *http.ServeMux, auth *Authenticator, store Co
 			emitAuditEvent(r, auditProvider, pd.ID, "connector.delete", "connector", id, outcome)
 			writeNotFound(w, "connector not found")
 			return
+		}
+		if caProvider != nil {
+			users, lerr := caProvider.ListCAs(r.Context(), CAListQuery{Type: ca.CATypeExternal, Limit: 1 << 20})
+			if lerr != nil {
+				// Fail closed: deleting under an unknown binding would leave an
+				// external CA that can no longer sign.
+				emitAuditEvent(r, auditProvider, pd.ID, "connector.delete", "connector", id, AuditOutcomeFailure)
+				writeServiceUnavailable(w, "connector usage check failed")
+				return
+			}
+			for _, c := range users.Items {
+				if c.ConnectorID == id {
+					emitAuditEvent(r, auditProvider, pd.ID, "connector.delete", "connector", id, AuditOutcomeDenied)
+					writeConflict(w, fmt.Sprintf("connector is used by external CA %s (%s)", c.Name, c.ID))
+					return
+				}
+			}
 		}
 		if err := store.Delete(r.Context(), id); err != nil {
 			if errors.Is(err, errConnectorNotFound) {

@@ -1,7 +1,7 @@
 openapi: "3.1.0"
 info:
   title: Kryptkeeper API
-  version: "1.0.0"
+  version: "1.1.0"
   description: Enterprise PKI and Crypto Trust Platform REST API
   license:
     name: Apache-2.0
@@ -43,6 +43,32 @@ components:
         session (bootstrap/JWT/OIDC/API key) is never accepted here.
 
   schemas:
+    CredentialSourceConfig:
+      type: object
+      description: Everything about a source that is not secret.
+      properties:
+        base_url: { type: string, description: "vault_kv2: the Vault or OpenBao address." }
+        namespace: { type: string, description: "vault_kv2: X-Vault-Namespace." }
+        mount: { type: string, description: "vault_kv2: the KV v2 mount path (default secret)." }
+        approle_mount: { type: string, description: "vault_kv2: the AppRole auth mount (default approle)." }
+        ca_cert_pem: { type: string, description: "vault_kv2: pins a private server CA (public material)." }
+        plugin_id: { type: string, description: "plugin: the enabled credentials plugin." }
+        cache_ttl_seconds:
+          type: integer
+          minimum: 0
+          maximum: 300
+          description: "0 (default) fetches at every use and keeps nothing; otherwise the fetched credential is held in memory this long."
+    CredentialSource:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [vault_kv2, plugin] }
+        tenant: { type: string }
+        credential_ref: { type: string }
+        config: { $ref: "#/components/schemas/CredentialSourceConfig" }
+        created_at: { type: string }
+        updated_at: { type: string }
     PrivilegePreflight:
       type: object
       required: [checked_at, mode, rows, ok, privileged_all]
@@ -85,6 +111,21 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         url: { type: string, description: "<KRYPTKEEPER_BASE_URL>/.well-known/est/<label>/" }
+    SCEPLabel:
+      type: object
+      description: A named SCEP endpoint in Intune challenge mode (W20-23).
+      properties:
+        label: { type: string }
+        mode: { type: string, enum: [intune] }
+        template_id: { type: string }
+        intune_tenant_id: { type: string }
+        intune_client_id: { type: string }
+        credential_ref: { type: string, description: "Id of the outbound credential; never the secret" }
+        issuing_authority: { type: string }
+        description: { type: string }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        url: { type: string, description: "<KRYPTKEEPER_BASE_URL>/scep/<label>" }
     ESTUser:
       type: object
       properties:
@@ -277,6 +318,46 @@ components:
         message:
           type: string
 
+    TrustBundleSummary:
+      type: object
+      properties:
+        id: {type: string}
+        name: {type: string}
+        action: {type: string, enum: [add, remove]}
+        certs:
+          type: array
+          items:
+            type: object
+            properties:
+              sha256: {type: string}
+              subject: {type: string}
+              issuer: {type: string}
+              not_after: {type: string, format: date-time}
+              root: {type: boolean}
+        selector:
+          type: object
+          properties:
+            agent_ids: {type: array, items: {type: string}}
+            agent_types: {type: array, items: {type: string}}
+            all: {type: boolean}
+        agent_ids: {type: array, items: {type: string}}
+        created_by: {type: string}
+        approved_by: {type: string}
+        action_id: {type: string}
+        created_at: {type: string, format: date-time}
+        targets: {type: integer}
+        applied: {type: integer}
+        refused_not_opted_in: {type: integer}
+        failed: {type: integer}
+        pending: {type: integer}
+    TrustHostStatus:
+      type: object
+      properties:
+        agent_id: {type: string}
+        agent_name: {type: string}
+        outcome: {type: string, enum: [applied, refused_not_opted_in, failed, pending]}
+        detail: {type: string}
+        reported_at: {type: string, format: date-time}
     CodesignTrustRule:
       type: object
       properties:
@@ -342,9 +423,12 @@ components:
         revocation_reason: { type: integer }
         revocation_scope:
           type: string
-          enum: [ca, inventory_only]
+          enum: [ca, inventory_only, upstream]
           description: >-
             `ca`: recorded against the issuing CA, so CRL and OCSP reflect it.
+            `upstream`: the issuing CA is external (or the certificate has a
+            renewal connector that can revoke) and it accepted the revocation
+            first; relying parties see it through that CA's own CRL and OCSP.
             `inventory_only`: the certificate has no issuing CA in this hub
             (imported, discovered or synced); only the hub inventory was
             marked, and the operator must still revoke it at the real issuer.
@@ -405,6 +489,21 @@ components:
         renewal_status:
           type: string
           enum: [active, renewed, revoked, expired, reissue_required]
+        ca_id:
+          type: string
+          description: Issuing CA in this hub; empty for imported, discovered or synced certificates.
+        origin:
+          type: string
+          enum: [internal, imported, discovered, synced]
+          description: Where the certificate came from.
+        management_state:
+          type: string
+          enum: [managed, external, unmanaged]
+        renewal_connector_id:
+          type: string
+          description: >-
+            Issuer connector that renews (and, when it supports it, revokes)
+            this certificate. Absent for the internal renewal path.
         trust_class:
           $ref: "#/components/schemas/TrustClass"
         chain_complete:
@@ -727,6 +826,13 @@ components:
           $ref: "#/components/schemas/NamePolicy"
         enrollment_permissions:
           $ref: "#/components/schemas/EnrollmentPermissions"
+        device_attestation:
+          type: boolean
+          description: >-
+            Explicitly allows ACME device-attest-01 issuance from this template
+            (W40-02, D-317). Needs attestation roots configured on the hub and
+            the device in the inventory (/acme/devices). Set on create or
+            replace (PUT), not PATCH; a clone starts without it.
         revision: { type: integer }
 
     TemplateRevision:
@@ -941,10 +1047,29 @@ components:
         content: { type: string, description: "The raw export text. Omit for a live read (importers that support it)." }
         credential_ref: { type: string, description: "Stored credential used for a live read. Only the reference is kept." }
         options: { type: object, additionalProperties: { type: string } }
+    PluginCatalogueEntry:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string }
+        name: { type: string }
+        publisher: { type: string }
+        version: { type: string }
+        description: { type: string }
+        manifest_url: { type: string }
+        wasm_url: { type: string }
+        bundle_url: { type: string }
+        sha256: { type: string }
+        capabilities: { type: array, items: { type: string } }
+        min_hub_version: { type: string }
+        status: { type: string, enum: [available, installed, upgradable] }
+        installed_version: { type: string }
+        compatible: { type: boolean }
     DeliveryPluginVersion:
       type: object
       properties:
         plugin_id: { type: string }
+        kind: { type: string, enum: [delivery, notify, ticket, dns01, inventory, credentials], description: "What the plugin does (manifest kind; absent in a manifest means delivery). The hub runs delivery and notify plugins today." }
         version: { type: string }
         sha256: { type: string }
         trust_tier: { type: string, enum: [first-party, verified, community] }
@@ -973,8 +1098,19 @@ components:
           description: Lowercase exact names or *.suffix entries
         challenges:
           type: array
-          items: { type: string, enum: [http-01, dns-01] }
-          description: Empty means both
+          items: { type: string, enum: [http-01, dns-01, device-attest-01] }
+          description: >-
+            Empty means http-01 and dns-01 (and device-attest-01 when the
+            template allows it and roots are configured)
+    ACMEDevice:
+      type: object
+      required: [identifier, tenant_id, created_by, created_at]
+      properties:
+        identifier: { type: string }
+        label: { type: string }
+        tenant_id: { type: string }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
     ACMEProvisioner:
       type: object
       required: [name, ca_id, allow_names, challenges, directory_url]
@@ -994,16 +1130,18 @@ components:
           type: string
           description: >-
             ServiceNow incident or change_request; Jira an issue-type name
-            (default Task when omitted on create).
+            (default Task when omitted on create); a plugin connection takes
+            free text the ticket plugin interprets (empty means its default).
     ItsmConnection:
       type: object
       required: [id, kind, name, base_url, credential_ref, event_classes, enabled, tenant, created_at, updated_at]
       properties:
         id: { type: string }
-        kind: { type: string, enum: [servicenow, jira] }
+        kind: { type: string, enum: [servicenow, jira, plugin] }
         name: { type: string }
-        base_url: { type: string }
+        base_url: { type: string, description: "Empty for a plugin connection; the credential holds the service address." }
         credential_ref: { type: string }
+        plugin_id: { type: string, description: "The ticket plugin of a plugin connection (D-326); absent for ServiceNow and Jira." }
         event_classes:
           type: array
           items: { $ref: "#/components/schemas/ItsmEventClass" }
@@ -1160,10 +1298,10 @@ components:
         name: { type: string }
         host: { type: string }
         discovery_mode: { type: string, enum: [agent, network, cloud, winrm, none] }
-        install_mode: { type: string, enum: [agent, ssh, f5, citrix, k8s, iis, keychain, cloud, acme, plugin] }
+        install_mode: { type: string, enum: [agent, ssh, f5, citrix, k8s, iis, sqlserver, rdp, exchange, keychain, cloud, acme, plugin] }
         renewal_method: { type: string, enum: [acme, est, scep, manual] }
         plugin_id: { type: string, description: "Delivery plugin for install_mode=plugin (W20-20)" }
-        key_handling_mode: { type: string, enum: [client_csr, hub_generated, hsm_resident_ca, macos_non_extractable], description: "W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode." }
+        key_handling_mode: { type: string, enum: [client_csr, hub_generated, hsm_resident_ca, macos_non_extractable], description: "W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/sqlserver/rdp/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode." }
         effective_key_handling_mode: { type: string, readOnly: true, enum: [client_csr, hub_generated, hsm_resident_ca, macos_non_extractable], description: "The explicit key_handling_mode, else the one derived from install_mode (W23-46). Never accepted in a request body." }
         credential_privileged: { type: boolean, readOnly: true, description: "The target's credential carries the privileged flag (W34-11). Response only." }
         renewal_privilege_required: { type: boolean, readOnly: true, description: "The latest scan found a service-attributed file that needs root to replace (W34-08). Response only." }
@@ -1989,9 +2127,9 @@ components:
       required: [report, format, recipients]
       properties:
         id: { type: string }
-        report: { type: string, enum: [executive-summary, inventory, findings] }
+        report: { type: string, description: A report name from GET /reports/schedules/catalog }
         format: { type: string, enum: [csv, xlsx, pdf] }
-        cadence: { type: string, enum: [weekly, monthly], default: monthly }
+        cadence: { type: string, enum: [daily, weekly, monthly], default: monthly }
         recipients:
           type: array
           minItems: 1
@@ -2250,6 +2388,11 @@ paths:
                     type: string
                   version:
                     type: string
+                  environment:
+                    type: string
+                    description: >-
+                      Deployment environment name from KRYPTKEEPER_ENV (APP_ENV when unset).
+                      `kryptkeeper demo seed` refuses a hub that reports `production`.
                   fips:
                     type: object
                     description: Live FIPS 140-3 posture of this process (W23-32).
@@ -2262,6 +2405,35 @@ paths:
                         type: string
                       root_hsm_required:
                         type: boolean
+
+  /demo/status:
+    get:
+      operationId: getDemoStatus
+      summary: Whether this hub holds demo data (W37-07)
+      description: >-
+        `demo` is true after `kryptkeeper demo seed` has set the `demo.seeded_at`
+        runtime setting and false after `kryptkeeper demo reset` cleared it. The UI
+        shows its Demo data banner from this. The marker is written through
+        `PUT /config/demo.seeded_at` (audited as config.set and demo.marker.update),
+        which a hub with KRYPTKEEPER_ENV=production refuses with 409.
+      tags: [Meta]
+      responses:
+        "200":
+          description: Demo marker
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      demo: { type: boolean }
+                      seeded_at: { type: string, format: date-time, description: Present when demo is true. }
+        "401":
+          description: Unauthorized
+        "503":
+          description: Config store unavailable
 
   # ── Certificates ──────────────────────────────────────────────────────────
 
@@ -2437,6 +2609,13 @@ paths:
           description: The issuing CA is not active or has no signing key (imported without a private key)
         "503":
           description: Team policy or quota could not be evaluated; issuance is refused (fail closed).
+        "429":
+          description: The external CA's upstream is rate limiting (error upstream_rate_limited); Retry-After when the upstream sent one.
+        "502":
+          description: >-
+            External CA (W36): upstream_issue_failed when the upstream refused or could not be reached, or
+            upstream_response_rejected when it returned a certificate that does not match the request
+            (audited as certificate.issue.upstream_rejected). Nothing is stored.
         "422":
           description: >-
             Refused by template or issuance policy (for example a key below min_key_size, a disallowed
@@ -2538,12 +2717,25 @@ paths:
     post:
       operationId: revokeCertificate
       summary: Revoke certificate
+      description: >-
+        D-306: a certificate issued through an external CA, or renewed through
+        a connector that can revoke, is revoked at the upstream CA first. If
+        the upstream accepts, the certificate is marked revoked with
+        `revocation_scope` `upstream`. If it refuses or is unreachable the
+        certificate is NOT marked revoked (502). `scope=inventory_only`
+        (admin only) records the revocation here without asking the upstream,
+        for an operator who already revoked it at the CA.
       tags: [Certificates]
       parameters:
         - name: fingerprint
           in: path
           required: true
           schema: { type: string }
+        - name: scope
+          in: query
+          required: false
+          schema: { type: string, enum: [inventory_only] }
+          description: Record the revocation in this hub only. Admin only.
       requestBody:
         content:
           application/json:
@@ -2552,6 +2744,10 @@ paths:
               properties:
                 reason_code: { type: integer }
                 reason_text: { type: string, maxLength: 500 }
+                scope:
+                  type: string
+                  enum: [inventory_only]
+                  description: Same as the `scope` query parameter; the query wins when both are sent.
       responses:
         "200":
           description: Revoked (see `data.revocation_scope`)
@@ -2561,8 +2757,17 @@ paths:
                 type: object
                 properties:
                   data: { $ref: "#/components/schemas/CertificateRevokeResult" }
+        "403":
+          description: A non-admin set `scope`
         "409":
-          description: Already revoked
+          description: >-
+            Already revoked, or the connector cannot revoke upstream (error
+            `upstream_revoke_unsupported`; use `scope=inventory_only`)
+        "502":
+          description: >-
+            The upstream CA refused or could not be reached (error
+            `upstream_revoke_failed`, message scrubbed of secrets). The
+            certificate is not marked revoked.
 
   /connectors:
     get:
@@ -2588,7 +2793,7 @@ paths:
                       properties:
                         id: { type: string }
                         name: { type: string }
-                        type: { type: string, enum: [internal, acme, digicert, scep, est, wstep] }
+                        type: { type: string, enum: [internal, acme, digicert, scep, est, wstep, vault_pki, ejbca, aws_pca, gcp_cas, sectigo, globalsign, entrust] }
                         config_json: { type: string }
                         credential_ref: { type: string }
                         tenant: { type: string }
@@ -2610,8 +2815,8 @@ paths:
               required: [name, type]
               properties:
                 name: { type: string }
-                type: { type: string, enum: [internal, acme, digicert, scep, est, wstep] }
-                config_json: { type: string, description: "No secrets — credentials go in credential_ref (W5-10 store). For acme connectors with dns-01: optional dns_propagation (auto|authoritative|resolver|doh|none), dns_resolver, dns_doh_url, dns_propagation_timeout (max 10m), dns_propagation_delay; see docs/ops/ACME_UPSTREAM.md. Upstream types (W27-35), all non-secret: digicert {base_url?, organization_id, product_name_id?, validity_years?}; scep {endpoint_url}; est {base_url, username}; wstep {endpoint_url, username, template_name}. api_key, password, secret or token anywhere in config_json is refused 400." }
+                type: { type: string, enum: [internal, acme, digicert, scep, est, wstep, vault_pki, ejbca, aws_pca, gcp_cas, sectigo, globalsign, entrust] }
+                config_json: { type: string, description: "No secrets — credentials go in credential_ref (W5-10 store). For acme connectors with dns-01: optional dns_propagation (auto|authoritative|resolver|doh|none), dns_resolver, dns_doh_url, dns_propagation_timeout (max 10m), dns_propagation_delay; see docs/ops/ACME_UPSTREAM.md. Upstream types (W27-35), all non-secret: digicert {base_url?, organization_id, product_name_id?, validity_years?}; scep {endpoint_url}; est {base_url, username}; wstep {endpoint_url, username, template_name}. W36 upstream CAs: vault_pki {base_url, role, mount?, namespace?, ttl?, approle_mount?, ca_cert_pem?}; ejbca {base_url, certificate_profile_name, end_entity_profile_name, certificate_authority_name, username_prefix?, ca_cert_pem?}; aws_pca {certificate_authority_arn, region, signing_algorithm?, validity_days?, template_arn?, endpoint_url?, auth? static|ambient}; gcp_cas {project, location, ca_pool, certificate_authority_id?, certificate_template?, lifetime_days?, auth? service_account|ambient}; sectigo {base_url?, customer_uri, org_id, cert_type, term_days}; globalsign {base_url?, validity_days?, ca_cert_pem?}; entrust {base_url?, client_id, cert_type, validity_days|cert_lifetime, requester_name, requester_email, requester_phone}. Secrets and mTLS client cert/key go in the credential store (docs/ops/UPSTREAM_CAS.md). api_key, password, secret or token anywhere in config_json is refused 400." }
                 credential_ref: { type: string }
       responses:
         "201":
@@ -2677,6 +2882,34 @@ paths:
           description: Deleted
         "404":
           description: Connector not found
+        "409":
+          description: Referenced by an external CA or takeover; the message names the referencing object
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /connectors/{id}/test:
+    post:
+      operationId: testConnector
+      summary: Test an issuer connection (health plus a dry run where the vendor has one; pki-admin)
+      tags: [Connectors]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Probe result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [healthy, degraded, unknown] }
+                  detail: { type: string }
+        "403": { description: Not a pki-admin }
+        "404": { description: Connector not found (or in another tenant) }
 
   # ── Issuance policy (W22-14, FR-P8) ─────────────────────────────────────────
   # Instance-global: pki-admin only, and the platform super-admin when
@@ -3619,6 +3852,10 @@ paths:
                 owner_email: { type: string, format: email }
                 owner_team: { type: string }
                 service_name: { type: string }
+                labels:
+                  type: array
+                  items: { type: string }
+                  description: Free-form labels; omitted leaves them untouched. Demo data carries `demo=true` (W37-07).
       responses:
         "200":
           description: Updated
@@ -3889,7 +4126,9 @@ paths:
         "200":
           description: >-
             Bulk revoke result (per-item outcomes). Each `succeeded` item
-            carries `revocation_scope` (`ca` or `inventory_only`).
+            carries `revocation_scope` (`ca`, `inventory_only` or `upstream`);
+            a `failed` item whose upstream refused carries
+            `revocation_scope: upstream_failed`.
           content:
             application/json:
               schema:
@@ -3901,7 +4140,7 @@ paths:
                       type: object
                       properties:
                         fingerprint: { type: string }
-                        revocation_scope: { type: string, enum: [ca, inventory_only] }
+                        revocation_scope: { type: string, enum: [ca, inventory_only, upstream] }
                   failed:
                     type: array
                     items:
@@ -3909,6 +4148,7 @@ paths:
                       properties:
                         fingerprint: { type: string }
                         error: { type: string }
+                        revocation_scope: { type: string, enum: [upstream_failed] }
 
   /certificates/bulk-reissue:
     post:
@@ -3931,6 +4171,50 @@ paths:
 
   # ── Certificate Authorities ───────────────────────────────────────────────
 
+  /cas/external:
+    post:
+      operationId: createExternalCA
+      summary: Create an external CA that issues through an issuer connector (pki-admin)
+      tags: [CAs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, connector_id, trust_pem]
+              properties:
+                name: { type: string }
+                connector_id: { type: string }
+                trust_pem: { type: string, description: "CA certificate chain (PEM) that upstream responses must chain to." }
+                approved_action_id: { type: string, description: "Pending action approved by a different human (dual control)." }
+      description: >-
+        Admin only. D-122 dual control: when on, the first call proposes (202 +
+        `data.action_id`), a different human approves it in the pending-actions
+        queue, and the proposer repeats the call with `approved_action_id` (201).
+      responses:
+        "202":
+          description: Dual control proposal filed; body carries `data.action_id`
+        "201":
+          description: Created; a CA list item with type external and connector_id
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      name: { type: string }
+                      type: { type: string, enum: [external] }
+                      connector_id: { type: string }
+                      status: { type: string }
+        "400": { description: Invalid name, unknown connector, tenant mismatch or unparseable trust_pem }
+        "401": { description: Unauthenticated }
+        "403": { description: Not an admin, or the approved action is not redeemable by this caller }
+        "503": { description: External CAs are not supported by this provider, or creation failed }
+
   /cas:
     get:
       operationId: listCAs
@@ -3952,7 +4236,8 @@ paths:
                         id: { type: string }
                         name: { type: string }
                         display_name: { type: string }
-                        type: { type: string, enum: [root, intermediate, issuing] }
+                        type: { type: string, enum: [root, intermediate, issuing, external] }
+                        connector_id: { type: string, description: "Issuer connector that signs for an external CA; absent for hub CAs." }
                         status: { type: string, enum: [active, suspended, revoked, expired, pending_ceremony, pending_certificate] }
                         csr_pem: { type: string, description: "PKCS#10 request of an issuing CA in status pending_certificate; absent otherwise." }
                         key_storage_type: { type: string, enum: [software, pkcs11, vault, cloud_kms, external], description: "Key backend that holds the CA key; immutable after creation (PATCH returns 422)." }
@@ -5769,7 +6054,7 @@ paths:
             schema:
               type: object
               properties:
-                channel: { type: string, enum: [email, slack, pagerduty, webhook] }
+                channel: { type: string, enum: [email, slack, pagerduty, webhook, plugin], description: "plugin sends through a notify plugin; its target is <plugin_id>/<credential_id>" }
       responses:
         "202":
           description: >-
@@ -5836,8 +6121,8 @@ paths:
                 threshold_pct: { type: integer, minimum: 0, maximum: 100, description: Percent of the certificate's lifetime remaining; 0 means EXPIRED. }
                 use_defaults: { type: boolean, description: Create the four default rules (50%, 25%, 10%, EXPIRED). }
                 template_id: { type: string, maxLength: 128, description: Scope the rule to one template; template-scoped rules override global ones for that template. }
-                channel: { type: string, enum: [email, slack, pagerduty, webhook, itsm] }
-                target: { type: string, description: "Destination for the channel (for itsm, the id of an existing ITSM connection visible to the caller tenant), or the literal @owner_team to route each alert to the certificate owner team's /notifications/team-routes on this channel, else the global inbox (owner_team *), else the dashboard queue with nothing sent externally." }
+                channel: { type: string, enum: [email, slack, pagerduty, webhook, itsm, plugin] }
+                target: { type: string, description: "Destination for the channel (for itsm, the id of an existing ITSM connection visible to the caller tenant; for plugin, <plugin_id>/<credential_id> naming an enabled notify plugin and an api_token credential holding its credential fields), or the literal @owner_team to route each alert to the certificate owner team's /notifications/team-routes on this channel, else the global inbox (owner_team *), else the dashboard queue with nothing sent externally." }
       responses:
         "201":
           description: Created rule (with use_defaults, the 50% rule plus meta.created listing all four ids)
@@ -5954,6 +6239,53 @@ paths:
         "404":
           description: Not found
 
+  /notifications/ownerless:
+    get:
+      operationId: listOwnerlessExpiringCertificates
+      summary: List expiring certificates that have no owner team
+      description: |
+        Active certificates with no owner team whose expiry is within `within_days`
+        (already-expired ones included), soonest first. Same "unowned" definition as
+        the dashboard count and `GET /certificates?owner=unassigned`. Alerts for
+        these certificates go to the routes whose owner_team is `!ownerless` (the
+        ownerless queue), else the global inbox, else the dashboard queue.
+        Tenant-scoped callers see only their own tenant's certificates.
+      tags: [Notifications]
+      parameters:
+        - { name: within_days, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 3650, default: 30 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+      responses:
+        "200":
+          description: Ownerless expiring certificates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            fingerprint_sha256: { type: string }
+                            common_name: { type: string }
+                            valid_until: { type: string, format: date-time }
+                            days_left: { type: integer, description: Negative when already expired }
+                            owner_email: { type: string }
+                            ca_id: { type: string }
+                  meta:
+                    type: object
+                    properties:
+                      total: { type: integer, description: Matches before `limit` is applied }
+                      within_days: { type: integer }
+        "400":
+          description: within_days or limit out of range
+        "403":
+          description: Caller may not read operational summaries
+
   /notifications/team-routes:
     get:
       operationId: listNotificationTeamRoutes
@@ -5981,7 +6313,7 @@ paths:
     post:
       operationId: createNotificationTeamRoute
       summary: Create an owner-team notification route
-      description: Used by alert rules whose target is @owner_team. owner_team `*` is the global inbox, used when the certificate's own team has no route on the rule's channel.
+      description: Used by alert rules whose target is @owner_team. owner_team `*` is the global inbox, used when the certificate's own team has no route on the rule's channel. owner_team `!ownerless` is the ownerless queue, the routes used for certificates with no owner team (tried before the global inbox).
       tags: [Notifications]
       requestBody:
         required: true
@@ -6498,7 +6830,8 @@ paths:
             connector the throttle state (connectors: in_flight, max_concurrent,
             waiting, rate_limited_total, blocked_until, daily_budget, daily_used)
             repeated compactly as connector_budgets (connector_id, in_flight,
-            cap, daily_used, daily_limit). Upstream 429/Retry-After responses
+            cap, daily_used, daily_limit, and window_used, window_limit, window_seconds
+            when a rolling issuance window is set, W27-39). Upstream 429/Retry-After responses
             back a connector off exponentially (30 s doubling, capped at 1 h) and
             are audited as connector.rate_limited; a throttled renewal is
             audited as certificate.renew_execute_deferred and does not consume
@@ -6582,8 +6915,10 @@ paths:
       operationId: createReportSchedule
       summary: Create a scheduled report delivery
       description: >-
-        Allowed report/format pairs are executive-summary with pdf, and
-        inventory or findings with csv or xlsx. Delivery is retried 3 times,
+        Allowed report/format pairs are listed by GET /reports/schedules/catalog
+        (executive-summary pdf; estate csv, xlsx or pdf; inventory, findings,
+        crypto-posture, expiry-timeline, ca-health and algorithm-sunset csv or
+        xlsx). Cadence is daily, weekly or monthly. Delivery is retried 3 times,
         then the report.delivery_failed alert event is raised. Audited as
         report.schedule_create.
       tags: [Reports]
@@ -6598,6 +6933,33 @@ paths:
           description: Schedule created
         "400":
           description: Invalid report/format/cadence/recipients
+        "403":
+          description: Tenant-scoped principals cannot use fleet-wide report schedules
+
+  /reports/schedules/catalog:
+    get:
+      operationId: getReportScheduleCatalog
+      summary: List the reports a schedule can deliver and each report's formats
+      tags: [Reports]
+      responses:
+        "200":
+          description: Schedulable reports
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [report, title, formats]
+                      properties:
+                        report: { type: string }
+                        title: { type: string }
+                        formats:
+                          type: array
+                          items: { type: string, enum: [csv, xlsx, pdf] }
         "403":
           description: Tenant-scoped principals cannot use fleet-wide report schedules
 
@@ -6683,7 +7045,12 @@ paths:
         base_url must be https (http only for a loopback host).
         credential_ref names an entry in the encrypted outbound credential
         store; for ServiceNow its api_token payload is
-        {"username","password"}, for Jira {"email","api_token"}.
+        {"username","password"}, for Jira {"email","api_token"}. Kind plugin
+        (D-326) names an enabled ticket plugin in plugin_id, takes no
+        base_url, and its credential is an api_token credential holding the
+        plugin's credential_schema fields (which include the service's
+        subdomain address). Plugin connections cannot carry approval_pending:
+        approval sync stays native-only.
       tags: [ITSM]
       requestBody:
         required: true
@@ -6691,12 +7058,13 @@ paths:
           application/json:
             schema:
               type: object
-              required: [kind, name, base_url, credential_ref]
+              required: [kind, name, credential_ref]
               properties:
-                kind: { type: string, enum: [servicenow, jira] }
+                kind: { type: string, enum: [servicenow, jira, plugin] }
                 name: { type: string }
-                base_url: { type: string }
+                base_url: { type: string, description: "Required for servicenow and jira; must be empty for plugin." }
                 credential_ref: { type: string }
+                plugin_id: { type: string, description: "Required for kind plugin: the id of an enabled ticket plugin." }
                 event_classes:
                   type: array
                   items: { $ref: "#/components/schemas/ItsmEventClass" }
@@ -7001,6 +7369,22 @@ paths:
                             privileged_reason: { type: string }
                             privileged_set_by: { type: string, description: "auto:<source> or manual:<principal>" }
                             privileged_set_at: { type: string }
+                            source:
+                              type: string
+                              enum: [local, external]
+                              description: >-
+                                Where the secret lives (W38-07). local is the encrypted row;
+                                external is a reference fetched from source_id's secret manager
+                                at each use.
+                            source_id: { type: string, description: "The credential source an external credential fetches from." }
+                            reference:
+                              type: object
+                              additionalProperties: { type: string }
+                              description: "External only: where in the manager the secret is (vault_kv2: path, version)."
+                            static:
+                              type: object
+                              additionalProperties: { type: string }
+                              description: "External only: fixed non-secret payload fields (host_public_key, base_url)."
         "401": { description: Unauthenticated }
         "403": { description: Admin role required }
         "503": { description: Credential store not configured }
@@ -7012,6 +7396,13 @@ paths:
         key + user, a WinRM URL + password, a device API login). It goes IN
         and never comes back out - the response is metadata only, and there
         is deliberately no update or read-back route.
+
+
+        With `source: external` (W38-07, D-324) the hub stores no secret at
+        all: send `source_id` (a credential source of the caller's tenant),
+        `reference` and optionally `static`, and no payload. The secret is
+        fetched from the manager at each use and validated against the
+        credential type's shape then; see docs/ops/CREDENTIAL_SOURCES.md.
       tags: [Credentials]
       requestBody:
         required: true
@@ -7019,12 +7410,34 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, credential_type, payload]
+              required: [name, credential_type]
               properties:
                 name: { type: string }
                 credential_type:
                   type: string
                   enum: [ssh_key, api_token, cloud_iam, windows_password]
+                source:
+                  type: string
+                  enum: [local, external]
+                  default: local
+                source_id:
+                  type: string
+                  description: "external only: the credential source to fetch from."
+                reference:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: >-
+                    external only: where the secret is. vault_kv2 sources take `path`
+                    (under the source's mount) and optionally `version` (whole number;
+                    absent or 0 reads the latest). Plugin sources take the plugin's keys
+                    (CyberArk safe/object, Secret Server secret_id) and `map`
+                    (SourceField:payload_field pairs).
+                static:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: >-
+                    external only: fixed payload fields the manager does not hold
+                    (host_public_key, base_url). Names that look like secrets are refused.
                 payload:
                   type: object
                   description: >-
@@ -7057,6 +7470,138 @@ paths:
         "401": { description: Unauthenticated }
         "403": { description: Admin role required }
         "503": { description: Credential store not configured }
+
+  /credential-sources:
+    get:
+      operationId: listCredentialSources
+      summary: List credential sources of the caller's tenant (admin role required)
+      description: >-
+        A source says where external credentials fetch their secrets from
+        (W38-07, D-324): HashiCorp Vault or OpenBao KV v2, or a `credentials`
+        plugin. Nothing in a source is secret; its login is a local api_token
+        credential named by credential_ref.
+      tags: [Credentials]
+      responses:
+        "200":
+          description: Sources
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/CredentialSource" }
+        "401": { description: Unauthenticated }
+        "403": { description: Admin role required }
+        "503": { description: Credential source store not configured }
+    post:
+      operationId: createCredentialSource
+      summary: Create a credential source (admin role required)
+      description: >-
+        credential_ref must be a local api_token credential of the same tenant
+        holding the manager login: {"token"} or {"role_id","secret_id"} for
+        Vault and OpenBao, the plugin's credential fields for a plugin source.
+        A plugin source needs an enabled `credentials` plugin, which a second
+        person approved (provide_credentials is a Critical capability).
+      tags: [Credentials]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, kind, credential_ref, config]
+              properties:
+                name: { type: string }
+                kind: { type: string, enum: [vault_kv2, plugin] }
+                credential_ref: { type: string }
+                config: { $ref: "#/components/schemas/CredentialSourceConfig" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/CredentialSource" }
+        "400": { description: Invalid source, unknown or non-local login credential, or plugin not enabled }
+        "401": { description: Unauthenticated }
+        "403": { description: Admin role required }
+        "503": { description: Credential source store not configured }
+
+  /credential-sources/{id}:
+    delete:
+      operationId: deleteCredentialSource
+      summary: Delete a credential source no credential uses (admin role required)
+      tags: [Credentials]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Deleted }
+        "401": { description: Unauthenticated }
+        "403": { description: Admin role required }
+        "404": { description: Source not found }
+        "409": { description: Credentials still use this source }
+
+  /credential-sources/{id}/test:
+    post:
+      operationId: testCredentialSource
+      summary: Fetch a reference through a source and report the field names (admin role required)
+      description: >-
+        Runs the real fetch and payload validation for a credential type, so the
+        operator sees a bad path, a denied policy or a missing field before
+        relying on it. Only field names come back, never values. A failed fetch
+        is a 200 with ok=false and the reason. The attempt is audited as
+        credential.resolve.
+      tags: [Credentials]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [credential_type, reference]
+              properties:
+                credential_type:
+                  type: string
+                  enum: [ssh_key, api_token, cloud_iam, windows_password]
+                reference:
+                  type: object
+                  additionalProperties: { type: string }
+                static:
+                  type: object
+                  additionalProperties: { type: string }
+      responses:
+        "200":
+          description: The probe's result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      ok: { type: boolean }
+                      fields: { type: array, items: { type: string }, description: "Names of the payload fields the manager's secret yielded." }
+                      error: { type: string, description: "Why the fetch or the shape check failed; never carries a secret." }
+        "400": { description: Missing credential_type or an invalid reference }
+        "401": { description: Unauthenticated }
+        "403": { description: Admin role required }
+        "404": { description: Source not found }
 
   /credentials/{id}:
     delete:
@@ -9630,6 +10175,84 @@ paths:
         "404":
           description: No unused challenge with that id (a used one stays as a record)
 
+  /scep/labels:
+    get:
+      operationId: listSCEPLabels
+      summary: List SCEP labels (pki-admin; W20-23)
+      description: >-
+        A label publishes a named SCEP endpoint, /scep/{label}, whose challenge
+        mode is "intune": the hub validates each device's challenge through
+        the Microsoft Intune SCEP validation API before issuing. The bare /scep
+        route keeps the hub's one-time challenges.
+      tags: [SCEP]
+      responses:
+        "200":
+          description: Labels
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/SCEPLabel" }
+        "401": { description: Unauthenticated }
+        "403": { description: Caller is not pki-admin }
+    post:
+      operationId: createSCEPLabel
+      summary: Create an Intune-mode SCEP label (pki-admin)
+      description: >-
+        credential_ref names an api_token credential in the outbound credential
+        store whose payload is {"client_secret": "..."} or {"certificate_pem":
+        "...", "private_key_pem": "..."} for the Entra app. The secret is never
+        accepted, stored in the label or returned here.
+      tags: [SCEP]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, mode, template_id, intune_tenant_id, intune_client_id, credential_ref]
+              properties:
+                label: { type: string, pattern: "^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$" }
+                mode: { type: string, enum: [intune] }
+                template_id: { type: string, description: "Its enrollment_permissions gate the label (role protocol:scep)" }
+                intune_tenant_id: { type: string, description: "Entra tenant GUID or domain" }
+                intune_client_id: { type: string, description: "Entra app (client) id" }
+                credential_ref: { type: string }
+                issuing_authority: { type: string, maxLength: 256, description: "certIssuingAuthority reported to Intune; defaults to the certificate issuer" }
+                description: { type: string, maxLength: 500 }
+      responses:
+        "201":
+          description: Label created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/SCEPLabel" }
+        "400": { description: "Invalid label, mode or tenant, or the template or credential is not usable" }
+        "401": { description: Unauthenticated }
+        "403": { description: Caller is not pki-admin }
+        "409": { description: Label already exists }
+
+  /scep/labels/{label}:
+    delete:
+      operationId: deleteSCEPLabel
+      summary: Delete a SCEP label (pki-admin)
+      tags: [SCEP]
+      parameters:
+        - name: label
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Deleted }
+        "401": { description: Unauthenticated }
+        "403": { description: Caller is not pki-admin }
+        "404": { description: No such label }
+
   /acme/eab-keys:
     post:
       operationId: createACMEEABKey
@@ -9728,6 +10351,91 @@ paths:
           description: No such key
         "409":
           description: Already revoked
+
+  /acme/devices:
+    post:
+      operationId: addACMEDevice
+      summary: Add a device to the ACME device inventory (pki-admin; W40-02)
+      description: >-
+        device-attest-01 issues only to identifiers in this inventory:
+        attestation proves the hardware, the inventory proves ownership. The
+        identifier is the order value verbatim (case-sensitive, at most 64
+        bytes, optional "/assigner-OID" suffix per draft-ietf-acme-device-attest
+        section 3.1) and is unique across the hub. With MULTI_TENANCY on the
+        entry belongs to the caller's tenant and only CAs of that tenant issue
+        to it.
+      tags: [ACME]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier]
+              properties:
+                identifier: { type: string, maxLength: 64 }
+                label: { type: string, maxLength: 200 }
+      responses:
+        "201":
+          description: Added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/ACMEDevice" }
+        "400":
+          description: Invalid identifier or label
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller is not pki-admin
+        "409":
+          description: The identifier is already in the inventory
+        "503":
+          description: Inventory unavailable
+    get:
+      operationId: listACMEDevices
+      summary: List the ACME device inventory visible to the caller (pki-admin; W40-02)
+      tags: [ACME]
+      responses:
+        "200":
+          description: Devices by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/ACMEDevice" }
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller is not pki-admin
+
+  /acme/devices/{identifier}:
+    delete:
+      operationId: removeACMEDevice
+      summary: Remove a device from the ACME device inventory (pki-admin; W40-02)
+      description: >-
+        Takes effect at once: an order already attested is refused at finalize.
+        The identifier is percent-encoded because it may contain "/".
+      tags: [ACME]
+      parameters:
+        - name: identifier
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Removed
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller is not pki-admin
+        "404":
+          description: No such device (or it belongs to another tenant)
 
   /acme/provisioners:
     get:
@@ -9962,6 +10670,123 @@ paths:
           description: Waiting for a second pki-admin in the approval queue
         "404":
           description: No such plugin version
+
+  /plugin-catalogue:
+    get:
+      operationId: listPluginCatalogue
+      summary: List the signed plugin catalogue with install status (pki-admin, W38-11)
+      description: >-
+        Fetches catalogue.json and its cosign bundle through the egress guard
+        (only when called; the hub never polls), verifies the signature
+        against the compiled-in first-party key or KRYPTKEEPER_PLUGIN_TRUSTED_KEYS,
+        and marks each entry available, installed or upgradable. The URL is
+        KRYPTKEEPER_PLUGIN_CATALOGUE_URL (default https://kryptkeeper.io/plugins/catalogue.json;
+        empty disables it).
+      tags: [DeliveryPlugins]
+      responses:
+        "200":
+          description: Catalogue entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      generated_at: { type: string }
+                      entries:
+                        type: array
+                        items: { $ref: "#/components/schemas/PluginCatalogueEntry" }
+        "403":
+          description: Not pki-admin
+        "502":
+          description: The catalogue could not be fetched or its signature does not verify
+        "503":
+          description: The catalogue is disabled or plugins are turned off
+
+  /plugin-catalogue/{id}/install:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    post:
+      operationId: installPluginFromCatalogue
+      summary: Install a plugin version from the catalogue, disabled (pki-admin, W38-11)
+      description: >-
+        Downloads the manifest, cosign bundle and module, checks the module
+        against the catalogue's and the manifest's SHA-256, then runs the same
+        install as a manual upload (same trust tiers). Enabling is a separate
+        step and High or Critical capabilities still need a second pki-admin.
+      tags: [DeliveryPlugins]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                version: { type: string, description: "Defaults to the highest version listed." }
+      responses:
+        "201":
+          description: Installed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/DeliveryPluginVersion" }
+        "400":
+          description: Hash mismatch, manifest not matching the entry, or a signature that does not verify
+        "404":
+          description: Not in the catalogue
+        "409":
+          description: Already installed, or the version needs a newer hub
+        "502":
+          description: Download failed or the catalogue signature does not verify
+        "503":
+          description: The catalogue is disabled
+
+  /plugin-catalogue/import:
+    post:
+      operationId: importPluginFromCatalogueFiles
+      summary: Install a plugin from catalogue files carried in by hand (pki-admin, W38-11)
+      description: >-
+        For air-gapped hubs. Send the catalogue.json and catalogue.json.bundle
+        from a release asset plus one plugin's manifest.json, its bundle and
+        plugin.wasm. The catalogue signature is verified exactly as for an
+        online fetch; nothing touches the network.
+      tags: [DeliveryPlugins]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, catalogue_base64, catalogue_bundle, manifest_base64, bundle, wasm_base64]
+              properties:
+                id: { type: string }
+                version: { type: string }
+                catalogue_base64: { type: string }
+                catalogue_bundle: { type: string }
+                manifest_base64: { type: string }
+                bundle: { type: string }
+                wasm_base64: { type: string }
+      responses:
+        "201":
+          description: Installed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/DeliveryPluginVersion" }
+        "400":
+          description: Bad files, hash mismatch, or a signature that does not verify
+        "404":
+          description: Not in the catalogue
+        "409":
+          description: That version is already installed
+        "502":
+          description: The catalogue signature does not verify
 
   /integrations/siem:
     get:
@@ -10939,11 +11764,11 @@ paths:
                 name: { type: string }
                 host: { type: string }
                 discovery_mode: { type: string, enum: [agent, network, cloud, winrm, none] }
-                install_mode: { type: string, enum: [agent, ssh, f5, citrix, k8s, iis, keychain, cloud, acme, plugin] }
+                install_mode: { type: string, enum: [agent, ssh, f5, citrix, k8s, iis, sqlserver, rdp, exchange, keychain, cloud, acme, plugin] }
                 renewal_method: { type: string, enum: [acme, est, scep, manual] }
                 renewal_threshold_days: { type: integer, minimum: 0, maximum: 365, description: "1 to 365; 0 or omitted means use the RENEWAL_THRESHOLD_DAYS env default" }
                 plugin_id: { type: string, description: "Delivery plugin for install_mode=plugin (W20-20); required then, refused otherwise" }
-                key_handling_mode: { type: string, enum: [client_csr, hub_generated, hsm_resident_ca, macos_non_extractable], description: "W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode." }
+                key_handling_mode: { type: string, enum: [client_csr, hub_generated, hsm_resident_ca, macos_non_extractable], description: "W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/sqlserver/rdp/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode." }
                 plugin_settings: { type: object, additionalProperties: { type: string }, description: "The plugin's target_schema values; no secrets" }
                 credential_ref: { type: string }
                 schedule: { type: string }
@@ -11055,11 +11880,11 @@ paths:
                 name: { type: string }
                 host: { type: string }
                 discovery_mode: { type: string, enum: [agent, network, cloud, winrm, none] }
-                install_mode: { type: string, enum: [agent, ssh, f5, citrix, k8s, iis, keychain, cloud, acme, plugin] }
+                install_mode: { type: string, enum: [agent, ssh, f5, citrix, k8s, iis, sqlserver, rdp, exchange, keychain, cloud, acme, plugin] }
                 renewal_method: { type: string, enum: [acme, est, scep, manual] }
                 renewal_threshold_days: { type: integer, minimum: 0, maximum: 365, description: "1 to 365; 0 clears the override, reverting to the env default" }
                 plugin_id: { type: string, description: "Delivery plugin for install_mode=plugin (W20-20); required then, refused otherwise" }
-                key_handling_mode: { type: string, enum: [client_csr, hub_generated, hsm_resident_ca, macos_non_extractable], description: "W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode." }
+                key_handling_mode: { type: string, enum: [client_csr, hub_generated, hsm_resident_ca, macos_non_extractable], description: "W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/sqlserver/rdp/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode." }
                 plugin_settings: { type: object, additionalProperties: { type: string }, description: "The plugin's target_schema values; no secrets" }
                 credential_ref: { type: string }
                 schedule: { type: string }
@@ -11751,6 +12576,177 @@ paths:
                 properties:
                   accepted: {type: integer}
 
+  /trust-bundles:
+    get:
+      operationId: listTrustBundles
+      summary: List approved trust bundles with per-host status counts (W40-03)
+      tags: [Agents]
+      responses:
+        "200":
+          description: Trust bundles, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TrustBundleSummary"
+        "401":
+          description: Unauthenticated
+        "403":
+          description: Instance-wide setting, platform super-admin required when multi-tenancy is on
+        "503":
+          description: Trust bundle store unavailable
+    post:
+      operationId: proposeTrustBundle
+      summary: Propose pushing CA certificates to agents' OS trust stores (dual control, Critical)
+      description: >-
+        Queues the bundle in the approval queue; nothing reaches an agent until
+        a different approver approves it (proposer is never the approver). The
+        hub refuses bundles holding any block other than CERTIFICATE, any
+        certificate that is not a CA, and (for `add`) any expired or not yet
+        valid certificate. A `remove` bundle that names the root of a hub CA
+        that issued live managed certificates returns `warnings`, which the
+        approver also sees. Targets are resolved now: a union of `agent_ids`,
+        `agent_types` and `all`. An agent applies the bundle only if its own
+        configuration opts in (`KRYPTKEEPER_TRUST_STORE_PUSH=true`).
+      tags: [Agents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, action, cert_pem, selector]
+              properties:
+                name: {type: string, maxLength: 120}
+                action: {type: string, enum: [add, remove]}
+                cert_pem: {type: string, description: "PEM CA certificates only; at most 20"}
+                selector:
+                  type: object
+                  properties:
+                    agent_ids: {type: array, items: {type: string}}
+                    agent_types: {type: array, items: {type: string, enum: [linux, mac, windows]}}
+                    all: {type: boolean}
+                rationale: {type: string}
+      responses:
+        "202":
+          description: Pending approval
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      action_id: {type: string}
+                      status: {type: string}
+                      targets: {type: integer}
+                      warnings: {type: array, items: {type: string}}
+        "400":
+          description: Not a CA bundle, expired certificate, empty or unknown selector
+        "401":
+          description: Unauthenticated
+        "403":
+          description: Role may not propose, or platform super-admin required under multi-tenancy
+        "503":
+          description: Approval queue unavailable
+
+  /trust-bundles/{id}:
+    get:
+      operationId: getTrustBundle
+      summary: One trust bundle with its per-host result (applied, refused_not_opted_in, failed, pending)
+      tags: [Agents]
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: Bundle and per-host status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      bundle:
+                        $ref: "#/components/schemas/TrustBundleSummary"
+                      hosts:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/TrustHostStatus"
+        "401":
+          description: Unauthenticated
+        "404":
+          description: Unknown bundle
+
+  /agent/trust-tasks:
+    get:
+      operationId: getAgentTrustTasks
+      summary: Fetch trust bundles queued for this agent (X-Agent-ID + X-Agent-Token headers)
+      description: >-
+        Bundles that target this agent and have no applied result. The agent
+        acts only if it opted in locally; otherwise it reports
+        refused_not_opted_in.
+      tags: [Agents]
+      security: []
+      parameters:
+        - {in: header, name: X-Agent-ID, required: true, schema: {type: string}}
+        - {in: header, name: X-Agent-Token, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: Trust tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        bundle_id: {type: string}
+                        name: {type: string}
+                        action: {type: string, enum: [add, remove]}
+                        cert_pem: {type: string}
+        "401":
+          description: Bad agent credentials
+
+  /agent/trust-result:
+    post:
+      operationId: submitAgentTrustResult
+      summary: Report what the agent did with a trust bundle (X-Agent-ID + X-Agent-Token headers)
+      tags: [Agents]
+      security: []
+      parameters:
+        - {in: header, name: X-Agent-ID, required: true, schema: {type: string}}
+        - {in: header, name: X-Agent-Token, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bundle_id, outcome]
+              properties:
+                bundle_id: {type: string}
+                outcome: {type: string, enum: [applied, refused_not_opted_in, failed]}
+                detail: {type: string, maxLength: 1000}
+      responses:
+        "200":
+          description: Recorded
+        "400":
+          description: Missing credentials or unknown outcome
+        "401":
+          description: Bad agent credentials
+        "404":
+          description: The bundle does not target this agent
+
   /agent/renewal-result:
     post:
       operationId: submitAgentRenewalResult
@@ -11862,6 +12858,81 @@ paths:
                         completed_at: {type: string, format: date-time}
         "401":
           description: Unauthorized
+        "404":
+          description: Agent not found
+
+  /agents/{id}/inventory:
+    get:
+      operationId: getAgentInventory
+      summary: What one agent discovered, certificates and files (admin view)
+      description: >-
+        W24-45: the certificates the agent last pushed (the fields it sent: no
+        PEM, no key) and the files its host pass flagged (non-standard posture
+        or findings; a key file is a path with no bytes), with counts of every
+        statted file by posture. Pages by limit and offset, applied to each list
+        separately. Authorized like GET /agents/{id}/tasks: agents carry no
+        tenant column (D-203), so under multi-tenancy only a platform
+        super-admin may read it; a tenant-scoped principal gets 403, audited.
+        Audited as agent.inventory.
+      tags: [Agents]
+      parameters:
+        - {in: path, name: id, required: true, schema: {type: string}}
+        - {in: query, name: limit, schema: {type: integer, minimum: 1, maximum: 500, default: 100}}
+        - {in: query, name: offset, schema: {type: integer, minimum: 0, default: 0}}
+      responses:
+        "200":
+          description: One page of the agent's inventory
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agent_id, certificates, total_certificates, files, total_files, files_known, limit, offset]
+                properties:
+                  agent_id: {type: string}
+                  certificates:
+                    type: array
+                    items:
+                      type: object
+                      required: [fingerprint, subject, issuer, not_before, not_after, source, auto_renewable]
+                      properties:
+                        fingerprint: {type: string}
+                        subject: {type: string}
+                        issuer: {type: string}
+                        not_before: {type: string, format: date-time}
+                        not_after: {type: string, format: date-time}
+                        source: {type: string, description: "Where the agent found it: a file path or a store such as jks:/path."}
+                        auto_renewable: {type: boolean}
+                        dns_names: {type: array, items: {type: string}}
+                  total_certificates: {type: integer}
+                  files:
+                    type: array
+                    items:
+                      type: object
+                      required: [path, kind, posture]
+                      properties:
+                        path: {type: string}
+                        kind: {type: string, enum: [pem, jks, p12, key, config]}
+                        owner: {type: string}
+                        group: {type: string}
+                        mode: {type: string}
+                        posture: {type: string}
+                        service_tech: {type: string}
+                        findings: {type: array, items: {type: string}}
+                  total_files: {type: integer}
+                  file_posture_counts:
+                    type: object
+                    additionalProperties: {type: integer}
+                  files_known:
+                    type: boolean
+                    description: False when the agent has sent no host pass; its files are unknown, not empty.
+                  limit: {type: integer}
+                  offset: {type: integer}
+        "400":
+          description: Bad limit or offset
+        "401":
+          description: Unauthorized
+        "403":
+          description: Tenant-scoped principals cannot read agent inventory (agents have no tenant)
         "404":
           description: Agent not found
 

@@ -26,6 +26,7 @@ import { PageHeader } from "../components/PageHeader";
 import { TargetPreflightPanel } from "../components/TargetPreflightPanel";
 import { Wizard, type WizardStepDef } from "../components/Wizard";
 import { CapabilityList } from "../components/PluginCapabilities";
+import { ExternalCredentialFields, type ExternalCredentialValue } from "../components/ExternalCredentialFields";
 import { capabilityTier, tierLabel, tierTone, type PluginManifest } from "../lib/plugins";
 
 type Mode = "agent" | "agentless";
@@ -78,18 +79,23 @@ function discoveryOptionsFor(os: TargetOS) {
 }
 
 function installOptionsFor(os: TargetOS) {
-  const hostMode =
+  const hostModes =
     os === "windows"
-      ? { value: "iis", label: "IIS / HTTP.sys binding" }
+      ? [
+          { value: "iis", label: "IIS / HTTP.sys binding" },
+          { value: "sqlserver", label: "Microsoft SQL Server (WinRM)" },
+          { value: "rdp", label: "Remote Desktop listener (WinRM)" },
+          { value: "exchange", label: "Microsoft Exchange (WinRM)" },
+        ]
       : os === "mac"
-        ? { value: "keychain", label: "System keychain (SSH)" }
-        : { value: "ssh", label: "SSH push" };
-  return [hostMode, ...OS_NEUTRAL_INSTALL_MODES];
+        ? [{ value: "keychain", label: "System keychain (SSH)" }]
+        : [{ value: "ssh", label: "SSH push" }];
+  return [...hostModes, ...OS_NEUTRAL_INSTALL_MODES];
 }
 
 // iis, keychain and k8s need a credential for the same reason ssh and the
 // appliances do: something has to authenticate to the target.
-const CREDENTIAL_REQUIRED_MODES = new Set(["ssh", "keychain", "iis", "f5", "citrix", "k8s", "plugin"]);
+const CREDENTIAL_REQUIRED_MODES = new Set(["ssh", "keychain", "iis", "sqlserver", "rdp", "exchange", "f5", "citrix", "k8s", "plugin"]);
 
 // Modes the hub's renewal sweep can execute (renewal_scheduler.go). ssh also
 // needs server type and paths; keychain installs into the macOS keychain.
@@ -138,10 +144,28 @@ const CREDENTIAL_SHAPES: Record<string, { type: string; fields: CredField[] }> =
   iis: {
     type: "windows_password",
     fields: [
-      { key: "base_url", label: "WinRM endpoint", placeholder: "https://host.corp.example.com:5986/wsman" },
+      { key: "base_url", label: "WinRM endpoint (https :5986 = local admin; http :5985 = NTLM, domain account allowed)", placeholder: "https://host.corp.example.com:5986/wsman" },
       { key: "username", label: "Username", placeholder: "CORP\\svc-pki" },
       { key: "password", label: "Password", secret: true },
       { key: "ipport", label: "HTTPS binding (ip:port)", placeholder: "0.0.0.0:443" },
+    ],
+  },
+  sqlserver: {
+    type: "windows_password",
+    fields: [
+      { key: "base_url", label: "WinRM endpoint (https :5986 = local admin; http :5985 = NTLM, domain account allowed)", placeholder: "https://host.corp.example.com:5986/wsman" },
+      { key: "username", label: "Username (local administrator)", placeholder: "CORP\\svc-pki" },
+      { key: "password", label: "Password", secret: true },
+      { key: "sql_instance", label: "Instance name (blank = MSSQLSERVER)", placeholder: "MSSQLSERVER" },
+      { key: "sql_port", label: "Instance TCP port (blank = 1433)", placeholder: "1433" },
+    ],
+  },
+  rdp: {
+    type: "windows_password",
+    fields: [
+      { key: "base_url", label: "WinRM endpoint (https :5986 = local admin; http :5985 = NTLM, domain account allowed)", placeholder: "https://host.corp.example.com:5986/wsman" },
+      { key: "username", label: "Username (local administrator)", placeholder: "CORP\\svc-pki" },
+      { key: "password", label: "Password", secret: true },
     ],
   },
   f5: {
@@ -266,8 +290,12 @@ function PrivilegeModeFields({
   sha,
   onSha,
   bundle,
+  external,
 }: {
   bundle?: PrivilegeBundle;
+  // W38-07: with an external credential the sudo password is fetched with the
+  // rest of the secret, so there is nothing to type here.
+  external?: boolean;
   mode: PrivilegeMode;
   onMode: (m: PrivilegeMode) => void;
   password: string;
@@ -294,7 +322,12 @@ function PrivilegeModeFields({
           </span>
         </label>
       ))}
-      {mode === "password" && (
+      {mode === "password" && external && (
+        <p className="text-xs text-muted-foreground">
+          The secret in the manager must also hold the sudo password as a field named sudo_password.
+        </p>
+      )}
+      {mode === "password" && !external && (
         <label className="block space-y-1">
           <span>Sudo password</span>
           <Input
@@ -339,6 +372,10 @@ function CredentialPicker({
   const [name, setName] = useState("");
   const [fields, setFields] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
+  // W38-07: "local" stores the secret here, encrypted; "external" stores only
+  // a reference to a secret manager and fetches the secret at each use.
+  const [home, setHome] = useState<"local" | "external">("local");
+  const [ext, setExt] = useState<ExternalCredentialValue>({ sourceId: "", reference: {}, fixed: {}, valid: false });
 
   const listQ = useQuery({ queryKey: ["credentials"], queryFn: api.credentials });
   const allItems: CredentialMeta[] = listQ.data?.data?.items ?? [];
@@ -371,7 +408,7 @@ function CredentialPicker({
   const effectiveHelperSha = helperSha || (privilegeMode === "helper" ? (bundle?.helper_sha256 ?? "") : "");
   const privilegeInvalid =
     hasPrivilege &&
-    ((privilegeMode === "password" && sudoPassword === "") ||
+    ((privilegeMode === "password" && sudoPassword === "" && home === "local") ||
       (privilegeMode === "helper" && !/^[0-9a-fA-F]{64}$/.test(effectiveHelperSha.trim())));
 
   // W18-11: a Windows credential can be tested the moment it is picked.
@@ -387,7 +424,20 @@ function CredentialPicker({
 
   const createM = useMutation({
     mutationFn: () =>
-      api.createCredential({
+      home === "external"
+        ? api.createCredential({
+            name: name.trim(),
+            credential_type: shape.type,
+            source: "external",
+            source_id: ext.sourceId,
+            reference: ext.reference,
+            static: {
+              ...ext.fixed,
+              ...(hasPrivilege ? { sudo_mode: privilegeMode } : {}),
+              ...(hasPrivilege && privilegeMode === "helper" ? { helper_sha256: effectiveHelperSha.trim() } : {}),
+            },
+          })
+        : api.createCredential({
         name: name.trim(),
         credential_type: shape.type,
         payload: hasPrivilege
@@ -401,6 +451,7 @@ function CredentialPicker({
       }),
     onSuccess: (res) => {
       setCreating(false);
+      setHome("local");
       setName("");
       setFields({});
       setPickedMode(null);
@@ -492,7 +543,7 @@ function CredentialPicker({
                           : "Unreachable"}
                 </Badge>
                 <span className="text-xs text-muted-foreground">
-                  {installMode === "iis" && !verdict.can_install
+                  {(installMode === "iis" || installMode === "exchange") && !verdict.can_install
                     ? "This target's install mode needs a local Administrator."
                     : null}
                 </span>
@@ -513,7 +564,25 @@ function CredentialPicker({
               placeholder={`${installMode} credential`}
             />
           </label>
-          {shape.fields.map((f) => (
+          <fieldset className="space-y-1 text-sm text-foreground">
+            <legend className="font-medium">Where does the secret live?</legend>
+            <label className="flex items-start gap-2">
+              <input type="radio" name="secret_home" checked={home === "local"} onChange={() => setHome("local")} className="mt-1" />
+              <span>Store it here (encrypted, never read back)</span>
+            </label>
+            <label className="flex items-start gap-2">
+              <input type="radio" name="secret_home" checked={home === "external"} onChange={() => setHome("external")} className="mt-1" />
+              <span>Fetch it from a secret manager (Vault, OpenBao, CyberArk, Delinea) at each use</span>
+            </label>
+          </fieldset>
+          {home === "external" && (
+            <ExternalCredentialFields
+              credentialType={shape.type}
+              fields={shape.fields.map((f) => ({ key: f.key, label: f.label, secret: f.secret }))}
+              onChange={setExt}
+            />
+          )}
+          {home === "local" && shape.fields.map((f) => (
             <label key={f.key} className="block space-y-1 text-sm text-foreground">
               <span>{f.label}</span>
               {f.multiline ? (
@@ -552,15 +621,18 @@ function CredentialPicker({
               sha={effectiveHelperSha}
               onSha={setHelperSha}
               bundle={bundle}
+              external={home === "external"}
             />
           )}
           <p className="text-xs text-muted-foreground">
-            Stored encrypted. It can be used and deleted, never read back.
+            {home === "external"
+              ? "No secret is stored in Kryptkeeper: only the source and this reference. The secret is fetched, used and dropped each time."
+              : "Stored encrypted. It can be used and deleted, never read back."}
           </p>
           {error && <p className="text-sm text-state-over">{error}</p>}
           <Button
             tone="primary"
-            disabled={createM.isPending || !name.trim() || privilegeInvalid}
+            disabled={createM.isPending || !name.trim() || privilegeInvalid || (home === "external" && !ext.valid)}
             onClick={() => createM.mutate()}
           >
             {createM.isPending ? "Creating…" : "Create & use"}
@@ -1011,9 +1083,9 @@ function AgentlessSetupWizard() {
   const [form, setForm] = useState<AgentlessForm>({
     name: prefillHost ? `${prefillHost}` : "",
     host: prefillHost,
-    targetOS: prefillMode === "iis" ? "windows" : prefillMode === "keychain" ? "mac" : "linux",
+    targetOS: prefillMode === "iis" || prefillMode === "exchange" ? "windows" : prefillMode === "keychain" ? "mac" : "linux",
     credentialName: "",
-    discoveryMode: prefillMode === "iis" ? "winrm" : "network",
+    discoveryMode: prefillMode === "iis" || prefillMode === "exchange" ? "winrm" : "network",
     installMode: prefillMode || "ssh",
     credentialRef: "",
     schedule: "",

@@ -95,7 +95,7 @@ jobs:
         run: bash scripts/test/xlsx-libreoffice.sh "$RUNNER_TEMP"/xlsx/kryptkeeper-inventory.xlsx "$RUNNER_TEMP"/xlsx/kryptkeeper-findings.xlsx
 
   # W30-20: zero default egress. Needs podman, so ubuntu-latest resolves to the self-hosted
-  # self-hosted runner.
+  # kk-m4max-podman runner (docs/ops/CI_RUNNER_SETUP.md).
   egress-capture:
     runs-on: ubuntu-latest
     timeout-minutes: 120

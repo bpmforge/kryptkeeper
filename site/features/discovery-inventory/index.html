@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Discovery and inventory · Kryptkeeper</title>
+<meta name="description" content="Find the certificates you didn't know about. Scan your network, pull inventory from other CAs, and watch Certificate Transparency logs for certificates issued in your name. Risky endpoints are flagged and can be accepted as risk with approval.">
+<meta property="og:title" content="Discovery and inventory · Kryptkeeper">
+<meta property="og:description" content="Find the certificates you didn't know about. Scan your network, pull inventory from other CAs, and watch Certificate Transparency logs for certificates issued in your name. Risky endpoints are flagged and can be accepted as risk with approval.">
+<meta property="og:url" content="https://kryptkeeper.io/features/discovery-inventory/">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<div class="crumb-row"><nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/features/">Features</a></li><li aria-current="page">Discovery and inventory</li></ol></nav></div>
+<header class="page-head">
+  <span class="label">Feature</span>
+  <h1>Discovery and inventory</h1>
+  <p class="lede">Find the certificates you didn't know about.</p>
+  <p class="intro">Scan your network, pull inventory from other CAs, and watch Certificate Transparency logs for certificates issued in your name. Risky endpoints are flagged and can be accepted as risk with approval.</p>
+</header>
+<figure class="hub-hero"><div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/discovery</span></div>
+    <a href="/features/discovery-inventory/" tabindex="-1" aria-hidden="true"><img src="/shots/U-25/cover-dark.webp" width="1220" height="762" alt="Discovery and inventory screen in Kryptkeeper"></a>
+  </div></figure>
+<section aria-labelledby="how"><h2 id="how">How it works</h2><ol class="card-grid wt-grid">
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-25/08-risky-only.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/discovery-inventory/run-scan/">Run a discovery scan</a></h3><p>Scan a range and read what was found.</p><span class="meta">8 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-58/07-add-cloud-source-row.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/discovery-inventory/discovery-sources/">Add discovery sources</a></h3><p>Tell discovery which clusters, endpoints, domains and cloud accounts to watch.</p><span class="meta">7 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-26b/02-exceptions-list.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/discovery-inventory/inspect-endpoint/">Inspect an endpoint and accept a risk</a></h3><p>Open a risky endpoint and propose a risk exception for approval.</p><span class="meta">6 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-51/04-add-source-form.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/discovery-inventory/sync-other-ca/">Sync certificates from another CA</a></h3><p>Pull the inventory of another CA into one view.</p><span class="meta">4 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-53/03-add-ct-domain-row.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/discovery-inventory/certificate-transparency/">Monitor Certificate Transparency</a></h3><p>See certificates issued for your domains by anyone.</p><span class="meta">3 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-54b/02-slo-after-sweep.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/discovery-inventory/anomalies/">Review issuance anomalies</a></h3><p>Spot unusual issuance once the scheduled scan has run.</p><span class="meta">4 steps</span></li>
+</ol></section>
+<section aria-labelledby="docs"><h2 id="docs">Docs</h2><ul class="link-list"><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/guides/day-one-estate.md">Day-one estate</a></li></ul></section>
+<section aria-labelledby="used-by"><h2 id="used-by">Paths that use this</h2><ul class="link-list"><li><a href="/paths/take-over-estate/">Take over an existing estate</a> <span class="muted">for Security lead</span></li></ul></section>
+
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

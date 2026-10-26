@@ -66,6 +66,20 @@ func TestOCSPLookupReportsUnknownIssuer(t *testing.T) {
 	wantErrorStatus(t, serve(t, r, leaf, ca.cert), goocsp.Unauthorized)
 }
 
+// W36-02: an external CA's OCSP is the upstream's; the hub answers 404.
+func TestOCSPExternalIssuerIs404(t *testing.T) {
+	ca := newTestCA(t)
+	leaf := issueTestCert(t, ca, 1004)
+	r := NewResponder(neverRevoked, func([]byte) (*x509.Certificate, crypto.Signer, error) {
+		return nil, nil, ErrExternalIssuer
+	}, time.Hour, 100)
+	rec := httptest.NewRecorder()
+	r.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ocsp", strings.NewReader(string(makeOCSPRequest(t, leaf, ca.cert)))))
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), `"external_ca"`) {
+		t.Fatalf("got %d %s, want 404 external_ca", rec.Code, rec.Body.String())
+	}
+}
+
 // SEMGREP-012: a CA-list read failure is a transient fault, never a good.
 func TestOCSPIssuerListFailureIsTryLater(t *testing.T) {
 	ca := newTestCA(t)

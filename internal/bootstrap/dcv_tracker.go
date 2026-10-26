@@ -429,6 +429,27 @@ func (d *dcvTrackedConnector) Issue(ctx context.Context, req connectors.IssueReq
 	return res, nil
 }
 
+// Revoke and CanRevoke forward to the wrapped connector: embedding only
+// promotes the IssuerConnector methods, so without these the wrapper would
+// hide the inner connector's revocation support.
+func (d *dcvTrackedConnector) Revoke(ctx context.Context, req connectors.RevokeRequest) error {
+	rc, ok := d.IssuerConnector.(connectors.RevokingConnector)
+	if !ok {
+		return connectors.ErrRevokeUnsupported
+	}
+	return rc.Revoke(ctx, req)
+}
+
+func (d *dcvTrackedConnector) CanRevoke() bool {
+	if _, ok := d.IssuerConnector.(connectors.RevokingConnector); !ok {
+		return false
+	}
+	if cr, ok := d.IssuerConnector.(connectors.RevokeCapable); ok {
+		return cr.CanRevoke()
+	}
+	return true
+}
+
 // csrDomains is the CN plus DNS SANs, lower-cased and deduped; wildcards are
 // kept as written.
 func csrDomains(csrPEM string) []string {

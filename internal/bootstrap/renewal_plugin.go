@@ -55,36 +55,52 @@ func (e *RenewalExecutor) preparePlugin(ctx context.Context, target ManagedTarge
 	if err != nil {
 		return pluginRun{}, fmt.Errorf("delivery plugin %q: %w", target.PluginID, err)
 	}
+	if v.Kind != abi.KindDelivery {
+		return pluginRun{}, fmt.Errorf("plugin %q is a %s plugin, not a delivery plugin", target.PluginID, v.Kind)
+	}
 	if v.Manifest.Capabilities.RemoteExec {
 		return pluginRun{}, fmt.Errorf("delivery plugin %q needs remote_exec, which plugin targets do not support yet", target.PluginID)
 	}
-	if strings.TrimSpace(target.CredentialRef) == "" {
-		return pluginRun{}, errRenewalNoCredential
-	}
-	if e.creds == nil {
-		return pluginRun{}, errors.New("outbound credential store not configured (set APP_CREDENTIAL_STORE_PASSPHRASE or KRYPTKEEPER_KEYSTORE_PASSPHRASE)")
-	}
-	meta, err := e.creds.Get(ctx, target.CredentialRef)
+	env, err := buildPluginEnv(ctx, e.creds, e.pushClient, v, target.CredentialRef, target.PluginSettings)
 	if err != nil {
-		return pluginRun{}, fmt.Errorf("credential %q: %w", target.CredentialRef, err)
+		return pluginRun{}, err
+	}
+	return pluginRun{plugin: p, version: v, env: env}, nil
+}
+
+// buildPluginEnv resolves a stored credential and the target's settings into
+// the Env one plugin operation runs with, checked against the manifest's
+// schemas (D-119). Delivery targets and notification channels share it, so a
+// credential is read, validated and redacted the same way for both.
+func buildPluginEnv(ctx context.Context, creds OutboundCredentialStore, base *http.Client, v DeliveryPluginVersion, credentialRef string, settings map[string]string) (delivery.Env, error) {
+	pluginID := v.PluginID
+	if strings.TrimSpace(credentialRef) == "" {
+		return delivery.Env{}, errRenewalNoCredential
+	}
+	if creds == nil {
+		return delivery.Env{}, errors.New("outbound credential store not configured (set APP_CREDENTIAL_STORE_PASSPHRASE or KRYPTKEEPER_KEYSTORE_PASSPHRASE)")
+	}
+	meta, err := creds.Get(ctx, credentialRef)
+	if err != nil {
+		return delivery.Env{}, fmt.Errorf("credential %q: %w", credentialRef, err)
 	}
 	if meta.CredentialType != CredentialTypeAPIToken {
-		return pluginRun{}, fmt.Errorf("%w: plugin targets need an %s credential holding a JSON object of the plugin's credential fields; %q is %s",
-			errRenewalBadCredential, CredentialTypeAPIToken, target.CredentialRef, meta.CredentialType)
+		return delivery.Env{}, fmt.Errorf("%w: plugins need an %s credential holding a JSON object of the plugin's credential fields; %q is %s",
+			errRenewalBadCredential, CredentialTypeAPIToken, credentialRef, meta.CredentialType)
 	}
-	plaintext, err := e.creds.Resolve(ctx, target.CredentialRef)
+	plaintext, err := creds.Resolve(ctx, credentialRef)
 	if err != nil {
-		return pluginRun{}, fmt.Errorf("credential %q: %w", target.CredentialRef, err)
+		return delivery.Env{}, fmt.Errorf("credential %q: %w", credentialRef, err)
 	}
 	defer zeroize(plaintext)
 	var raw map[string]string
 	if err := json.Unmarshal(plaintext, &raw); err != nil {
-		return pluginRun{}, fmt.Errorf("%w: credential %q is not a JSON object of string fields", errRenewalBadCredential, target.CredentialRef)
+		return delivery.Env{}, fmt.Errorf("%w: credential %q is not a JSON object of string fields", errRenewalBadCredential, credentialRef)
 	}
 
-	client, err := pluginHTTPClient(e.pushClient, raw[credentialFieldTLSCA])
+	client, err := pluginHTTPClient(base, raw[credentialFieldTLSCA])
 	if err != nil {
-		return pluginRun{}, fmt.Errorf("%w: credential %q: %v", errRenewalBadCredential, target.CredentialRef, err)
+		return delivery.Env{}, fmt.Errorf("%w: credential %q: %v", errRenewalBadCredential, credentialRef, err)
 	}
 	env := delivery.Env{Credential: map[string]string{}, Target: map[string]string{}, HTTPClient: client}
 	var missing []string
@@ -105,7 +121,7 @@ func (e *RenewalExecutor) preparePlugin(ctx context.Context, target ManagedTarge
 		}
 	}
 	for name, f := range v.Manifest.TargetSchema {
-		val := target.PluginSettings[name]
+		val := settings[name]
 		if val == "" {
 			val = f.Default
 		}
@@ -119,9 +135,9 @@ func (e *RenewalExecutor) preparePlugin(ctx context.Context, target ManagedTarge
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
-		return pluginRun{}, fmt.Errorf("delivery plugin %q is missing required fields: %s", target.PluginID, strings.Join(missing, ", "))
+		return delivery.Env{}, fmt.Errorf("plugin %q is missing required fields: %s", pluginID, strings.Join(missing, ", "))
 	}
-	return pluginRun{plugin: p, version: v, env: env}, nil
+	return env, nil
 }
 
 // credentialFieldTLSCA is a credential field the hub itself reads: a PEM CA

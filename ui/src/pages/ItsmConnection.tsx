@@ -2,20 +2,40 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, fetchJSON } from "../lib/api";
 import { Badge, Button, Input, Panel, Select, StateMessage } from "../components/ui";
+import type { DeliveryPlugin, DeliveryPluginVersion } from "../lib/plugins";
 
 // Wire contract constants (handlers_itsm.go, W32-10). Change only these if the
 // backend moves.
 const CONNECTIONS_PATH = "/itsm/connections";
 const testPath = (id: string) => `${CONNECTIONS_PATH}/${encodeURIComponent(id)}/test`;
 
+const PLUGINS_PATH = "/delivery-plugins";
 const EVENT_CLASSES = ["renewal_failed", "approval_pending", "expiry_no_owner"] as const;
+// A plugin connection cannot carry approval_pending: approval sync is
+// native-only in 1.1 (D-326), and the API refuses it.
+const classesFor = (kind: Kind) =>
+  kind === "plugin" ? EVENT_CLASSES.filter((c) => c !== "approval_pending") : EVENT_CLASSES;
+// "default" for a plugin means "open a ticket of the plugin's default type";
+// the wire value is the empty string.
 const TICKET_TYPES: Record<Kind, string[]> = {
   servicenow: ["incident", "change_request"],
   jira: ["Task", "Bug", "Story"],
+  plugin: ["default"],
 };
-const DEFAULT_TICKET_TYPE: Record<Kind, string> = { servicenow: "incident", jira: "Task" };
+const DEFAULT_TICKET_TYPE: Record<Kind, string> = { servicenow: "incident", jira: "Task", plugin: "default" };
 
-type Kind = "servicenow" | "jira";
+type Kind = "servicenow" | "jira" | "plugin";
+
+// The enabled ticket plugins an operator can pick, with the credential fields
+// each one asks for (its credential_schema).
+function ticketPlugins(plugins: DeliveryPlugin[]): { id: string; version: DeliveryPluginVersion }[] {
+  const out: { id: string; version: DeliveryPluginVersion }[] = [];
+  for (const p of plugins) {
+    const v = p.versions.find((x) => x.version === p.enabled_version);
+    if (v && v.kind === "ticket") out.push({ id: p.id, version: v });
+  }
+  return out;
+}
 
 interface ItsmConn {
   id: string;
@@ -23,6 +43,7 @@ interface ItsmConn {
   name: string;
   base_url: string;
   credential_ref: string;
+  plugin_id?: string;
   enabled: boolean;
 }
 
@@ -31,12 +52,14 @@ interface TestResult {
   detail: string;
 }
 
-function buildEventClasses(rows: Record<string, string>) {
-  return EVENT_CLASSES.filter((c) => rows[c]).map((c) => ({ class: c, ticket_type: rows[c] }));
+function buildEventClasses(kind: Kind, rows: Record<string, string>) {
+  return classesFor(kind)
+    .filter((c) => rows[c])
+    .map((c) => ({ class: c, ticket_type: kind === "plugin" && rows[c] === "default" ? "" : rows[c] }));
 }
 
 function defaultRows(kind: Kind): Record<string, string> {
-  return Object.fromEntries(EVENT_CLASSES.map((c) => [c, DEFAULT_TICKET_TYPE[kind]]));
+  return Object.fromEntries(classesFor(kind).map((c) => [c, DEFAULT_TICKET_TYPE[kind]]));
 }
 
 function isHttpsUrl(v: string): boolean {
@@ -59,6 +82,8 @@ export default function ItsmConnection({ canWrite }: { canWrite: boolean }) {
   const [approvedStatus, setApprovedStatus] = useState("");
   const [rejectedStatus, setRejectedStatus] = useState("");
   const [doneStatus, setDoneStatus] = useState("");
+  const [pluginId, setPluginId] = useState("");
+  const [pluginFields, setPluginFields] = useState<Record<string, string>>({});
   const [rows, setRows] = useState<Record<string, string>>(defaultRows("servicenow"));
   const [formError, setFormError] = useState<string | null>(null);
   const [results, setResults] = useState<Record<string, TestResult>>({});
@@ -70,8 +95,22 @@ export default function ItsmConnection({ canWrite }: { canWrite: boolean }) {
   });
   const items = list.data?.data?.items ?? [];
 
+  // Read only while the plugin kind is chosen, so the native kinds never
+  // depend on the plugin API being on.
+  const pluginList = useQuery({
+    queryKey: ["itsm-ticket-plugins"],
+    queryFn: () => fetchJSON<{ data: DeliveryPlugin[] }>(PLUGINS_PATH),
+    enabled: kind === "plugin",
+  });
+  const rawPlugins = pluginList.data?.data;
+  const plugins = ticketPlugins(Array.isArray(rawPlugins) ? rawPlugins : []);
+  const chosenPlugin = plugins.find((p) => p.id === pluginId);
+  const schema = Object.entries(chosenPlugin?.version.manifest.credential_schema ?? {});
+
   function changeKind(k: Kind) {
     setKind(k);
+    setPluginId("");
+    setPluginFields({});
     setRows(defaultRows(k));
   }
 
@@ -85,13 +124,17 @@ export default function ItsmConnection({ canWrite }: { canWrite: boolean }) {
     setApprovedStatus("");
     setRejectedStatus("");
     setDoneStatus("");
+    setPluginId("");
+    setPluginFields({});
     setRows(defaultRows(kind));
   }
 
   const addMutation = useMutation({
     mutationFn: async () => {
       const payload: Record<string, unknown> =
-        kind === "jira"
+        kind === "plugin"
+          ? Object.fromEntries(Object.entries(pluginFields).filter(([, v]) => v.trim() !== ""))
+          : kind === "jira"
           ? {
               email: username.trim(),
               api_token: secret,
@@ -112,9 +155,9 @@ export default function ItsmConnection({ canWrite }: { canWrite: boolean }) {
         body: JSON.stringify({
           kind,
           name: name.trim(),
-          base_url: baseUrl.trim(),
+          ...(kind === "plugin" ? { plugin_id: pluginId } : { base_url: baseUrl.trim() }),
           credential_ref: cred.data.id,
-          event_classes: buildEventClasses(rows),
+          event_classes: buildEventClasses(kind, rows),
         }),
       });
     },
@@ -131,6 +174,17 @@ export default function ItsmConnection({ canWrite }: { canWrite: boolean }) {
 
   function submit() {
     if (!name.trim()) return setFormError("Name is required.");
+    if (kind === "plugin") {
+      if (!chosenPlugin) return setFormError("Choose an enabled ticket plugin.");
+      for (const [field, f] of schema) {
+        const v = (pluginFields[field] ?? "").trim();
+        if (f.required && !v && !f.default) return setFormError(`${field} is required.`);
+        if (f.type === "url" && v && !isHttpsUrl(v)) return setFormError(`${field} must start with https://`);
+      }
+      setFormError(null);
+      addMutation.mutate();
+      return;
+    }
     if (!isHttpsUrl(baseUrl.trim())) return setFormError("URL must start with https://");
     if (!secret) return setFormError("Credential is required.");
     if (kind === "jira" && !projectKey.trim()) return setFormError("Jira project key is required.");
@@ -159,7 +213,7 @@ export default function ItsmConnection({ canWrite }: { canWrite: boolean }) {
   return (
     <Panel
       title="ITSM connections"
-      subtitle="ServiceNow and Jira ticket creation; credentials are write-only"
+      subtitle="ServiceNow, Jira and ticket plugins; credentials are write-only"
     >
       <div className="space-y-4">
         {!canWrite ? (
@@ -179,12 +233,57 @@ export default function ItsmConnection({ canWrite }: { canWrite: boolean }) {
             >
               <option value="servicenow">ServiceNow</option>
               <option value="jira">Jira</option>
+              <option value="plugin">Ticket plugin</option>
             </Select>
           </label>
           <label className="block space-y-1 text-sm text-foreground">
             <span>Name</span>
             <Input aria-label="ITSM name" value={name} disabled={disabled} onChange={(e) => setName(e.target.value)} />
           </label>
+          {kind === "plugin" ? (
+            <>
+              <label className="block space-y-1 text-sm text-foreground sm:col-span-2">
+                <span>Plugin</span>
+                <Select
+                  aria-label="Ticket plugin"
+                  value={pluginId}
+                  disabled={disabled}
+                  onChange={(e) => {
+                    setPluginId(e.target.value);
+                    setPluginFields({});
+                  }}
+                >
+                  <option value="">Choose an enabled ticket plugin</option>
+                  {plugins.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.version.manifest.name} ({p.id})
+                    </option>
+                  ))}
+                </Select>
+                {pluginList.isSuccess && plugins.length === 0 ? (
+                  <span className="block text-xs text-muted-foreground">
+                    No ticket plugin is enabled. Install one under Delivery plugins; enabling needs a second approver.
+                  </span>
+                ) : null}
+              </label>
+              {schema.map(([field, f]) => (
+                <label key={field} className="block space-y-1 text-sm text-foreground">
+                  <span>{field}</span>
+                  <Input
+                    type={f.secret ? "password" : "text"}
+                    aria-label={`Plugin credential ${field}`}
+                    value={pluginFields[field] ?? ""}
+                    disabled={disabled}
+                    autoComplete={f.secret ? "new-password" : "off"}
+                    placeholder={f.secret ? "Write-only" : f.default ?? ""}
+                    onChange={(e) => setPluginFields((p) => ({ ...p, [field]: e.target.value }))}
+                  />
+                </label>
+              ))}
+            </>
+          ) : null}
+          {kind !== "plugin" ? (
+            <>
           <label className="block space-y-1 text-sm text-foreground sm:col-span-2">
             <span>URL</span>
             <Input
@@ -217,6 +316,8 @@ export default function ItsmConnection({ canWrite }: { canWrite: boolean }) {
               placeholder="Write-only"
             />
           </label>
+            </>
+          ) : null}
           {isJira ? (
             <>
               <label className="block space-y-1 text-sm text-foreground">
@@ -245,7 +346,7 @@ export default function ItsmConnection({ canWrite }: { canWrite: boolean }) {
 
         <fieldset className="space-y-2">
           <legend className="text-sm font-medium text-foreground">Event class to ticket type</legend>
-          {EVENT_CLASSES.map((c) => (
+          {classesFor(kind).map((c) => (
             <div key={c} className="flex flex-wrap items-center gap-2 text-sm">
               <code className="w-40 font-mono text-xs">{c}</code>
               <Select
@@ -287,7 +388,7 @@ export default function ItsmConnection({ canWrite }: { canWrite: boolean }) {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium text-foreground">{c.name}</span>
                   <Badge tone="info">{c.kind}</Badge>
-                  <span className="text-muted-foreground">{c.base_url}</span>
+                  <span className="text-muted-foreground">{c.kind === "plugin" ? c.plugin_id : c.base_url}</span>
                 </div>
                 <div className="text-xs text-muted-foreground">Credential: Stored (write-only)</div>
                 <Button

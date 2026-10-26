@@ -115,6 +115,8 @@ func TestWriteGateMatrix(t *testing.T) {
 		{"POST", "/api/v1/certificates/abc/revoke", []string{"pki-operator"}, []string{"service-account", "approver"}},
 		{"POST", "/api/v1/pending-actions/act-1/approve", []string{"pki-operator", "approver"}, []string{"service-account", RoleMCPAgent, "viewer"}},
 		{"POST", "/api/v1/pending-actions", []string{RoleMCPAgent, "mcp-agent+*", "pki-operator", "service-account"}, []string{"viewer", "cert-reader", "made-up-role"}},
+		// W40-03: MCP may propose a trust bundle; it can never approve one (action.approve).
+		{"POST", "/api/v1/trust-bundles", []string{RoleMCPAgent, "mcp-agent+*", "pki-operator"}, []string{"viewer", "cert-reader", "made-up-role"}},
 		{"POST", "/api/v1/notifications/rules", []string{"pki-operator", "notification-operator", "bot+ops:write"}, []string{"service-account", "discovery-operator"}},
 		{"POST", "/api/v1/discovery/scans", []string{"discovery-operator", "bot+ops:write"}, []string{"pki-operator", "notification-operator"}},
 		{"POST", "/api/v1/protocols/conformance/recheck", []string{"pki-operator", "protocol-operator"}, []string{"service-account"}},
@@ -228,11 +230,11 @@ func TestWriteRoutesUseTheVocabulary(t *testing.T) {
 // each handler), so they need no rule. A route on neither list fails the
 // coverage test below: decide it, then put it on one.
 var readOnlyAPIRoutes = map[string]bool{
-	"/api/v1/agents": true, "/api/v1/audit": true,
+	"/api/v1/agents": true, "/api/v1/audit": true, "/api/v1/trust-bundles/x": true,
 	"/api/v1/audit/export":                  true,
 	"/api/v1/audit/transparency/checkpoint": true, "/api/v1/audit/transparency/consistency": true,
 	"/api/v1/audit/transparency/inclusion": true, "/api/v1/authz-check": true, "/api/v1/blast-radius": true,
-	"/api/v1/cbom": true, "/api/v1/certificates/x": true, "/api/v1/certificates/quota": true, "/api/v1/certificates/x/download": true, "/api/v1/ct/findings": true, "/api/v1/events": true, "/api/v1/meta": true, "/api/v1/openapi.yaml": true,
+	"/api/v1/cbom": true, "/api/v1/certificates/x": true, "/api/v1/certificates/quota": true, "/api/v1/certificates/x/download": true, "/api/v1/ct/findings": true, "/api/v1/events": true, "/api/v1/meta": true, "/api/v1/demo/status": true, "/api/v1/openapi.yaml": true,
 	"/api/v1/pending-actions/x": true, "/api/v1/protected/certs/summary": true, "/api/v1/protected/config": true,
 	"/api/v1/protected/ping": true, "/api/v1/protected/whoami": true, "/api/v1/reports/algorithm-sunset": true,
 	"/api/v1/reports/anomalies": true, "/api/v1/reports/ca-health": true, "/api/v1/reports/change-audit": true,

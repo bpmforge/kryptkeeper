@@ -527,6 +527,44 @@ func mapTrustAnchorErr(err error) error {
 	return err
 }
 
+// externalCAEngine is the slice of *ca.Engine the ExternalCACreator capability
+// and the issuer bridge need.
+type externalCAEngine interface {
+	CreateExternalCA(name, connectorID string, trustPEM []byte) (*ca.CA, error)
+	SetExternalIssuer(ca.ExternalIssuer)
+}
+
+// CreateExternalCA implements ExternalCACreator.
+func (p *engineCAProvider) CreateExternalCA(_ context.Context, name, connectorID string, trustPEM []byte) (CAListItem, error) {
+	e, ok := p.engine.(externalCAEngine)
+	if !ok {
+		return CAListItem{}, errCACreateUnsupported
+	}
+	c, err := e.CreateExternalCA(name, connectorID, trustPEM)
+	if err != nil {
+		return CAListItem{}, err
+	}
+	return caToListItem(c), nil
+}
+
+// SetExternalIssuer attaches the connector bridge to the engine; a no-op for
+// an engine that cannot hold external CAs.
+func (p *engineCAProvider) SetExternalIssuer(x ca.ExternalIssuer) {
+	if e, ok := p.engine.(externalCAEngine); ok {
+		e.SetExternalIssuer(x)
+	}
+}
+
+// SetExternalRejectionObserver attaches the audit hook for refused upstream
+// responses; a no-op for an engine that cannot hold external CAs.
+func (p *engineCAProvider) SetExternalRejectionObserver(fn ca.ExternalRejectionObserver) {
+	if e, ok := p.engine.(interface {
+		SetExternalRejectionObserver(ca.ExternalRejectionObserver)
+	}); ok {
+		e.SetExternalRejectionObserver(fn)
+	}
+}
+
 // caToListItem converts a ca.CA engine object to the API-layer CAListItem.
 func caToListItem(c *ca.CA) CAListItem {
 	// W19-08/W23-10: the stored backend label in the canonical vocabulary;
@@ -544,6 +582,12 @@ func caToListItem(c *ca.CA) CAListItem {
 	}
 	if c.ParentCAID != "" {
 		item.ParentCAID = &c.ParentCAID
+	}
+	// An external CA has no key here, and its CRL and OCSP are the upstream's:
+	// no pointers to the hub's own endpoints are ever emitted for it (D-304).
+	if c.Type == ca.CATypeExternal {
+		item.ConnectorID = c.ConnectorID
+		item.KeyStorageType = ca.CATypeExternal
 	}
 	item.RevocationSigning = revsign.RevocationSigningClassical
 	if len(c.CertPEM) > 0 {

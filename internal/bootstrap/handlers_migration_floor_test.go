@@ -184,7 +184,7 @@ func TestMigrationSinkCarriesEnrollRestriction(t *testing.T) {
 	if r := got.EnrollRoles(); len(r) != 1 || r[0] != "pki-admin" || got.AutoEnroll {
 		t.Fatalf("restriction not stored: %+v", got)
 	}
-	grant := []string{"pki-admin", "protocol:wstep:lab-dc01.corp.example.test"}
+	grant := []string{"pki-admin", "protocol:wstep:dc01.corp.example.test"}
 	if _, err := h.templates.PatchTemplate(ctx, id, TemplatePatchRequest{EnrollmentPermissions: &EnrollmentPermissions{Enroll: grant}}); err != nil {
 		t.Fatal(err)
 	}

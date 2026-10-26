@@ -191,6 +191,15 @@ and the reverse.
   repository is private; the hub does not consult the log either way. It
   replaces `--tlog-upload=false`, which cosign v3 deprecates. Ship
   `manifest.json.bundle` next to `manifest.json` and `plugin.wasm`.
+- **Catalogue (W38-11, D-328).** The plugin catalogue (`catalogue.json`) is
+  signed with this same key, as `catalogue.json.bundle`, and the hub verifies it
+  against the same compiled-in key, so the catalogue adds no trust root. The
+  `plugin-catalogue` job in `packaging/public/github-release.yml` is the first CI
+  use of the key: it needs repository secrets `PLUGIN_SIGNING_KEY` (the
+  `kk-plugin.key` contents) and `PLUGIN_SIGNING_PASSWORD`. Adding them is the
+  release owner's decision, since this file previously kept the key out of CI;
+  the key file is password-encrypted, so the password is the part to guard.
+  Until the secrets exist the job fails with a message and signing stays local.
 - **Rotation.** Add the new public key to `plugin_signing_keys.txt` beside
   the old one, sign new releases with the new key, and drop the old key
   after one release. Versions already installed keep their recorded

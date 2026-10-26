@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"kryptkeeper/internal/logging"
 	"strings"
+	"time"
 
 	"kryptkeeper/internal/cloudinventory"
 )
@@ -72,6 +73,8 @@ type cloudScanSummary struct {
 	// Scopes is the per-scope outcome of a W24-17 fan-out; empty on the
 	// legacy single-connector path.
 	Scopes []cloudScopeSummary `json:"scopes"`
+	// Import is what the scan did to the certificate inventory (W38-05).
+	Import *cloudImportSummary `json:"import,omitempty"`
 }
 
 type cloudScopeSummary struct {
@@ -165,7 +168,7 @@ func runCloudScanAndFinalize(ctx context.Context, db *sql.DB, postgres bool, job
 		}
 	}
 	if len(mine) > 0 {
-		runCloudScopeFanOut(ctx, finalize, jobID, scanType, mine)
+		runCloudScopeFanOut(ctx, db, postgres, finalize, jobID, scanType, mine)
 		return
 	}
 
@@ -179,13 +182,31 @@ func runCloudScanAndFinalize(ctx context.Context, db *sql.DB, postgres bool, job
 		finalize("failed", "", fmt.Sprintf("list certificates: %v", err))
 		return
 	}
-	finalizeCloudSummary(finalize, jobID, cloudScanSummary{Provider: scanType, Certificates: len(certs), Items: certs}, "completed", "")
+	summary := cloudScanSummary{Provider: scanType, Certificates: len(certs), Items: certs}
+	imp := importScanResults(ctx, db, postgres, jobID, certs, []string{cloudScopeKeyLegacy(provider)}, provider)
+	summary.Import = &imp
+	finalizeCloudSummary(finalize, jobID, summary, "completed", "")
+}
+
+// importScanResults imports a finished scan's certificates under the tenant
+// that owns the job. An import failure is reported in the summary and never
+// fails the scan: the listing itself succeeded.
+func importScanResults(ctx context.Context, db *sql.DB, postgres bool, jobID string, certs []cloudinventory.CloudCertificate, sweep []string, provider string) cloudImportSummary {
+	var tenant string
+	q := "SELECT COALESCE(tenant, '') FROM scan_jobs WHERE id = ?"
+	if postgres {
+		q = "SELECT COALESCE(tenant, '') FROM scan_jobs WHERE id = $1"
+	}
+	if err := db.QueryRowContext(ctx, q, jobID).Scan(&tenant); err != nil {
+		return cloudImportSummary{Failed: []string{fmt.Sprintf("scan tenant: %v", err)}}
+	}
+	return importCloudCertificates(ctx, db, postgres, tenant, certs, sweep, provider, time.Now())
 }
 
 // runCloudScopeFanOut scans every configured scope; one failing scope only
 // fails its own result. Messages carry scope keys and provider errors, never
 // credentials.
-func runCloudScopeFanOut(ctx context.Context, finalize func(status, summary, errMsg string), jobID, scanType string, scopes []cloudinventory.Scope) {
+func runCloudScopeFanOut(ctx context.Context, db *sql.DB, postgres bool, finalize func(status, summary, errMsg string), jobID, scanType string, scopes []cloudinventory.Scope) {
 	results := cloudinventory.FanOut(ctx, scopes, func(c context.Context, s cloudinventory.Scope) (cloudinventory.Lister, error) {
 		return newCloudScopeConnector(c, s)
 	}, 0)
@@ -205,6 +226,20 @@ func runCloudScopeFanOut(ctx context.Context, finalize func(status, summary, err
 		status, errMsg = "failed", fmt.Sprintf("%d of %d scopes failed: %s", len(failed), len(results), strings.Join(failed, "; "))
 	case len(failed) > 0:
 		status, errMsg = scanStatusCompletedWithErrors, fmt.Sprintf("%d of %d scopes failed: %s", len(failed), len(results), strings.Join(failed, "; "))
+	}
+	// Only scopes that answered are swept: silence from a scope is not
+	// evidence its certificates are gone. The legacy key is swept too so a hub
+	// that moves to configured scopes retires its old single-connector links.
+	provider := cloudProviderForScanType(scanType)
+	sweep := []string{cloudScopeKeyLegacy(provider)}
+	for _, r := range results {
+		if r.Err == "" {
+			sweep = append(sweep, r.Scope.Key())
+		}
+	}
+	if db != nil && len(failed) < len(results) {
+		imp := importScanResults(ctx, db, postgres, jobID, merged, sweep, provider)
+		summary.Import = &imp
 	}
 	finalizeCloudSummary(finalize, jobID, summary, status, errMsg)
 }

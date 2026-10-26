@@ -1,3 +1,9 @@
+# PUBLIC PIPELINE SOURCE (W37). This file is the canonical
+# .github/workflows/release.yml of the public repository bpmforge/kryptkeeper;
+# the publish snapshot copies it into place. The dev repository's own
+# .github/workflows/release.yml is the internal pipeline (D-210) and must not be
+# replaced by this file.
+#
 # W20-02: single goreleaser-driven release pipeline, triggered by a `v*` tag.
 # Produces binaries (linux/amd64, linux/arm64, darwin/arm64) for all four
 # commands plus the Windows agent (zip + MSI) and a Homebrew formula
@@ -255,10 +261,111 @@ jobs:
   # W33-09: verify every signature right after publish, against the identity
   # of THIS workflow at THIS tag. A mismatch fails the run, which skips
   # promote-latest, so `latest` keeps pointing at the previous release.
+  # W37-01 (D-309): the Helm chart as an OCI artifact in ghcr, signed keyless
+  # with this workflow's identity like the images. scripts/release/helm-oci.sh
+  # packages at the tag version, pushes, signs and verifies a clean pull.
+  helm-chart:
+    name: Helm chart (OCI)
+    runs-on: ubuntu-latest
+    needs: goreleaser
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Helm is preinstalled on GitHub's ubuntu-latest image.
+      - name: Helm version
+        run: helm version --short
+
+      - name: Install Cosign (keyless)
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Log in to GHCR for Helm
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "$GH_TOKEN" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Package, push, sign and verify the chart
+        env:
+          TAG: ${{ github.ref_name }}
+          IDENTITY_REGEXP: '^https://github\.com/bpmforge/kryptkeeper/\.github/workflows/release\.yml@refs/tags/v'
+        run: bash scripts/release/helm-oci.sh "$TAG"
+
+  # W38-11 (D-328): first-party plugins as a signed catalogue. Plugins are signed
+  # with the plugin-signing key the hub embeds (plugin_signing_keys.txt), NOT the
+  # keyless release identity: the hub verifies plugin signatures offline against
+  # that key, so using it adds no trust root (packaging/SIGNING.md). This is the
+  # first CI use of that key; it needs two repository secrets, set by the release
+  # owner, and the job fails with a plain message while they are absent:
+  #   PLUGIN_SIGNING_KEY       contents of kk-plugin.key (cosign-encrypted)
+  #   PLUGIN_SIGNING_PASSWORD  its password
+  # Output: one release asset, plugin-catalogue-<tag>.tar.gz, whose tree is also
+  # what is copied to site/plugins/ (kryptkeeper.io/plugins/catalogue.json). The
+  # site deploy stays the owner's manual step (docs/ops/PLUGIN_CATALOGUE.md).
+  plugin-catalogue:
+    name: Plugin catalogue
+    runs-on: ubuntu-latest
+    needs: goreleaser
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: ui/.nvmrc
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+
+      - name: Build, sign and verify the plugins and the catalogue
+        env:
+          PLUGIN_SIGNING_KEY: ${{ secrets.PLUGIN_SIGNING_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.PLUGIN_SIGNING_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PLUGIN_SIGNING_KEY" ] || [ -z "$COSIGN_PASSWORD" ]; then
+            echo "::error::PLUGIN_SIGNING_KEY and PLUGIN_SIGNING_PASSWORD are not set; the plugin catalogue cannot be signed (packaging/SIGNING.md)"
+            exit 1
+          fi
+          umask 077
+          key="$RUNNER_TEMP/kk-plugin.key"
+          printf '%s' "$PLUGIN_SIGNING_KEY" > "$key"
+          trap 'rm -f "$key"' EXIT
+          # sign-plugins.sh builds (make plugins), signs each manifest and
+          # verifies every bundle against the key compiled into the hub.
+          KK_PLUGIN_KEY="$key" bash scripts/sign-plugins.sh
+          out="$RUNNER_TEMP/plugin-catalogue"
+          node scripts/plugins/build-catalogue.mjs --dist dist/plugins --plugins plugins \
+            --out "$out" --base-url https://kryptkeeper.io/plugins
+          pub="$RUNNER_TEMP/kk-plugin.pub"
+          sed -n '/-----BEGIN PUBLIC KEY-----/,/-----END PUBLIC KEY-----/p' internal/bootstrap/plugin_signing_keys.txt > "$pub"
+          cosign sign-blob --yes --key "$key" --bundle "$out/catalogue.json.bundle" \
+            --signing-config scripts/cosign-signing-config.json "$out/catalogue.json"
+          cosign verify-blob --key "$pub" --bundle "$out/catalogue.json.bundle" --insecure-ignore-tlog=true "$out/catalogue.json"
+          tar -C "$out" -czf "$RUNNER_TEMP/plugin-catalogue-${GITHUB_REF_NAME}.tar.gz" .
+          echo "CATALOGUE_ASSET=$RUNNER_TEMP/plugin-catalogue-${GITHUB_REF_NAME}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Upload the catalogue to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: gh release upload "$RELEASE_TAG" --repo "$REPO" --clobber "$CATALOGUE_ASSET"
+
   release-verify:
     name: Verify signatures
     runs-on: ubuntu-latest
-    needs: [goreleaser, fips-image, homebrew-formula]
+    needs: [goreleaser, fips-image, homebrew-formula, helm-chart]
     permissions:
       contents: read
       packages: read
@@ -318,6 +425,24 @@ jobs:
             --certificate-oidc-issuer "$issuer" \
             "ghcr.io/bpmforge/kryptkeeper:${TAG#v}-fips"
           bash scripts/repro-check.sh sbom "$rel"
+          cosign verify \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer "$issuer" \
+            "ghcr.io/bpmforge/charts/kryptkeeper:${TAG#v}"
+
+      # D-312: a release whose published assets do not verify says so in its
+      # notes instead of looking healthy.
+      - name: Mark the release broken on verification failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="$(gh release view "$TAG" --repo "$REPO" --json body --jq .body)"
+          printf '%s\n\n> **This release failed post-publish verification.** Do not install it; see %s\n' "$body" "$RUN_URL" > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --repo "$REPO" --notes-file "$RUNNER_TEMP/notes.md"
 
   # Promote `latest` only after release-verify passed; never for rc/prerelease
   # tags. goreleaser no longer pushes :latest (.goreleaser.yaml).

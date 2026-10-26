@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Replace ADCS for your Windows domain · Kryptkeeper</title>
+<meta name="description" content="Keep Group Policy autoenrollment and move the CA behind it to Kryptkeeper.">
+<meta property="og:title" content="Replace ADCS for your Windows domain · Kryptkeeper">
+<meta property="og:description" content="Keep Group Policy autoenrollment and move the CA behind it to Kryptkeeper.">
+<meta property="og:url" content="https://kryptkeeper.io/paths/replace-adcs/">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<div class="crumb-row"><nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/paths/">Paths</a></li><li aria-current="page">Replace ADCS for your Windows domain</li></ol></nav><span class="pill role">Windows and AD administrator</span></div>
+<header class="page-head">
+  <h1>Replace ADCS for your Windows domain</h1>
+  <p class="lede">Keep Group Policy autoenrollment and move the CA behind it to Kryptkeeper.</p>
+</header>
+<ol class="path-steps">
+<li class="pstep">
+  <span class="card-img"><img src="/shots/U-07/cover-dark.webp" width="1220" height="762" alt="Import an existing root screen in Kryptkeeper" loading="lazy" decoding="async"></span>
+  <div class="pstep-text">
+    <span class="label">Step <b>1</b> &middot; Certificate authorities</span>
+    <h3><a class="stretch" href="/features/certificate-authorities/import-root/">Import an existing root</a></h3>
+    <p>Import a root you already trust as a trust anchor.</p>
+    <span class="card-foot"><span>7 steps</span><span class="arr" aria-hidden="true">&rarr;</span></span>
+  </div>
+</li>
+<li class="pstep">
+  <span class="card-img"><img src="/shots/U-05/cover-dark.webp" width="1220" height="762" alt="Create the issuing CA for the domain screen in Kryptkeeper" loading="lazy" decoding="async"></span>
+  <div class="pstep-text">
+    <span class="label">Step <b>2</b> &middot; Windows and Active Directory</span>
+    <h3><a class="stretch" href="/features/windows-active-directory/issuing-ca-for-the-domain/">Create the issuing CA for the domain</a></h3>
+    <p>Create the intermediate CA that will sign your domain certificates.</p>
+    <span class="card-foot"><span>7 steps</span><span class="arr" aria-hidden="true">&rarr;</span></span>
+  </div>
+</li>
+<li class="pstep">
+  <span class="card-img"><img src="/shots/U-52/cover-dark.webp" width="1220" height="762" alt="Import templates from ADCS screen in Kryptkeeper" loading="lazy" decoding="async"></span>
+  <div class="pstep-text">
+    <span class="label">Step <b>3</b> &middot; Windows and Active Directory</span>
+    <h3><a class="stretch" href="/features/windows-active-directory/import-adcs-templates/">Import templates from ADCS</a></h3>
+    <p>Bring your existing ADCS templates across instead of rebuilding them.</p>
+    <span class="card-foot"><span>5 steps</span><span class="arr" aria-hidden="true">&rarr;</span></span>
+  </div>
+</li>
+<li class="pstep">
+  <span class="card-img"><img src="/shots/U-10/cover-dark.webp" width="1220" height="762" alt="Create a certificate template screen in Kryptkeeper" loading="lazy" decoding="async"></span>
+  <div class="pstep-text">
+    <span class="label">Step <b>4</b> &middot; Windows and Active Directory</span>
+    <h3><a class="stretch" href="/features/windows-active-directory/machine-user-templates/">Create a certificate template</a></h3>
+    <p>Name the template, set its lifetime, key usage and algorithms, then create it.</p>
+    <span class="card-foot"><span>8 steps</span><span class="arr" aria-hidden="true">&rarr;</span></span>
+  </div>
+</li>
+<li class="pstep">
+  <span class="card-img"><img src="/shots/U-25/cover-dark.webp" width="1220" height="762" alt="Scan for certificates in use screen in Kryptkeeper" loading="lazy" decoding="async"></span>
+  <div class="pstep-text">
+    <span class="label">Step <b>5</b> &middot; Windows and Active Directory</span>
+    <h3><a class="stretch" href="/features/windows-active-directory/scan-windows-stores/">Scan for certificates in use</a></h3>
+    <p>Scan a host or range for the TLS certificates its services present, then read the results.</p>
+    <span class="card-foot"><span>8 steps</span><span class="arr" aria-hidden="true">&rarr;</span></span>
+  </div>
+</li>
+<li class="pstep">
+  <span class="card-img"><img src="/shots/U-29/cover-dark.webp" width="1220" height="762" alt="Enroll an agent on a server screen in Kryptkeeper" loading="lazy" decoding="async"></span>
+  <div class="pstep-text">
+    <span class="label">Step <b>6</b> &middot; Windows and Active Directory</span>
+    <h3><a class="stretch" href="/features/windows-active-directory/windows-agent/">Enroll an agent on a server</a></h3>
+    <p>Name the agent, choose its host type, generate an enrollment token and find the install steps.</p>
+    <span class="card-foot"><span>7 steps</span><span class="arr" aria-hidden="true">&rarr;</span></span>
+  </div>
+</li>
+</ol>
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

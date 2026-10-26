@@ -227,14 +227,22 @@ if [ -n "$INV_OK" ]; then pass "hub recorded inventory_count=$COUNT (expected >=
 else fail "hub never recorded expected inventory (last count: ${COUNT:-unknown})"; podman logs "$CONTAINER" 2>&1 | tail -40; fi
 
 # --- W24-16: keystores, kubeconfig, hub-DB hygiene, out-of-band replacement ---
-# No hub API lists an agent's inventory, so these checks read the hub's SQLite
-# file (copied with its WAL) scoped to the agent_* tables.
+# W24-45: these checks read GET /api/v1/agents/{id}/inventory. The hub DB is
+# still copied below, only for the PRIVATE KEY hygiene scan of the agent_* tables.
+inv_json() { curl -fsSk -H "Authorization: Bearer uat-token" "$BASE/api/v1/agents/$AGENT_ID/inventory?limit=500" 2>/dev/null; }
 hub_db() {
   rm -rf "$WORKDIR/hubdb"; mkdir -p "$WORKDIR/hubdb"
   podman cp "$HUB:/data/." "$WORKDIR/hubdb/" >/dev/null 2>&1
   echo "$WORKDIR/hubdb/kryptkeeper.db"
 }
-inv_sources() { sqlite3 "$(hub_db)" "SELECT source FROM agent_inventory WHERE agent_id='$AGENT_ID'" 2>/dev/null; }
+inv_sources() { inv_json | python3 -c "
+import json,sys
+for c in json.load(sys.stdin).get('certificates',[]): print(c.get('source',''))" 2>/dev/null; }
+# Fingerprint of the certificate whose source ends in the given path suffix.
+inv_fp_for() { inv_json | python3 -c "
+import json,sys
+for c in json.load(sys.stdin).get('certificates',[]):
+    if c.get('source','').endswith('$1'): print(c.get('fingerprint','')); break" 2>/dev/null; }
 count_src() { grep -c -E "$1" <<<"$2" || true; }
 
 # Wait (one agent poll is 8 s) until all 6 keystore-sourced rows are present.
@@ -260,7 +268,7 @@ N_ALL="$(count_src '^(jks|pkcs12|kubeconfig):' "$SRCS")"
 # Out-of-band replacement of a served cert. extra1.pem (not the nginx leaf) is
 # replaced so the autopilot renewal and its agent.renewal_result suppression
 # cannot explain the change. Same CN, new key.
-OLD_FP="$(sqlite3 "$(hub_db)" "SELECT fingerprint FROM agent_inventory WHERE agent_id='$AGENT_ID' AND source LIKE '%/etc/ssl/certs-extra/extra1.pem'" 2>/dev/null | head -1)"
+OLD_FP="$(inv_fp_for /etc/ssl/certs-extra/extra1.pem)"
 T_REPLACE=$(date +%s)
 podman exec "$CONTAINER" sh -c 'openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -keyout /tmp/extra1-new.key -out /etc/ssl/certs-extra/extra1.pem -days 301 -nodes -subj "/CN=extra1.kryptkeeper.uat.local" >/dev/null 2>&1; rm -f /tmp/extra1-new.key'
 ALERT=""
@@ -274,7 +282,7 @@ print('\n'.join(r.get('change_summary','') for r in rows))" 2>/dev/null)"
   sleep 2
 done
 ELAPSED=$(( $(date +%s) - T_REPLACE ))
-NEW_FP="$(sqlite3 "$(hub_db)" "SELECT fingerprint FROM agent_inventory WHERE agent_id='$AGENT_ID' AND source LIKE '%/etc/ssl/certs-extra/extra1.pem'" 2>/dev/null | head -1)"
+NEW_FP="$(inv_fp_for /etc/ssl/certs-extra/extra1.pem)"
 if grep -q 'extra1.pem' <<<"$ALERT"; then
   pass "CERTIFICATE_REPLACED raised for extra1.pem within ${ELAPSED}s of the out-of-band replacement (audit discovery.scan_diff.certificate_replaced)"
 else
@@ -287,6 +295,10 @@ else
 fi
 if grep -q '/opt/keystores' <<<"$ALERT"; then fail "alert raised for an unchanged keystore source"
 else pass "0 alerts for the unchanged keystore sources"; fi
+
+# The API view must carry no key material either.
+if inv_json | grep -q 'PRIVATE KEY'; then fail "GET /agents/{id}/inventory carries a PRIVATE KEY header"
+else pass "GET /agents/{id}/inventory carries 0 PEM private-key headers"; fi
 
 # Hub DB hygiene: no PEM private-key header in the agent_* tables.
 DB="$(hub_db)"

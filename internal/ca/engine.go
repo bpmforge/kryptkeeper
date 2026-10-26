@@ -48,6 +48,9 @@ type Engine struct {
 	// Used both to record CA.KeyStorageType truthfully (W19-08) and to
 	// gate PQC key generation against docs/ADR_PQC_KEYS_SOFTWARE_ONLY.md.
 	keyBackend string
+	// external forwards external-CA issuance to a connector (W36-02).
+	external         ExternalIssuer
+	onExternalReject ExternalRejectionObserver
 	// rotateFault and onRotate are the W23-16 rotation test seam and
 	// CRL/OCSP cache-eviction callbacks; both are set once at startup.
 	rotateFault func(RotateStep) error
@@ -815,6 +818,9 @@ func (e *Engine) lookupActiveCA(caID string) (*CA, error) {
 }
 
 func (e *Engine) IssueCertificate(caID string, req IssuanceRequest) (*IssuedCertificate, error) {
+	if ext, ok := e.externalCA(caID); ok {
+		return e.issueExternal(ext, req)
+	}
 	if req.PQCCSR != nil {
 		return e.issueCertificateFromPQCCSR(caID, req)
 	}
@@ -1091,6 +1097,13 @@ func (e *Engine) issueLeafCertificate(caID string, req IssuanceRequest, params l
 	// CSR/caller/Subject resolution above, for every CSR type.
 	if err := checkNamePolicy(req.Policy, template); err != nil {
 		return nil, err
+	}
+	if len(req.PermanentIdentifiers) > 0 {
+		san, err := marshalSANExtension(template.DNSNames, template.IPAddresses, template.URIs, req.PermanentIdentifiers)
+		if err != nil {
+			return nil, err
+		}
+		template.ExtraExtensions = append(template.ExtraExtensions, san)
 	}
 
 	leafSKI, err := computeSKIAny(params.pub, "")

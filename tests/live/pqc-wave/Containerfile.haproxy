@@ -1,0 +1,21 @@
+# W40-01 (D-315): haproxy + sshd endpoint for the live PQC wave harness, and the
+# OpenSSL 3.5 workload image the kind leg serves a TLS Secret from. alpine:3.22
+# ships haproxy 3.2 built against the system OpenSSL 3.5 (checked by run-w40.sh).
+FROM docker.io/library/alpine:3.22
+RUN apk add --no-cache haproxy openssh openssl \
+    && mkdir -p /etc/haproxy /run /root/.ssh \
+    && chmod 700 /root/.ssh \
+    && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 3650 \
+         -keyout /tmp/k.pem -out /tmp/c.pem -subj "/CN=placeholder.kk-uat.local" \
+    && cat /tmp/c.pem /tmp/k.pem > /etc/haproxy/kk.pem && rm /tmp/k.pem /tmp/c.pem \
+    && chmod 600 /etc/haproxy/kk.pem \
+    && sed -i -e 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' \
+              -e 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+COPY haproxy-kk.cfg /etc/haproxy/haproxy.cfg
+COPY entrypoint-haproxy.sh /entrypoint.sh
+# A container has no systemd. The installer reloads with `systemctl reload haproxy`; this shim does
+# what the stock unit's ExecReload does for a master-worker haproxy (SIGUSR2 to the master).
+COPY systemctl-shim.sh /usr/local/bin/systemctl
+RUN chmod +x /entrypoint.sh /usr/local/bin/systemctl
+EXPOSE 22 443
+ENTRYPOINT ["/entrypoint.sh"]

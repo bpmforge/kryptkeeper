@@ -41,6 +41,8 @@ export type CertificateRecord = {
   service_name?: string;
   labels?: string[];
   ca_id?: string;
+  // Issuer connector that renews (and can revoke) this certificate.
+  renewal_connector_id?: string;
   serial_number?: string;
   public_key_algorithm?: string;
   // ML-DSA parameter set (e.g. "ML-DSA-65"); absent for other key types.
@@ -71,11 +73,28 @@ export type CaRecord = {
   key_storage_type: string;
   status: string;
   parent_ca_id?: string;
+  connector_id?: string;
   crl_distribution_points?: string[];
   ocsp_service_url?: string;
   active_issued_certificates?: number;
   csr_pem?: string;
   warnings?: string[];
+};
+
+export type NotificationTeamRoute = {
+  id: string;
+  owner_team: string;
+  channel: string;
+  target: string;
+};
+
+export type OwnerlessCertificate = {
+  fingerprint_sha256: string;
+  common_name: string;
+  valid_until: string;
+  days_left: number;
+  owner_email?: string;
+  ca_id?: string;
 };
 
 export type NotificationRule = {
@@ -469,6 +488,9 @@ export type RenewalConnectorBudget = {
   cap: number;
   daily_used?: number;
   daily_limit?: number;
+  window_used?: number;
+  window_limit?: number;
+  window_seconds?: number;
 };
 
 export type RenewalQueueMetrics = {
@@ -530,6 +552,23 @@ export type EvidenceSchedule = {
   enabled: boolean;
   last_sent_at?: string;
   created_at: string;
+};
+
+export type ReportSchedule = {
+  id: string;
+  report: string;
+  format: "csv" | "xlsx" | "pdf";
+  cadence: "daily" | "weekly" | "monthly";
+  recipients: string[];
+  enabled: boolean;
+  last_sent_at?: string;
+  created_at: string;
+};
+
+export type ReportScheduleCatalogEntry = {
+  report: string;
+  title: string;
+  formats: string[];
 };
 
 export type ExpiryBucket = {

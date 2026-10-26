@@ -8,7 +8,25 @@ export type PluginNetwork = {
   ports?: number[];
 };
 
+// Plugin kinds (D-321). A manifest without one is a delivery plugin.
+export type PluginKind =
+  "delivery" | "notify" | "ticket" | "dns01" | "inventory" | "credentials";
+
+export const KIND_LABELS: Record<PluginKind, string> = {
+  delivery: "Delivery",
+  notify: "Notification",
+  ticket: "Ticket",
+  dns01: "DNS-01",
+  inventory: "Inventory",
+  credentials: "Credentials",
+};
+
+export function kindLabel(kind: string | undefined): string {
+  return KIND_LABELS[(kind || "delivery") as PluginKind] ?? kind ?? "Delivery";
+}
+
 export type PluginCapabilities = {
+  provide_credentials?: boolean;
   receive_private_key?: boolean;
   trust_store?: boolean;
   elevated_exec?: boolean;
@@ -27,6 +45,7 @@ export type PluginField = {
 
 export type PluginManifest = {
   api_version: string;
+  kind?: PluginKind;
   id: string;
   name: string;
   version: string;
@@ -39,8 +58,25 @@ export type PluginManifest = {
   target_schema?: Record<string, PluginField>;
 };
 
+/** One row of the signed catalogue (W38-11) with this hub's install status. */
+export type PluginCatalogueEntry = {
+  id: string;
+  kind: string;
+  name: string;
+  publisher: string;
+  version: string;
+  description: string;
+  sha256: string;
+  capabilities: string[];
+  min_hub_version?: string;
+  status: "available" | "installed" | "upgradable";
+  installed_version?: string;
+  compatible: boolean;
+};
+
 export type DeliveryPluginVersion = {
   plugin_id: string;
+  kind: PluginKind;
   version: string;
   sha256: string;
   trust_tier: "first-party" | "verified" | "community";
@@ -85,6 +121,12 @@ export function capabilityLines(c: PluginCapabilities): CapabilityLine[] {
   const out: CapabilityLine[] = [];
   const add = (key: string, tier: CapabilityTier, text: string) =>
     out.push({ key, tier, text, enforced: true });
+  if (c.provide_credentials)
+    add(
+      "provide_credentials",
+      "critical",
+      "This plugin returns credentials the hub uses to log in to your systems.",
+    );
   if (c.receive_private_key)
     add(
       "receive_private_key",
@@ -177,4 +219,17 @@ export function toBase64(bytes: ArrayBuffer): string {
     s += String.fromCharCode(...u8.subarray(i, i + 0x8000));
   }
   return btoa(s);
+}
+
+// enabledDNS01Plugins lists the ids of plugins whose enabled version is a
+// dns01 plugin: the ones an ACME connector can use as its DNS provider.
+export function enabledDNS01Plugins(plugins: DeliveryPlugin[]): string[] {
+  return plugins
+    .filter((p) =>
+      p.versions.some(
+        (v) => v.version === p.enabled_version && v.kind === "dns01",
+      ),
+    )
+    .map((p) => p.id)
+    .sort();
 }

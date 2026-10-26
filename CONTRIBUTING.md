@@ -51,6 +51,7 @@ reports that `golangci-lint` is missing, install it with the command under
 
 - [`docs/plugins/README.md`](docs/plugins/README.md): writing a delivery plugin and the SDK (`make plugins` builds them; the vetted list is [`docs/plugins/REGISTRY.md`](docs/plugins/REGISTRY.md)).
 - [`docs/APP_MAP.md`](docs/APP_MAP.md): screens and routes of the UI.
+- [`docs/site/README.md`](docs/site/README.md): the website. A new user-facing feature needs a guide story and a place in `site/content/hubs.json`; CI checks that every story is on the site or explicitly unlisted.
 - [`docs/COMPONENT_MAP.md`](docs/COMPONENT_MAP.md): Go packages and components.
 - [`docs/openapi.yaml`](docs/openapi.yaml): the API contract, validated by `scripts/validate-openapi.sh`.
 

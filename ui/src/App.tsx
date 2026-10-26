@@ -20,6 +20,7 @@ import Dashboard from "./pages/Dashboard";
 import Certificates from "./pages/Certificates";
 import IssueWizard from "./pages/IssueWizard";
 import CAs from "./pages/CAs";
+import Issuers from "./pages/Issuers";
 import Ceremonies from "./pages/Ceremonies";
 import Discovery from "./pages/Discovery";
 import Alerts from "./pages/Alerts";
@@ -76,6 +77,7 @@ import { Toaster } from "./components/ui/sonner";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { CommandPalette } from "./components/CommandPalette";
 import { MobileNav } from "./components/MobileNav";
+import { DemoBanner } from "./components/DemoBanner";
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 30_000, retry: 1 } },
@@ -330,6 +332,8 @@ function AppShell() {
         <SidebarBody collapsed={false} />
       </MobileNav>
 
+      <DemoBanner />
+
       {/* Main content */}
       <main
         id="main-content"
@@ -351,6 +355,7 @@ function AppShell() {
               element={<Certificates />}
             />
             <Route path="/cas" element={<CAs />} />
+            <Route path="/issuers" element={<Issuers />} />
             <Route path="/ceremonies" element={<Ceremonies />} />
             <Route path="/cas/:id" element={<CAs />} />
             <Route path="/keys" element={<Keys />} />

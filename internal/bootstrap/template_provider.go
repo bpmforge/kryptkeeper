@@ -82,6 +82,11 @@ type TemplateItem struct {
 	// EnrollmentPermissions restricts which roles may issue from this
 	// template (W23-42); absent = unrestricted.
 	EnrollmentPermissions *EnrollmentPermissions `json:"enrollment_permissions,omitempty"`
+
+	// DeviceAttestation explicitly allows ACME device-attest-01 issuance from
+	// this template (W40-02, D-317). Absent/false: the challenge is never
+	// offered for it and nothing about the template changes.
+	DeviceAttestation bool `json:"device_attestation,omitempty"`
 }
 
 // EnrollRoles returns the template's enroll list (nil = unrestricted).
@@ -153,6 +158,8 @@ type TemplateUpsertRequest struct {
 	NamePolicy *ca.NamePolicy `json:"name_policy,omitempty"`
 	// EnrollmentPermissions replaces the stored enroll list (absent clears it).
 	EnrollmentPermissions *EnrollmentPermissions `json:"enrollment_permissions,omitempty"`
+	// DeviceAttestation allows ACME device-attest-01 issuance (W40-02); absent clears it.
+	DeviceAttestation bool `json:"device_attestation,omitempty"`
 }
 
 type TemplateCloneRequest struct {

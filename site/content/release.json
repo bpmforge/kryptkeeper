@@ -1,0 +1,5 @@
+{
+  "_comment": "The one place the website's release version lives. build.mjs stamps it into index.html and tour.html; --check fails on any other vX.Y.Z on the site; --check-release fails unless the public GitHub release exists. See docs/site/README.md.",
+  "version": "1.0.0",
+  "repo": "bpmforge/kryptkeeper"
+}

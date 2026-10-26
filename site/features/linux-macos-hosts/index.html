@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Linux and macOS hosts · Kryptkeeper</title>
+<meta name="description" content="Certificates that land on the host and renew themselves. Run the lightweight agent on Linux and macOS, or manage hardened hosts agentlessly over SSH. Renewal policy is set per target, rollouts go canary first, and anything that fails lands in one queue.">
+<meta property="og:title" content="Linux and macOS hosts · Kryptkeeper">
+<meta property="og:description" content="Certificates that land on the host and renew themselves. Run the lightweight agent on Linux and macOS, or manage hardened hosts agentlessly over SSH. Renewal policy is set per target, rollouts go canary first, and anything that fails lands in one queue.">
+<meta property="og:url" content="https://kryptkeeper.io/features/linux-macos-hosts/">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<div class="crumb-row"><nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/features/">Features</a></li><li aria-current="page">Linux and macOS hosts</li></ol></nav></div>
+<header class="page-head">
+  <span class="label">Feature</span>
+  <h1>Linux and macOS hosts</h1>
+  <p class="lede">Certificates that land on the host and renew themselves.</p>
+  <p class="intro">Run the lightweight agent on Linux and macOS, or manage hardened hosts agentlessly over SSH. Renewal policy is set per target, rollouts go canary first, and anything that fails lands in one queue.</p>
+</header>
+<figure class="hub-hero"><div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/targets/setup</span></div>
+    <a href="/features/linux-macos-hosts/" tabindex="-1" aria-hidden="true"><img src="/shots/U-29/cover-dark.webp" width="1220" height="762" alt="Linux and macOS hosts screen in Kryptkeeper"></a>
+  </div></figure>
+<p class="callout" role="note"><strong>Coming:</strong> Screens from the host side (installing the agent, the certificate landing on disk and the service reloading) are being captured on the lab hosts and will be added here.</p>
+<section aria-labelledby="how"><h2 id="how">How it works</h2><ol class="card-grid wt-grid">
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-29/07-agent-install-quickstart.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/linux-macos-hosts/enroll-agent/">Enroll an agent</a></h3><p>Enroll a Linux or macOS host so it can receive and renew certificates.</p><span class="meta">7 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-30/08-credential-required-validation.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/linux-macos-hosts/agentless-ssh/">Manage a host without an agent</a></h3><p>Add a host as an agentless target and see what the wizard still needs before it can finish.</p><span class="meta">8 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-31/08-group-saved.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/linux-macos-hosts/renewal-policy/">Set renewal policy per target</a></h3><p>Choose a target's renewal method and threshold, set a group threshold, and clear an override.</p><span class="meta">8 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-46/07-issued.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/linux-macos-hosts/ssh-certificates/">Issue SSH host and user certificates</a></h3><p>Replace long-lived SSH keys with short-lived signed certificates.</p><span class="meta">7 steps</span></li>
+</ol></section>
+<section aria-labelledby="docs"><h2 id="docs">Docs</h2><ul class="link-list"><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/guides/agentless-hardened-linux.md">Agentless on hardened Linux</a></li><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/ops/MACOS_AGENT.md">macOS agent</a></li></ul></section>
+<section aria-labelledby="used-by"><h2 id="used-by">Paths that use this</h2><ul class="link-list"><li><a href="/paths/automate-renewal/">Automate renewal for servers and devices</a> <span class="muted">for Platform and DevOps engineer</span></li></ul></section>
+
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

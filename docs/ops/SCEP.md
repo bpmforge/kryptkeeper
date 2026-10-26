@@ -64,6 +64,93 @@ common name and DNS names from the **old certificate**, never from the CSR; the
 CSR only proves possession of the key. The reply is encrypted to the signer
 certificate.
 
+## Microsoft Intune (W20-23, D-327)
+
+Intune-managed devices enroll through a **SCEP label**, `/scep/<label>`, set to
+the `intune` challenge mode. The hub does not mint these challenges: Intune
+creates one per device, encrypted, and the hub asks Intune to validate each
+request before it issues. This is Microsoft's third-party CA integration
+([overview](https://learn.microsoft.com/en-us/intune/fundamentals/certificates/third-party-ca-scep),
+[developer contract](https://learn.microsoft.com/en-us/intune/fundamentals/certificates/ref-scep-api)).
+
+### Set it up
+
+1. **Register an app in Entra ID** (Azure portal, Microsoft Entra ID, App
+   registrations, New registration; "Accounts in any organizational
+   directory"). Copy the **Application (client) ID** and the **Tenant ID**.
+2. **Give it two application permissions**, then **Grant admin consent**:
+   - Intune API: `scep_challenge_provider` (SCEP challenge validation)
+   - Microsoft Graph: `Application.Read.All` (the hub uses it to find the
+     Intune validation service)
+3. **Add a credential to the app**: a client secret, or upload a certificate.
+4. **Store it in the hub** as an `api_token` credential (Credentials page or
+   `POST /api/v1/credentials`), with the payload
+   `{"client_secret": "..."}` or
+   `{"certificate_pem": "...", "private_key_pem": "..."}` (an RSA key; the hub
+   signs a PS256 client assertion with it). Note the credential id.
+5. **Create the label** (pki-admin):
+
+   ```json
+   POST /api/v1/scep/labels
+   {"label": "intune", "mode": "intune", "template_id": "<template>",
+    "intune_tenant_id": "<tenant GUID or domain>",
+    "intune_client_id": "<application id>",
+    "credential_ref": "<credential id>",
+    "issuing_authority": "Kryptkeeper Issuing CA"}
+   ```
+
+   The template's `enrollment_permissions.enroll` must list the role
+   `protocol:scep`, as for the other protocols. The Entra secret is never
+   accepted by this API, kept in the label or shown again.
+6. **In Intune**, upload the CA certificate as a Trusted certificate profile,
+   then create a SCEP certificate profile whose **SCEP Server URL** is
+   `https://<hub>/scep/intune`. The URL must be https for Android. Set the
+   subject and SAN to what you want: **the certificate carries the subject,
+   SANs, key usage and EKU of the CSR that Intune just validated against the
+   profile**. DNS, IP address and URI SANs are supported. A profile that asks
+   for a UPN or email SAN, or an EKU other than server authentication, client
+   authentication or email protection, is refused with the reason in the
+   audit log rather than issued without it.
+
+### What the hub does on each request
+
+1. The template gate, then `validateRequest` with the CSR and SCEP transaction
+   id. Only Intune's `Success` lets issuance continue. A refusal (for example
+   `SubjectNameMismatch`, `ChallengeExpired`) or any failure to reach Intune,
+   Entra or Graph **refuses enrollment**: nothing is issued.
+2. Issues the certificate and records it in the inventory (source `scep`).
+3. Sends Intune the success notification (thumbprint, serial, expiry, issuing
+   authority). If that fails the certificate is **withheld and revoked** and
+   the device gets a failure, because Microsoft's contract says a certificate
+   must not be issued when the notification fails.
+4. If issuance itself fails after a good validation, sends Intune the failure
+   notification. It is not sent for validation failures (the contract reserves
+   it for errors after validation).
+
+A label does not advertise the `Renewal` capability: Intune sends every
+renewal as a new request with a new challenge, and it goes through the same
+validation.
+
+### Audit
+
+`scep.enroll` rows carry `label=<name>`. Success adds the serial, subject and
+DNS names. A denial adds `intune refused: <Code>`, `intune validation
+unavailable: <stage>`, the template gate, an unsupported SAN or EKU, or
+`withheld: success notification failed`. No CSR bytes, token, challenge or
+Entra secret is logged or audited. `scep.label.create` and `scep.label.delete`
+record label changes.
+
+### Not covered yet
+
+- Revoking certificates when Intune asks (wipe, retire) through Intune's
+  revocation download API. Revoke from the certificate list for now.
+- Proof against a real tenant. The tests use a TLS stand-in for Entra, Graph
+  and the Intune service built from Microsoft's published client. On the first
+  real run, check that Intune accepts the notification fields (thumbprint
+  case, serial format, expiry format) and the token scope
+  `https://api.manage.microsoft.com//.default`, which is copied byte for byte
+  from Microsoft's library.
+
 ## Removed in W20-16
 
 - **`KRYPTKEEPER_SCEP_CHALLENGE`**, one static challenge shared by every

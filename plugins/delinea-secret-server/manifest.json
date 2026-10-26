@@ -1,0 +1,21 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "kind": "credentials",
+  "id": "kryptkeeper.delinea-secret-server",
+  "name": "Delinea Secret Server",
+  "version": "1.0.0",
+  "publisher": "Kryptkeeper Authors",
+  "license": "Apache-2.0",
+  "source": "https://github.com/bpmforge/kryptkeeper/tree/main/plugins/delinea-secret-server",
+  "artifact": {"file": "plugin.wasm", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "capabilities": {
+    "provide_credentials": true,
+    "network": {"hosts_from_credential": "base_url"}
+  },
+  "credential_schema": {
+    "base_url": {"type": "url", "required": true},
+    "username": {"type": "string", "required": true},
+    "password": {"type": "string", "required": true, "secret": true},
+    "domain": {"type": "string"}
+  }
+}

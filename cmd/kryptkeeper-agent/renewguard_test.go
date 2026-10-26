@@ -248,3 +248,21 @@ func TestDispatchRenewals_NilPreflightUnchanged(t *testing.T) {
 		func(agentclient.RenewalTask) error { done <- struct{}{}; return nil })
 	<-done
 }
+
+func TestEnableHTTP01Preflight(t *testing.T) {
+	cases := []struct {
+		goos, webRoot string
+		want          bool
+	}{
+		{"windows", "", true},
+		{"windows", `C:\inetpub\wwwroot`, false}, // web server serves the challenge; nothing to bind
+		{"linux", "", false},
+	}
+	for _, c := range cases {
+		g := newRenewGuard()
+		g.enableHTTP01Preflight(c.goos, c.webRoot)
+		if (g.preflight != nil) != c.want {
+			t.Errorf("goos=%s webRoot=%q: preflight set=%v, want %v", c.goos, c.webRoot, g.preflight != nil, c.want)
+		}
+	}
+}

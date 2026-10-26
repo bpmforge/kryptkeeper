@@ -135,9 +135,26 @@ func registerCredentialHandlers(mux *http.ServeMux, auth *Authenticator, store O
 				// store encrypts it opaquely; it never appears in any
 				// response, log, or audit detail.
 				Payload json.RawMessage `json:"payload"`
+				// Source is "local" (the default: payload is encrypted and
+				// stored here) or "external" (W38-07, D-324: only a reference
+				// is stored and the secret is fetched from SourceID's manager
+				// at each use; payload must then be absent).
+				Source    string            `json:"source"`
+				SourceID  string            `json:"source_id"`
+				Reference map[string]string `json:"reference"`
+				Static    map[string]string `json:"static"`
 			}
 			decodeErr := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256*1024)).Decode(&req)
 			if rejectOversizeBody(w, decodeErr) {
+				return
+			}
+			if req.Source == CredentialSourceExternal {
+				createExternalCredential(w, r, pd, store, auditProvider, req.Name, req.CredentialType, req.SourceID, ExternalReference{Reference: req.Reference, Static: req.Static}, len(req.Payload) > 0, decodeErr)
+				return
+			}
+			if req.Source != "" && req.Source != CredentialSourceLocal {
+				emitAuditEvent(r, auditProvider, principal, "credential.create", "credential", "-", AuditOutcomeFailure)
+				writeBadRequest(w, `source must be "local" or "external"`)
 				return
 			}
 			if decodeErr != nil ||
@@ -221,6 +238,51 @@ func registerCredentialHandlers(mux *http.ServeMux, auth *Authenticator, store O
 	})
 }
 
+// createExternalCredential stores a credential whose secret stays in an
+// external manager (W38-07, D-324). The request carries no secret and the store
+// keeps none: just the source and the reference.
+func createExternalCredential(w http.ResponseWriter, r *http.Request, pd AuthPrincipal, store OutboundCredentialStore, auditProvider AuditProvider,
+	name, credentialType, sourceID string, ref ExternalReference, hasPayload bool, decodeErr error) {
+	const action = "credential.create"
+	fail := func(msg string) {
+		emitAuditEvent(r, auditProvider, pd.ID, action, "credential", strings.TrimSpace(name), AuditOutcomeFailure)
+		writeBadRequest(w, msg)
+	}
+	creator, ok := store.(externalCredentialCreator)
+	switch {
+	case !ok:
+		writeServiceUnavailable(w, "this credential store cannot hold external credentials")
+	case decodeErr != nil || strings.TrimSpace(name) == "" || strings.TrimSpace(sourceID) == "":
+		fail("name, credential_type, source_id and reference are required for an external credential")
+	case hasPayload:
+		fail("an external credential stores no secret: remove payload, and name the secret with reference")
+	default:
+		meta, err := creator.CreateExternal(r.Context(), mustCredentialID(), strings.TrimSpace(name), credentialType, pd.Tenant, strings.TrimSpace(sourceID), ref)
+		switch {
+		case errors.Is(err, errCredentialSourceNotFound):
+			fail(fmt.Sprintf("credential source %q does not exist", sourceID))
+		case err != nil:
+			fail(err.Error())
+		default:
+			emitAuditEventDetail(r, auditProvider, pd.ID, action, "credential", meta.ID, AuditOutcomeSuccess,
+				fmt.Sprintf(`{"name":%q,"type":%q,"source":"external","source_id":%q}`, meta.Name, meta.CredentialType, meta.SourceID))
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(struct {
+				Data OutboundCredentialMeta `json:"data"`
+			}{Data: meta})
+		}
+	}
+}
+
+func mustCredentialID() string {
+	id, err := newOutboundCredentialID()
+	if err != nil {
+		return "cred-" + fmt.Sprint(time.Now().UnixNano())
+	}
+	return id
+}
+
 // handleCredentialPreflight is W18-11: POST /api/v1/credentials/{id}/preflight.
 // The plaintext is resolved here, used for one WinRM session, and never
 // leaves the process; the response carries the verdict only.
@@ -265,7 +327,7 @@ func handleCredentialPreflight(w http.ResponseWriter, r *http.Request, id string
 	plaintext, err := store.Resolve(r.Context(), id)
 	if err != nil {
 		emitAuditEvent(r, auditProvider, principal, "credential.preflight", "credential", id, AuditOutcomeFailure)
-		writeServiceUnavailable(w, "credential could not be resolved")
+		writeServiceUnavailable(w, resolveFailure(id, err).Error())
 		return
 	}
 	var payload struct {

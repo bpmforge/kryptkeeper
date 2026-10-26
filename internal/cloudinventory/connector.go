@@ -26,6 +26,11 @@ type CloudCertificate struct {
 	KeyAlgorithm string    `json:"key_algorithm"`
 	InUse        bool      `json:"in_use"`          // attached to a load balancer / CDN / etc.
 	Scope        string    `json:"scope,omitempty"` // Scope.Key() of the source that produced it (W24-17)
+	// CertificatePEM is the certificate (leaf first) when the provider
+	// returned it, so the hub can fingerprint the real DER (W38-05, D-323).
+	// Public certificate data only; kept off the wire so it never reaches the
+	// scan_jobs summary.
+	CertificatePEM string `json:"-"`
 }
 
 func truncate(s string, n int) string {

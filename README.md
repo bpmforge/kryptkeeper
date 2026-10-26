@@ -220,6 +220,16 @@ port (default `8080`) — they are joined to form the listen address.
 
 ---
 
+## Use your existing CA
+
+Kryptkeeper can issue through the CA you already run or buy from: HashiCorp Vault PKI,
+EJBCA, AWS Private CA, Google Cloud CAS, Sectigo, GlobalSign, Entrust, DigiCert or any
+ACME CA. Add it under **Issuers**, create an external CA, and every front door above
+(ACME, EST, SCEP, CMP, Windows autoenrollment, the API, cert-manager, Terraform) issues
+through it, with Kryptkeeper's template policy applied first and every returned
+certificate checked against the request. Revoking a certificate revokes it at that CA.
+See [docs/ops/UPSTREAM_CAS.md](docs/ops/UPSTREAM_CAS.md).
+
 ## API Reference
 
 The full OpenAPI 3.1 spec is at [`docs/openapi.yaml`](docs/openapi.yaml).
@@ -494,7 +504,8 @@ Upgrade test: full matrix on rc.5, spot-check on rc.7 (schema 76); see
   MCP server; Helm chart.
 - **Experimental:** HashiCorp Vault and GCP Cloud KMS keystores.
 - **Not in v0.9:** agentless SSH certificate discovery (the scanner exists but nothing calls it yet); issuer connectors other than
-  `internal` and ACME (DigiCert, EST, SCEP and WSTEP upstream connectors).
+  `internal` and ACME (DigiCert, EST, SCEP and WSTEP upstream connectors). External CAs and the
+  Vault PKI, EJBCA, AWS Private CA, Google CAS, Sectigo, GlobalSign and Entrust connectors arrive in 1.1.
 - **Plugins:** the F5 and Citrix delivery plugins are verified against mock APIs only, not real
   appliances.
 

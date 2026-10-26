@@ -38,10 +38,12 @@ func configureACMEAdmin(srv *acme.Server, auth *bootstrap.Authenticator, db *sql
 	srv.WithProvisioners(provStore, func(templateID string) acme.EnrollmentGate {
 		return bootstrap.NewProtocolEnrollmentGate(templates, templateID, "acme", audit)
 	})
+	opts := []bootstrap.ServerOption{}
+	opts = append(opts, configureACMEDeviceAttestation(srv, auth, db, isPostgres, audit, templates)...)
 	caExists := func(id string) bool { _, err := caEngine.GetCA(id); return err == nil }
-	opts := []bootstrap.ServerOption{bootstrap.WithExtraHandlers(func(mux *http.ServeMux) {
+	opts = append(opts, bootstrap.WithExtraHandlers(func(mux *http.ServeMux) {
 		bootstrap.RegisterACMEProvisionerHandlers(mux, auth, provStore, caExists, templates, baseURL, audit)
-	})}
+	}))
 
 	if db != nil {
 		passphrase := bootstrap.CredentialStorePassphraseFromEnv()

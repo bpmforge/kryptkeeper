@@ -11,7 +11,8 @@ vi.mock("../lib/api", () => ({
   },
 }));
 
-import { BulkTakeoverDialog, RevertDialog } from "./Certificates";
+import { BulkTakeoverDialog, RevertDialog, UpstreamRevokeControls } from "./Certificates";
+import { UPSTREAM_REVOKE_NOTE, revokeScopeNote } from "../lib/revokeNotes";
 import { api } from "../lib/api";
 import type { CertificateRecord } from "../lib/models";
 
@@ -151,5 +152,28 @@ describe("RevertDialog", () => {
     wrap(<RevertDialog open cert={cert} onClose={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Revert to unmanaged" }));
     expect(await screen.findByText("certificate is not managed")).toBeInTheDocument();
+  });
+});
+
+describe("upstream revoke controls (W36-14)", () => {
+  it("explains upstream-first revoke and offers record-only to pki-admin", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<UpstreamRevokeControls isAdmin recordOnly={false} onRecordOnlyChange={onChange} />);
+    expect(screen.getByText(UPSTREAM_REVOKE_NOTE)).toBeInTheDocument();
+    await user.click(screen.getByRole("checkbox", { name: "Record here only (I revoked it at the CA myself)" }));
+    expect(onChange).toHaveBeenCalledWith(true);
+  });
+
+  it("hides record-only for non-admins", () => {
+    render(<UpstreamRevokeControls isAdmin={false} recordOnly={false} onRecordOnlyChange={vi.fn()} />);
+    expect(screen.getByText(UPSTREAM_REVOKE_NOTE)).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).toBeNull();
+  });
+
+  it("describes the revocation scope", () => {
+    expect(revokeScopeNote("upstream", "DigiCert prod")).toBe("Revoked at the issuing CA through DigiCert prod.");
+    expect(revokeScopeNote("inventory_only")).toMatch(/revoke at the issuing CA/);
+    expect(revokeScopeNote("ca")).toBe("");
   });
 });

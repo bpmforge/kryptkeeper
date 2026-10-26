@@ -17,7 +17,12 @@ import (
 // reads it before loading anything else and shows its capabilities to the
 // operator in fixed wording (docs/design/DELIVERY_PLUGINS.md).
 type Manifest struct {
-	APIVersion       string           `json:"api_version"`
+	APIVersion string `json:"api_version"`
+	// Kind says which family of operations the plugin serves (D-321). Absent
+	// means "delivery", so every manifest written before kinds existed stays
+	// valid byte for byte; ParseManifest fills the default on the parsed value
+	// only, never in the stored JSON, because a signature covers those bytes.
+	Kind             string           `json:"kind,omitempty"`
 	ID               string           `json:"id"`
 	Name             string           `json:"name"`
 	Version          string           `json:"version"`
@@ -66,6 +71,11 @@ type Capabilities struct {
 	Network           *Network `json:"network,omitempty"`
 	FileWrite         []string `json:"file_write,omitempty"`
 	TLSVerify         bool     `json:"tls_verify,omitempty"`
+	// ProvideCredentials belongs to the credentials kind (W38-07): the plugin
+	// returns credentials the hub uses to log in to other systems. Critical,
+	// so enabling such a plugin needs a second person. A credentials plugin
+	// must declare it and no other kind may.
+	ProvideCredentials bool `json:"provide_credentials,omitempty"`
 }
 
 // Network scopes outbound HTTPS. HostsFromCredential names the credential
@@ -103,11 +113,17 @@ func ParseManifest(raw []byte) (Manifest, error) {
 	if dec.More() {
 		return Manifest{}, errors.New("manifest: trailing data")
 	}
+	if m.Kind == "" {
+		m.Kind = KindDelivery
+	}
 	return m, m.Validate()
 }
 
 // Validate checks a manifest's own consistency.
 func (m Manifest) Validate() error {
+	if err := m.validateKind(); err != nil {
+		return err
+	}
 	switch {
 	case m.APIVersion != APIVersion:
 		return fmt.Errorf("manifest: api_version %q is not supported (want %s)", m.APIVersion, APIVersion)
@@ -177,7 +193,7 @@ func (m Manifest) Validate() error {
 // Within reports whether every capability in c is also in declared, so a
 // grant can never exceed what the manifest showed the operator.
 func (c Capabilities) Within(declared Capabilities) bool {
-	if (c.ReceivePrivateKey && !declared.ReceivePrivateKey) || (c.TrustStore && !declared.TrustStore) ||
+	if (c.ProvideCredentials && !declared.ProvideCredentials) || (c.ReceivePrivateKey && !declared.ReceivePrivateKey) || (c.TrustStore && !declared.TrustStore) ||
 		(c.ElevatedExec && !declared.ElevatedExec) || (c.RemoteExec && !declared.RemoteExec) ||
 		(c.TLSVerify && !declared.TLSVerify) {
 		return false
@@ -238,10 +254,46 @@ const (
 // lesser grant). Standard: the rest.
 func (c Capabilities) Tier() string {
 	switch {
-	case c.ReceivePrivateKey || c.TrustStore:
+	case c.ReceivePrivateKey || c.TrustStore || c.ProvideCredentials:
 		return TierCritical
 	case c.ElevatedExec || c.RemoteExec || (c.Network != nil && (len(c.Network.Hosts) > 0 || c.Network.HostsFromCredential != "")):
 		return TierHigh
 	}
 	return TierStandard
+}
+
+// validateKind checks the kind and the capabilities it may carry. Only a
+// delivery plugin may ask for key material, trust-store changes, file writes
+// or remote commands: the other kinds talk to one vendor API and get nothing
+// that touches a certificate's private key or a managed host.
+func (m Manifest) validateKind() error {
+	kind := m.Kind
+	if kind == "" {
+		kind = KindDelivery
+	}
+	if kind == KindIssuer {
+		return errors.New("manifest: kind \"issuer\" is reserved; issuer plugins are not supported by this hub yet")
+	}
+	if !Kinds[kind] {
+		return fmt.Errorf("manifest: kind %q is not supported (want one of %s)", kind, strings.Join(KindNames(), ", "))
+	}
+	c := m.Capabilities
+	// The capability is what makes the hub treat the plugin as Critical, so a
+	// credentials plugin without it would slip past the second-person enable,
+	// and any other kind carrying it would be mislabelled.
+	switch {
+	case kind == KindCredentials && !c.ProvideCredentials:
+		return errors.New("manifest: a credentials plugin must declare provide_credentials")
+	case kind != KindCredentials && c.ProvideCredentials:
+		return fmt.Errorf("manifest: capability provide_credentials is only for the credentials kind, not %s", kind)
+	}
+	if kind != KindDelivery {
+		switch {
+		case c.ReceivePrivateKey, c.TrustStore, c.RemoteExec, c.ElevatedExec, len(c.FileWrite) > 0:
+			return fmt.Errorf("manifest: a %s plugin may not declare receive_private_key, trust_store, remote_exec, elevated_exec or file_write", kind)
+		case c.Network == nil:
+			return fmt.Errorf("manifest: a %s plugin needs a network grant to reach its service", kind)
+		}
+	}
+	return nil
 }

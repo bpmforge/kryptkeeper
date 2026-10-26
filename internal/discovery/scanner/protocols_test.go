@@ -444,3 +444,45 @@ func TestImplicitTLSMailGreetingReadOnSameConnection(t *testing.T) {
 		t.Fatalf("passive signals opened %d connections, want 1", n)
 	}
 }
+
+// W24-48: an NLA-only host answers an SSL-only request with a failure but
+// grants PROTOCOL_HYBRID when it is offered; the cert comes from the TLS
+// handshake that opens CredSSP, and nothing further is sent.
+func TestRDPNLAOnlyHostHandsOverCertViaHybrid(t *testing.T) {
+	tlsCfg, cn := fixtureTLSConfig(t, "nla.example.com")
+	host, port := startListener(t, func(conn net.Conn) {
+		defer conn.Close()
+		req := make([]byte, 19)
+		_, _ = readFull(conn, req)
+		offered := binary.LittleEndian.Uint32(req[15:19])
+		if offered&0x2 == 0 {
+			_, _ = conn.Write([]byte{0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0, 0, 0, 0, 0, 0, 0x03, 0x00, 0x08, 0x00, 0x05, 0x00, 0x00, 0x00})
+			return
+		}
+		_, _ = conn.Write([]byte{0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x08, 0x00, 0x02, 0x00, 0x00, 0x00})
+		srv := tls.Server(conn, tlsCfg)
+		_ = srv.Handshake()
+		// A credential-sending client would write here; the probe must not.
+		_ = srv.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		if n, _ := srv.Read(make([]byte, 16)); n != 0 {
+			t.Errorf("probe sent %d bytes after the handshake", n)
+		}
+	})
+	ep := NewProtocolScanner(3*time.Second).ScanRDP(context.Background(), host, port)
+	if ep.Error != "" || len(ep.Certs) != 1 || ep.Certs[0].CommonName != cn {
+		t.Fatalf("nla capture: %s %+v", ep.Error, ep.Certs)
+	}
+}
+
+func TestRDPStandardSecuritySelectedIsDeclined(t *testing.T) {
+	host, port := startListener(t, func(conn net.Conn) {
+		defer conn.Close()
+		req := make([]byte, 19)
+		_, _ = readFull(conn, req)
+		_, _ = conn.Write([]byte{0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0, 0, 0, 0, 0, 0, 0x02, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00})
+	})
+	ep := NewProtocolScanner(2*time.Second).ScanRDP(context.Background(), host, port)
+	if ep.Error != "server declined TLS security" {
+		t.Fatalf("got %+v", ep)
+	}
+}

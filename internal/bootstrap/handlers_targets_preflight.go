@@ -231,7 +231,7 @@ func runTargetPreflight(ctx context.Context, t ManagedTarget, creds OutboundCred
 	}
 	plaintext, err := creds.Resolve(ctx, t.CredentialRef)
 	if err != nil {
-		return preflightReport{}, http.StatusServiceUnavailable, "credential could not be resolved"
+		return preflightReport{}, http.StatusServiceUnavailable, resolveFailure(t.CredentialRef, err).Error()
 	}
 	defer zeroize(plaintext)
 	var payload sshCredentialPayload

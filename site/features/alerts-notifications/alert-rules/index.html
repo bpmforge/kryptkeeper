@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Send a test delivery and build alert rules · Alerts and notifications · Kryptkeeper</title>
+<meta name="description" content="Send a test delivery, open its detail, then write an alert rule.">
+<meta property="og:title" content="Send a test delivery and build alert rules · Alerts and notifications · Kryptkeeper">
+<meta property="og:description" content="Send a test delivery, open its detail, then write an alert rule.">
+<meta property="og:url" content="https://kryptkeeper.io/features/alerts-notifications/alert-rules/">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<div class="crumb-row"><nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/features/">Features</a></li><li><a href="/features/alerts-notifications/">Alerts and notifications</a></li><li aria-current="page">Send a test delivery and build alert rules</li></ol></nav></div>
+<header class="page-head">
+  <span class="label">Walkthrough · 10 steps</span>
+  <h1>Send a test delivery and build alert rules</h1>
+  <p class="lede">Send a test delivery, open its detail, then write an alert rule.</p>
+  <p class="as">As <span class="pill role">pki-admin</span></p>
+</header>
+<ol class="steps">
+  <li class="step"><div class="step-head"><span class="label">Step <b>1</b></span><p>Open /alerts</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-36/01-alerts-queue.webp"><img src="/shots/U-36/01-alerts-queue.webp" width="1440" height="900" alt="Open /alerts" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>2</b></span><p>Select &quot;Email&quot; in <strong>Notification test channel</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-36/02-channel.webp"><img src="/shots/U-36/02-channel.webp" width="1440" height="900" alt="Select &quot;Email&quot; in Notification test channel" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>3</b></span><p>Fill <strong>Notification test target</strong> with &quot;ops@acme.test&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-36/03-test-target.webp"><img src="/shots/U-36/03-test-target.webp" width="1440" height="900" alt="Fill Notification test target with &quot;ops@acme.test&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>4</b></span><p>Click <strong>Send test delivery</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-36/04-test-delivery-queued.webp"><img src="/shots/U-36/04-test-delivery-queued.webp" width="1440" height="900" alt="Click Send test delivery" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>5</b></span><p>Click a delivery row to open its detail, attempts and actions</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-36/05-delivery-detail.webp"><img src="/shots/U-36/05-delivery-detail.webp" width="1440" height="900" alt="Click a delivery row to open its detail, attempts and actions" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>6</b></span><p>Click <strong>Alert rules</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-36/08-alert-rules-tab.webp"><img src="/shots/U-36/08-alert-rules-tab.webp" width="1440" height="900" alt="Click Alert rules" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>7</b></span><p>Click <strong>New rule</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-36/09-new-rule-dialog.webp"><img src="/shots/U-36/09-new-rule-dialog.webp" width="1440" height="900" alt="Click New rule" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>8</b></span><p>Fill <strong>Name</strong> with &quot;Expiry 14d to platform&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-36/10-Name.webp"><img src="/shots/U-36/10-Name.webp" width="1440" height="900" alt="Fill Name with &quot;Expiry 14d to platform&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>9</b></span><p>Fill <strong>Target</strong> with &quot;platform@acme.test&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-36/12-Target.webp"><img src="/shots/U-36/12-Target.webp" width="1440" height="900" alt="Fill Target with &quot;platform@acme.test&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>10</b></span><p>Click <strong>Create rule</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-36/13-rule-created.webp"><img src="/shots/U-36/13-rule-created.webp" width="1440" height="900" alt="Click Create rule" loading="lazy" decoding="async"></a></figure></li>
+</ol>
+<nav class="pager" aria-label="More in Alerts and notifications"><a class="prev" href="/features/alerts-notifications/channels/"><span class="label">Previous</span>Configure notification channels</a><a class="next" href="/features/alerts-notifications/itsm/"><span class="label">Next</span>Connect Jira or ServiceNow</a></nav>
+
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

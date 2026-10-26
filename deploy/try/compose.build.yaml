@@ -1,0 +1,19 @@
+# Build the trial images from this checkout instead of pulling them:
+#   docker compose -f deploy/try/compose.yaml -f deploy/try/compose.build.yaml up --build
+# Needed until a release that contains `kryptkeeper demo` (1.1) is published.
+services:
+  hub:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        BUILD_MODE: real
+        APP_BUILD_PATH: ./cmd/kryptkeeper
+    image: kryptkeeper-try-hub:local
+  seeder:
+    image: kryptkeeper-try-hub:local
+  console:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.dashboard
+    image: kryptkeeper-try-dashboard:local

@@ -92,6 +92,9 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		migrateAndExit(os.Args[2:])
 	}
+	if len(os.Args) > 1 && os.Args[1] == "demo" {
+		os.Exit(runDemo(os.Args[2:], os.Stdout, os.Stderr))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Printf("kryptkeeper %s (commit %s, built %s)\n", version, commit, date)
 		os.Exit(0)
@@ -119,6 +122,7 @@ func main() {
 		if fatal := bootstrap.CoreDBStartupDecision(certMode, err); fatal != nil {
 			logging.Fatal(fatal)
 		}
+		bootstrap.AttachConnectorThrottleStores(coreDB, isPostgres)
 	}
 
 	// --- Crypto engine (only when APP_CERTIFICATE_PROVIDER=ca) ---
@@ -334,6 +338,9 @@ func main() {
 	}
 	logging.Infof("audit provider: %s", auditDesc)
 	auditProvider := bootstrap.WithSIEMForwarding(rawAudit, siemRouter)
+	// credential.resolve rows: the credential stores are built from the environment
+	// in many places and hold no audit provider of their own (W38-07).
+	bootstrap.SetCredentialAuditProvider(auditProvider)
 	auditAppliedMigrations(auditProvider)
 	// W30-27: install the HA takeover observer before ANY HA-gated scheduler
 	// starts so a takeover on its first tick is reported (the setter is atomic).
@@ -395,22 +402,34 @@ func main() {
 		sched.Start(context.Background())
 	}
 
+	// W20-20: one delivery plugin manager for the whole process (nil = off).
+	// Built before the notification provider (notify plugins, W38-02, are a
+	// delivery channel too) and before ITSM (ticket plugins, W38-09, are its
+	// connectors).
+	pluginManager := newDeliveryPluginManager(coreDB, isPostgres)
+	// W38-08: ACME connectors with dns_provider "plugin" reach dns01 plugins
+	// through this same manager.
+	bootstrap.SetDNSPluginHost(func() *bootstrap.DeliveryPluginManager { return pluginManager }, auditProvider)
+
 	// W32-10: ITSM ticket queue; also a delivery channel named "itsm".
-	itsmSvc := newITSMService(coreDB, isPostgres, auditProvider)
+	itsmSvc := newITSMService(coreDB, isPostgres, auditProvider, pluginManager)
 
 	var notificationProvider bootstrap.NotificationProvider
 	if strings.ToLower(strings.TrimSpace(os.Getenv("APP_NOTIFICATION_PROVIDER"))) == "delivery" {
 		cfgStore := bootstrap.NewConfigStoreFromEnv()
-		notificationProvider = bootstrap.NewDeliveryNotificationProviderWithEscalation(append(deliveryChannelsFromEnv(cfgStore), itsmChannels(itsmSvc)...), 3, escalationResolver(cfgStore))
+		// W32-31: 8 attempts, exponential backoff; retry state lives in the
+		// core DB so a restart resumes (in-memory only without one).
+		var retryStore delivery.Store
+		if coreDB != nil {
+			retryStore = delivery.NewSQLStore(coreDB, isPostgres)
+		}
+		notificationProvider = bootstrap.NewDeliveryNotificationProviderWithEscalation(append(append(deliveryChannelsFromEnv(cfgStore), itsmChannels(itsmSvc)...), bootstrap.NewPluginNotifyChannel(func() *bootstrap.DeliveryPluginManager { return pluginManager }, auditProvider)), retryPolicyFromEnv(), retryStore, auditProvider, escalationResolver(cfgStore))
 		logging.Info("notification provider: delivery engine")
 	} else {
 		notificationProvider = bootstrap.NewNotificationProviderFromEnv()
 	}
 
 	dashboardActionProvider := bootstrap.NewDashboardActionProviderFromEnv()
-
-	// W20-20: one delivery plugin manager for the whole process (nil = off).
-	pluginManager := newDeliveryPluginManager(coreDB, isPostgres)
 
 	// --- Background schedulers ---
 	// Renewal scheduler: scans daily for certs approaching expiry and triggers
@@ -893,7 +912,7 @@ func main() {
 			invalidatable.SetOCSPCacheInvalidator(revocationInvalidator)
 		}
 
-		crlHandler := crlRL.Middleware(crlGen.Handler())
+		crlHandler := crlRL.Middleware(externalCAGuard(caEngine, crlGen.Handler()))
 		crlEndpoint := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			metrics.CRLRequestsTotal.Inc()
 			crlHandler.ServeHTTP(w, r)
@@ -979,7 +998,9 @@ func main() {
 				scepServer.WithIssuedRecorder(issuedRecorder)
 			}
 			protocolMux.Handle("/scep", scepRL.Middleware(scepServer.Handler()))
-			scepAPI = scepChallengeOption(auth, scepStore, scepCAID, auditProvider)
+			protocolMux.Handle("/scep/", scepRL.Middleware(scepServer.Handler()))
+			scepAPI = joinServerOptions(scepChallengeOption(auth, scepStore, scepCAID, auditProvider),
+				configureSCEPLabels(scepServer, coreDB, isPostgres, auth, templateProvider, auditProvider, revStore, scepCAID))
 			logging.Infof("SCEP endpoint: /scep (CA %s); one-time challenges: POST /api/v1/scep/challenges", scepCAID)
 		}
 
@@ -1299,6 +1320,30 @@ func deliveryChannelsFromEnv(store bootstrap.ConfigStore) []delivery.Channel {
 
 // escalationResolver reads the escalation channel/target on every call, so a
 // config change applies to the next failure with no restart. store may be nil.
+// retryPolicyFromEnv is delivery.DefaultPolicy (8 attempts, 1 min base, 1 h
+// cap) unless KRYPTKEEPER_NOTIFY_RETRY_ATTEMPTS / _BASE / _CAP override it; a
+// malformed value is ignored with a warning so a typo cannot disable alerts.
+func retryPolicyFromEnv() delivery.Policy {
+	p := delivery.DefaultPolicy()
+	if v := strings.TrimSpace(os.Getenv("KRYPTKEEPER_NOTIFY_RETRY_ATTEMPTS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 50 {
+			p.MaxAttempts = n
+		} else {
+			logging.Warnf("ignoring KRYPTKEEPER_NOTIFY_RETRY_ATTEMPTS=%q (want 1-50)", v)
+		}
+	}
+	for env, dst := range map[string]*time.Duration{"KRYPTKEEPER_NOTIFY_RETRY_BASE": &p.Base, "KRYPTKEEPER_NOTIFY_RETRY_CAP": &p.Cap} {
+		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d > 0 {
+				*dst = d
+			} else {
+				logging.Warnf("ignoring %s=%q (want a positive duration such as 30s)", env, v)
+			}
+		}
+	}
+	return p
+}
+
 func escalationResolver(store bootstrap.ConfigStore) bootstrap.EscalationResolver {
 	return func(ctx context.Context) (string, string) {
 		return resolveConfigString(ctx, store, "notifications.escalation_channel", "KRYPTKEEPER_NOTIFY_ESCALATION_CHANNEL"),
@@ -1518,6 +1563,9 @@ func ocspResolveIssuerByKeyHash(engine ca.Service, keyHash []byte) (*ca.CA, erro
 			continue
 		}
 		if h := ocspPublicKeyHash(c.Certificate, len(keyHash)); h != nil && bytes.Equal(h, keyHash) {
+			if c.Type == ca.CATypeExternal {
+				return nil, ocsp.ErrExternalIssuer
+			}
 			return c, nil
 		}
 	}

@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Features · Kryptkeeper</title>
+<meta name="description" content="Every area of Kryptkeeper with step-by-step walkthroughs and screenshots from a running hub.">
+<meta property="og:title" content="Features · Kryptkeeper">
+<meta property="og:description" content="Every area of Kryptkeeper with step-by-step walkthroughs and screenshots from a running hub.">
+<meta property="og:url" content="https://kryptkeeper.io/features/">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<div class="crumb-row"><nav class="crumbs" aria-label="Breadcrumb"><ol><li aria-current="page">Features</li></ol></nav></div>
+<header class="page-head">
+  <h1>Features</h1>
+  <p class="lede">16 areas of the product, each shown on real screens from a running hub. Open one to follow it step by step, in the order you would do the work.</p>
+  <nav class="band-jump" aria-label="Jump to a group"><a href="#setup">Set up</a><a href="#issue">Issue and renew</a><a href="#see">Visibility</a><a href="#govern">Govern and extend</a></nav>
+</header>
+<section class="chapter" id="setup">
+  <header>
+    <span class="label">Set up</span>
+    <h2>Set up your PKI</h2>
+    <p class="muted">Your own CAs, the rules for what they issue, and where the keys live.</p>
+  </header>
+<figure class="shot">
+  <figcaption>
+    <h3><a href="/features/getting-around/">Getting around</a></h3>
+    <p>One console for every certificate, CA and job that needs a person.</p>
+    <p>Sign in, see what needs attention today, and jump to any certificate, CA or setting from the keyboard. The console works the same on a phone.</p>
+    <a class="how-link" href="/features/getting-around/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/</span></div>
+    <a href="/features/getting-around/" tabindex="-1" aria-hidden="true"><img src="/screens/01-dashboard.webp" width="2880" height="1800" loading="lazy" decoding="async" alt="Getting around screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot flip">
+  <figcaption>
+    <h3><a href="/features/certificate-authorities/">Certificate authorities</a></h3>
+    <p>Your own root and issuing CAs, with dual control where it matters.</p>
+    <p>Create a root and the issuing CAs under it, or import a root you already trust. Sensitive operations on a CA are guarded, and a new root key can require an M-of-N key ceremony.</p>
+    <a class="how-link" href="/features/certificate-authorities/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/cas</span></div>
+    <a href="/features/certificate-authorities/" tabindex="-1" aria-hidden="true"><img src="/shots/U-07/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Certificate authorities screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot">
+  <figcaption>
+    <h3><a href="/features/templates-policy/">Templates and policy</a></h3>
+    <p>Decide once what a certificate may look like, then let people self-serve.</p>
+    <p>Templates fix key types, lifetimes and approvals. Issuance policies add rules on top, can be drafted from plain English, and can be dry-run against a request before they go live.</p>
+    <a class="how-link" href="/features/templates-policy/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/policies</span></div>
+    <a href="/features/templates-policy/" tabindex="-1" aria-hidden="true"><img src="/shots/U-42/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Templates and policy screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot flip">
+  <figcaption>
+    <h3><a href="/features/keys-kms/">Keys and KMS</a></h3>
+    <p>Keys in software, HSM or cloud KMS, with dual control for the root.</p>
+    <p>Generate, back up, import and rotate keys. Root keys can be escrowed and recovered only under dual control, and cloud KMS keys show up in one inventory.</p>
+    <a class="how-link" href="/features/keys-kms/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/keys</span></div>
+    <a href="/features/keys-kms/" tabindex="-1" aria-hidden="true"><img src="/shots/U-48/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Keys and KMS screen in Kryptkeeper"></a>
+  </div>
+</figure>
+</section>
+<section class="chapter" id="issue">
+  <header>
+    <span class="label">Issue and renew</span>
+    <h2>Issue certificates and keep them alive</h2>
+    <p class="muted">Certificates go out by hand, by protocol or by agent, and renew on their own.</p>
+  </header>
+<figure class="shot">
+  <figcaption>
+    <h3><a href="/features/windows-active-directory/">Windows and Active Directory</a></h3>
+    <p>Autoenrollment for domain machines and users, without an ADCS server.</p>
+    <p>Kryptkeeper serves MS-XCEP and MS-WSTEP natively, so domain-joined Windows machines and users enroll through Group Policy with Kerberos, exactly as they did with ADCS. Templates say whether they are offered to machines or users, ADCS templates can be imported, and a Windows agent and WinRM scanning cover the machine stores.</p>
+    <a class="how-link" href="/features/windows-active-directory/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/templates</span></div>
+    <a href="/features/windows-active-directory/" tabindex="-1" aria-hidden="true"><img src="/shots/U-10/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Windows and Active Directory screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot flip">
+  <figcaption>
+    <h3><a href="/features/linux-macos-hosts/">Linux and macOS hosts</a></h3>
+    <p>Certificates that land on the host and renew themselves.</p>
+    <p>Run the lightweight agent on Linux and macOS, or manage hardened hosts agentlessly over SSH. Renewal policy is set per target, rollouts go canary first, and anything that fails lands in one queue.</p>
+    <a class="how-link" href="/features/linux-macos-hosts/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/targets/setup</span></div>
+    <a href="/features/linux-macos-hosts/" tabindex="-1" aria-hidden="true"><img src="/shots/U-29/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Linux and macOS hosts screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot">
+  <figcaption>
+    <h3><a href="/features/issuing-certificates/">Issuing certificates</a></h3>
+    <p>A guided wizard for people, an approval step when it matters.</p>
+    <p>Issue from your own CSR or let the wizard generate the key locally. Templates that need approval route the request to a second person, and the requester can track it to the end.</p>
+    <a class="how-link" href="/features/issuing-certificates/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/certificates</span></div>
+    <a href="/features/issuing-certificates/" tabindex="-1" aria-hidden="true"><img src="/shots/U-16/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Issuing certificates screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot flip">
+  <figcaption>
+    <h3><a href="/features/lifecycle/">Renewal and revocation</a></h3>
+    <p>Own every certificate, renew in bulk, revoke in one step.</p>
+    <p>Take ownership of certificates nobody owned, import the ones you already have, and renew or revoke one at a time or in bulk. Revocation is published over OCSP and CRL.</p>
+    <a class="how-link" href="/features/lifecycle/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/certificates</span></div>
+    <a href="/features/lifecycle/" tabindex="-1" aria-hidden="true"><img src="/shots/U-22/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Renewal and revocation screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot">
+  <figcaption>
+    <h3><a href="/features/automation-enrollment/">Automation and enrollment</a></h3>
+    <p>Speaks the protocols your clients already use.</p>
+    <p>Servers renew over ACME, devices enroll over SCEP, EST or CMP, and agents or agentless targets install certificates where they are used. Rollouts go to a canary first, and failures wait in one queue.</p>
+    <a class="how-link" href="/features/automation-enrollment/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/acme</span></div>
+    <a href="/features/automation-enrollment/" tabindex="-1" aria-hidden="true"><img src="/shots/U-27/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Automation and enrollment screen in Kryptkeeper"></a>
+  </div>
+</figure>
+</section>
+<section class="chapter" id="see">
+  <header>
+    <span class="label">Visibility</span>
+    <h2>See everything, catch problems</h2>
+    <p class="muted">Find what you didn't know about and hear before it breaks.</p>
+  </header>
+<figure class="shot">
+  <figcaption>
+    <h3><a href="/features/discovery-inventory/">Discovery and inventory</a></h3>
+    <p>Find the certificates you didn't know about.</p>
+    <p>Scan your network, pull inventory from other CAs, and watch Certificate Transparency logs for certificates issued in your name. Risky endpoints are flagged and can be accepted as risk with approval.</p>
+    <a class="how-link" href="/features/discovery-inventory/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/discovery</span></div>
+    <a href="/features/discovery-inventory/" tabindex="-1" aria-hidden="true"><img src="/shots/U-25/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Discovery and inventory screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot flip">
+  <figcaption>
+    <h3><a href="/features/alerts-notifications/">Alerts and notifications</a></h3>
+    <p>Hear about expiry before your users do.</p>
+    <p>Send alerts to email, Slack, webhooks or PagerDuty, build rules for what matters, and open tickets in Jira or ServiceNow.</p>
+    <a class="how-link" href="/features/alerts-notifications/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/alerts</span></div>
+    <a href="/features/alerts-notifications/" tabindex="-1" aria-hidden="true"><img src="/shots/U-36/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Alerts and notifications screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot">
+  <figcaption>
+    <h3><a href="/features/compliance-risk/">Compliance, risk and post-quantum</a></h3>
+    <p>Evidence for auditors, and a plan for post-quantum.</p>
+    <p>Risk reports show weak keys, expiring chains and post-quantum readiness. Evidence packs and a CBOM can be produced on demand or delivered on a schedule, and every change is in the audit trail.</p>
+    <a class="how-link" href="/features/compliance-risk/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/crypto-posture</span></div>
+    <a href="/features/compliance-risk/" tabindex="-1" aria-hidden="true"><img src="/shots/U-55/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Compliance, risk and post-quantum screen in Kryptkeeper"></a>
+  </div>
+</figure>
+</section>
+<section class="chapter" id="govern">
+  <header>
+    <span class="label">Govern and extend</span>
+    <h2>Govern it and extend it</h2>
+    <p class="muted">A second person on sensitive changes, least privilege, and hooks into your stack.</p>
+  </header>
+<figure class="shot">
+  <figcaption>
+    <h3><a href="/features/approvals-guardrails/">Approvals and guardrails</a></h3>
+    <p>Sensitive changes need a second person, and show their impact first.</p>
+    <p>Requests, policies and exceptions can require a second approver. Before anything destructive, Kryptkeeper shows the blast radius: what will break and who owns it.</p>
+    <a class="how-link" href="/features/approvals-guardrails/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/inbox</span></div>
+    <a href="/features/approvals-guardrails/" tabindex="-1" aria-hidden="true"><img src="/shots/U-17/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Approvals and guardrails screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot flip">
+  <figcaption>
+    <h3><a href="/features/build-your-own/">Build your own integrations</a></h3>
+    <p>Plugins, an API and SDKs, so Kryptkeeper fits your stack.</p>
+    <p>If Kryptkeeper doesn't support a device yet, write a delivery plugin for it. Plugins are WebAssembly modules that run sandboxed in the hub, declare exactly what they may touch, and are signed so you can tell first-party, verified and community plugins apart. Everything in the console is also available over a documented REST API, with SDKs, a Terraform provider and an MCP server.</p>
+    <a class="how-link" href="/features/build-your-own/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/settings</span></div>
+    <a href="/features/build-your-own/" tabindex="-1" aria-hidden="true"><img src="/shots/U-58b/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Build your own integrations screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot">
+  <figcaption>
+    <h3><a href="/features/access-tenancy/">Access and tenancy</a></h3>
+    <p>Least privilege, reviewed on a schedule.</p>
+    <p>Invite people with built-in roles, build custom roles with only the permissions they need, run periodic access reviews, and separate teams or customers with tenants.</p>
+    <a class="how-link" href="/features/access-tenancy/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/roles</span></div>
+    <a href="/features/access-tenancy/" tabindex="-1" aria-hidden="true"><img src="/shots/U-39/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Access and tenancy screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot flip">
+  <figcaption>
+    <h3><a href="/features/machine-identity/">Machine and workload identity</a></h3>
+    <p>Identities for workloads, SSH and code signing in the same place.</p>
+    <p>Approve machine identities before they exist, issue SPIFFE SVIDs to workloads, sign SSH certificates, and keep code-signing certificates in their own inventory.</p>
+    <a class="how-link" href="/features/machine-identity/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/nhi</span></div>
+    <a href="/features/machine-identity/" tabindex="-1" aria-hidden="true"><img src="/shots/U-43/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Machine and workload identity screen in Kryptkeeper"></a>
+  </div>
+</figure>
+</section>
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

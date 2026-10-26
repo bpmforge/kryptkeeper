@@ -714,6 +714,51 @@ func TestResolvePushCredentialTypePerInstallMode(t *testing.T) {
 	}
 }
 
+// W35-02: a sqlserver target authenticates over WinRM like iis, takes its
+// instance and port from the credential, and the port may arrive as a number
+// (API) or as text (the wizard's form).
+func TestResolvePushCredentialSQLServer(t *testing.T) {
+	exec := func(ct string, payload string) *RenewalExecutor {
+		return NewRenewalExecutor(nil, &renewalFakeCredStore{
+			meta:    OutboundCredentialMeta{ID: "c", CredentialType: ct},
+			payload: []byte(payload),
+		})
+	}
+	for name, payload := range map[string]string{
+		"number": `{"base_url":"https://h:5986/wsman","username":"u","password":"p","sql_instance":"SALES","sql_port":14330}`,
+		"text":   `{"base_url":"https://h:5986/wsman","username":"u","password":"p","sql_instance":"SALES","sql_port":"14330"}`,
+	} {
+		got, err := exec(CredentialTypeWindowsPassword, payload).resolvePushCredential(context.Background(), "c", "sqlserver")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got.SQLInstance != "SALES" || got.SQLPort != 14330 {
+			t.Errorf("%s: instance/port = %q/%d", name, got.SQLInstance, got.SQLPort)
+		}
+		if p := defaultVerifyPort("sqlserver", got); p != "14330" {
+			t.Errorf("%s: verify port = %s", name, p)
+		}
+	}
+	if _, err := exec(CredentialTypeAPIToken, `{"base_url":"https://h"}`).resolvePushCredential(context.Background(), "c", "sqlserver"); err == nil {
+		t.Fatal("api_token must be rejected for sqlserver")
+	}
+	if _, err := exec(CredentialTypeWindowsPassword, `{"base_url":"https://h","sql_port":"99999"}`).resolvePushCredential(context.Background(), "c", "sqlserver"); err == nil {
+		t.Fatal("an out-of-range port must be rejected")
+	}
+	if p := defaultVerifyPort("sqlserver", pushCredentialPayload{}); p != "1433" {
+		t.Errorf("default sqlserver verify port = %s, want 1433", p)
+	}
+	if p := defaultVerifyPort("iis", pushCredentialPayload{}); p != "443" {
+		t.Errorf("default iis verify port = %s, want 443", p)
+	}
+	if p := defaultVerifyPort("rdp", pushCredentialPayload{}); p != "3389" {
+		t.Errorf("default rdp verify port = %s, want 3389", p)
+	}
+	if _, err := exec(CredentialTypeWindowsPassword, `{"base_url":"https://h:5986/wsman","username":"u","password":"p"}`).resolvePushCredential(context.Background(), "c", "rdp"); err != nil {
+		t.Fatalf("windows_password must be accepted for rdp: %v", err)
+	}
+}
+
 // TestHostKeyAlgorithmsFor_RSAUsesSHA2Names guards against the fix
 // regressing to []string{pub.Type()}: an RSA ssh.PublicKey's Type() is
 // "ssh-rsa" (KeyAlgoRSA), the legacy SHA-1 scheme that

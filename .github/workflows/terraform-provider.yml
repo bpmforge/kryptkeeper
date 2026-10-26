@@ -132,6 +132,7 @@ jobs:
           path: dist/
           merge-multiple: true
       - name: Create release
+        if: github.server_url == 'https://github.com'
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           files: dist/terraform-provider-kryptkeeper_*

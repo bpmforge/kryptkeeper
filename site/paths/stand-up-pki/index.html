@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Stand up your own PKI · Kryptkeeper</title>
+<meta name="description" content="From an empty install to a root, an issuing CA, templates and the first certificate.">
+<meta property="og:title" content="Stand up your own PKI · Kryptkeeper">
+<meta property="og:description" content="From an empty install to a root, an issuing CA, templates and the first certificate.">
+<meta property="og:url" content="https://kryptkeeper.io/paths/stand-up-pki/">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<div class="crumb-row"><nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/paths/">Paths</a></li><li aria-current="page">Stand up your own PKI</li></ol></nav><span class="pill role">PKI administrator</span></div>
+<header class="page-head">
+  <h1>Stand up your own PKI</h1>
+  <p class="lede">From an empty install to a root, an issuing CA, templates and the first certificate.</p>
+</header>
+<ol class="path-steps">
+<li class="pstep">
+  <span class="card-img"><img src="/shots/U-04/cover-dark.webp" width="1220" height="762" alt="Create a root CA screen in Kryptkeeper" loading="lazy" decoding="async"></span>
+  <div class="pstep-text">
+    <span class="label">Step <b>1</b> &middot; Certificate authorities</span>
+    <h3><a class="stretch" href="/features/certificate-authorities/create-root/">Create a root CA</a></h3>
+    <p>Create a self-signed root with the algorithm and lifetime you choose.</p>
+    <span class="card-foot"><span>9 steps</span><span class="arr" aria-hidden="true">&rarr;</span></span>
+  </div>
+</li>
+<li class="pstep">
+  <span class="card-img"><img src="/shots/U-05/cover-dark.webp" width="1220" height="762" alt="Create an issuing CA under a root screen in Kryptkeeper" loading="lazy" decoding="async"></span>
+  <div class="pstep-text">
+    <span class="label">Step <b>2</b> &middot; Certificate authorities</span>
+    <h3><a class="stretch" href="/features/certificate-authorities/create-issuing-ca/">Create an issuing CA under a root</a></h3>
+    <p>Create an intermediate CA that signs your day-to-day certificates.</p>
+    <span class="card-foot"><span>7 steps</span><span class="arr" aria-hidden="true">&rarr;</span></span>
+  </div>
+</li>
+<li class="pstep">
+  <span class="card-img"><img src="/shots/U-09/cover-dark.webp" width="1220" height="762" alt="Run a root key ceremony (M-of-N) screen in Kryptkeeper" loading="lazy" decoding="async"></span>
+  <div class="pstep-text">
+    <span class="label">Step <b>3</b> &middot; Certificate authorities</span>
+    <h3><a class="stretch" href="/features/certificate-authorities/key-ceremony/">Run a root key ceremony (M-of-N)</a></h3>
+    <p>One person starts a ceremony and two approvers complete the quorum.</p>
+    <span class="card-foot"><span>10 steps</span><span class="arr" aria-hidden="true">&rarr;</span></span>
+  </div>
+</li>
+<li class="pstep">
+  <span class="card-img"><img src="/shots/U-10/cover-dark.webp" width="1220" height="762" alt="Create a certificate template screen in Kryptkeeper" loading="lazy" decoding="async"></span>
+  <div class="pstep-text">
+    <span class="label">Step <b>4</b> &middot; Templates and policy</span>
+    <h3><a class="stretch" href="/features/templates-policy/create-template/">Create a certificate template</a></h3>
+    <p>Set the key, lifetime, usage and approval rules for a kind of certificate.</p>
+    <span class="card-foot"><span>8 steps</span><span class="arr" aria-hidden="true">&rarr;</span></span>
+  </div>
+</li>
+<li class="pstep">
+  <span class="card-img"><img src="/shots/U-42/cover-dark.webp" width="1220" height="762" alt="Create a policy and dry-run a request screen in Kryptkeeper" loading="lazy" decoding="async"></span>
+  <div class="pstep-text">
+    <span class="label">Step <b>5</b> &middot; Templates and policy</span>
+    <h3><a class="stretch" href="/features/templates-policy/dry-run-policy/">Create a policy and dry-run a request</a></h3>
+    <p>Test a policy against a request before it can block anyone.</p>
+    <span class="card-foot"><span>6 steps</span><span class="arr" aria-hidden="true">&rarr;</span></span>
+  </div>
+</li>
+<li class="pstep">
+  <span class="card-img"><img src="/shots/U-13/cover-dark.webp" width="1220" height="762" alt="Issue with your own CSR screen in Kryptkeeper" loading="lazy" decoding="async"></span>
+  <div class="pstep-text">
+    <span class="label">Step <b>6</b> &middot; Issuing certificates</span>
+    <h3><a class="stretch" href="/features/issuing-certificates/wizard-own-csr/">Issue with your own CSR</a></h3>
+    <p>Walk through the guided wizard with a CSR you generated.</p>
+    <span class="card-foot"><span>9 steps</span><span class="arr" aria-hidden="true">&rarr;</span></span>
+  </div>
+</li>
+<li class="pstep">
+  <span class="card-img"><img src="/shots/U-38/cover-dark.webp" width="1220" height="762" alt="Invite a user and assign a role screen in Kryptkeeper" loading="lazy" decoding="async"></span>
+  <div class="pstep-text">
+    <span class="label">Step <b>7</b> &middot; Access and tenancy</span>
+    <h3><a class="stretch" href="/features/access-tenancy/invite-user/">Invite a user and assign a role</a></h3>
+    <p>Invite someone and give them a built-in role.</p>
+    <span class="card-foot"><span>6 steps</span><span class="arr" aria-hidden="true">&rarr;</span></span>
+  </div>
+</li>
+</ol>
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

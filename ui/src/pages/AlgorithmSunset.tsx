@@ -157,8 +157,12 @@ function AgilityRoadmapPanel() {
           </Button>
           <p className="text-xs text-muted-foreground">
             The roadmap plans waves toward post-quantum algorithms. To move a
-            wave to a classical target such as ECDSA-P384, propose it from the
-            CLI or API.
+            wave to a classical target such as ECDSA-P384, choose a Target
+            algorithm when proposing execution on the{" "}
+            <Link to="/reports/pqc-migration" className="underline">
+              PQC Migration
+            </Link>{" "}
+            page.
           </p>
         </div>
       </form>
@@ -325,7 +329,9 @@ export default function AlgorithmSunset() {
                 <div className="text-xs text-muted-foreground uppercase tracking-widest mb-1">
                   {label}
                 </div>
-                <div className={`text-4xl font-black ${value > 0 ? cls : "text-foreground"} count-up`}>
+                <div
+                  className={`text-4xl font-black ${value > 0 ? cls : "text-foreground"} count-up`}
+                >
                   {value}
                 </div>
               </div>
@@ -408,7 +414,9 @@ export default function AlgorithmSunset() {
                     >
                       {g.count ?? 0}
                     </div>
-                    <div className="text-xs text-muted-foreground">certificates</div>
+                    <div className="text-xs text-muted-foreground">
+                      certificates
+                    </div>
                   </div>
                 </div>
               </Panel>

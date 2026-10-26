@@ -15,7 +15,7 @@ package adldap_test
 //	KK_ADLDAP_TOKEN       the hub's bootstrap token
 //	KK_ADLDAP_SOURCE_ID   an existing adcs_live inventory-sources id
 //	KK_ADLDAP_DC_CTR      the Samba container name (default kk-uat-samba)
-//	KK_ADLDAP_BASE_DN     e.g. CN=Users,DC=kkuat,DC=local
+//	KK_ADLDAP_BASE_DN     e.g. CN=Users,DC=corp,DC=local
 //	KK_ADLDAP_ADMIN_BIND  DOMAIN\Administrator
 //	KK_ADLDAP_ADMIN_PASS
 //

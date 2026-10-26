@@ -43,6 +43,7 @@ var (
 	errPluginVersionExists = errors.New("that plugin version is already installed")
 	errPluginNotEnabled    = errors.New("delivery plugin is not enabled")
 	errPluginInUse         = errors.New("delivery plugin is enabled; disable it first")
+	errPluginKindChanged   = errors.New("manifest: a plugin id keeps one kind across versions")
 	errPluginsOff          = errors.New("delivery plugins are turned off (KRYPTKEEPER_DELIVERY_PLUGINS=off)")
 )
 
@@ -54,7 +55,10 @@ func DeliveryPluginsEnabledFromEnv() bool {
 
 // DeliveryPluginVersion is one installed version, without its module bytes.
 type DeliveryPluginVersion struct {
-	PluginID        string       `json:"plugin_id"`
+	PluginID string `json:"plugin_id"`
+	// Kind is the manifest's kind (D-321), read from the stored manifest so it
+	// can never disagree with the hash-pinned bytes; no column holds it.
+	Kind            string       `json:"kind"`
 	Version         string       `json:"version"`
 	SHA256          string       `json:"sha256"`
 	Tier            string       `json:"trust_tier"`
@@ -83,7 +87,10 @@ type DeliveryPluginManager struct {
 	postgres bool
 	actions  PendingActionStore
 	trust    *PluginTrust
-	now      func() time.Time
+	// catalogue is nil until EnableCatalogue: tests and hubs with the
+	// catalogue off never reach the network.
+	catalogue *PluginCatalogue
+	now       func() time.Time
 
 	mu    sync.Mutex
 	rt    *delivery.Runtime
@@ -172,6 +179,23 @@ func (m *DeliveryPluginManager) Install(ctx context.Context, manifestJSON, wasm 
 	if exists > 0 {
 		return DeliveryPluginVersion{}, errPluginVersionExists
 	}
+	// An upgrade may not turn a delivery plugin into a notify plugin (or any
+	// other kind): an enabled approval was for one kind of work.
+	var prior sql.NullString
+	if err := tx.QueryRowContext(ctx, m.q(`SELECT manifest_json FROM delivery_plugin_versions WHERE plugin_id = ? ORDER BY installed_at DESC LIMIT 1`), man.ID).Scan(&prior); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return DeliveryPluginVersion{}, err
+	}
+	if prior.Valid {
+		var pm abi.Manifest
+		if json.Unmarshal([]byte(prior.String), &pm) == nil {
+			if pm.Kind == "" {
+				pm.Kind = abi.KindDelivery
+			}
+			if pm.Kind != man.Kind {
+				return DeliveryPluginVersion{}, errPluginKindChanged
+			}
+		}
+	}
 	if _, err := tx.ExecContext(ctx, m.q(`INSERT INTO delivery_plugins (id, created_at, updated_at) VALUES (?, ?, ?)
 		ON CONFLICT (id) DO UPDATE SET updated_at = excluded.updated_at`), man.ID, now, now); err != nil {
 		return DeliveryPluginVersion{}, err
@@ -202,6 +226,10 @@ func scanVersion(row interface{ Scan(...any) error }) (DeliveryPluginVersion, er
 		return v, fmt.Errorf("plugin %s %s: stored manifest: %w", v.PluginID, v.Version, err)
 	}
 	v.CapabilityTier = v.Manifest.Capabilities.Tier()
+	if v.Manifest.Kind == "" {
+		v.Manifest.Kind = abi.KindDelivery
+	}
+	v.Kind = v.Manifest.Kind
 	return v, nil
 }
 

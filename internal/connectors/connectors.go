@@ -156,10 +156,17 @@ const (
 
 // Limits caps one connector. DailyBudget 0 means unlimited; MaxConcurrent <= 0
 // falls back to the throttle default.
-type Limits struct{ MaxConcurrent, DailyBudget int }
+//
+// Window and WindowBudget (W27-39) add a rolling cap: at most WindowBudget
+// orders in any Window-long span. Both must be positive to take effect.
+type Limits struct {
+	MaxConcurrent, DailyBudget int
+	Window                     time.Duration
+	WindowBudget               int
+}
 
 // RateLimitError is an upstream (or local) refusal to issue right now. Reason
-// is "upstream_429", "backoff" or "daily_budget".
+// is "upstream_429", "backoff", "daily_budget" or "window_budget".
 type RateLimitError struct {
 	ConnectorID string
 	Reason      string
@@ -195,6 +202,9 @@ type ThrottleStatus struct {
 	BlockedUntil     string `json:"blocked_until"`
 	DailyBudget      int    `json:"daily_budget"`
 	DailyUsed        int    `json:"daily_used"`
+	WindowSeconds    int    `json:"window_seconds,omitempty"`
+	WindowBudget     int    `json:"window_budget,omitempty"`
+	WindowUsed       int    `json:"window_used,omitempty"`
 }
 
 type connState struct {
@@ -204,6 +214,10 @@ type connState struct {
 	// through it instead of being refused.
 	holdUntil time.Time
 	day       string
+	// issued is the rolling-window order log, oldest first; windowLoaded says
+	// the durable log has been merged in since this process started.
+	issued       []time.Time
+	windowLoaded bool
 	// notify is closed and replaced whenever capacity may have freed up.
 	notify chan struct{}
 }
@@ -220,6 +234,11 @@ type Throttle struct {
 	// minBackoff is the floor of the post-429 backoff (minRateLimitBackoff
 	// unless KRYPTKEEPER_CONNECTOR_MIN_BACKOFF says otherwise).
 	minBackoff time.Duration
+
+	gateStore   RetryGateStore
+	logStore    IssueLogStore
+	cfgWin      map[string]windowCfg
+	storeWarned map[string]time.Time
 }
 
 func NewThrottle(def Limits, now func() time.Time) *Throttle {
@@ -229,7 +248,8 @@ func NewThrottle(def Limits, now func() time.Time) *Throttle {
 	if now == nil {
 		now = time.Now
 	}
-	return &Throttle{def: def, per: map[string]Limits{}, st: map[string]*connState{}, now: now, minBackoff: minRateLimitBackoff}
+	return &Throttle{def: def, per: map[string]Limits{}, st: map[string]*connState{}, now: now, minBackoff: minRateLimitBackoff,
+		cfgWin: map[string]windowCfg{}, storeWarned: map[string]time.Time{}}
 }
 
 func (t *Throttle) SetLimits(connectorID string, l Limits) {
@@ -247,10 +267,13 @@ func (t *Throttle) SetObserver(fn func(ThrottleEvent)) {
 func (t *Throttle) limitsLocked(id string) Limits {
 	l, ok := t.per[id]
 	if !ok {
-		return t.def
+		l = t.def
 	}
 	if l.MaxConcurrent <= 0 {
 		l.MaxConcurrent = t.def.MaxConcurrent
+	}
+	if w, ok := t.cfgWin[id]; ok && l.Window <= 0 {
+		l.Window, l.WindowBudget = w.window, w.budget
 	}
 	return l
 }
@@ -272,7 +295,19 @@ func (t *Throttle) stateLocked(id string, now time.Time) *connState {
 // (honouring ctx) until a slot frees. Call release exactly once with the
 // issuance error so a 429 can start a backoff window.
 func (t *Throttle) Acquire(ctx context.Context, connectorID string) (func(err error), error) {
+	return t.acquire(ctx, connectorID, true)
+}
+
+// acquire is Acquire with the daily budget optional: revocations share the
+// concurrency cap and the post-429 backoff but must never be refused because
+// the day's issuance budget is spent (W36-01, D-306).
+func (t *Throttle) acquire(ctx context.Context, connectorID string, countBudget bool) (func(err error), error) {
 	for {
+		// Durable state is read before every attempt, outside the lock.
+		t.syncBackoff(ctx, connectorID)
+		if countBudget {
+			t.hydrateWindow(ctx, connectorID)
+		}
 		t.mu.Lock()
 		now := t.now()
 		s := t.stateLocked(connectorID, now)
@@ -282,15 +317,32 @@ func (t *Throttle) Acquire(ctx context.Context, connectorID string) (func(err er
 			e := &RateLimitError{ConnectorID: connectorID, Reason: "backoff", RetryAfter: s.blockedUntil.Sub(now)}
 			t.mu.Unlock()
 			return nil, e
-		case lim.DailyBudget > 0 && s.dailyUsed >= lim.DailyBudget:
+		case countBudget && lim.DailyBudget > 0 && s.dailyUsed >= lim.DailyBudget:
 			midnight := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day()+1, 0, 0, 0, 0, time.UTC)
 			e := &RateLimitError{ConnectorID: connectorID, Reason: "daily_budget", RetryAfter: midnight.Sub(now)}
 			t.mu.Unlock()
 			return nil, e
+		case countBudget && lim.Window > 0 && lim.WindowBudget > 0 && len(windowTrim(s.issued, now, lim.Window)) >= lim.WindowBudget:
+			s.issued = windowTrim(s.issued, now, lim.Window)
+			// The slot that frees first belongs to the order WindowBudget back.
+			oldest := s.issued[len(s.issued)-lim.WindowBudget]
+			e := &RateLimitError{ConnectorID: connectorID, Reason: "window_budget", RetryAfter: oldest.Add(lim.Window).Sub(now)}
+			t.mu.Unlock()
+			return nil, e
 		case s.inFlight < lim.MaxConcurrent:
 			s.inFlight++
-			s.dailyUsed++
+			if countBudget {
+				s.dailyUsed++
+			}
+			var persistAt time.Time
+			if countBudget && lim.Window > 0 && lim.WindowBudget > 0 {
+				s.issued = append(windowTrim(s.issued, now, lim.Window), now)
+				persistAt = now
+			}
 			t.mu.Unlock()
+			if !persistAt.IsZero() {
+				t.persistIssue(connectorID, persistAt, lim.Window)
+			}
 			var once sync.Once
 			return func(err error) { once.Do(func() { t.release(connectorID, err) }) }, nil
 		}
@@ -315,6 +367,7 @@ func (t *Throttle) Acquire(ctx context.Context, connectorID string) (func(err er
 
 func (t *Throttle) release(id string, err error) {
 	var ev *ThrottleEvent
+	var persistUntil time.Time
 	t.mu.Lock()
 	now := t.now()
 	s := t.stateLocked(id, now)
@@ -332,6 +385,7 @@ func (t *Throttle) release(id string, err error) {
 			wait = maxRateLimitBackoff
 		}
 		s.blockedUntil = now.Add(wait)
+		persistUntil = s.blockedUntil
 		s.rateLimited++
 		ev = &ThrottleEvent{ConnectorID: id, Reason: "upstream_429", RetryAfter: wait, Failures: s.failures}
 	} else if err == nil && !now.Before(s.blockedUntil) {
@@ -343,6 +397,9 @@ func (t *Throttle) release(id string, err error) {
 	s.notify = make(chan struct{})
 	obs := t.observer
 	t.mu.Unlock()
+	if !persistUntil.IsZero() {
+		t.persistGate(id, persistUntil, gateReasonBackoff)
+	}
 	if ev != nil && obs != nil {
 		obs(*ev)
 	}
@@ -364,6 +421,11 @@ func (t *Throttle) Snapshot() []ThrottleStatus {
 		out = append(out, ThrottleStatus{ConnectorID: id, InFlight: s.inFlight, MaxConcurrent: lim.MaxConcurrent,
 			Waiting: s.waiting, RateLimitedTotal: s.rateLimited, BlockedUntil: blocked,
 			DailyBudget: lim.DailyBudget, DailyUsed: s.dailyUsed})
+		if lim.Window > 0 && lim.WindowBudget > 0 {
+			st := &out[len(out)-1]
+			st.WindowSeconds, st.WindowBudget = int(lim.Window/time.Second), lim.WindowBudget
+			st.WindowUsed = len(windowTrim(s.issued, now, lim.Window))
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ConnectorID < out[j].ConnectorID })
 	return out
@@ -456,8 +518,10 @@ func LimitsFromEnv(getenv func(string) string) (def Limits, per map[string]Limit
 	}
 	if raw := strings.TrimSpace(getenv(envLimits)); raw != "" {
 		var parsed map[string]struct {
-			MaxConcurrent int `json:"max_concurrent"`
-			DailyBudget   int `json:"daily_budget"`
+			MaxConcurrent int             `json:"max_concurrent"`
+			DailyBudget   int             `json:"daily_budget"`
+			Window        json.RawMessage `json:"window"`
+			WindowBudget  int             `json:"window_budget"`
 		}
 		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
 			logging.Infof("connectors: invalid %s, ignoring per-connector limits: %v", envLimits, err)
@@ -467,7 +531,15 @@ func LimitsFromEnv(getenv func(string) string) (def Limits, per map[string]Limit
 					logging.Infof("connectors: invalid limits for %q in %s, ignoring", id, envLimits)
 					continue
 				}
-				per[id] = Limits{MaxConcurrent: l.MaxConcurrent, DailyBudget: l.DailyBudget}
+				lim := Limits{MaxConcurrent: l.MaxConcurrent, DailyBudget: l.DailyBudget}
+				if w, err := ParseWindow(l.Window); err != nil || l.WindowBudget < 0 || (w > 0) != (l.WindowBudget > 0) {
+					if len(l.Window) > 0 || l.WindowBudget != 0 {
+						logging.Infof("connectors: invalid window/window_budget for %q in %s, ignoring the window", id, envLimits)
+					}
+				} else {
+					lim.Window, lim.WindowBudget = w, l.WindowBudget
+				}
+				per[id] = lim
 			}
 		}
 	}

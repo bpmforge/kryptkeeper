@@ -28,10 +28,16 @@ func NewHTTPClient() *http.Client {
 // credential. W32-11 and W32-14 supply one each, keyed by Connector kind.
 type Factory func(baseURL string, credential []byte, hc *http.Client) (Connector, error)
 
+// PluginConnectorFactory builds the Connector of a "plugin" connection. The
+// plugin runtime lives in internal/bootstrap, which itsm cannot import, so the
+// wiring layer supplies this. The factory resolves the credential itself, per
+// call, and never holds it.
+type PluginConnectorFactory func(ctx context.Context, conn Connection) (Connector, error)
+
 // NewConnectorSource resolves a connection's credential from the encrypted
 // store at use time (never cached, never logged) and builds its connector
 // with hc, which must be an egress-guarded client.
-func NewConnectorSource(store *Store, creds CredentialResolver, hc *http.Client, factories map[string]Factory) ConnectorSource {
+func NewConnectorSource(store *Store, creds CredentialResolver, hc *http.Client, factories map[string]Factory, plugins PluginConnectorFactory) ConnectorSource {
 	return func(ctx context.Context, connectionID string) (Connector, error) {
 		conn, err := store.GetConnection(ctx, connectionID)
 		if err != nil {
@@ -39,6 +45,12 @@ func NewConnectorSource(store *Store, creds CredentialResolver, hc *http.Client,
 		}
 		if !conn.Enabled {
 			return nil, fmt.Errorf("itsm: connection %q is disabled", connectionID)
+		}
+		if conn.Kind == KindPlugin {
+			if plugins == nil {
+				return nil, fmt.Errorf("itsm: ticket plugins are not available on this hub")
+			}
+			return plugins(ctx, conn)
 		}
 		factory, ok := factories[conn.Kind]
 		if !ok {

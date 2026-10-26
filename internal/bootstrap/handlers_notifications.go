@@ -157,6 +157,36 @@ func itsmRuleTargetInvalid(ctx context.Context, p NotificationProvider, ok itsmC
 }
 
 func registerNotificationHandlers(mux *http.ServeMux, auth *Authenticator, notificationProvider NotificationProvider, auditProvider AuditProvider, itsmConnOK itsmConnectionVisibleFunc, targetVisible ...silenceTargetVisibleFunc) {
+	registerNotificationHandlersWithPlugins(mux, auth, notificationProvider, auditProvider, itsmConnOK, nil, targetVisible...)
+}
+
+// pluginTargetProblem checks a "plugin" rule target; nil check (no plugin
+// channel wired) refuses every target.
+func pluginTargetProblem(ctx context.Context, check pluginChannelTargetFunc, pd AuthPrincipal, target string) string {
+	if check == nil {
+		return "notify plugins are not available on this hub"
+	}
+	return check(ctx, pd, strings.TrimSpace(target))
+}
+
+// pluginRuleTargetProblem is itsmRuleTargetInvalid for plugin rules: UpdateRule
+// overwrites the target, so the new one must name a usable plugin and credential.
+func pluginRuleTargetProblem(ctx context.Context, p NotificationProvider, check pluginChannelTargetFunc, pd AuthPrincipal, id, target string) string {
+	rules, err := p.ListRules(ctx)
+	if err != nil {
+		return ""
+	}
+	for _, rule := range rules {
+		if rule.ID == id && rule.Channel == pluginChannelName {
+			return pluginTargetProblem(ctx, check, pd, target)
+		}
+	}
+	return ""
+}
+
+// registerNotificationHandlersWithPlugins mounts the notification API;
+// pluginTarget validates "plugin" channel targets (nil refuses them).
+func registerNotificationHandlersWithPlugins(mux *http.ServeMux, auth *Authenticator, notificationProvider NotificationProvider, auditProvider AuditProvider, itsmConnOK itsmConnectionVisibleFunc, pluginTarget pluginChannelTargetFunc, targetVisible ...silenceTargetVisibleFunc) {
 	// Without a target check (tests that never exercise tenancy) only unscoped
 	// principals can create silences.
 	var silenceTargetOK silenceTargetVisibleFunc = func(_ context.Context, pd AuthPrincipal, _, _ string) bool { return tenantBypass(pd) }
@@ -241,7 +271,7 @@ func registerNotificationHandlers(mux *http.ServeMux, auth *Authenticator, notif
 		channelFilter := strings.TrimSpace(r.URL.Query().Get("channel"))
 		if channelFilter != "" {
 			switch strings.ToLower(channelFilter) {
-			case "email", "slack", "pagerduty", "webhook", itsmChannelName:
+			case "email", "slack", "pagerduty", "webhook", itsmChannelName, pluginChannelName:
 				channelFilter = strings.ToLower(channelFilter)
 			default:
 				writeBadRequest(w, "invalid channel value")
@@ -327,6 +357,12 @@ func registerNotificationHandlers(mux *http.ServeMux, auth *Authenticator, notif
 		req.Message = strings.TrimSpace(req.Message)
 		switch req.Channel {
 		case "email", "slack", "pagerduty", "webhook":
+		case pluginChannelName:
+			if msg := pluginTargetProblem(r.Context(), pluginTarget, principal, req.Target); msg != "" {
+				emitAuditEvent(r, auditProvider, principal.ID, "notification.test_delivery", "notification", "test-delivery", AuditOutcomeFailure)
+				writeBadRequest(w, msg)
+				return
+			}
 		default:
 			emitAuditEvent(r, auditProvider, principal.ID, "notification.test_delivery", "notification", "test-delivery", AuditOutcomeFailure)
 			writeBadRequest(w, "invalid request body")
@@ -594,11 +630,18 @@ func registerNotificationHandlers(mux *http.ServeMux, auth *Authenticator, notif
 			req.Target = strings.TrimSpace(req.Target)
 			req.TemplateID = strings.TrimSpace(req.TemplateID)
 			switch req.Channel {
-			case "email", "slack", "pagerduty", "webhook", itsmChannelName:
+			case "email", "slack", "pagerduty", "webhook", itsmChannelName, pluginChannelName:
 			default:
 				emitAuditEvent(r, auditProvider, principal.ID, "notification.rules.create", "notification", "rules", AuditOutcomeFailure)
 				writeBadRequest(w, "invalid request body")
 				return
+			}
+			if req.Channel == pluginChannelName {
+				if msg := pluginTargetProblem(r.Context(), pluginTarget, principal, req.Target); msg != "" {
+					emitAuditEvent(r, auditProvider, principal.ID, "notification.rules.create", "notification", "rules", AuditOutcomeFailure)
+					writeBadRequest(w, msg)
+					return
+				}
 			}
 			if req.Channel == itsmChannelName && (itsmConnOK == nil || !itsmConnOK(r.Context(), principal, req.Target)) {
 				emitAuditEvent(r, auditProvider, principal.ID, "notification.rules.create", "notification", "rules", AuditOutcomeFailure)
@@ -746,6 +789,11 @@ func registerNotificationHandlers(mux *http.ServeMux, auth *Authenticator, notif
 			if itsmRuleTargetInvalid(r.Context(), notificationProvider, itsmConnOK, principal, id, req.Target) {
 				emitAuditEvent(r, auditProvider, principal.ID, "notification.rules.update", "notification", id, AuditOutcomeFailure)
 				writeBadRequest(w, "target must be an existing ITSM connection id")
+				return
+			}
+			if msg := pluginRuleTargetProblem(r.Context(), notificationProvider, pluginTarget, principal, id, req.Target); msg != "" {
+				emitAuditEvent(r, auditProvider, principal.ID, "notification.rules.update", "notification", id, AuditOutcomeFailure)
+				writeBadRequest(w, msg)
 				return
 			}
 			rule, err := notificationProvider.UpdateRule(r.Context(), id, req.Enabled, req.Target)
@@ -1047,9 +1095,17 @@ func registerNotificationHandlers(mux *http.ServeMux, auth *Authenticator, notif
 			req.Target = strings.TrimSpace(req.Target)
 			switch req.Channel {
 			case "email", "slack", "pagerduty", "webhook":
+			case pluginChannelName:
+				// A team can be routed to a notify plugin (Teams, PagerDuty,
+				// Opsgenie) once the plugin and its credential are visible.
+				if msg := pluginTargetProblem(r.Context(), pluginTarget, principal, req.Target); msg != "" {
+					emitAuditEvent(r, auditProvider, principal.ID, "notification.team_route.create", "notification", "team-routes", AuditOutcomeFailure)
+					writeBadRequest(w, msg)
+					return
+				}
 			default:
 				emitAuditEvent(r, auditProvider, principal.ID, "notification.team_route.create", "notification", "team-routes", AuditOutcomeFailure)
-				writeBadRequest(w, "channel must be email, slack, pagerduty, or webhook")
+				writeBadRequest(w, "channel must be email, slack, pagerduty, webhook or plugin")
 				return
 			}
 			if req.OwnerTeam == "" || len(req.OwnerTeam) > 120 || req.Target == "" || len(req.Target) > 320 || req.Target == routedRuleTarget {

@@ -262,6 +262,7 @@ export default function IssueWizard() {
               {cas.map((ca) => (
                 <option key={ca.id} value={ca.id}>
                   {ca.display_name || ca.name || ca.id}
+                  {ca.type === "external" ? " (external)" : ""}
                 </option>
               ))}
             </Select>

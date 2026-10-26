@@ -1,0 +1,154 @@
+# Try Kryptkeeper in five minutes (W37-08, D-310).
+#
+#   docker compose -f deploy/try/compose.yaml up
+#
+# Starts a hub on PostgreSQL, the web console, two small TLS servers for the
+# hub to discover, and a one-shot seeder that runs `kryptkeeper demo seed`
+# against the hub's public API. Everything it creates is labelled demo=true.
+#
+# THIS IS A DEMO, NOT A DEPLOYMENT. The login, the API token and the signing
+# secret below are published in this file, so every port is bound to 127.0.0.1
+# and the hub reports KRYPTKEEPER_ENV=trial. For a real install see
+# docs/deployment.md.
+#
+# Images come from ghcr.io/bpmforge. Set KK_VERSION to pin a release (the
+# default, latest, must be 1.1 or newer: older images have no `demo` command).
+# To build from this checkout instead, add the build override:
+#   docker compose -f deploy/try/compose.yaml -f deploy/try/compose.build.yaml up --build
+name: ${KK_PROJECT:-kryptkeeper-try}
+
+x-hub-image: &hub-image ${KK_HUB_IMAGE:-ghcr.io/bpmforge/kryptkeeper}:${KK_VERSION:-latest}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: kryptkeeper
+      POSTGRES_USER: kryptkeeper
+      POSTGRES_PASSWORD: trial-only-postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kryptkeeper -d kryptkeeper"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  hub:
+    image: *hub-image
+    hostname: kryptkeeper
+    networks:
+      default:
+        aliases: [kryptkeeper]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      KRYPTKEEPER_ENV: trial
+      AUTH_MODE: bootstrap
+      # The seeder's credential. Demo only: never reuse this value.
+      APP_BOOTSTRAP_TOKEN: trial-only-bootstrap-token-0123456789abcdef
+      KRYPTKEEPER_KEYSTORE_PASSPHRASE: trial-only-keystore-passphrase-0123456789
+      APP_BIND_ADDR: "0.0.0.0"
+      PORT: "8080"
+      APP_CERTIFICATE_PROVIDER: ca
+      APP_DISCOVERY_PROVIDER: db
+      APP_NOTIFICATION_PROVIDER: delivery
+      KRYPTKEEPER_KEYSTORE_DIR: /var/kryptkeeper/keys
+      KRYPTKEEPER_DATA_DIR: /var/kryptkeeper/data
+      APP_TEMPLATE_FILE: /var/kryptkeeper/data/templates.json
+      KRYPTKEEPER_DB_MODE: postgres
+      DATABASE_URL: postgres://kryptkeeper:trial-only-postgres@postgres:5432/kryptkeeper?sslmode=disable
+      # TLS stays on: the hub issues its own listener certificate and exports
+      # the CA bundle that the console proxy and the seeder verify against.
+      KRYPTKEEPER_TLS_SANS: kryptkeeper,localhost,127.0.0.1
+      KRYPTKEEPER_TLS_TRUST_EXPORT_DIR: /var/kryptkeeper/tls-trust
+      HEALTHCHECK_URL: https://127.0.0.1:8080/healthz
+      HEALTHCHECK_CA_FILE: /var/kryptkeeper/data/tls/ca.pem
+      KRYPTKEEPER_BASE_URL: https://localhost:8080
+      # The console login. Password: kryptkeeper-demo
+      APP_AUTH_LOGIN_ENABLED: "true"
+      APP_AUTH_LOGIN_ACTIVE: "true"
+      APP_AUTH_LOGIN_EMAIL: admin@demo.test
+      APP_AUTH_LOGIN_SUBJECT: demo.admin
+      APP_AUTH_LOGIN_ROLE: pki-admin
+      APP_AUTH_LOGIN_PASSWORD_PEPPER: kryptkeeper-demo-pepper
+      APP_AUTH_LOGIN_PASSWORD_HASH: $$argon2id$$v=19$$m=19456,t=2,p=1$$bvNRhbuKXGpnTuleaViPLw$$6PVdo2HUq9JC0vhJSqnR/Qm6bSlqvONhtoBIGkqoyJE
+      APP_AUTH_LOGIN_SIGNING_SECRET: trial-only-signing-secret-0123456789abcdef
+      APP_AUTH_ACCESS_TTL_SEC: "28800"
+      APP_AUTH_IDLE_TIMEOUT_SEC: "28800"
+    volumes:
+      - appdata:/var/kryptkeeper
+      - tls-trust:/var/kryptkeeper/tls-trust
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+      start_period: 3s
+    restart: unless-stopped
+
+  console:
+    image: ${KK_DASHBOARD_IMAGE:-ghcr.io/bpmforge/kryptkeeper-dashboard}:${KK_VERSION:-latest}
+    ports:
+      - "127.0.0.1:${KK_UI_PORT:-3000}:8080"
+    volumes:
+      - tls-trust:/etc/kryptkeeper/tls:ro
+    depends_on:
+      hub:
+        condition: service_started
+    # nginx must not start before the hub has written the CA bundle it verifies
+    # the hub's certificate against (same wait as the main compose file).
+    entrypoint: >
+      sh -c '
+      i=0;
+      while [ ! -s /etc/kryptkeeper/tls/ca.pem ]; do
+        i=$$((i+1));
+        if [ "$$i" -ge 120 ]; then echo "timed out waiting for the hub CA bundle" >&2; exit 1; fi;
+        sleep 1;
+      done;
+      exec nginx -g "daemon off;"
+      '
+    restart: unless-stopped
+
+  # Two TLS servers the hub discovers. They generate their own self-signed
+  # certificates on start, so the discovery scan finds certificates that no
+  # hub CA issued.
+  demo-web1:
+    image: nginx:1.27-alpine
+    entrypoint: ["sh", "-c"]
+    command: ["apk add -q --no-cache openssl >/dev/null && cd /etc/nginx && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 30 -subj /CN=demo-web1.demo.example -addext subjectAltName=DNS:demo-web1.demo.example,DNS:demo-web1 -keyout k.pem -out c.pem 2>/dev/null && printf 'server { listen 8443 ssl; ssl_certificate /etc/nginx/c.pem; ssl_certificate_key /etc/nginx/k.pem; location / { return 200 \"demo-web1\\n\"; } }' > conf.d/default.conf && exec nginx -g 'daemon off;'"]
+
+  demo-web2:
+    image: nginx:1.27-alpine
+    entrypoint: ["sh", "-c"]
+    command: ["apk add -q --no-cache openssl >/dev/null && cd /etc/nginx && openssl req -x509 -newkey rsa:3072 -nodes -days 365 -subj /CN=demo-web2.demo.example -addext subjectAltName=DNS:demo-web2.demo.example,DNS:demo-web2 -keyout k.pem -out c.pem 2>/dev/null && printf 'server { listen 8443 ssl; ssl_certificate /etc/nginx/c.pem; ssl_certificate_key /etc/nginx/k.pem; location / { return 200 \"demo-web2\\n\"; } }' > conf.d/default.conf && exec nginx -g 'daemon off;'"]
+
+  # One-shot: runs `kryptkeeper demo seed`, waits for the hub itself, exits.
+  # Safe to re-run: it refuses a hub that is already seeded.
+  seeder:
+    image: *hub-image
+    depends_on:
+      hub:
+        condition: service_started
+      demo-web1:
+        condition: service_started
+      demo-web2:
+        condition: service_started
+    environment:
+      KRYPTKEEPER_DEMO_TOKEN: trial-only-bootstrap-token-0123456789abcdef
+    volumes:
+      - tls-trust:/tls:ro
+    command:
+      - demo
+      - seed
+      - --hub=https://kryptkeeper:8080
+      - --ca-file=/tls/ca.pem
+      - --targets=demo-web1:8443,demo-web2:8443
+      - --wait=3m
+    restart: "no"
+
+volumes:
+  pgdata:
+  appdata:
+  tls-trust:

@@ -324,14 +324,32 @@ mismatched URL would be told to dial the wrong scheme).
   `secrets.databaseURL` or `secrets.existingSecret` to point at one you run separately; SQLite also
   works for single-replica installs via `config.dbMode=sqlite`)
 
-### Add the Helm repository
+### Install from the OCI registry (recommended)
+
+Each release publishes the chart to `oci://ghcr.io/bpmforge/charts/kryptkeeper`. The chart version
+and `appVersion` both equal the release version (tag `v1.1.0` is chart `1.1.0`), and the chart is
+signed keyless with cosign, like the images.
 
 ```bash
-helm repo add kryptkeeper https://kryptkeeper.github.io/helm-charts
-helm repo update
+VERSION=1.1.0   # the tag without the "v"
+
+# Verify the signature before installing (same identity as the images).
+cosign verify \
+  --certificate-identity-regexp '^https://github\.com/bpmforge/kryptkeeper/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/bpmforge/charts/kryptkeeper:${VERSION}
+
+helm install kryptkeeper oci://ghcr.io/bpmforge/charts/kryptkeeper --version "${VERSION}" \
+  --namespace kryptkeeper --create-namespace \
+  --set config.dbMode=sqlite --set replicaCount=1 --set autoscaling.enabled=false \
+  --set secrets.bootstrapToken="$(openssl rand -hex 20)" \
+  --set secrets.keystorePassphrase="$(openssl rand -hex 32)"
 ```
 
-Or install directly from a checked-out copy of this repo: `helm install kryptkeeper ./charts/kryptkeeper ...`.
+The examples below use `kryptkeeper/kryptkeeper`; substitute
+`oci://ghcr.io/bpmforge/charts/kryptkeeper --version "${VERSION}"` for it. There is no classic
+`helm repo add` index. To install from a checked-out copy instead:
+`helm install kryptkeeper ./charts/kryptkeeper ...`.
 
 ### Minimal install (SQLite, no TLS)
 

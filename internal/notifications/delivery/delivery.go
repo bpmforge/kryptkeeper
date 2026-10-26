@@ -70,6 +70,12 @@ type Event struct {
 	Message   string
 	Priority  string // critical, high, medium, low
 	CreatedAt time.Time
+	// Optional structure for channels that can use it (notify plugins, W38-02).
+	// omitempty keeps the generic webhook's JSON body byte-identical for events
+	// that do not set them.
+	Class    string            `json:",omitempty"` // event class, e.g. "certificate.expiry"; a ".resolved" suffix clears
+	DeepLink string            `json:",omitempty"`
+	Fields   map[string]string `json:",omitempty"` // non-secret context rows
 }
 
 // Result is the outcome of a delivery attempt.
@@ -101,104 +107,6 @@ var urlPattern = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"']+`)
 // and webhook/Slack URLs carry bearer tokens that must not reach logs or
 // delivery messages.
 func RedactURLs(s string) string { return urlPattern.ReplaceAllString(s, "[redacted-url]") }
-
-// Worker processes notification events with retry and channel routing.
-type Worker struct {
-	channels   map[string]Channel
-	maxRetries int
-	retryDelay time.Duration
-	mu         sync.Mutex
-	results    []Result
-}
-
-// NewWorker creates a delivery worker with the given channels.
-func NewWorker(channels []Channel, maxRetries int, retryDelay time.Duration) *Worker {
-	if maxRetries <= 0 {
-		maxRetries = 3
-	}
-	if retryDelay <= 0 {
-		retryDelay = 5 * time.Second
-	}
-	channelMap := make(map[string]Channel)
-	for _, ch := range channels {
-		channelMap[ch.Name()] = ch
-	}
-	return &Worker{
-		channels:   channelMap,
-		maxRetries: maxRetries,
-		retryDelay: retryDelay,
-	}
-}
-
-// Deliver sends an event through the appropriate channel with retry.
-func (w *Worker) Deliver(ctx context.Context, event Event) Result {
-	ch, ok := w.channels[event.Channel]
-	if !ok {
-		result := Result{
-			EventID:     event.ID,
-			Channel:     event.Channel,
-			Status:      "failed",
-			Error:       fmt.Sprintf("unknown channel: %s", event.Channel),
-			DeliveredAt: time.Now().UTC(),
-			Attempts:    0,
-		}
-		w.recordResult(result)
-		return result
-	}
-
-	var lastErr error
-	for attempt := 1; attempt <= w.maxRetries; attempt++ {
-		err := ch.Send(ctx, event)
-		if err == nil {
-			result := Result{
-				EventID:     event.ID,
-				Channel:     event.Channel,
-				Status:      "sent",
-				DeliveredAt: time.Now().UTC(),
-				Attempts:    attempt,
-			}
-			w.recordResult(result)
-			return result
-		}
-		lastErr = err
-		logging.Warnf("delivery attempt %d/%d for event %s on channel %s failed: %s",
-			attempt, w.maxRetries, event.ID, event.Channel, RedactURLs(err.Error()))
-
-		if attempt < w.maxRetries {
-			select {
-			case <-ctx.Done():
-				break
-			case <-time.After(w.retryDelay * time.Duration(attempt)):
-			}
-		}
-	}
-
-	result := Result{
-		EventID:     event.ID,
-		Channel:     event.Channel,
-		Status:      "failed",
-		Error:       lastErr.Error(),
-		DeliveredAt: time.Now().UTC(),
-		Attempts:    w.maxRetries,
-	}
-	w.recordResult(result)
-	return result
-}
-
-// Results returns all delivery results.
-func (w *Worker) Results() []Result {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	out := make([]Result, len(w.results))
-	copy(out, w.results)
-	return out
-}
-
-func (w *Worker) recordResult(r Result) {
-	w.mu.Lock()
-	w.results = append(w.results, r)
-	w.mu.Unlock()
-}
 
 // --- Built-in Channel Implementations ---
 
@@ -418,7 +326,7 @@ func webhookMAC(secret, ts string, body []byte) string {
 }
 
 // postJSON POSTs a JSON body to url with the given extra headers, returning an
-// error on transport failure or a non-2xx response so the worker's retry engages.
+// error on transport failure or a non-2xx response so the retrier engages.
 func postJSON(ctx context.Context, url string, body []byte, headers map[string]string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -435,7 +343,13 @@ func postJSON(ctx context.Context, url string, body []byte, headers map[string]s
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("post %s: server returned %d", url, resp.StatusCode)
+		herr := fmt.Errorf("post %s: server returned %d", url, resp.StatusCode)
+		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusServiceUnavailable {
+			if d, ok := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()); ok {
+				return &RetryAfterError{After: d, Err: herr}
+			}
+		}
+		return herr
 	}
 	return nil
 }

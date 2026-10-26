@@ -1,0 +1,18 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "kind": "notify",
+  "id": "kryptkeeper.opsgenie",
+  "name": "Opsgenie alerts",
+  "version": "1.0.0",
+  "publisher": "Kryptkeeper Authors",
+  "license": "Apache-2.0",
+  "source": "https://github.com/bpmforge/kryptkeeper/tree/main/plugins/opsgenie",
+  "artifact": {"file": "plugin.wasm", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "capabilities": {
+    "network": {"hosts_from_credential": "api_base"}
+  },
+  "credential_schema": {
+    "api_base": {"type": "url", "default": "https://api.opsgenie.com"},
+    "api_key": {"type": "string", "required": true, "secret": true}
+  }
+}

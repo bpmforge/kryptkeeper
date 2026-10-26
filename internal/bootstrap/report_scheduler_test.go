@@ -99,7 +99,7 @@ func TestValidateReportSchedule(t *testing.T) {
 		{"inventory pdf", func(s *ReportSchedule) { s.Report, s.Format = "inventory", "pdf" }, false},
 		{"exec csv", func(s *ReportSchedule) { s.Format = "csv" }, false},
 		{"unknown report", func(s *ReportSchedule) { s.Report = "nope" }, false},
-		{"bad cadence", func(s *ReportSchedule) { s.Cadence = "daily" }, false},
+		{"bad cadence", func(s *ReportSchedule) { s.Cadence = "hourly" }, false},
 		{"zero recipients", func(s *ReportSchedule) { s.Recipients = nil }, false},
 		{"20 recipients", func(s *ReportSchedule) { s.Recipients = many(20) }, true},
 		{"21 recipients", func(s *ReportSchedule) { s.Recipients = many(21) }, false},

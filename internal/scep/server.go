@@ -84,6 +84,10 @@ type Server struct {
 	issuedRecorder ca.IssuedCertificateRecorder
 	enrollGate     EnrollmentGate
 	revoked        RevocationChecker // nil refuses every renewal (fail closed)
+	labels         LabelStore        // named /scep/<label> endpoints (W20-23)
+	intune         IntuneBackend
+	labelGate      func(templateID string) EnrollmentGate
+	withdraw       WithdrawFunc
 	audit          AuditFunc
 	now            func() time.Time
 }
@@ -189,6 +193,25 @@ func (s *Server) WithEnrollmentGate(g EnrollmentGate) *Server {
 // All SCEP operations go through a single endpoint with ?operation= parameter.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// /scep/<label> selects a named endpoint; any unknown label answers
+		// the same 404 so labels cannot be enumerated.
+		if rest, ok := strings.CutPrefix(r.URL.Path, "/scep/"); ok && strings.Trim(rest, "/") != "" {
+			name := strings.Trim(rest, "/")
+			if s.labels == nil || !ValidLabel(name) {
+				http.NotFound(w, r)
+				return
+			}
+			l, err := s.labels.Get(r.Context(), name)
+			if errors.Is(err, ErrLabelNotFound) {
+				http.NotFound(w, r)
+				return
+			}
+			if err != nil {
+				http.Error(w, "SCEP labels unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			r = r.WithContext(context.WithValue(r.Context(), ctxLabelKey{}, &l))
+		}
 		operation := r.URL.Query().Get("operation")
 		switch strings.ToLower(operation) {
 		case "getcacert":
@@ -243,7 +266,11 @@ func (s *Server) handleGetCACaps(w http.ResponseWriter, r *http.Request) {
 		"AES",
 		"POSTPKIOperation",
 		"SCEPStandard",
-		"Renewal",
+	}
+	// A label's certificates are validated by Intune on every request, which
+	// the hub-native renewal (no challenge) would bypass, so it is not offered.
+	if labelFrom(r.Context()) == nil {
+		caps = append(caps, "Renewal")
 	}
 
 	w.Header().Set("Content-Type", "text/plain")
@@ -330,6 +357,13 @@ func (s *Server) handlePKIOperation(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		s.writeCertRep(w, caObj, txID, senderNonce, pkiStatusFailure, failInfo, nil, nil)
+		return
+	}
+
+	// An Intune label sends every request, renewals included, through Intune:
+	// the hub-native renewal below would skip the challenge check.
+	if l := labelFrom(r.Context()); l != nil {
+		s.enrollIntune(w, r, caObj, txID, senderNonce, csr, clientCert, l)
 		return
 	}
 

@@ -137,6 +137,10 @@ type RenewalConnectorBudget struct {
 	Cap         int    `json:"cap"`
 	DailyUsed   int    `json:"daily_used,omitempty"`
 	DailyLimit  int    `json:"daily_limit,omitempty"`
+	// W27-39: rolling-window usage; omitted when the connector has no window.
+	WindowUsed    int `json:"window_used,omitempty"`
+	WindowLimit   int `json:"window_limit,omitempty"`
+	WindowSeconds int `json:"window_seconds,omitempty"`
 }
 
 func renewalQueueReport(th *connectors.Throttle) RenewalQueueReport {
@@ -149,7 +153,8 @@ func renewalQueueReport(th *connectors.Throttle) RenewalQueueReport {
 	capSum := 0
 	for _, c := range conns {
 		budgets = append(budgets, RenewalConnectorBudget{ConnectorID: c.ConnectorID, InFlight: c.InFlight,
-			Cap: c.MaxConcurrent, DailyUsed: c.DailyUsed, DailyLimit: c.DailyBudget})
+			Cap: c.MaxConcurrent, DailyUsed: c.DailyUsed, DailyLimit: c.DailyBudget,
+			WindowUsed: c.WindowUsed, WindowLimit: c.WindowBudget, WindowSeconds: c.WindowSeconds})
 		capSum += c.MaxConcurrent
 	}
 	if workers == 0 {

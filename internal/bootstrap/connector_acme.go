@@ -54,8 +54,14 @@ type acmeConnectorConfig struct {
 	HTTP01Hosts []acmeHTTP01Host `json:"http01_hosts,omitempty"`
 	// Challenge is "http-01" (the default) or "dns-01".
 	Challenge string `json:"challenge,omitempty"`
-	// DNSProvider names the dns-01 provider; "cloudflare" is the only one.
+	// DNSProvider names the dns-01 provider: cloudflare, route53, azure, gcp,
+	// rfc2136, delegated or plugin (see connector_acme_dns01*.go).
 	DNSProvider string `json:"dns_provider,omitempty"`
+	// DNSPluginID and DNSPluginCredential complete dns_provider "plugin"
+	// (W38-08): the enabled dns01 plugin, and the outbound credential that
+	// holds its credential fields. Both are names, not secrets.
+	DNSPluginID         string `json:"dns_plugin_id,omitempty"`
+	DNSPluginCredential string `json:"dns_plugin_credential,omitempty"`
 	// DNSPropagation picks how the hub checks the TXT record is visible
 	// before telling the CA to validate: auto (default), authoritative,
 	// resolver, doh or none. See connector_acme_dnscheck.go.
@@ -96,6 +102,9 @@ type acmeIssuerConnector struct {
 	// nil fleetDial = the real SSH dial.
 	targets   ManagedTargetStore
 	fleetDial sshDialFunc
+
+	// dnsPluginHost overrides the process-wide plugin host (tests).
+	dnsPluginHost *dnsPluginHost
 
 	// dns-01 seams; nil means the real Cloudflare API and DNS.
 	newDNS      func(acmeCredentialPayload) (dnsProvider, error)
@@ -494,6 +503,9 @@ func (c *acmeIssuerConnector) issueOnce(ctx context.Context, req connectors.Issu
 func (c *acmeIssuerConnector) dnsProvider(payload acmeCredentialPayload) (dnsProvider, error) {
 	if c.newDNS != nil {
 		return c.newDNS(payload)
+	}
+	if c.cfg.DNSProvider == "plugin" {
+		return c.newPluginDNS()
 	}
 	return newDNSProviderFromConfig(c.cfg, payload)
 }

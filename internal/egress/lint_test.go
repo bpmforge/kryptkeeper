@@ -56,6 +56,8 @@ var rawHTTPAllowlist = map[string]string{
 	"internal/connectors/wstep_client.go": "default only; the hub always injects egress.NewClient (W27-35)",
 	"internal/connectors/digicert.go":     "default only; the hub always injects egress.NewClient (W27-35)",
 
+	"internal/bootstrap/egress_clients.go": "fixed GCE metadata endpoint for ambient workload identity; no operator-supplied host",
+
 	// Plugin host and delivery.
 	"internal/plugins/delivery/host.go": "sandboxed plugin host client; allowlisted hosts are enforced by the plugin capability model",
 

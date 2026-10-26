@@ -78,7 +78,7 @@ const (
 
 // registerITSMHandlers mounts /api/v1/itsm/{connections,events}. Admin only:
 // a connection names a credential that creates tickets in the customer's ITSM.
-func registerITSMHandlers(mux *http.ServeMux, auth *Authenticator, svc *itsm.Service, creds OutboundCredentialStore, auditProvider AuditProvider) {
+func registerITSMHandlers(mux *http.ServeMux, auth *Authenticator, svc *itsm.Service, creds OutboundCredentialStore, auditProvider AuditProvider, pluginCheck itsmPluginCheckFunc) {
 	authorize := func(w http.ResponseWriter, r *http.Request, action, resType string) (AuthPrincipal, bool) {
 		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
 		if err != nil {
@@ -123,7 +123,7 @@ func registerITSMHandlers(mux *http.ServeMux, auth *Authenticator, svc *itsm.Ser
 			}
 			writeJSONData(w, map[string]any{"items": visible})
 		case http.MethodPost:
-			createITSMConnection(w, r, authorize, unconfigured, svc, creds, auditProvider)
+			createITSMConnection(w, r, authorize, unconfigured, svc, creds, auditProvider, pluginCheck)
 		default:
 			writeMethodNotAllowed(w, http.MethodGet+", "+http.MethodPost)
 		}
@@ -224,7 +224,7 @@ func registerITSMHandlers(mux *http.ServeMux, auth *Authenticator, svc *itsm.Ser
 func createITSMConnection(w http.ResponseWriter, r *http.Request,
 	authorize func(http.ResponseWriter, *http.Request, string, string) (AuthPrincipal, bool),
 	unconfigured func(http.ResponseWriter, *http.Request, AuthPrincipal, string, string, string) bool,
-	svc *itsm.Service, creds OutboundCredentialStore, auditProvider AuditProvider) {
+	svc *itsm.Service, creds OutboundCredentialStore, auditProvider AuditProvider, pluginCheck itsmPluginCheckFunc) {
 	const action = itsm.ActionConnectionCreate
 	pd, ok := authorize(w, r, action, "itsm_connection")
 	if !ok || unconfigured(w, r, pd, action, "itsm_connection", "-") {
@@ -239,6 +239,7 @@ func createITSMConnection(w http.ResponseWriter, r *http.Request,
 		Name          string          `json:"name"`
 		BaseURL       string          `json:"base_url"`
 		CredentialRef string          `json:"credential_ref"`
+		PluginID      string          `json:"plugin_id"`
 		EventClasses  json.RawMessage `json:"event_classes"`
 		Enabled       *bool           `json:"enabled"`
 	}
@@ -248,17 +249,24 @@ func createITSMConnection(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	req.Name, req.BaseURL, req.CredentialRef = strings.TrimSpace(req.Name), strings.TrimSpace(req.BaseURL), strings.TrimSpace(req.CredentialRef)
+	req.PluginID = strings.TrimSpace(req.PluginID)
 	switch {
 	case decodeErr != nil:
 		reject("invalid JSON body")
 		return
-	case req.Kind != "servicenow" && req.Kind != "jira":
-		reject("kind must be servicenow or jira")
+	case req.Kind != "servicenow" && req.Kind != "jira" && req.Kind != itsm.KindPlugin:
+		reject("kind must be servicenow, jira or plugin")
 		return
 	case req.Name == "":
 		reject("name is required")
 		return
-	case !validITSMBaseURL(req.BaseURL):
+	case req.Kind == itsm.KindPlugin && (req.PluginID == "" || req.BaseURL != ""):
+		reject("a plugin connection needs plugin_id and no base_url: the credential holds the service address")
+		return
+	case req.Kind != itsm.KindPlugin && req.PluginID != "":
+		reject("plugin_id is only for kind plugin")
+		return
+	case req.Kind != itsm.KindPlugin && !validITSMBaseURL(req.BaseURL):
 		reject("base_url must be an https URL (http only for a loopback host)")
 		return
 	case req.CredentialRef == "":
@@ -281,6 +289,16 @@ func createITSMConnection(w http.ResponseWriter, r *http.Request,
 		reject("unknown credential_ref")
 		return
 	}
+	if req.Kind == itsm.KindPlugin {
+		if pluginCheck == nil {
+			reject("ticket plugins are not available on this hub")
+			return
+		}
+		if msg := pluginCheck(r.Context(), pd, req.PluginID, req.CredentialRef); msg != "" {
+			reject(msg)
+			return
+		}
+	}
 	buf := make([]byte, 12)
 	if _, err := rand.Read(buf); err != nil {
 		emitAuditEvent(r, auditProvider, pd.ID, action, "itsm_connection", "-", AuditOutcomeFailure)
@@ -290,7 +308,7 @@ func createITSMConnection(w http.ResponseWriter, r *http.Request,
 	enabled := req.Enabled == nil || *req.Enabled
 	conn, err := svc.Store().CreateConnection(r.Context(), itsm.Connection{
 		ID: "itsm-" + hex.EncodeToString(buf), Kind: req.Kind, Name: req.Name, BaseURL: req.BaseURL,
-		CredentialRef: req.CredentialRef, EventClasses: classes, Enabled: enabled, Tenant: pd.Tenant,
+		CredentialRef: req.CredentialRef, PluginID: req.PluginID, EventClasses: classes, Enabled: enabled, Tenant: pd.Tenant,
 	}, time.Now())
 	if err != nil {
 		emitAuditEvent(r, auditProvider, pd.ID, action, "itsm_connection", "-", AuditOutcomeFailure)
@@ -298,7 +316,7 @@ func createITSMConnection(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	emitAuditEventDetail(r, auditProvider, pd.ID, action, "itsm_connection", conn.ID, AuditOutcomeSuccess,
-		fmt.Sprintf(`{"name":%q,"kind":%q}`, conn.Name, conn.Kind))
+		fmt.Sprintf(`{"name":%q,"kind":%q,"plugin_id":%q}`, conn.Name, conn.Kind, conn.PluginID))
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	_ = json.NewEncoder(w).Encode(struct {
@@ -381,6 +399,18 @@ func parseITSMEventClasses(kind string, raw json.RawMessage) ([]itsm.EventClass,
 			}
 			if ec.TicketType != "incident" && ec.TicketType != "change_request" {
 				return nil, "servicenow ticket_type must be incident or change_request"
+			}
+		case itsm.KindPlugin:
+			// Approval sync is native-only in 1.1 (D-326): a plugin ticket for an
+			// approval could never be decided from the ticket, so offering it
+			// would promise something the connector cannot do.
+			if ec.Class == "approval_pending" {
+				return nil, "plugin connections cannot carry approval_pending: approval sync is native-only (ServiceNow, Jira)"
+			}
+			// Free text the plugin interprets (a Zendesk or Freshservice ticket
+			// type); empty means the plugin default.
+			if len(ec.TicketType) > 255 || strings.ContainsFunc(ec.TicketType, unicode.IsControl) {
+				return nil, "plugin ticket_type must be at most 255 characters"
 			}
 		default:
 			if ec.TicketType == "" {

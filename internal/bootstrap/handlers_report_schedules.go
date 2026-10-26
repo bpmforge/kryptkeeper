@@ -105,6 +105,13 @@ func RegisterReportScheduleHandlers(mux *http.ServeMux, auth *Authenticator, sto
 			writeUnauthorized(w)
 			return
 		}
+		if r.Method == http.MethodGet && id == "catalog" {
+			if denyAggregateReportForTenantScoped(w, principal) {
+				return
+			}
+			writeReportScheduleCatalog(w)
+			return
+		}
 		if r.Method != http.MethodDelete {
 			writeMethodNotAllowed(w, http.MethodDelete)
 			return
@@ -138,4 +145,25 @@ func RegisterReportScheduleHandlers(mux *http.ServeMux, auth *Authenticator, sto
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "deleted"})
 	})
+}
+
+// ReportScheduleCatalogEntry is one schedulable report and its formats.
+type ReportScheduleCatalogEntry struct {
+	Report  string   `json:"report"`
+	Title   string   `json:"title"`
+	Formats []string `json:"formats"`
+}
+
+// writeReportScheduleCatalog lists what POST /reports/schedules accepts, so
+// the UI never hard-codes the report/format matrix.
+func writeReportScheduleCatalog(w http.ResponseWriter) {
+	out := make([]ReportScheduleCatalogEntry, 0, len(reportScheduleCatalog))
+	for _, name := range scheduledReportNames() {
+		d := reportScheduleCatalog[name]
+		out = append(out, ReportScheduleCatalogEntry{Report: name, Title: d.Title, Formats: d.Formats})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Data []ReportScheduleCatalogEntry `json:"data"`
+	}{Data: out})
 }

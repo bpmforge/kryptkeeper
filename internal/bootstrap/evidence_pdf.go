@@ -328,6 +328,11 @@ func renderExecutiveSummaryPDF(s ExecutiveSummary, createdAt time.Time) ([]byte,
 	pdf.SetFont("Helvetica", "", 10)
 	pdf.SetTextColor(71, 85, 105)
 	pdf.CellFormat(0, 6, tr(fmt.Sprintf("Risk: %d critical · %d high", s.RiskCritical, s.RiskHigh)), "", 1, "L", false, 0, "")
+	// Nil for tenant-scoped callers (keys are hub-wide), so the line is omitted
+	// rather than printed as zeros; counts are the PQC posture page's own.
+	if k := s.KeyPQC; k != nil {
+		pdf.CellFormat(0, 6, tr(fmt.Sprintf("Keys ready / not ready / unknown for PQC migration: %d / %d / %d", k.Ready, k.NotReady, k.Unknown)), "", 1, "L", false, 0, "")
+	}
 	if pc := s.PrivilegedCredentials; pc != nil {
 		pdf.CellFormat(0, 6, tr(fmt.Sprintf("Privileged credentials: %d in use on %d hosts", pc.Count, pc.HostCount)), "", 1, "L", false, 0, "")
 	}

@@ -83,6 +83,10 @@ jobs:
           set -euo pipefail
           npm --prefix ui ci
           npm --prefix ui run lint
+      - name: Website in sync with the guide (site/content/hubs.json, docs/site/README.md)
+        run: |
+          node --test site/tools/content.test.mjs site/tools/release.test.mjs
+          node site/tools/build.mjs --check
       - name: Ensure PyYAML (validate-openapi.sh fails closed without a YAML parser)
         # GitHub's hosted image ships PyYAML; the self-hosted act image does not.
         run: python3 -c 'import yaml' 2>/dev/null || { SUDO=$(command -v sudo || true); $SUDO apt-get update -qq && $SUDO apt-get install -y -qq python3-yaml; }
@@ -137,6 +141,18 @@ jobs:
           GODEBUG: fips140=only
           KK_EXPECT_FIPS_ONLY: "1"
         run: go test ./internal/keystore/ -run '^(TestFIPSOnly|TestCheckFIPSAlgorithm|TestFIPSPosture|TestRootKeyCustody)' -count=1 -v
+      # W31F-05: the PQC issuance refusal tests skip outside their GODEBUG mode;
+      # KRYPTKEEPER_REQUIRE_FIPS_TEST=1 turns that skip into a failure.
+      - name: PQC issuance refusal under fips140=only
+        env:
+          GODEBUG: fips140=only
+          KRYPTKEEPER_REQUIRE_FIPS_TEST: "1"
+        run: go test ./internal/bootstrap -run '^TestIssueRefusal_FIPSOnlyMLDSA$' -count=1 -v
+      - name: PQC hybrid issuance refusal under fips140=on
+        env:
+          GODEBUG: fips140=on
+          KRYPTKEEPER_REQUIRE_FIPS_TEST: "1"
+        run: go test ./internal/bootstrap -run '^TestIssueRefusal_FIPSHybrid$' -count=1 -v
 
   unit-frontend:
     runs-on: ubuntu-latest
@@ -164,6 +180,22 @@ jobs:
       - name: Skip marker
         if: ${{ hashFiles('ui/package.json') == '' }}
         run: echo "No frontend package detected; skipping frontend unit tests"
+
+  # W37-06: unit tests and ansible-test sanity for the kryptkeeper.pki collection.
+  # The live-hub run (ansible/kryptkeeper/pki/tests/integration/run.sh) needs a
+  # compose provider and the image builds, so it stays a manual/release check.
+  ansible-collection:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Unit tests and sanity
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet ansible-core pytest cryptography
+          pyver="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+          PATH="$RUNNER_TEMP/venv/bin:$PATH" bash ansible/kryptkeeper/pki/tests/run-checks.sh "$pyver"
 
   integration-core:
     runs-on: ubuntu-latest

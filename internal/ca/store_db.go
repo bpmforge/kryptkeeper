@@ -104,19 +104,23 @@ func (s *DBStore) Save(ca *CA) error {
 	certPEM := sql.NullString{String: string(ca.CertPEM), Valid: len(ca.CertPEM) > 0}
 	keyID := sql.NullString{String: ca.KeyID, Valid: ca.KeyID != ""}
 	csrPEM := sql.NullString{String: string(ca.CSRPEM), Valid: len(ca.CSRPEM) > 0}
+	connectorID := sql.NullString{String: ca.ConnectorID, Valid: ca.ConnectorID != ""}
+	trustPEM := sql.NullString{String: string(ca.ExternalTrustPEM), Valid: len(ca.ExternalTrustPEM) > 0}
 
 	var query string
 	if s.isPostgres {
 		query = `
 INSERT INTO certificate_authorities
     (id, name, display_name, type, key_storage_type, key_id, cert_pem, status,
-     parent_ca_id, created_at, updated_at, csr_pem)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     parent_ca_id, created_at, updated_at, csr_pem, connector_id, external_trust_pem)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 ON CONFLICT (id) DO UPDATE SET
     status       = EXCLUDED.status,
     cert_pem     = EXCLUDED.cert_pem,
     key_id       = EXCLUDED.key_id,
     csr_pem      = EXCLUDED.csr_pem,
+    connector_id = EXCLUDED.connector_id,
+    external_trust_pem = EXCLUDED.external_trust_pem,
     updated_at   = EXCLUDED.updated_at`
 	} else {
 		// A true upsert, not INSERT OR REPLACE: replace deletes and
@@ -125,13 +129,15 @@ ON CONFLICT (id) DO UPDATE SET
 		query = `
 INSERT INTO certificate_authorities
     (id, name, display_name, type, key_storage_type, key_id, cert_pem, status,
-     parent_ca_id, created_at, updated_at, csr_pem)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     parent_ca_id, created_at, updated_at, csr_pem, connector_id, external_trust_pem)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
     status       = excluded.status,
     cert_pem     = excluded.cert_pem,
     key_id       = excluded.key_id,
     csr_pem      = excluded.csr_pem,
+    connector_id = excluded.connector_id,
+    external_trust_pem = excluded.external_trust_pem,
     updated_at   = excluded.updated_at`
 	}
 
@@ -144,14 +150,14 @@ ON CONFLICT (id) DO UPDATE SET
 	}
 	_, err := s.db.Exec(query,
 		ca.ID, ca.Name, ca.Name, dbType, keyStorageType, keyID, certPEM,
-		ca.Status, parentCAID, now, now, csrPEM,
+		ca.Status, parentCAID, now, now, csrPEM, connectorID, trustPEM,
 	)
 	return err
 }
 
 func (s *DBStore) Load(id string) (*CA, error) {
 	query := `
-SELECT id, name, type, key_storage_type, key_id, cert_pem, status, parent_ca_id, csr_pem
+SELECT id, name, type, key_storage_type, key_id, cert_pem, status, parent_ca_id, csr_pem, connector_id, external_trust_pem
 FROM certificate_authorities
 WHERE id = ` + s.ph(1)
 
@@ -161,7 +167,7 @@ WHERE id = ` + s.ph(1)
 
 func (s *DBStore) List() ([]*CA, error) {
 	rows, err := s.db.Query(`
-SELECT id, name, type, key_storage_type, key_id, cert_pem, status, parent_ca_id, csr_pem
+SELECT id, name, type, key_storage_type, key_id, cert_pem, status, parent_ca_id, csr_pem, connector_id, external_trust_pem
 FROM certificate_authorities
 ORDER BY created_at`)
 	if err != nil {
@@ -278,9 +284,9 @@ type scanner interface {
 
 func scanCA(row scanner) (*CA, error) {
 	var id, name, dbType, status string
-	var keyID, certPEMStr, parentCAID, keyStorageType, csrPEMStr sql.NullString
+	var keyID, certPEMStr, parentCAID, keyStorageType, csrPEMStr, connectorID, trustPEM sql.NullString
 
-	if err := row.Scan(&id, &name, &dbType, &keyStorageType, &keyID, &certPEMStr, &status, &parentCAID, &csrPEMStr); err != nil {
+	if err := row.Scan(&id, &name, &dbType, &keyStorageType, &keyID, &certPEMStr, &status, &parentCAID, &csrPEMStr, &connectorID, &trustPEM); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrCANotFound
 		}
@@ -295,6 +301,10 @@ func scanCA(row scanner) (*CA, error) {
 		Status:         status,
 		ParentCAID:     parentCAID.String,
 		KeyStorageType: keyStorageType.String,
+		ConnectorID:    connectorID.String,
+	}
+	if trustPEM.Valid && trustPEM.String != "" {
+		ca.ExternalTrustPEM = []byte(trustPEM.String)
 	}
 	if csrPEMStr.Valid && csrPEMStr.String != "" {
 		ca.CSRPEM = []byte(csrPEMStr.String)

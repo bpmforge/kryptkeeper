@@ -20,6 +20,8 @@ import type {
   RenewalSLOReport,
   ExecutiveSummary,
   EvidenceSchedule,
+  ReportSchedule,
+  ReportScheduleCatalogEntry,
   PQCMigrationRoadmap,
   PQCCountdownReport,
   WaveProgress,
@@ -38,6 +40,8 @@ import type {
   LoginResponse,
   NotificationDeliveryRecord,
   NotificationRule,
+  NotificationTeamRoute,
+  OwnerlessCertificate,
   NotificationSummary,
   SearchResult,
   TemplateRecord,
@@ -46,7 +50,11 @@ import type {
   UserRecord,
 } from "./models";
 import type { components, operations, paths } from "../generated/api-types";
-import type { DeliveryPlugin, DeliveryPluginVersion } from "./plugins";
+import type {
+  DeliveryPlugin,
+  DeliveryPluginVersion,
+  PluginCatalogueEntry,
+} from "./plugins";
 
 type AgilityOp = operations["deriveCryptoAgilityRoadmap"];
 export type AgilityRoadmapRequest = NonNullable<
@@ -107,7 +115,12 @@ export type ManagedTarget = {
   last_privilege_mode?: string;
   unreadable_count?: number;
   last_scanned_at?: string;
-  blocked?: { kind: "privilege" | "rollback"; reason: string; fix: string; since?: string };
+  blocked?: {
+    kind: "privilege" | "rollback";
+    reason: string;
+    fix: string;
+    since?: string;
+  };
   install_cert_path?: string;
   install_key_path?: string;
   tenant: string;
@@ -243,6 +256,35 @@ export type CredentialMeta = {
   privileged_reason?: string;
   privileged_set_by?: string;
   privileged_set_at?: string;
+  // W38-07: where the secret lives. An external credential stores only a
+  // reference; the secret is fetched from source_id's manager at each use.
+  source?: "local" | "external";
+  source_id?: string;
+  reference?: Record<string, string>;
+  static?: Record<string, string>;
+};
+
+// W38-07: where external credentials fetch their secrets from. Nothing in a
+// source is secret.
+export type CredentialSource = {
+  id: string;
+  name: string;
+  kind: "vault_kv2" | "plugin";
+  tenant: string;
+  credential_ref: string;
+  config: {
+    base_url?: string;
+    namespace?: string;
+    mount?: string;
+    plugin_id?: string;
+    cache_ttl_seconds?: number;
+  };
+};
+
+export type CredentialSourceTest = {
+  ok: boolean;
+  fields?: string[];
+  error?: string;
 };
 
 // W18-11: what a windows_password credential can do on its host, decided
@@ -566,6 +608,48 @@ export interface AgentEnrollmentToken {
   revoked_at: string;
 }
 
+// W40-03: trust bundles pushed to agents' OS trust stores.
+export type TrustHostOutcome =
+  "applied" | "refused_not_opted_in" | "failed" | "pending";
+
+export interface TrustBundleSummary {
+  id: string;
+  name: string;
+  action: "add" | "remove";
+  certs: {
+    sha256: string;
+    subject: string;
+    issuer: string;
+    not_after: string;
+    root: boolean;
+  }[];
+  agent_ids: string[];
+  created_by: string;
+  approved_by: string;
+  created_at: string;
+  targets: number;
+  applied: number;
+  refused_not_opted_in: number;
+  failed: number;
+  pending: number;
+}
+
+export interface TrustHostStatus {
+  agent_id: string;
+  agent_name: string;
+  outcome: TrustHostOutcome;
+  detail?: string;
+  reported_at?: string;
+}
+
+export interface TrustBundleProposal {
+  name: string;
+  action: "add" | "remove";
+  cert_pem: string;
+  selector: { agent_ids?: string[]; agent_types?: string[]; all?: boolean };
+  rationale?: string;
+}
+
 export async function fetchJSON<T>(
   path: string,
   init?: RequestInit,
@@ -781,9 +865,40 @@ export const api = {
         id: string;
         name: string;
         type: string;
+        config_json?: string;
+        credential_ref?: string;
+        tenant?: string;
         health?: { status: string; detail?: string };
       }[];
     }>("/connectors"),
+  createConnector: (body: {
+    name: string;
+    type: string;
+    config_json: string;
+    credential_ref?: string;
+  }) =>
+    fetchJSON<ApiDataResponse<{ id: string; name: string; type: string }>>(
+      "/connectors",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  deleteConnector: (id: string) =>
+    fetchJSON<void>(`/connectors/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  testConnector: (id: string) =>
+    fetchJSON<{ status: string; detail?: string }>(
+      `/connectors/${encodeURIComponent(id)}/test`,
+      { method: "POST" },
+    ),
+  createExternalCa: (body: {
+    name: string;
+    connector_id: string;
+    trust_pem: string;
+  }) =>
+    fetchJSON<ApiDataResponse<CaRecord>>("/cas/external", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   dcvValidations: () =>
     fetchJSON<DcvValidationsResponse>("/connectors/dcv-validations"),
   estateTakeover: (body: {
@@ -1024,10 +1139,9 @@ export const api = {
       { method: "POST", body: JSON.stringify(body) },
     ),
   deleteAuthorizedIssuer: (id: string) =>
-    fetchJSON<void>(
-      `/discovery/authorized-issuers/${encodeURIComponent(id)}`,
-      { method: "DELETE" },
-    ),
+    fetchJSON<void>(`/discovery/authorized-issuers/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
   discoverySchedules: () =>
     fetchJSON<ApiDataResponse<DiscoverySchedule[]>>("/discovery/schedules"),
   updateDiscoverySchedule: (body: {
@@ -1118,6 +1232,27 @@ export const api = {
     }),
   deleteNotificationRule: (id: string) =>
     fetchJSON<void>(`/notifications/rules/${id}`, { method: "DELETE" }),
+
+  // Owner-team routing and the ownerless queue (W32-30)
+  notificationTeamRoutes: () =>
+    fetchJSON<ApiListResponse<NotificationTeamRoute>>(
+      "/notifications/team-routes",
+    ),
+  createNotificationTeamRoute: (body: {
+    owner_team: string;
+    channel: string;
+    target: string;
+  }) =>
+    fetchJSON<ApiDataResponse<NotificationTeamRoute>>(
+      "/notifications/team-routes",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  deleteNotificationTeamRoute: (id: string) =>
+    fetchJSON<void>(`/notifications/team-routes/${id}`, { method: "DELETE" }),
+  ownerlessCertificates: (withinDays = 30) =>
+    fetchJSON<ApiListResponse<OwnerlessCertificate>>(
+      `/notifications/ownerless?within_days=${withinDays}`,
+    ),
 
   // Users
   users: () => fetchJSON<ApiListResponse<UserRecord>>("/users"),
@@ -1214,6 +1349,28 @@ export const api = {
     fetchJSON<{ status: string }>(`/reports/evidence/schedules/${id}`, {
       method: "DELETE",
     }),
+  // W38-06: generic scheduled report delivery
+  reportScheduleCatalog: () =>
+    fetchJSON<ApiDataResponse<ReportScheduleCatalogEntry[]>>(
+      "/reports/schedules/catalog",
+    ),
+  reportSchedules: () =>
+    fetchJSON<ApiDataResponse<ReportSchedule[]>>("/reports/schedules"),
+  createReportSchedule: (body: {
+    report: string;
+    format: string;
+    cadence: string;
+    recipients: string[];
+    enabled: boolean;
+  }) =>
+    fetchJSON<ApiDataResponse<ReportSchedule>>("/reports/schedules", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  deleteReportSchedule: (id: string) =>
+    fetchJSON<{ status: string }>(`/reports/schedules/${id}`, {
+      method: "DELETE",
+    }),
   sendEvidenceNow: (body: { framework: string; recipients: string[] }) =>
     fetchJSON<{ status: string; recipients: number }>(
       "/reports/evidence/send",
@@ -1308,10 +1465,22 @@ export const api = {
   // The execute proposal REQUIRES a template carrying an ML-DSA/hybrid
   // algorithm — an empty body was a guaranteed 400 after the wave had
   // already been created.
-  proposePqcWaveExecute: (id: string, templateId: string) =>
+  // targetAlgorithm is optional: omitted keeps the PQC-only default; the
+  // server rejects (400) one the template does not allow.
+  proposePqcWaveExecute: (
+    id: string,
+    templateId: string,
+    targetAlgorithm?: string,
+  ) =>
     fetchJSON<ApiDataResponse<{ id: string; status: string }>>(
       `/reports/pqc-waves/${id}/execute`,
-      { method: "POST", body: JSON.stringify({ template_id: templateId }) },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          template_id: templateId,
+          ...(targetAlgorithm ? { target_algorithm: targetAlgorithm } : {}),
+        }),
+      },
     ),
   // pqc_migrate_wave actions are decided on this dedicated route, not the
   // generic pending-actions approve (whose executor has no case for them).
@@ -1479,11 +1648,39 @@ export const api = {
   // Outbound credentials (metadata only — the API never returns secrets).
   credentials: () =>
     fetchJSON<ApiDataResponse<{ items: CredentialMeta[] }>>("/credentials"),
-  createCredential: (body: {
-    name: string;
-    credential_type: string;
-    payload: Record<string, unknown>;
-  }) =>
+  credentialSources: () =>
+    fetchJSON<ApiDataResponse<{ items: CredentialSource[] }>>(
+      "/credential-sources",
+    ),
+  // Fetches a reference through a source and returns field names, never values.
+  testCredentialSource: (
+    id: string,
+    body: {
+      credential_type: string;
+      reference: Record<string, string>;
+      static?: Record<string, string>;
+    },
+  ) =>
+    fetchJSON<ApiDataResponse<CredentialSourceTest>>(
+      `/credential-sources/${encodeURIComponent(id)}/test`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+  createCredential: (
+    body:
+      | {
+          name: string;
+          credential_type: string;
+          payload: Record<string, unknown>;
+        }
+      | {
+          name: string;
+          credential_type: string;
+          source: "external";
+          source_id: string;
+          reference: Record<string, string>;
+          static?: Record<string, string>;
+        },
+  ) =>
     fetchJSON<ApiDataResponse<CredentialMeta>>("/credentials", {
       method: "POST",
       body: JSON.stringify(body),
@@ -1530,6 +1727,24 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  // Trust stores (W40-03): proposing never changes a host; a second human
+  // approves in the Approvals queue.
+  trustBundles: () =>
+    fetchJSON<ApiDataResponse<TrustBundleSummary[]>>("/trust-bundles"),
+  trustBundle: (id: string) =>
+    fetchJSON<
+      ApiDataResponse<{ bundle: TrustBundleSummary; hosts: TrustHostStatus[] }>
+    >(`/trust-bundles/${encodeURIComponent(id)}`),
+  proposeTrustBundle: (body: TrustBundleProposal) =>
+    fetchJSON<
+      ApiDataResponse<{
+        action_id: string;
+        status: string;
+        targets: number;
+        warnings?: string[];
+      }>
+    >("/trust-bundles", { method: "POST", body: JSON.stringify(body) }),
+
   // Single-use agent enrollment tokens (W29-06 API, used by W33-25). The
   // minted token is in this response only; callers must keep it in memory,
   // never in storage.
@@ -1571,6 +1786,17 @@ export const api = {
         ...(signature ? { signature } : {}),
       }),
     }),
+  // Signed catalogue (W38-11): listing fetches from the network, so it is only
+  // called when an administrator opens the Catalogue tab.
+  pluginCatalogue: () =>
+    fetchJSON<
+      ApiDataResponse<{ generated_at: string; entries: PluginCatalogueEntry[] }>
+    >("/plugin-catalogue"),
+  installFromPluginCatalogue: (id: string, version: string) =>
+    fetchJSON<ApiDataResponse<DeliveryPluginVersion>>(
+      `/plugin-catalogue/${encodeURIComponent(id)}/install`,
+      { method: "POST", body: JSON.stringify({ version }) },
+    ),
   enableDeliveryPlugin: (id: string, version: string) =>
     fetchJSON<
       ApiDataResponse<{
@@ -1655,7 +1881,9 @@ export const api = {
   // Managed targets (W5-09, agentless mode)
   targets: () => fetchJSON<ApiDataResponse<ManagedTarget[]>>("/targets"),
   unblockTarget: (id: string) =>
-    fetchJSON<void>(`/targets/${encodeURIComponent(id)}/unblock`, { method: "POST" }),
+    fetchJSON<void>(`/targets/${encodeURIComponent(id)}/unblock`, {
+      method: "POST",
+    }),
   certTargetBindings: (targetId: string) =>
     fetchJSON<ApiDataResponse<CertTargetBinding[]>>(
       `/targets/${encodeURIComponent(targetId)}/bindings`,
@@ -1700,14 +1928,23 @@ export const api = {
       if (q.certPath) p.set("cert_path", q.certPath);
       if (q.keyPath) p.set("key_path", q.keyPath);
     }
-    const base = q.targetId ? `/targets/${encodeURIComponent(q.targetId)}/privilege-bundle` : "/targets/privilege-bundle";
-    return fetchJSON<ApiDataResponse<PrivilegeBundle>>(`${base}?${p.toString()}`);
+    const base = q.targetId
+      ? `/targets/${encodeURIComponent(q.targetId)}/privilege-bundle`
+      : "/targets/privilege-bundle";
+    return fetchJSON<ApiDataResponse<PrivilegeBundle>>(
+      `${base}?${p.toString()}`,
+    );
   },
   // W34-15: per-capability privilege preflight for an ssh target.
   preflightTarget: (targetId: string) =>
-    fetchJSON<ApiDataResponse<PrivilegePreflight>>(`/targets/${encodeURIComponent(targetId)}/preflight`, { method: "POST" }),
+    fetchJSON<ApiDataResponse<PrivilegePreflight>>(
+      `/targets/${encodeURIComponent(targetId)}/preflight`,
+      { method: "POST" },
+    ),
   targetPreflight: (targetId: string) =>
-    fetchJSON<ApiDataResponse<PrivilegePreflight>>(`/targets/${encodeURIComponent(targetId)}/preflight`),
+    fetchJSON<ApiDataResponse<PrivilegePreflight>>(
+      `/targets/${encodeURIComponent(targetId)}/preflight`,
+    ),
   probeTargetHostKey: (body: { host: string; port?: number }) =>
     fetchJSON<ApiDataResponse<HostKeyProbe>>("/targets/hostkey", {
       method: "POST",

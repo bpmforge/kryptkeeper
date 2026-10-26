@@ -8,6 +8,7 @@ vi.mock("../lib/api", () => ({
   api: {
     authzCheck: vi.fn(),
     cas: vi.fn(),
+    connectors: vi.fn(),
     importCa: vi.fn(),
     createCa: vi.fn(),
     caCsr: vi.fn(),
@@ -455,3 +456,29 @@ describe("CAs re-key wizard (W23-18)", () => {
     expect(screen.getByText("admin role required")).toBeInTheDocument();
   });
 });
+
+describe("external CAs (W36-14)", () => {
+  const ext = {
+    id: "ca-ext",
+    name: "Sectigo CA",
+    type: "external",
+    key_storage_type: "external",
+    status: "active",
+    connector_id: "conn1",
+  };
+
+  it("badges an external CA, names its connector and hides key actions", async () => {
+    vi.mocked(api.connectors).mockResolvedValue({
+      data: [{ id: "conn1", name: "Sectigo prod", type: "sectigo" }],
+    } as unknown as never);
+    listOf(ext);
+    renderPage();
+    expect((await screen.findAllByText("External")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("via Sectigo prod")).length).toBeGreaterThan(0);
+    expect(screen.getByText(/Kryptkeeper publishes none of them/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Re-key" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Request issuing CA/ })).toBeNull();
+  });
+});
+

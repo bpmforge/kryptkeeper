@@ -34,6 +34,23 @@ func revocationHTTPHandler(crl, ocsp http.Handler) http.Handler {
 	return mux
 }
 
+// externalCAGuard answers 404 external_ca for the CRL of an external CA: the
+// hub holds no key for it and its revocation data lives at the upstream, so
+// serving an empty list from here would read as "nothing revoked" (W36-02).
+func externalCAGuard(engine ca.Service, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if id, ok := crl.RequestCAID(r.URL.Path); ok {
+			if c, err := engine.GetCA(id); err == nil && c.Type == ca.CATypeExternal {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"error":"external_ca","message":"this CA is operated by an external issuer; use its own CRL and OCSP"}`))
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // startRevocationHTTP serves revocationHTTPHandler on
 // KRYPTKEEPER_REVOCATION_HTTP_ADDR when it is set. It is opt-in: a hub
 // without it keeps a single TLS listener.

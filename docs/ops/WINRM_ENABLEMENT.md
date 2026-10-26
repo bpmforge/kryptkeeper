@@ -146,9 +146,9 @@ time rather than here.
 | Field | Value |
 |---|---|
 | `base_url` | `https://192.0.2.10:5986/wsman` — full URL, port and `/wsman` path included; nothing normalizes it |
-| credential | `windows_password`, a **local** account, no `DOMAIN\` prefix (Basic auth rejects domain accounts) |
+| credential | `windows_password`: over `https://...:5986` a **local** account, no `DOMAIN\` prefix (Basic auth rejects domain accounts); over `http://...:5985/wsman` a domain or local account (see "Domain-account installs over sealed NTLM") |
 | `discovery_mode` | `winrm` |
-| `install_mode` | `iis` |
+| `install_mode` | `iis`, `sqlserver` or `rdp` (see "Rights each install mode needs") |
 
 **Privilege**: discovery needs only a standard user — reads succeed
 unprivileged. **Install needs a local Administrator**: the ProgramData staging
@@ -161,6 +161,109 @@ Windows 11 22621: a local Administrator over Basic-on-HTTPS received a
 import, rebind 443, `iisreset`, verify the served leaf — completed and was
 confirmed by an independent TLS dial from the hub. The PFX is built on the
 hub; the private key never lands on the host unencrypted.
+
+## Rights each install mode needs
+
+Every Windows install mode is the same account on the same channel: a **local
+Administrator** over WinRM. They differ in what they touch, which is what to
+check when an install fails with `HRESULT 0x80070005` (the error names the
+operation, W18-10).
+
+| Mode | Touches | Needs |
+|---|---|---|
+| `iis` | the ProgramData staging directory, `Cert:\LocalMachine\My`, the HTTP.sys binding (`netsh http add sslcert`), `iisreset` | local Administrator |
+| `sqlserver` (W35-02) | the staging directory, `Cert:\LocalMachine\My`, the ACL of the certificate's private-key file under `ProgramData\Microsoft\Crypto`, `HKLM\SOFTWARE\Microsoft\Microsoft SQL Server\<instance id>\MSSQLServer\SuperSocketNetLib\Certificate`, a restart of the instance service | local Administrator. The account does **not** need to be a SQL login or `sysadmin`: nothing connects to SQL Server except the verify dial. |
+| `rdp` (W35-04) | the staging directory, `Cert:\LocalMachine\My`, the ACL of the certificate's private-key file, the `SSLCertificateSHA1Hash` property of `Win32_TSGeneralSetting` (namespace `root\cimv2\TerminalServices`, terminal `RDP-Tcp`) | local Administrator |
+
+**SQL Server details.** The credential carries `sql_instance` (blank means
+`MSSQLSERVER`) and `sql_port` (blank means 1433; set it for a named instance on
+a fixed port, or set the target's `verify_host_port`). Kryptkeeper reads the
+instance's service logon account from `Win32_Service`, grants it **read** on the
+imported certificate's private key (Microsoft: the service account "must have
+read permissions on the certificate"; without it the restart fails), writes the
+thumbprint (lowercase, no spaces) to the `Certificate` registry value for
+SQL Server 2019 and 2022 alike, restarts the instance service and any running
+dependent service such as SQL Server Agent, then verifies with a TLS handshake
+carried inside TDS PRELOGIN (a plain TLS dial to 1433 never reaches the
+certificate). **The restart drops every connection to that instance**, so
+schedule it like any other maintenance. On a verify failure the previous
+`Certificate` value is restored and the service restarted again; if there was
+none, the value is removed. A failover-cluster instance needs the same
+certificate on every node and is not handled by this mode. Source:
+[Encrypt Connections by Importing a Certificate](https://learn.microsoft.com/en-us/sql/database-engine/configure-windows/configure-sql-server-encryption).
+
+**RDP details.** Kryptkeeper grants **NETWORK SERVICE** (the listener's account)
+read on the imported certificate's private key, sets `SSLCertificateSHA1Hash`
+(Microsoft: the SHA-1 hash, in hexadecimal, of the certificate the server uses)
+and verifies with an X.224 negotiation followed by the TLS handshake on 3389.
+The Remote Desktop service is **not** restarted, so existing sessions are not
+dropped; if a host only picks the new certificate up after a restart, the
+verify fails and the previous setting is restored rather than the service being
+bounced. When `SSLCertificateSHA1HashType` reports the certificate as enforced
+by **group policy**, the install refuses before changing anything: change the
+policy's certificate template instead. With no previous custom hash, rollback
+removes the value so the listener returns to its default certificate. Source:
+[Win32_TSGeneralSetting](https://learn.microsoft.com/en-us/windows/win32/termserv/win32-tsgeneralsetting).
+
+## Step 6b — Microsoft Exchange (`install_mode` = `exchange`, W35-03)
+
+Same WinRM channel as IIS, different last step: the renewed certificate is
+imported into `LocalMachine\My` exactly as for IIS, then enabled with
+`Enable-ExchangeCertificate -Thumbprint <tp> -Services <list> -Force` in an
+Exchange Management Shell context. The cmdlets are loaded on the Exchange
+server itself with `Add-PSSnapin Microsoft.Exchange.Management.PowerShell.SnapIn`
+(a remote session to `http://<server>/PowerShell/` would need the account's
+credential again inside the script, and Microsoft documents that
+`Get-ExchangeCertificate` is not fully supported over remote PowerShell).
+References: learn.microsoft.com/powershell/module/exchangepowershell/enable-exchangecertificate
+and /powershell/exchange/connect-to-exchange-servers-using-remote-powershell.
+
+| Field | Value |
+|---|---|
+| credential | `windows_password` for an account that is **both** a local Administrator on the Exchange server (store write) **and** a member of the **Organization Management** or **Server Management** role group (the certificate cmdlets). A member of neither fails with a message naming which is missing. |
+| credential JSON | the `base_url`, `username`, `password` of Step 6, plus optional `"services": ["IIS","SMTP"]` (allowed: `IIS`, `SMTP`, `IMAP`, `POP`; default `IIS,SMTP`) and `"smtp_ports": [25, 587]` (default 25 and 587) |
+| `verify_host_port` | the OWA HTTPS endpoint; default `<host>:443` |
+| `install_mode` | `exchange` |
+
+After enabling, Kryptkeeper runs `iisreset /noforce` when IIS is among the
+services, then proves the new leaf is served: a TLS handshake to OWA, and an
+SMTP `STARTTLS` handshake on each configured port (a port that does not answer
+is skipped, one that answers with a different leaf fails the install, and at
+least one must answer). On any failure the previously enabled certificate is
+re-enabled for each service. The old certificate is never deleted, and
+`-DoNotRequireSsl` is passed so a renewal does not change the default web
+site's SSL settings. Only the leaf is imported, as with IIS; an Exchange host
+needs its intermediates already in the store.
+
+**Not yet proven on a licensed Exchange host** (a live run must show):
+the snap-in loads in a WinRM-launched `powershell.exe` and RBAC resolves the
+WinRM account; the credential works over the auth scheme in use (Exchange
+accounts are domain accounts, while Basic auth in Step 6 rejects them, so this
+needs the NTLM or Negotiate path); `Get-ExchangeCertificate` reports the
+certificate currently enabled per service so the rollback target is right (the
+IIS flag can sit on several certificates, the longest-lived unexpired one is
+chosen); OWA and port 25/587 present the new leaf with no further service
+restart (if the transport services cache the old certificate, a restart step
+must be added); rollback restores the old leaf on both.
+
+## Domain-account installs over sealed NTLM (W39-01)
+
+Every install mode (`iis`, `sqlserver`, `rdp`, `exchange`) drives the host
+through the same `WSManShell` discovery uses, and that shell picks its
+transport from the credential's `base_url` scheme alone: `https://...:5986`
+is Basic over TLS (local account only), `http://host:5985/wsman` is NTLM with
+message sealing and accepts `DOMAIN\user`. There is no separate `auth` field;
+one rule serves discovery and installs. So a **domain account in the local
+Administrators group** can install with no Basic auth and no HTTPS listener.
+
+What the host needs: the default WinRM listener on 5985 (`winrm quickconfig`
+or `Enable-PSRemoting`), `service/auth` `Negotiate=true` (the default),
+`AllowUnencrypted` left `false`, and the account in the target's local
+**Administrators** group (a domain admin is, via Domain Admins). The sealed
+transport refuses, with an error saying so, when the listener offers no
+Negotiate/NTLM or answers unsealed; it never falls back to Basic or a plain
+body over http. A UAC-filtered token still blocks installs: the preflight
+reports `discover` instead of `install` for such an account.
 
 ## Fallback: plain HTTP (5985) with NTLM message sealing (W18-09)
 

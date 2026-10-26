@@ -7,6 +7,7 @@ package bootstrap
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,7 +22,9 @@ const maxBulkBodyBytes int64 = 128 * 1024
 type bulkRevokeItem struct {
 	Fingerprint string `json:"fingerprint"`
 	Error       string `json:"error,omitempty"`
-	// RevocationScope is set on succeeded items only; see CertificateRevokeResult.
+	// RevocationScope is the scope of a succeeded item (see
+	// CertificateRevokeResult), or "upstream_failed" on a failed item whose
+	// upstream CA refused or could not be reached (D-306).
 	RevocationScope string `json:"revocation_scope,omitempty"`
 }
 
@@ -93,7 +96,14 @@ func registerBulkHandlers(mux *http.ServeMux, auth *Authenticator, provider Cert
 			res, rerr := provider.RevokeCertificate(r.Context(), fp, revokeReq)
 			if rerr != nil {
 				logging.Infof("bulk revoke %s: %v", fp, rerr)
-				failed = append(failed, bulkRevokeItem{Fingerprint: fp, Error: rerr.Error()})
+				item := bulkRevokeItem{Fingerprint: fp, Error: scrubUpstreamError(rerr.Error())}
+				var upErr *UpstreamRevokeError
+				if errors.As(rerr, &upErr) {
+					item.RevocationScope = "upstream_failed"
+					emitAuditEventDetail(r, auditProvider, principal, "certificate.revoke.upstream_failed", "certificate", fp, AuditOutcomeFailure,
+						fmt.Sprintf(`{"fingerprint":%q,"reason":%d,"bulk":true,"connector_id":%q}`, fp, req.ReasonCode, upErr.ConnectorID))
+				}
+				failed = append(failed, item)
 			} else {
 				emitAuditEventDetail(r, auditProvider, principal, "certificate.revoke", "certificate", fp, AuditOutcomeSuccess,
 					fmt.Sprintf(`{"fingerprint":%q,"reason":%d,"bulk":true,"revocation_scope":%q}`, fp, req.ReasonCode, res.RevocationScope))

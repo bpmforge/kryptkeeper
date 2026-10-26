@@ -116,20 +116,26 @@ func installProfileForCaller(pd AuthPrincipal, target ManagedTarget, supplied Re
 // must be able to access the certificate, and the target must be visible to
 // the caller's tenant.
 func RegisterRenewalExecuteHandler(mux *http.ServeMux, auth *Authenticator, certificateProvider CertificateProvider, targetStore ManagedTargetStore, credentialStore OutboundCredentialStore, auditProvider AuditProvider) {
-	registerRenewalExecuteHandler(mux, auth, certificateProvider, targetStore, credentialStore, auditProvider, nil)
+	registerRenewalExecuteHandler(mux, auth, certificateProvider, targetStore, credentialStore, auditProvider, nil, nil)
 }
 
 // registerRenewalExecuteHandler is RegisterRenewalExecuteHandler with the
 // delivery plugin manager for install_mode "plugin" targets (W20-20).
-func registerRenewalExecuteHandler(mux *http.ServeMux, auth *Authenticator, certificateProvider CertificateProvider, targetStore ManagedTargetStore, credentialStore OutboundCredentialStore, auditProvider AuditProvider, plugins *DeliveryPluginManager) {
+func registerRenewalExecuteHandler(mux *http.ServeMux, auth *Authenticator, certificateProvider CertificateProvider, targetStore ManagedTargetStore, credentialStore OutboundCredentialStore, auditProvider AuditProvider, plugins *DeliveryPluginManager, notifs NotificationProvider) {
 	executor := NewRenewalExecutor(certificateProvider, credentialStore).WithEnvConnectorRegistry(certificateProvider).WithPluginDeliverer(plugins, auditProvider)
 	if targetStore != nil {
 		executor = executor.WithTargetBlocker(targetStateBlocker{targetStore})
 	}
-	registerRenewalExecuteHandlerWithRunner(mux, auth, certificateProvider, targetStore, credentialStore, auditProvider, executor, renewalExecuteBudget)
+	registerRenewalExecuteHandlerWithNotifs(mux, auth, certificateProvider, targetStore, credentialStore, auditProvider, executor, renewalExecuteBudget, notifs)
 }
 
 func registerRenewalExecuteHandlerWithRunner(mux *http.ServeMux, auth *Authenticator, certificateProvider CertificateProvider, targetStore ManagedTargetStore, credentialStore OutboundCredentialStore, auditProvider AuditProvider, executor renewalRunner, budget time.Duration) {
+	registerRenewalExecuteHandlerWithNotifs(mux, auth, certificateProvider, targetStore, credentialStore, auditProvider, executor, budget, nil)
+}
+
+// registerRenewalExecuteHandlerWithNotifs also announces a failed manual
+// renewal to ITSM through notifs (W32-32); nil disables the announcement.
+func registerRenewalExecuteHandlerWithNotifs(mux *http.ServeMux, auth *Authenticator, certificateProvider CertificateProvider, targetStore ManagedTargetStore, credentialStore OutboundCredentialStore, auditProvider AuditProvider, executor renewalRunner, budget time.Duration, notifs NotificationProvider) {
 	mux.HandleFunc("/api/v1/renewal/retry", renewalRetryHandler(auth, certificateProvider, auditProvider))
 	mux.HandleFunc("/api/v1/renewal/execute", func(w http.ResponseWriter, r *http.Request) {
 		pd, err := auth.AuthenticatePrincipalDetails(r, time.Now())
@@ -277,6 +283,7 @@ func registerRenewalExecuteHandlerWithRunner(mux *http.ServeMux, auth *Authentic
 			default:
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.renew_execute", "certificate", req.Fingerprint, AuditOutcomeFailure)
 				logging.Warnf("renewal execute failed: %v", err)
+				announceManualRenewalFailed(r.Context(), notifs, certificateProvider, req.Fingerprint)
 				writeServiceUnavailable(w, "renewal execution failed")
 			}
 			return

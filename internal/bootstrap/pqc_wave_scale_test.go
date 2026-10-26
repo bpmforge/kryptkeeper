@@ -100,7 +100,7 @@ func (d *scaleDeliverer) Supports(t ManagedTarget) (bool, string) {
 	return t.InstallMode == "ssh", "unsupported install mode"
 }
 
-func (d *scaleDeliverer) Deliver(_ context.Context, t ManagedTarget, _, newFP string) (waveDelivery, error) {
+func (d *scaleDeliverer) Deliver(_ context.Context, t ManagedTarget, _, newFP, _ string) (waveDelivery, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.failVerify[t.Host] {

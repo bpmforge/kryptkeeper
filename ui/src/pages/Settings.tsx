@@ -12,6 +12,7 @@ import {
   StateMessage,
 } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
+import { ReportDeliveryPanel } from "./ReportDeliveryPanel";
 import type { EvidenceSchedule, SIEMTestResult } from "../lib/models";
 
 function testResultLine(label: string, ok: boolean, error?: string) {
@@ -794,6 +795,7 @@ export default function Settings() {
 
       <SiemPanel />
       <EvidenceDeliveryPanel />
+      <ReportDeliveryPanel />
       <DiscoverySourcesPanel />
       <PrivilegedCredentialsPanel />
     </div>

@@ -89,6 +89,7 @@ func newPluginHarness(t *testing.T) *pluginHarness {
 	audit := &scepRecordingAudit{}
 	mux := http.NewServeMux()
 	registerDeliveryPluginHandlers(mux, auth, mgr, audit)
+	registerPluginCatalogueHandlers(mux, auth, mgr, audit)
 	registerPendingActionHandlers(mux, auth, &reportCertProvider{}, actions, audit,
 		map[string]ActionExecutor{ActionEnableDeliveryPlugin: mgr.ExecuteEnable})
 	_, adminKey, err := auth.CreateAPIKey("admin-2", "second-admin", "pki-admin", nil, "", "", time.Now())

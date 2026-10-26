@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"kryptkeeper/internal/bootstrap"
 	"kryptkeeper/internal/notifications/delivery"
@@ -40,7 +39,7 @@ func TestDeliveryChannelsFromEnv_WebhookReceivesDelivery(t *testing.T) {
 	t.Setenv("WEBHOOK_URL", srv.URL)
 
 	channels := deliveryChannelsFromEnv(nil)
-	worker := delivery.NewWorker(channels, 1, time.Millisecond)
+	worker := delivery.NewRetrier(channels, delivery.Policy{MaxAttempts: 1}, nil, nil)
 
 	result := worker.Deliver(context.Background(), delivery.Event{
 		ID:      "test-webhook-1",
@@ -102,7 +101,7 @@ func TestDeliveryChannelsFromEnv_DBOverrideChangesNextSend(t *testing.T) {
 	defer srv.Close()
 
 	channels := deliveryChannelsFromEnv(store)
-	worker := delivery.NewWorker(channels, 1, time.Millisecond)
+	worker := delivery.NewRetrier(channels, delivery.Policy{MaxAttempts: 1}, nil, nil)
 
 	first := worker.Deliver(context.Background(), delivery.Event{
 		ID: "before-override", Channel: "slack", Subject: "test", Message: "test",

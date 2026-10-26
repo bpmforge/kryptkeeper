@@ -1,7 +1,7 @@
 # Live validation W24-27: ADCS LDAP inventory sync vs Windows DC - v0.12
 
 Date: 2026-10-18. Hub commit: c9e0e766. Harness: `tests/live/ad-ldap/windows/run.sh`.
-DC OS: Windows Server 2025 Standard. Search base: DC=kkuat,DC=lab. Page size: 1000.
+DC OS: Windows Server 2025 Standard. Search base: DC=corp,DC=example,DC=test. Page size: 1000.
 
 ## Verdict: PASS
 

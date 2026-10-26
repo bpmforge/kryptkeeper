@@ -90,7 +90,7 @@ func TestWebhookEventID_StableAcrossRetries(t *testing.T) {
 		}
 		return 200
 	})
-	w := NewWorker([]Channel{&WebhookChannel{URL: srv.URL, Secret: "k"}}, 3, time.Millisecond)
+	w := newSyncWorker([]Channel{&WebhookChannel{URL: srv.URL, Secret: "k"}}, 3)
 	res := w.Deliver(context.Background(), Event{ID: "evt-retry", Channel: "webhook"})
 	if res.Status != "sent" {
 		t.Fatalf("status = %s", res.Status)

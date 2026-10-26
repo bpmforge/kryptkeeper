@@ -419,18 +419,18 @@ func TestConnectorSource_ResolvesCredentialAndKind(t *testing.T) {
 	}), NewHTTPClient(), map[string]Factory{"jira": func(base string, cred []byte, _ *http.Client) (Connector, error) {
 		gotSecret = string(cred)
 		return h.conn, nil
-	}})
+	}}, nil)
 	if _, err := src(ctx, "c1"); err != nil || gotSecret != "s3cret" {
 		t.Fatalf("err=%v secret=%q", err, gotSecret)
 	}
 	if _, err := src(ctx, "missing"); err == nil {
 		t.Fatal("unknown connection")
 	}
-	bad := NewConnectorSource(h.svc.Store(), credFunc(func(context.Context, string) ([]byte, error) { return []byte("s3cret"), errors.New("boom") }), nil, map[string]Factory{"jira": nil})
+	bad := NewConnectorSource(h.svc.Store(), credFunc(func(context.Context, string) ([]byte, error) { return []byte("s3cret"), errors.New("boom") }), nil, map[string]Factory{"jira": nil}, nil)
 	if _, err := bad(ctx, "c1"); err == nil || containsStr(err.Error(), "s3cret") {
 		t.Fatalf("err=%v", err)
 	}
-	none := NewConnectorSource(h.svc.Store(), nil, nil, nil)
+	none := NewConnectorSource(h.svc.Store(), nil, nil, nil, nil)
 	if _, err := none(ctx, "c1"); err == nil {
 		t.Fatal("kind without factory")
 	}
@@ -530,22 +530,33 @@ func TestRun_ReconcilesOnItsInterval(t *testing.T) {
 	h.svc.reconcileEvery = time.Nanosecond
 	h.svc.lastReconcile = h.clock.now().Add(-time.Hour)
 	done := make(chan struct{})
-	go func() { h.svc.Run(ctx, 5*time.Millisecond, nil); close(done) }()
-	deadline := time.Now().Add(5 * time.Second)
+	var logMu sync.Mutex
+	var runErrs []string
+	logf := func(format string, args ...any) {
+		logMu.Lock()
+		runErrs = append(runErrs, fmt.Sprintf(format, args...))
+		logMu.Unlock()
+	}
+	go func() { h.svc.Run(ctx, 5*time.Millisecond, logf); close(done) }()
+	// Wait for the persisted outcome, not the connector call: the recreate
+	// is written to the store after the second create, and a loaded CI
+	// runner can cancel in between.
+	deadline := time.Now().Add(20 * time.Second)
+	var row EventRow
 	for time.Now().Before(deadline) {
-		h.conn.mu.Lock()
-		c := h.conn.creates
-		h.conn.mu.Unlock()
-		if c >= 2 {
+		row, _ = h.svc.Store().GetEvent(context.Background(), "ev-1")
+		if row.Recreated {
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		// Poll gently: every read contends with Run's writes on SQLite.
+		time.Sleep(100 * time.Millisecond)
 	}
 	cancel()
 	<-done
-	row, _ := h.svc.Store().GetEvent(context.Background(), "ev-1")
 	if !row.Recreated {
-		t.Fatalf("Run never reconciled: %+v", row)
+		logMu.Lock()
+		defer logMu.Unlock()
+		t.Fatalf("Run never reconciled: %+v; Run errors: %v", row, runErrs)
 	}
 }
 

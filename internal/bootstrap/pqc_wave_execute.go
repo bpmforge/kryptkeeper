@@ -75,15 +75,17 @@ type waveDelivery struct {
 type waveDeliverer interface {
 	Supports(t ManagedTarget) (ok bool, reason string)
 	// Deliver installs the member's new cert, verifies the served fingerprint
-	// equals newFP and, on mismatch, restores the previous files. A non-nil
-	// error means the install was not attempted.
-	Deliver(ctx context.Context, t ManagedTarget, oldFP, newFP string) (waveDelivery, error)
+	// equals newFP and, on mismatch, restores the previous files. keyID names
+	// the successor's private key in the keystore. A non-nil error means the
+	// install was not attempted; one wrapping errWaveDeliveryUnsupported is a
+	// capability gap (reported delivery_unsupported), anything else a failure.
+	Deliver(ctx context.Context, t ManagedTarget, oldFP, newFP, keyID string) (waveDelivery, error)
 }
 
-// unsupportedWaveDeliverer is the production deliverer until ML-DSA private
-// key export exists (D-103 generate-without-deliver): RenewalExecutor generates
-// its own ECDSA/RSA key and cannot carry a hub-held ML-DSA key, so every bound
-// target is reported rather than silently skipped.
+// unsupportedWaveDeliverer is the deliverer for hubs whose keystore cannot
+// export keys (or without an outbound credential store): every bound target is
+// reported delivery_unsupported rather than silently skipped. Production uses
+// keystoreWaveDeliverer (W31F-06) when the keystore can export.
 type unsupportedWaveDeliverer struct{}
 
 const waveDeliveryUnsupportedReason = "PQC key material cannot be installed yet (D-103 generate-without-deliver); manual install"
@@ -92,7 +94,7 @@ func (unsupportedWaveDeliverer) Supports(ManagedTarget) (bool, string) {
 	return false, waveDeliveryUnsupportedReason
 }
 
-func (unsupportedWaveDeliverer) Deliver(context.Context, ManagedTarget, string, string) (waveDelivery, error) {
+func (unsupportedWaveDeliverer) Deliver(context.Context, ManagedTarget, string, string, string) (waveDelivery, error) {
 	return waveDelivery{}, errors.New(waveDeliveryUnsupportedReason)
 }
 
@@ -330,7 +332,17 @@ func handleWaveExecuteApprove(w http.ResponseWriter, r *http.Request, auth *Auth
 		return
 	}
 	publishMigrateWaveEvent(pd.Tenant, waveID, "running", "")
+	// D-315: delivery is serial and a k8s Secret's verify window alone is
+	// ~135s, so a wave outlives server.go's 15s WriteTimeout. Found live
+	// (W40): the connection was cut mid-wave, which cancels r.Context and
+	// would fail the remaining members. Same per-connection override as
+	// renewal execute; unsupported writers (tests) keep the default.
+	rc := http.NewResponseController(w)
+	budget := waveMemberDeliveryBudget * time.Duration(max(1, len(wave.Members)))
+	_ = rc.SetWriteDeadline(time.Now().Add(budget + renewalResponseWindow)) // unsupported ResponseWriter (tests) keeps the default
+	_ = rc.SetReadDeadline(time.Now().Add(budget + renewalResponseWindow))  // as above
 	execResult := runWaveMigration(r.Context(), waveDeps{certs: certProvider, keys: keys, targets: targets, deliver: deliver, waves: waveStore}, *wave, algo, hooks)
+	_ = rc.SetWriteDeadline(time.Now().Add(renewalResponseWindow)) // re-arm so the result is written after a long run
 	if execResult.Failed == 0 {
 		publishMigrateWaveEvent(pd.Tenant, waveID, "completed", "migrated")
 	} else {
@@ -392,6 +404,10 @@ func handleWaveExecuteApprove(w http.ResponseWriter, r *http.Request, auth *Auth
 // not IP SANs separately, so a re-issued cert's IP SANs (if the original
 // had any) are not preserved -- out of this ticket's scope to add IP-SAN
 // tracking to the certificate store.
+// waveMemberDeliveryBudget is the connection window granted per wave member:
+// the k8s verify-retry window (~135s) plus issuance and install margin.
+const waveMemberDeliveryBudget = 4 * time.Minute
+
 func runWaveMigration(ctx context.Context, d waveDeps, wave MigrationWave, algo keystore.Algorithm, hooks waveHooks) migrateWaveExecutionResult {
 	result := migrateWaveExecutionResult{Results: make([]migrateWaveMemberResult, 0, len(wave.Members))}
 	var targets []ManagedTarget
@@ -465,8 +481,10 @@ func runWaveMigration(ctx context.Context, d waveDeps, wave MigrationWave, algo 
 			record(migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: pqc.MemberDeliveryUnsupported, NewFingerprint: newFP, Delivery: "unsupported", Reason: why})
 			continue
 		}
-		del, derr := d.deliver.Deliver(ctx, target, m.Fingerprint, newFP)
+		del, derr := d.deliver.Deliver(ctx, target, m.Fingerprint, newFP, migrated.KeyID)
 		switch {
+		case errors.Is(derr, errWaveDeliveryUnsupported):
+			record(migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: pqc.MemberDeliveryUnsupported, NewFingerprint: newFP, Delivery: "unsupported", Reason: derr.Error()})
 		case derr != nil:
 			result.Regressed = true
 			record(migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: pqc.MemberFailed, NewFingerprint: newFP, Delivery: "failed",
@@ -479,9 +497,12 @@ func runWaveMigration(ctx context.Context, d waveDeps, wave MigrationWave, algo 
 			// old cert; the wave is marked regressed rather than un-superseded.
 			result.Regressed = true
 			oldServed := del.Outcome == waveDeliveryRolledBack
+			reason := fmt.Sprintf("delivery %s: %s", del.Outcome, del.Detail)
+			if oldServed {
+				reason += "; rolled back"
+			}
 			record(migrateWaveMemberResult{Fingerprint: m.Fingerprint, Status: pqc.MemberFailed, NewFingerprint: newFP, Delivery: "failed",
-				Reason:          fmt.Sprintf("delivery %s: %s; rolled back", del.Outcome, del.Detail),
-				OldSerialServed: &oldServed})
+				Reason: reason, OldSerialServed: &oldServed})
 		}
 	}
 

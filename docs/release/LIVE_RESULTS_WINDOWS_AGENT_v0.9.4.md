@@ -112,7 +112,7 @@ Agent event log, task for fingerprint `aa11`:
 
 ## Step 3: busy :80, fail-fast message: PASS, with gap F1
 
-A normal process (PowerShell `TcpListener`, user kkadmin, no setting changes) held
+A normal process (PowerShell `TcpListener`, user labadmin, no setting changes) held
 :80 inside one WinRM session (child processes die when the session ends, so the
 listener and the observation ran in one call).
 

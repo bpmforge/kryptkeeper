@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Certificate authorities · Kryptkeeper</title>
+<meta name="description" content="Your own root and issuing CAs, with dual control where it matters. Create a root and the issuing CAs under it, or import a root you already trust. Sensitive operations on a CA are guarded, and a new root key can require an M-of-N key ceremony.">
+<meta property="og:title" content="Certificate authorities · Kryptkeeper">
+<meta property="og:description" content="Your own root and issuing CAs, with dual control where it matters. Create a root and the issuing CAs under it, or import a root you already trust. Sensitive operations on a CA are guarded, and a new root key can require an M-of-N key ceremony.">
+<meta property="og:url" content="https://kryptkeeper.io/features/certificate-authorities/">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<div class="crumb-row"><nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/features/">Features</a></li><li aria-current="page">Certificate authorities</li></ol></nav></div>
+<header class="page-head">
+  <span class="label">Feature</span>
+  <h1>Certificate authorities</h1>
+  <p class="lede">Your own root and issuing CAs, with dual control where it matters.</p>
+  <p class="intro">Create a root and the issuing CAs under it, or import a root you already trust. Sensitive operations on a CA are guarded, and a new root key can require an M-of-N key ceremony.</p>
+</header>
+<figure class="hub-hero"><div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/cas</span></div>
+    <a href="/features/certificate-authorities/" tabindex="-1" aria-hidden="true"><img src="/shots/U-07/cover-dark.webp" width="1220" height="762" alt="Certificate authorities screen in Kryptkeeper"></a>
+  </div></figure>
+<section aria-labelledby="how"><h2 id="how">How it works</h2><ol class="card-grid wt-grid">
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-04/09-ca-created.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/certificate-authorities/create-root/">Create a root CA</a></h3><p>Create a self-signed root with the algorithm and lifetime you choose.</p><span class="meta">9 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-05/07-ca-created.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/certificate-authorities/create-issuing-ca/">Create an issuing CA under a root</a></h3><p>Create an intermediate CA that signs your day-to-day certificates.</p><span class="meta">7 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-06/04-pem-pasted.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/certificate-authorities/import-root/">Import an existing root</a></h3><p>Import a root you already trust as a trust anchor.</p><span class="meta">7 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-07/06-ca-health-report.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/certificate-authorities/hierarchy/">Inspect a CA and its hierarchy</a></h3><p>Read a CA's details and see the whole chain at a glance.</p><span class="meta">6 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-08/17-revoke-ca-confirm.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/certificate-authorities/guarded-operations/">Suspend, re-key or revoke a CA</a></h3><p>Change a CA's state through guarded actions that show what they affect.</p><span class="meta">13 steps</span></li>
+<li class="card wt-card"><div class="thumb"><img src="/shots/U-09c/03-cas-list-new-root.webp" width="1440" height="900" alt="" loading="lazy" decoding="async"></div><h3><a class="stretch" href="/features/certificate-authorities/key-ceremony/">Run a root key ceremony (M-of-N)</a></h3><p>One person starts a ceremony and two approvers complete the quorum.</p><span class="meta">10 steps</span></li>
+</ol></section>
+<section aria-labelledby="docs"><h2 id="docs">Docs</h2><ul class="link-list"><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/guides/getting-started.md">Getting started</a></li></ul></section>
+<section aria-labelledby="used-by"><h2 id="used-by">Paths that use this</h2><ul class="link-list"><li><a href="/paths/stand-up-pki/">Stand up your own PKI</a> <span class="muted">for PKI administrator</span></li><li><a href="/paths/replace-adcs/">Replace ADCS for your Windows domain</a> <span class="muted">for Windows and AD administrator</span></li></ul></section>
+
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

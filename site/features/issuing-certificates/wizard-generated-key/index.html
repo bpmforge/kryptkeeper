@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Issue with a generated key · Issuing certificates · Kryptkeeper</title>
+<meta name="description" content="Let the wizard give you the openssl command so the key never leaves your machine.">
+<meta property="og:title" content="Issue with a generated key · Issuing certificates · Kryptkeeper">
+<meta property="og:description" content="Let the wizard give you the openssl command so the key never leaves your machine.">
+<meta property="og:url" content="https://kryptkeeper.io/features/issuing-certificates/wizard-generated-key/">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<div class="crumb-row"><nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/features/">Features</a></li><li><a href="/features/issuing-certificates/">Issuing certificates</a></li><li aria-current="page">Issue with a generated key</li></ol></nav></div>
+<header class="page-head">
+  <span class="label">Walkthrough · 9 steps</span>
+  <h1>Issue with a generated key</h1>
+  <p class="lede">Let the wizard give you the openssl command so the key never leaves your machine.</p>
+  <p class="as">As <span class="pill role">pki-admin</span></p>
+</header>
+<ol class="steps">
+  <li class="step"><div class="step-head"><span class="label">Step <b>1</b></span><p>Open /certificates/issue</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-14/01-wizard-step-1.webp"><img src="/shots/U-14/01-wizard-step-1.webp" width="1440" height="900" alt="Open /certificates/issue" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>2</b></span><p>Select &quot;Acme Issuing CA&quot; in <strong>Certificate authority</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-14/02-Certificate authority.webp"><img src="/shots/U-14/02-Certificate authority.webp" width="1440" height="900" alt="Select &quot;Acme Issuing CA&quot; in Certificate authority" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>3</b></span><p>Click <strong>Next</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-14/03-wizard-step-2.webp"><img src="/shots/U-14/03-wizard-step-2.webp" width="1440" height="900" alt="Click Next" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>4</b></span><p>Select &quot;Web Server (90 day)&quot; in <strong>Issuance template</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-14/04-Issuance template.webp"><img src="/shots/U-14/04-Issuance template.webp" width="1440" height="900" alt="Select &quot;Web Server (90 day)&quot; in Issuance template" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>5</b></span><p>Click <strong>Next</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-14/05-wizard-step-3.webp"><img src="/shots/U-14/05-wizard-step-3.webp" width="1440" height="900" alt="Click Next" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>6</b></span><p>Fill <strong>Subject common name</strong> with &quot;gen.acme.test&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-14/06-Subject common name.webp"><img src="/shots/U-14/06-Subject common name.webp" width="1440" height="900" alt="Fill Subject common name with &quot;gen.acme.test&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>7</b></span><p>Fill <strong>Subject alternative names</strong> with &quot;gen.acme.test&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-14/07-Subject alternative names.webp"><img src="/shots/U-14/07-Subject alternative names.webp" width="1440" height="900" alt="Fill Subject alternative names with &quot;gen.acme.test&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>8</b></span><p>Click <strong>Next</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-14/08-wizard-step-4.webp"><img src="/shots/U-14/08-wizard-step-4.webp" width="1440" height="900" alt="Click Next" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>9</b></span><p>Click <strong>Generate a new key</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-14/09-openssl-instructions.webp"><img src="/shots/U-14/09-openssl-instructions.webp" width="1440" height="900" alt="Click Generate a new key" loading="lazy" decoding="async"></a></figure></li>
+</ol>
+<nav class="pager" aria-label="More in Issuing certificates"><a class="prev" href="/features/issuing-certificates/wizard-own-csr/"><span class="label">Previous</span>Issue with your own CSR</a><a class="next" href="/features/issuing-certificates/request-approval/"><span class="label">Next</span>Request a certificate that needs approval</a></nav>
+
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

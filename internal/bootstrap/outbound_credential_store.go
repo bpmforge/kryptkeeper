@@ -11,10 +11,12 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/argon2"
@@ -72,6 +74,14 @@ type OutboundCredentialMeta struct {
 	// PrivilegedSetBy is "auto:<source>" or "manual:<principal>".
 	PrivilegedSetBy string `json:"privileged_set_by,omitempty"`
 	PrivilegedSetAt string `json:"privileged_set_at,omitempty"`
+	// Source says where the secret lives (W38-07, D-324): "local" is the
+	// encrypted row, "external" a reference fetched from SourceID's manager at
+	// each use. An external credential has no secret in the hub at all, so
+	// Reference and Static, which are all it stores, are safe to show.
+	Source    string            `json:"source"`
+	SourceID  string            `json:"source_id,omitempty"`
+	Reference map[string]string `json:"reference,omitempty"`
+	Static    map[string]string `json:"static,omitempty"`
 }
 
 // credentialPrivilegeStore is implemented by the DB-backed stores; other
@@ -82,7 +92,8 @@ type credentialPrivilegeStore interface {
 }
 
 const outboundCredentialMetaCols = `id, name, credential_type, tenant, created_at, updated_at,
-		COALESCE(privileged, FALSE), COALESCE(privileged_reason, ''), COALESCE(privileged_set_by, ''), COALESCE(privileged_set_at, '')`
+		COALESCE(privileged, FALSE), COALESCE(privileged_reason, ''), COALESCE(privileged_set_by, ''), COALESCE(privileged_set_at, ''),
+		COALESCE(source, 'local'), COALESCE(source_id, ''), COALESCE(source_ref, '')`
 
 // OutboundCredentialStore persists outbound credentials (SSH keys, API
 // tokens, cloud IAM refs) encrypted at rest, referenced by id from a
@@ -106,6 +117,22 @@ type OutboundCredentialStore interface {
 	// over any API response, log it, or include it in an audit event --
 	// treat it exactly as radioactively as a private key.
 	Resolve(ctx context.Context, id string) ([]byte, error)
+}
+
+// externalCredentialTester is implemented by the DB-backed stores: it fetches
+// a reference through its source without storing anything, for the "test this
+// reference" call, and returns the names of the fields the manager returned,
+// never their values.
+type externalCredentialTester interface {
+	TestExternal(ctx context.Context, sourceID, tenant, credentialType string, ref ExternalReference) ([]string, error)
+}
+
+// externalCredentialCreator is implemented by the DB-backed stores; a store
+// without it simply cannot hold external credentials.
+type externalCredentialCreator interface {
+	// CreateExternal stores a reference, never a secret. The source must exist
+	// and belong to tenant.
+	CreateExternal(ctx context.Context, id, name, credentialType, tenant, sourceID string, ref ExternalReference) (OutboundCredentialMeta, error)
 }
 
 func validateCredentialType(credentialType string) error {
@@ -197,24 +224,33 @@ CREATE TABLE IF NOT EXISTS outbound_credentials (
     tenant          TEXT NOT NULL DEFAULT 'default',
     envelope        TEXT NOT NULL,
     created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL
+    updated_at      TEXT NOT NULL,
+    source          TEXT NOT NULL DEFAULT 'local',
+    source_id       TEXT,
+    source_ref      TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_outbound_credentials_tenant ON outbound_credentials(tenant);`
+CREATE INDEX IF NOT EXISTS idx_outbound_credentials_tenant ON outbound_credentials(tenant);` + credentialSourceSchema
 
-// Privileged-flag columns (migration 000343) for a store whose table predates
-// them. Dialects differ in the boolean type and in ADD COLUMN IF NOT EXISTS.
+// Privileged-flag columns (migration 000343) and source columns (000386) for a
+// store whose table predates them. Dialects differ in the boolean type and in ADD COLUMN IF NOT EXISTS.
 var (
 	outboundPrivilegedUpgradesSQLite = []string{
 		"ALTER TABLE outbound_credentials ADD COLUMN privileged INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE outbound_credentials ADD COLUMN privileged_reason TEXT",
 		"ALTER TABLE outbound_credentials ADD COLUMN privileged_set_by TEXT",
 		"ALTER TABLE outbound_credentials ADD COLUMN privileged_set_at TEXT",
+		"ALTER TABLE outbound_credentials ADD COLUMN source TEXT NOT NULL DEFAULT 'local'",
+		"ALTER TABLE outbound_credentials ADD COLUMN source_id TEXT",
+		"ALTER TABLE outbound_credentials ADD COLUMN source_ref TEXT",
 	}
 	outboundPrivilegedUpgradesPostgres = []string{
 		"ALTER TABLE outbound_credentials ADD COLUMN IF NOT EXISTS privileged BOOLEAN NOT NULL DEFAULT FALSE",
 		"ALTER TABLE outbound_credentials ADD COLUMN IF NOT EXISTS privileged_reason TEXT",
 		"ALTER TABLE outbound_credentials ADD COLUMN IF NOT EXISTS privileged_set_by TEXT",
 		"ALTER TABLE outbound_credentials ADD COLUMN IF NOT EXISTS privileged_set_at TEXT",
+		"ALTER TABLE outbound_credentials ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'local'",
+		"ALTER TABLE outbound_credentials ADD COLUMN IF NOT EXISTS source_id TEXT",
+		"ALTER TABLE outbound_credentials ADD COLUMN IF NOT EXISTS source_ref TEXT",
 	}
 )
 
@@ -223,6 +259,9 @@ var (
 type sqliteOutboundCredentialStore struct {
 	db         *sql.DB
 	passphrase []byte
+
+	extOnce sync.Once
+	ext     *externalCredentialResolver
 }
 
 func (s *sqliteOutboundCredentialStore) EnsureSchema(ctx context.Context) error {
@@ -264,7 +303,26 @@ func (s *sqliteOutboundCredentialStore) Delete(ctx context.Context, id string) e
 }
 
 func (s *sqliteOutboundCredentialStore) Resolve(ctx context.Context, id string) ([]byte, error) {
-	return resolveOutboundCredential(ctx, s.db, s.passphrase, "SELECT envelope FROM outbound_credentials WHERE id = ?", id)
+	return resolveOutboundCredential(ctx, s.db, false, s.passphrase, id, s.external)
+}
+
+func (s *sqliteOutboundCredentialStore) resolveLocalOnly(ctx context.Context, id string) ([]byte, error) {
+	return resolveOutboundCredential(ctx, s.db, false, s.passphrase, id, nil)
+}
+
+func (s *sqliteOutboundCredentialStore) CreateExternal(ctx context.Context, id, name, credentialType, tenant, sourceID string, ref ExternalReference) (OutboundCredentialMeta, error) {
+	return createExternalOutboundCredential(ctx, s.db, false, id, name, credentialType, tenant, sourceID, ref)
+}
+
+// external builds the resolver on first use: the store is constructed from the
+// environment in many places and most never see an external credential.
+func (s *sqliteOutboundCredentialStore) TestExternal(ctx context.Context, sourceID, tenant, credentialType string, ref ExternalReference) ([]string, error) {
+	return testExternalCredential(ctx, s.external(), sourceID, tenant, credentialType, ref)
+}
+
+func (s *sqliteOutboundCredentialStore) external() *externalCredentialResolver {
+	s.extOnce.Do(func() { s.ext = newExternalResolverForDB(s.db, false, s) })
+	return s.ext
 }
 
 // --- Postgres implementation ---
@@ -272,6 +330,9 @@ func (s *sqliteOutboundCredentialStore) Resolve(ctx context.Context, id string) 
 type postgresOutboundCredentialStore struct {
 	db         *sql.DB
 	passphrase []byte
+
+	extOnce sync.Once
+	ext     *externalCredentialResolver
 }
 
 func (s *postgresOutboundCredentialStore) EnsureSchema(ctx context.Context) error {
@@ -315,7 +376,24 @@ func (s *postgresOutboundCredentialStore) Delete(ctx context.Context, id string)
 }
 
 func (s *postgresOutboundCredentialStore) Resolve(ctx context.Context, id string) ([]byte, error) {
-	return resolveOutboundCredential(ctx, s.db, s.passphrase, "SELECT envelope FROM outbound_credentials WHERE id = $1", id)
+	return resolveOutboundCredential(ctx, s.db, true, s.passphrase, id, s.external)
+}
+
+func (s *postgresOutboundCredentialStore) resolveLocalOnly(ctx context.Context, id string) ([]byte, error) {
+	return resolveOutboundCredential(ctx, s.db, true, s.passphrase, id, nil)
+}
+
+func (s *postgresOutboundCredentialStore) CreateExternal(ctx context.Context, id, name, credentialType, tenant, sourceID string, ref ExternalReference) (OutboundCredentialMeta, error) {
+	return createExternalOutboundCredential(ctx, s.db, true, id, name, credentialType, tenant, sourceID, ref)
+}
+
+func (s *postgresOutboundCredentialStore) TestExternal(ctx context.Context, sourceID, tenant, credentialType string, ref ExternalReference) ([]string, error) {
+	return testExternalCredential(ctx, s.external(), sourceID, tenant, credentialType, ref)
+}
+
+func (s *postgresOutboundCredentialStore) external() *externalCredentialResolver {
+	s.extOnce.Do(func() { s.ext = newExternalResolverForDB(s.db, true, s) })
+	return s.ext
 }
 
 // --- shared helpers ---
@@ -342,13 +420,25 @@ func createOutboundCredential(ctx context.Context, db *sql.DB, passphrase []byte
 }
 
 func scanOutboundCredentialMeta(row *sql.Row) (OutboundCredentialMeta, error) {
-	var m OutboundCredentialMeta
-	err := row.Scan(&m.ID, &m.Name, &m.CredentialType, &m.Tenant, &m.CreatedAt, &m.UpdatedAt, &m.Privileged, &m.PrivilegedReason, &m.PrivilegedSetBy, &m.PrivilegedSetAt)
+	m, err := scanMetaFrom(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OutboundCredentialMeta{}, errOutboundCredentialNotFound
 	}
-	if err != nil {
+	return m, err
+}
+
+func scanMetaFrom(sc rowScanner) (OutboundCredentialMeta, error) {
+	var m OutboundCredentialMeta
+	var ref string
+	if err := sc.Scan(&m.ID, &m.Name, &m.CredentialType, &m.Tenant, &m.CreatedAt, &m.UpdatedAt, &m.Privileged, &m.PrivilegedReason, &m.PrivilegedSetBy, &m.PrivilegedSetAt,
+		&m.Source, &m.SourceID, &ref); err != nil {
 		return OutboundCredentialMeta{}, err
+	}
+	if ref != "" {
+		var r ExternalReference
+		if err := json.Unmarshal([]byte(ref), &r); err == nil {
+			m.Reference, m.Static = r.Reference, r.Static
+		}
 	}
 	return m, nil
 }
@@ -357,8 +447,8 @@ func scanOutboundCredentialMetaRows(rows *sql.Rows) ([]OutboundCredentialMeta, e
 	defer rows.Close()
 	items := []OutboundCredentialMeta{}
 	for rows.Next() {
-		var m OutboundCredentialMeta
-		if err := rows.Scan(&m.ID, &m.Name, &m.CredentialType, &m.Tenant, &m.CreatedAt, &m.UpdatedAt, &m.Privileged, &m.PrivilegedReason, &m.PrivilegedSetBy, &m.PrivilegedSetAt); err != nil {
+		m, err := scanMetaFrom(rows)
+		if err != nil {
 			return nil, err
 		}
 		items = append(items, m)
@@ -381,16 +471,87 @@ func deleteOutboundCredentialRow(ctx context.Context, db *sql.DB, query, id stri
 	return nil
 }
 
-func resolveOutboundCredential(ctx context.Context, db *sql.DB, passphrase []byte, query, id string) ([]byte, error) {
-	var envelope string
-	err := db.QueryRowContext(ctx, query, id).Scan(&envelope)
+// resolveOutboundCredential returns a credential's plaintext. A local row is
+// opened with the passphrase; an external row is fetched from its source by
+// ext, and a nil ext (the source's own login, which must be local or resolving
+// it could loop) refuses it.
+func resolveOutboundCredential(ctx context.Context, db *sql.DB, postgres bool, passphrase []byte, id string, ext func() *externalCredentialResolver) ([]byte, error) {
+	q := `SELECT envelope, credential_type, tenant, COALESCE(source, 'local'), COALESCE(source_id, ''), COALESCE(source_ref, '')
+		FROM outbound_credentials WHERE id = ?`
+	if postgres {
+		q = rebindPostgres(q)
+	}
+	var envelope, credType, tenant, source, sourceID, sourceRef string
+	err := db.QueryRowContext(ctx, q, id).Scan(&envelope, &credType, &tenant, &source, &sourceID, &sourceRef)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, errOutboundCredentialNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	return openEnvelope(passphrase, envelope)
+	if source != CredentialSourceExternal {
+		return openEnvelope(passphrase, envelope)
+	}
+	if ext == nil {
+		return nil, resolveErr(resolveClassConfig, "credential %q is external; a credential source's own login must be a local credential", id)
+	}
+	var ref ExternalReference
+	if err := json.Unmarshal([]byte(sourceRef), &ref); err != nil {
+		return nil, resolveErr(resolveClassConfig, "credential %q has an unreadable source reference", id)
+	}
+	return ext().resolve(ctx, externalRow{ID: id, Type: credType, Tenant: tenant, SourceID: sourceID, Ref: ref})
+}
+
+// createExternalOutboundCredential stores a reference. It checks the source
+// here, not only in the handler, so no caller can attach a credential to a
+// source of another tenant or to a reference the source kind cannot read.
+func createExternalOutboundCredential(ctx context.Context, db *sql.DB, postgres bool, id, name, credentialType, tenant, sourceID string, ref ExternalReference) (OutboundCredentialMeta, error) {
+	if err := validateCredentialType(credentialType); err != nil {
+		return OutboundCredentialMeta{}, err
+	}
+	if tenant == "" {
+		tenant = DefaultTenant
+	}
+	src, err := (&dbCredentialSourceStore{db: db, postgres: postgres}).Get(ctx, sourceID)
+	if err != nil {
+		return OutboundCredentialMeta{}, err
+	}
+	if normalizeTenant(src.Tenant) != tenant {
+		return OutboundCredentialMeta{}, errCredentialSourceNotFound // another tenant's source does not exist here
+	}
+	if err := ref.validate(src.Kind); err != nil {
+		return OutboundCredentialMeta{}, err
+	}
+	refJSON, err := json.Marshal(ref)
+	if err != nil {
+		return OutboundCredentialMeta{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	q := `INSERT INTO outbound_credentials (id, name, credential_type, tenant, envelope, created_at, updated_at, source, source_id, source_ref)
+		VALUES (?, ?, ?, ?, '', ?, ?, 'external', ?, ?)`
+	if postgres {
+		q = rebindPostgres(q)
+	}
+	if _, err := db.ExecContext(ctx, q, id, name, credentialType, tenant, now, now, sourceID, string(refJSON)); err != nil {
+		return OutboundCredentialMeta{}, err
+	}
+	return OutboundCredentialMeta{
+		ID: id, Name: name, CredentialType: credentialType, Tenant: tenant, CreatedAt: now, UpdatedAt: now,
+		Source: CredentialSourceExternal, SourceID: sourceID, Reference: ref.Reference, Static: ref.Static,
+	}, nil
+}
+
+// newExternalResolverForDB wires a resolver to a store's own database. The
+// plugin manager is a light one over the same database: running a credentials
+// plugin needs the stored, approved plugin bytes and the WebAssembly runtime,
+// not the approval queue or trust keys.
+func newExternalResolverForDB(db *sql.DB, postgres bool, local localCredentialReader) *externalCredentialResolver {
+	var once sync.Once
+	var mgr *DeliveryPluginManager
+	return newExternalCredentialResolver(&dbCredentialSourceStore{db: db, postgres: postgres}, local, func() *DeliveryPluginManager {
+		once.Do(func() { mgr = NewDeliveryPluginManager(db, postgres, nil, nil) })
+		return mgr
+	})
 }
 
 // outboundCredentialPassphraseFromEnv resolves the passphrase this store

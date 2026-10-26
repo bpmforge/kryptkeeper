@@ -15,6 +15,10 @@ vi.mock("../lib/api", async (importOriginal) => {
       createNotificationRule: vi.fn(),
       updateNotificationRule: vi.fn(),
       deleteNotificationRule: vi.fn(),
+      notificationTeamRoutes: vi.fn(),
+      createNotificationTeamRoute: vi.fn(),
+      deleteNotificationTeamRoute: vi.fn(),
+      ownerlessCertificates: vi.fn(),
       notificationsSummary: vi.fn(),
       notificationDeliveries: vi.fn(),
       testNotificationDelivery: vi.fn(),
@@ -118,6 +122,12 @@ beforeEach(() => {
   } as unknown as never);
   vi.mocked(api.createNotificationRule).mockResolvedValue({
     data: {},
+  } as unknown as never);
+  vi.mocked(api.notificationTeamRoutes).mockResolvedValue({
+    data: { items: [] },
+  } as unknown as never);
+  vi.mocked(api.ownerlessCertificates).mockResolvedValue({
+    data: { items: [] },
   } as unknown as never);
 });
 

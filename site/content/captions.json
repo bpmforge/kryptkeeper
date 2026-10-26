@@ -1,0 +1,66 @@
+{
+  "U-06": {
+    "4": "Paste the root certificate into **Certificate PEM**",
+    "6": "A second person approves the pending import"
+  },
+  "U-08": {
+    "5": "Press **Escape** to close the dialog",
+    "10": "Press **Escape** to close the dialog",
+    "18": "Press **Escape** to close the dialog"
+  },
+  "U-13": {
+    "11": "Paste your CSR into **CSR PEM**"
+  },
+  "U-15": {
+    "10": "Paste your CSR into **CSR PEM**"
+  },
+  "U-21": {
+    "3": "Paste your certificates into **Bulk import bundle**"
+  },
+  "U-22": {
+    "6": "Paste your CSR into **CSR PEM**"
+  },
+  "U-23": {
+    "5": "Choose a revocation reason",
+    "13": "Press **Escape** to close the dialog"
+  },
+  "U-25": {
+    "3": "Fill the scan target with the host to scan",
+    "6": "Wait for the scan to finish",
+    "8": "Turn on **Show risky endpoints only**"
+  },
+  "U-26": {
+    "2": "Open the endpoint from its findings row"
+  },
+  "U-26b": {
+    "2": "Scroll down to the exceptions list"
+  },
+  "U-28": {
+    "11": "Paste the CA certificate into **Certificate**"
+  },
+  "U-31": {
+    "4": "Click **Save** next to the web-01 renewal threshold",
+    "5": "Click **Clear override** to go back to the default threshold"
+  },
+  "U-35": {
+    "2": "Fill **SMTP host** with your mail relay",
+    "5": "Click **Save** on the SMTP port row",
+    "7": "Click **Save** on the SMTP from address row",
+    "8": "Fill **Webhook URL** with the address of your receiver",
+    "9": "Click **Save** on the Webhook URL row"
+  },
+  "U-41b": {
+    "5": "Switch **Tenant view** to the new tenant"
+  },
+  "U-49": {
+    "3": "Press **Escape** to close the dialog",
+    "5": "Press **Escape** to close the dialog",
+    "7": "Press **Escape** to close the dialog"
+  },
+  "U-55": {
+    "4": "Press **Escape** to close the dialog"
+  },
+  "U-59": {
+    "4": "Scroll down to the certificates table"
+  }
+}

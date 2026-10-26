@@ -1,0 +1,348 @@
+{
+  "_comment": "Source of truth for kryptkeeper.io feature hubs, walkthroughs and paths. Walkthrough steps and screenshots come from docs/guide/specs/<id>.json. See docs/site/README.md.",
+  "repo": "https://github.com/bpmforge/kryptkeeper/blob/main/",
+  "bands": [
+    {"id": "setup", "label": "Set up", "title": "Set up your PKI", "intro": "Your own CAs, the rules for what they issue, and where the keys live."},
+    {"id": "issue", "label": "Issue and renew", "title": "Issue certificates and keep them alive", "intro": "Certificates go out by hand, by protocol or by agent, and renew on their own."},
+    {"id": "see", "label": "Visibility", "title": "See everything, catch problems", "intro": "Find what you didn't know about and hear before it breaks."},
+    {"id": "govern", "label": "Govern and extend", "title": "Govern it and extend it", "intro": "A second person on sensitive changes, least privilege, and hooks into your stack."}
+  ],
+  "pages": [
+    {"url": "/try/", "file": "try/index.html", "title": "Try Kryptkeeper in five minutes"}
+  ],
+  "flagship": ["windows-active-directory", "discovery-inventory", "automation-enrollment", "approvals-guardrails"],
+  "hubs": [
+    {
+      "id": "getting-around",
+      "band": "setup",
+      "cover": {"file": "/screens/01-dashboard.webp", "width": 2880, "height": 1800, "route": "/"},
+      "title": "Getting around",
+      "tagline": "One console for every certificate, CA and job that needs a person.",
+      "intro": "Sign in, see what needs attention today, and jump to any certificate, CA or setting from the keyboard. The console works the same on a phone.",
+      "walkthroughs": [
+        {"slug": "sign-in", "title": "Sign in and find your way around", "summary": "Sign in, see how the sidebar groups the pages, and switch the theme.", "specs": ["U-01"], "thumbSpec": "U-02"},
+        {"slug": "dashboard", "title": "See what needs attention", "summary": "Read the dashboard: what expires soon, what failed, and what waits on a person.", "specs": ["U-02"], "thumbSpec": "U-55"},
+        {"slug": "search", "title": "Find anything from the keyboard", "summary": "Use global search and the command palette to jump straight to a certificate or page.", "specs": ["U-03"], "thumbSpec": "U-24"},
+        {"slug": "phone", "title": "Use it on a phone", "summary": "Open the navigation menu and browse the certificate list on a phone-sized screen.", "specs": ["U-59"], "thumbSpec": "U-16"}
+      ]
+    },
+    {
+      "id": "certificate-authorities",
+      "band": "setup",
+      "cover": {"spec": "U-07"},
+      "title": "Certificate authorities",
+      "tagline": "Your own root and issuing CAs, with dual control where it matters.",
+      "intro": "Create a root and the issuing CAs under it, or import a root you already trust. Sensitive operations on a CA are guarded, and a new root key can require an M-of-N key ceremony.",
+      "docs": [{"title": "Getting started", "path": "docs/guides/getting-started.md"}],
+      "walkthroughs": [
+        {"slug": "create-root", "title": "Create a root CA", "summary": "Create a self-signed root with the algorithm and lifetime you choose.", "specs": ["U-04"]},
+        {"slug": "create-issuing-ca", "title": "Create an issuing CA under a root", "summary": "Create an intermediate CA that signs your day-to-day certificates.", "specs": ["U-05"]},
+        {"slug": "import-root", "title": "Import an existing root", "summary": "Import a root you already trust as a trust anchor.", "specs": ["U-06"], "thumb": {"spec": "U-06", "n": 4}, "thumbSpec": "U-07"},
+        {"slug": "hierarchy", "title": "Inspect a CA and its hierarchy", "summary": "Read a CA's details and see the whole chain at a glance.", "specs": ["U-07"]},
+        {"slug": "guarded-operations", "title": "Suspend, re-key or revoke a CA", "summary": "Change a CA's state through guarded actions that show what they affect.", "specs": ["U-08"], "steps": {"U-08": [1, 2, 3, 4, 6, 7, 8, 11, 12, 13, 14, 15, 17]}},
+        {"slug": "key-ceremony", "title": "Run a root key ceremony (M-of-N)", "summary": "One person starts a ceremony and two approvers complete the quorum.", "specs": ["U-09", "U-09b", "U-09c"], "steps": {"U-09": [1, 2, 3, 8, 9]}, "thumbSpec": "U-09"}
+      ]
+    },
+    {
+      "id": "windows-active-directory",
+      "band": "issue",
+      "cover": {"spec": "U-10"},
+      "title": "Windows and Active Directory",
+      "tagline": "Autoenrollment for domain machines and users, without an ADCS server.",
+      "intro": "Kryptkeeper serves MS-XCEP and MS-WSTEP natively, so domain-joined Windows machines and users enroll through Group Policy with Kerberos, exactly as they did with ADCS. Templates say whether they are offered to machines or users, ADCS templates can be imported, and a Windows agent and WinRM scanning cover the machine stores.",
+      "docs": [
+        {"title": "Replace ADCS with Kryptkeeper", "path": "docs/guides/replace-adcs.md"},
+        {"title": "GPO autoenrollment runbook", "path": "docs/ops/WSTEP_AUTOENROLLMENT.md"},
+        {"title": "Windows agent", "path": "docs/ops/WINDOWS_AGENT.md"},
+        {"title": "Enable WinRM for agentless Windows", "path": "docs/ops/WINRM_ENABLEMENT.md"},
+        {"title": "Intune BYOCA", "path": "docs/guides/intune-byoca.md"}
+      ],
+      "points": [
+        {"title": "Group Policy autoenrollment", "text": "Point the domain's enrollment policy at Kryptkeeper. Machines and users authenticate with Kerberos and enroll and renew on their own. Proven on Windows 11 and Server 2022."},
+        {"title": "Templates for machines or users", "text": "Each template says whether Windows offers it to computer accounts or to users, and which groups may enroll."},
+        {"title": "Move off ADCS gradually", "text": "Import your ADCS templates, run both CAs side by side, and let old certificates expire naturally."}
+      ],
+      "pending": "Screens from the Windows side (the Group Policy setup, a client enrolling, the certificate in certlm.msc) are being captured on the lab domain and will be added here.",
+      "walkthroughs": [
+        {"slug": "issuing-ca-for-the-domain", "title": "Create the issuing CA for the domain", "summary": "Create the intermediate CA that will sign your domain certificates.", "specs": ["U-05"]},
+        {"slug": "machine-user-templates", "title": "Create a certificate template", "summary": "Name the template, set its lifetime, key usage and algorithms, then create it.", "specs": ["U-10"], "steps": {"U-10": [1, 2, 3, 5, 6, 7, 10, 11]}},
+        {"slug": "import-adcs-templates", "title": "Import templates from ADCS", "summary": "Bring your existing ADCS templates across instead of rebuilding them.", "specs": ["U-52"]},
+        {"slug": "windows-agent", "title": "Enroll an agent on a server", "summary": "Name the agent, choose its host type, generate an enrollment token and find the install steps.", "specs": ["U-29"]},
+        {"slug": "scan-windows-stores", "title": "Scan for certificates in use", "summary": "Scan a host or range for the TLS certificates its services present, then read the results.", "specs": ["U-25"]}
+      ]
+    },
+    {
+      "id": "linux-macos-hosts",
+      "band": "issue",
+      "cover": {"spec": "U-29"},
+      "title": "Linux and macOS hosts",
+      "tagline": "Certificates that land on the host and renew themselves.",
+      "intro": "Run the lightweight agent on Linux and macOS, or manage hardened hosts agentlessly over SSH. Renewal policy is set per target, rollouts go canary first, and anything that fails lands in one queue.",
+      "docs": [
+        {"title": "Agentless on hardened Linux", "path": "docs/guides/agentless-hardened-linux.md"},
+        {"title": "macOS agent", "path": "docs/ops/MACOS_AGENT.md"}
+      ],
+      "pending": "Screens from the host side (installing the agent, the certificate landing on disk and the service reloading) are being captured on the lab hosts and will be added here.",
+      "walkthroughs": [
+        {"slug": "enroll-agent", "title": "Enroll an agent", "summary": "Enroll a Linux or macOS host so it can receive and renew certificates.", "specs": ["U-29"]},
+        {"slug": "agentless-ssh", "title": "Manage a host without an agent", "summary": "Add a host as an agentless target and see what the wizard still needs before it can finish.", "specs": ["U-30"]},
+        {"slug": "renewal-policy", "title": "Set renewal policy per target", "summary": "Choose a target's renewal method and threshold, set a group threshold, and clear an override.", "specs": ["U-31"]},
+        {"slug": "ssh-certificates", "title": "Issue SSH host and user certificates", "summary": "Replace long-lived SSH keys with short-lived signed certificates.", "specs": ["U-46"]}
+      ]
+    },
+    {
+      "id": "templates-policy",
+      "band": "setup",
+      "cover": {"spec": "U-42"},
+      "title": "Templates and policy",
+      "tagline": "Decide once what a certificate may look like, then let people self-serve.",
+      "intro": "Templates fix key types, lifetimes and approvals. Issuance policies add rules on top, can be drafted from plain English, and can be dry-run against a request before they go live.",
+      "docs": [{"title": "Templates by protocol", "path": "docs/ops/TEMPLATES_BY_PROTOCOL.md"}],
+      "walkthroughs": [
+        {"slug": "create-template", "title": "Create a certificate template", "summary": "Set the key, lifetime, usage and approval rules for a kind of certificate.", "specs": ["U-10"], "steps": {"U-10": [1, 2, 3, 5, 6, 7, 10, 11]}},
+        {"slug": "template-revisions", "title": "Edit a template", "summary": "Open a template, change its validity period and save the change.", "specs": ["U-11"]},
+        {"slug": "policy-from-plain-english", "title": "Draft a policy from plain English", "summary": "Describe a rule in a sentence and review the policy it produces.", "specs": ["U-12"]},
+        {"slug": "dry-run-policy", "title": "Create a policy and dry-run a request", "summary": "Test a policy against a request before it can block anyone.", "specs": ["U-42"]}
+      ]
+    },
+    {
+      "id": "issuing-certificates",
+      "band": "issue",
+      "cover": {"spec": "U-16"},
+      "title": "Issuing certificates",
+      "tagline": "A guided wizard for people, an approval step when it matters.",
+      "intro": "Issue from your own CSR or let the wizard generate the key locally. Templates that need approval route the request to a second person, and the requester can track it to the end.",
+      "walkthroughs": [
+        {"slug": "wizard-own-csr", "title": "Issue with your own CSR", "summary": "Walk through the guided wizard with a CSR you generated.", "specs": ["U-13"], "steps": {"U-13": [1, 2, 3, 5, 7, 8, 11, 13, 15]}},
+        {"slug": "wizard-generated-key", "title": "Issue with a generated key", "summary": "Let the wizard give you the openssl command so the key never leaves your machine.", "specs": ["U-14"]},
+        {"slug": "request-approval", "title": "Request a certificate that needs approval", "summary": "Submit a request, watch it wait for approval, then collect the certificate.", "specs": ["U-15", "U-15b"], "steps": {"U-15": [1, 2, 4, 6, 7, 10, 12, 13], "U-15b": [1]}},
+        {"slug": "browse-inspect", "title": "Browse and inspect certificates", "summary": "Filter the inventory and open any certificate's details.", "specs": ["U-16"], "steps": {"U-16": [1, 2, 3, 4, 6, 7, 9, 10, 11]}},
+        {"slug": "export-csv", "title": "Export the inventory as CSV", "summary": "Download the filtered inventory for a spreadsheet or another tool.", "specs": ["U-24"]}
+      ]
+    },
+    {
+      "id": "approvals-guardrails",
+      "band": "govern",
+      "cover": {"spec": "U-17"},
+      "title": "Approvals and guardrails",
+      "tagline": "Sensitive changes need a second person, and show their impact first.",
+      "intro": "Requests, policies and exceptions can require a second approver. Before anything destructive, Kryptkeeper shows the blast radius: what will break and who owns it.",
+      "walkthroughs": [
+        {"slug": "approve-request", "title": "Approve a pending request", "summary": "A second person reviews and approves a certificate request.", "specs": ["U-17"]},
+        {"slug": "approver-role", "title": "Decide requests with the approver role", "summary": "A dedicated approver decides requests on the templates that name them.", "specs": ["U-19x"]},
+        {"slug": "reject-request", "title": "Reject a request", "summary": "Turn a request down with a reason the requester can read.", "specs": ["U-18"]},
+        {"slug": "approve-policy", "title": "Approve a policy or exception", "summary": "Approve a proposed policy change or risk exception before it takes effect.", "specs": ["U-19"]},
+        {"slug": "blast-radius", "title": "Check the blast radius first", "summary": "See every certificate and service a destructive change would affect.", "specs": ["U-45"]}
+      ]
+    },
+    {
+      "id": "lifecycle",
+      "band": "issue",
+      "cover": {"spec": "U-22"},
+      "title": "Renewal and revocation",
+      "tagline": "Own every certificate, renew in bulk, revoke in one step.",
+      "intro": "Take ownership of certificates nobody owned, import the ones you already have, and renew or revoke one at a time or in bulk. Revocation is published over OCSP and CRL.",
+      "walkthroughs": [
+        {"slug": "take-ownership", "title": "Take ownership of an unmanaged certificate", "summary": "Claim a discovered certificate, record who owns it, then take over several at once.", "specs": ["U-20"], "thumb": {"spec": "U-20", "n": 7}, "steps": {"U-20": [1, 2, 3, 4, 5, 6, 7, 11, 12, 13]}},
+        {"slug": "bulk-import", "title": "Bulk import existing certificates", "summary": "Import a batch of certificates you already have.", "specs": ["U-21"]},
+        {"slug": "renew", "title": "Renew certificates", "summary": "Renew a single certificate or a whole selection at once.", "specs": ["U-22"], "steps": {"U-22": [1, 4, 5, 6, 7, 8, 9, 10, 11, 12]}},
+        {"slug": "revoke", "title": "Revoke certificates", "summary": "Revoke one or many certificates with a reason.", "specs": ["U-23"], "steps": {"U-23": [1, 3, 4, 6, 7, 8, 9, 11, 12, 14]}}
+      ]
+    },
+    {
+      "id": "discovery-inventory",
+      "band": "see",
+      "cover": {"spec": "U-25"},
+      "title": "Discovery and inventory",
+      "tagline": "Find the certificates you didn't know about.",
+      "intro": "Scan your network, pull inventory from other CAs, and watch Certificate Transparency logs for certificates issued in your name. Risky endpoints are flagged and can be accepted as risk with approval.",
+      "docs": [{"title": "Day-one estate", "path": "docs/guides/day-one-estate.md"}],
+      "walkthroughs": [
+        {"slug": "run-scan", "title": "Run a discovery scan", "summary": "Scan a range and read what was found.", "specs": ["U-25"]},
+        {"slug": "discovery-sources", "title": "Add discovery sources", "summary": "Tell discovery which clusters, endpoints, domains and cloud accounts to watch.", "specs": ["U-58"]},
+        {"slug": "inspect-endpoint", "title": "Inspect an endpoint and accept a risk", "summary": "Open a risky endpoint and propose a risk exception for approval.", "specs": ["U-26", "U-26b"]},
+        {"slug": "sync-other-ca", "title": "Sync certificates from another CA", "summary": "Pull the inventory of another CA into one view.", "specs": ["U-51"]},
+        {"slug": "certificate-transparency", "title": "Monitor Certificate Transparency", "summary": "See certificates issued for your domains by anyone.", "specs": ["U-53"]},
+        {"slug": "anomalies", "title": "Review issuance anomalies", "summary": "Spot unusual issuance once the scheduled scan has run.", "specs": ["U-54", "U-54b"], "thumbSpec": "U-54"}
+      ]
+    },
+    {
+      "id": "automation-enrollment",
+      "band": "issue",
+      "cover": {"spec": "U-27"},
+      "title": "Automation and enrollment",
+      "tagline": "Speaks the protocols your clients already use.",
+      "intro": "Servers renew over ACME, devices enroll over SCEP, EST or CMP, and agents or agentless targets install certificates where they are used. Rollouts go to a canary first, and failures wait in one queue.",
+      "docs": [
+        {"title": "SCEP", "path": "docs/ops/SCEP.md"},
+        {"title": "EST authentication", "path": "docs/ops/EST_AUTH.md"},
+        {"title": "ACME upstream", "path": "docs/ops/ACME_UPSTREAM.md"}
+      ],
+      "walkthroughs": [
+        {"slug": "acme", "title": "Set up ACME for a server", "summary": "Create a provisioner and EAB key, then point an ACME client at it.", "specs": ["U-27"], "thumb": {"spec": "U-27", "n": 9}, "steps": {"U-27": [1, 3, 4, 8, 9, 10, 11, 12, 13, 14]}},
+        {"slug": "scep-est-cmp", "title": "Enroll devices with SCEP, EST or CMP", "summary": "Set up EST and CMP enrollment, then create a SCEP challenge for a device.", "specs": ["U-28", "U-28b"], "thumb": {"spec": "U-28", "n": 12}, "steps": {"U-28": [1, 2, 3, 5, 6, 8, 9, 11, 12], "U-28b": [1, 3, 6]}},
+        {"slug": "agent", "title": "Enroll a satellite agent", "summary": "Enroll an agent that installs certificates on its host.", "specs": ["U-29"]},
+        {"slug": "agentless", "title": "Add an agentless target", "summary": "Start adding an SSH or WinRM target with nothing installed and see what the wizard needs before it can finish.", "specs": ["U-30"]},
+        {"slug": "canary-rollout", "title": "Create a rollout group for a cluster", "summary": "Group a cluster's nodes, set a rollout window and save the group.", "specs": ["U-32"]},
+        {"slug": "failed-renewals", "title": "Watch the failed-renewal queue", "summary": "See every renewal that needs a person, in one place.", "specs": ["U-33"]}
+      ]
+    },
+    {
+      "id": "alerts-notifications",
+      "band": "see",
+      "cover": {"spec": "U-36"},
+      "title": "Alerts and notifications",
+      "tagline": "Hear about expiry before your users do.",
+      "intro": "Send alerts to email, Slack, webhooks or PagerDuty, build rules for what matters, and open tickets in Jira or ServiceNow.",
+      "walkthroughs": [
+        {"slug": "channels", "title": "Configure notification channels", "summary": "Set up email delivery and a webhook, then send a test message.", "specs": ["U-35"], "steps": {"U-35": [1, 2, 3, 4, 5, 6, 7, 11, 12, 13]}},
+        {"slug": "alert-rules", "title": "Send a test delivery and build alert rules", "summary": "Send a test delivery, open its detail, then write an alert rule.", "specs": ["U-36"], "steps": {"U-36": [1, 2, 3, 4, 5, 8, 9, 10, 12, 13]}},
+        {"slug": "itsm", "title": "Connect Jira or ServiceNow", "summary": "Choose Jira or ServiceNow and enter the connection details for ticket-based alerts.", "specs": ["U-37"]}
+      ]
+    },
+    {
+      "id": "build-your-own",
+      "band": "govern",
+      "cover": {"spec": "U-58b"},
+      "title": "Build your own integrations",
+      "tagline": "Plugins, an API and SDKs, so Kryptkeeper fits your stack.",
+      "intro": "If Kryptkeeper doesn't support a device yet, write a delivery plugin for it. Plugins are WebAssembly modules that run sandboxed in the hub, declare exactly what they may touch, and are signed so you can tell first-party, verified and community plugins apart. Everything in the console is also available over a documented REST API, with SDKs, a Terraform provider and an MCP server.",
+      "docs": [
+        {"title": "Write a delivery plugin", "path": "docs/plugins/README.md"},
+        {"title": "Plugin design and sandbox rules", "path": "docs/design/DELIVERY_PLUGINS.md"},
+        {"title": "Operate delivery plugins", "path": "docs/ops/DELIVERY_PLUGINS.md"},
+        {"title": "Example plugin", "path": "plugins/example", "tree": true},
+        {"title": "Plugin SDK (Go)", "path": "sdk/delivery-go", "tree": true},
+        {"title": "REST API (OpenAPI)", "path": "docs/openapi.yaml"},
+        {"title": "MCP server", "path": "docs/guides/mcp-server.md"}
+      ],
+      "points": [
+        {"title": "Write a plugin in three functions", "text": "Start from the example plugin and implement Validate, Push and Rollback. The hub checks what the device actually serves, so a plugin cannot claim success it didn't earn."},
+        {"title": "Sandboxed and least privilege", "text": "A manifest declares whether the plugin receives private keys and which hosts it may reach. The hub refuses anything undeclared, and new plugins start disabled."},
+        {"title": "Signed and tiered", "text": "Plugins signed with the Kryptkeeper key are first-party, plugins signed by a publisher you trust are verified, and unsigned ones are community."},
+        {"title": "First-party plugins to copy", "text": "AWS (ACM, ALB, CloudFront), Azure (Key Vault, App Gateway, Front Door), HashiCorp Vault, cloud secret managers, Cloudflare, F5 and Citrix ship as plugins built on the same SDK."},
+        {"title": "API, SDKs and Terraform", "text": "Go, Python and TypeScript SDKs, a Terraform provider and an MCP server sit on the same REST API the console uses."},
+        {"title": "Events out", "text": "Webhooks, ITSM tickets and SIEM forwarding (CEF) carry every alert and security event to your own tools."}
+      ],
+      "walkthroughs": [
+        {"slug": "install-plugin", "title": "Install a delivery plugin", "summary": "Open the delivery plugin page and start installing a signed plugin.", "specs": ["U-34"]},
+        {"slug": "webhooks", "title": "Point events at a webhook", "summary": "Set the webhook URL Kryptkeeper posts every alert and event to.", "specs": ["U-35"], "steps": {"U-35": [1, 8, 9]}, "thumbSpec": "U-36"},
+        {"slug": "siem", "title": "Forward security events to a SIEM", "summary": "Point audit and security events at your SIEM webhook and send a test event.", "specs": ["U-58b"]}
+      ]
+    },
+    {
+      "id": "access-tenancy",
+      "band": "govern",
+      "cover": {"spec": "U-39"},
+      "title": "Access and tenancy",
+      "tagline": "Least privilege, reviewed on a schedule.",
+      "intro": "Invite people with built-in roles, build custom roles with only the permissions they need, run periodic access reviews, and separate teams or customers with tenants.",
+      "walkthroughs": [
+        {"slug": "invite-user", "title": "Invite a user and assign a role", "summary": "Invite someone and give them a built-in role.", "specs": ["U-38"], "thumb": {"spec": "U-38", "n": 5}},
+        {"slug": "custom-role", "title": "Create a least-privilege role", "summary": "Build a role with only the permissions a job needs.", "specs": ["U-39"], "thumb": {"spec": "U-39", "n": 8}, "steps": {"U-39": [1, 2, 3, 4, 5, 6, 7, 8, 12]}},
+        {"slug": "access-review", "title": "Run an access review", "summary": "Confirm or remove each person's access on a schedule.", "specs": ["U-40"]},
+        {"slug": "tenants", "title": "Turn on multi-tenancy", "summary": "Enable tenants and manage them as a platform admin.", "specs": ["U-41", "U-41b"]}
+      ]
+    },
+    {
+      "id": "machine-identity",
+      "band": "govern",
+      "cover": {"spec": "U-43"},
+      "title": "Machine and workload identity",
+      "tagline": "Identities for workloads, SSH and code signing in the same place.",
+      "intro": "Approve machine identities before they exist, issue SPIFFE SVIDs to workloads, sign SSH certificates, and keep code-signing certificates in their own inventory.",
+      "docs": [{"title": "SPIFFE", "path": "docs/guides/spiffe.md"}],
+      "walkthroughs": [
+        {"slug": "machine-identity", "title": "Propose and approve a machine identity", "summary": "One person proposes a machine identity and another approves it.", "specs": ["U-43", "U-43b"], "thumb": {"spec": "U-43b", "n": 1}},
+        {"slug": "spiffe", "title": "Issue SPIFFE SVIDs", "summary": "Issue workload identities from a signing CA.", "specs": ["U-44", "U-44b"], "thumb": {"spec": "U-44b", "n": 1}},
+        {"slug": "ssh", "title": "Issue SSH certificates", "summary": "Sign SSH user and host certificates.", "specs": ["U-46"]},
+        {"slug": "code-signing", "title": "Use the code-signing inventory", "summary": "Track code-signing certificates and who may use them.", "specs": ["U-47a", "U-47"]}
+      ]
+    },
+    {
+      "id": "keys-kms",
+      "band": "setup",
+      "cover": {"spec": "U-48"},
+      "title": "Keys and KMS",
+      "tagline": "Keys in software, HSM or cloud KMS, with dual control for the root.",
+      "intro": "Generate, back up, import and rotate keys. Root keys can be escrowed and recovered only under dual control, and cloud KMS keys show up in one inventory.",
+      "docs": [
+        {"title": "Key rotation", "path": "docs/ops/KEY_ROTATION.md"},
+        {"title": "Cloud KMS", "path": "docs/ops/CLOUD_KMS.md"}
+      ],
+      "walkthroughs": [
+        {"slug": "manage-keys", "title": "Generate, back up and rotate keys", "summary": "Run the key lifecycle from the console.", "specs": ["U-48"], "steps": {"U-48": [1, 2, 3, 4, 5, 6, 8, 10, 11]}},
+        {"slug": "escrow-recover", "title": "Escrow and recover a root key", "summary": "Open the escrow, recover and BYOK-export actions for a root key, which need two people to complete.", "specs": ["U-49"]},
+        {"slug": "cloud-kms", "title": "Review cloud KMS keys", "summary": "See the keys held in your cloud KMS.", "specs": ["U-50"]}
+      ]
+    },
+    {
+      "id": "compliance-risk",
+      "band": "see",
+      "cover": {"spec": "U-55"},
+      "title": "Compliance, risk and post-quantum",
+      "tagline": "Evidence for auditors, and a plan for post-quantum.",
+      "intro": "Risk reports show weak keys, expiring chains and post-quantum readiness. Evidence packs and a CBOM can be produced on demand or delivered on a schedule, and every change is in the audit trail.",
+      "docs": [{"title": "Issue a post-quantum certificate", "path": "docs/guides/pqc-certificate.md"}],
+      "walkthroughs": [
+        {"slug": "risk-reports", "title": "Read the risk and post-quantum reports", "summary": "See crypto posture, weak keys and post-quantum migration progress.", "specs": ["U-55"]},
+        {"slug": "evidence", "title": "Produce compliance evidence", "summary": "Build an evidence pack or CBOM, or schedule it.", "specs": ["U-56"]},
+        {"slug": "audit-trail", "title": "Investigate with the audit trail", "summary": "Follow who changed what, and when.", "specs": ["U-57"], "thumbSpec": "U-40"}
+      ]
+    }
+  ],
+  "paths": [
+    {
+      "id": "stand-up-pki",
+      "title": "Stand up your own PKI",
+      "role": "PKI administrator",
+      "intro": "From an empty install to a root, an issuing CA, templates and the first certificate.",
+      "steps": ["certificate-authorities/create-root", "certificate-authorities/create-issuing-ca", "certificate-authorities/key-ceremony", "templates-policy/create-template", "templates-policy/dry-run-policy", "issuing-certificates/wizard-own-csr", "access-tenancy/invite-user"]
+    },
+    {
+      "id": "replace-adcs",
+      "title": "Replace ADCS for your Windows domain",
+      "role": "Windows and AD administrator",
+      "intro": "Keep Group Policy autoenrollment and move the CA behind it to Kryptkeeper.",
+      "steps": ["certificate-authorities/import-root", "windows-active-directory/issuing-ca-for-the-domain", "windows-active-directory/import-adcs-templates", "windows-active-directory/machine-user-templates", "windows-active-directory/scan-windows-stores", "windows-active-directory/windows-agent"]
+    },
+    {
+      "id": "automate-renewal",
+      "title": "Automate renewal for servers and devices",
+      "role": "Platform and DevOps engineer",
+      "intro": "Get certificates renewing and installing themselves, and hear about it only when one can't.",
+      "steps": ["automation-enrollment/acme", "automation-enrollment/scep-est-cmp", "automation-enrollment/agent", "linux-macos-hosts/agentless-ssh", "linux-macos-hosts/renewal-policy", "automation-enrollment/canary-rollout", "automation-enrollment/failed-renewals", "alerts-notifications/channels"]
+    },
+    {
+      "id": "take-over-estate",
+      "title": "Take over an existing estate",
+      "role": "Security lead",
+      "intro": "Find what you already have, give every certificate an owner, and bring it under renewal.",
+      "steps": ["discovery-inventory/run-scan", "discovery-inventory/inspect-endpoint", "lifecycle/take-ownership", "lifecycle/bulk-import", "discovery-inventory/sync-other-ca", "windows-active-directory/import-adcs-templates", "lifecycle/renew"]
+    },
+    {
+      "id": "govern-prove",
+      "title": "Govern it and prove it",
+      "role": "Security and audit",
+      "intro": "Least privilege, a second person on sensitive changes, and evidence an auditor will accept.",
+      "steps": ["access-tenancy/custom-role", "approvals-guardrails/approve-request", "approvals-guardrails/blast-radius", "access-tenancy/access-review", "compliance-risk/risk-reports", "compliance-risk/evidence", "compliance-risk/audit-trail"]
+    },
+    {
+      "id": "machine-identity",
+      "title": "Machine and workload identity",
+      "role": "Platform engineer",
+      "intro": "Identities for workloads, SSH and code signing, approved before they exist.",
+      "steps": ["machine-identity/machine-identity", "machine-identity/spiffe", "machine-identity/ssh", "machine-identity/code-signing"]
+    },
+    {
+      "id": "extend",
+      "title": "Integrate with your own tools",
+      "role": "Developer and integrator",
+      "intro": "Write a plugin for a device we don't support, and send every event to the tools you already run.",
+      "steps": ["build-your-own/install-plugin", "build-your-own/webhooks", "alerts-notifications/itsm", "build-your-own/siem"]
+    }
+  ],
+  "unlisted": {
+    "U-60": "Empty, error and not-found states: a QA story, not a task anyone sets out to do."
+  }
+}

@@ -1,0 +1,163 @@
+---
+# Run through tests/integration/run.sh (it provides the variables and the token env var).
+- name: kryptkeeper.pki.certificate against a live hub
+  hosts: localhost
+  gather_facts: false
+  vars:
+    cert: "{{ work }}/leaf.pem"
+    common: &common
+      hub_url: "{{ hub_url }}"
+  tasks:
+    - name: Issue
+      kryptkeeper.pki.certificate:
+        <<: *common
+        ca_id: "{{ ca_id }}"
+        template_id: "{{ template_id }}"
+        csr_path: "{{ csr_path }}"
+        path: "{{ cert }}"
+        mode: "0640"
+      register: issued
+    - name: Issue created the file and reported a fingerprint
+      ansible.builtin.assert:
+        that:
+          - issued is changed
+          - issued.action == 'issued'
+          - issued.fingerprint | length == 64
+
+    - name: Leaf and chain are in the file with the requested mode
+      ansible.builtin.stat:
+        path: "{{ cert }}"
+      register: st
+    - ansible.builtin.assert:
+        that: st.stat.exists and st.stat.mode == '0640'
+    - name: File holds more than one PEM block (leaf plus chain)
+      ansible.builtin.command: grep -c 'BEGIN CERTIFICATE' "{{ cert }}"
+      register: blocks
+      changed_when: false
+    - ansible.builtin.assert:
+        that: blocks.stdout | int >= 2
+
+    - name: Re-run is idempotent
+      kryptkeeper.pki.certificate:
+        <<: *common
+        ca_id: "{{ ca_id }}"
+        template_id: "{{ template_id }}"
+        csr_path: "{{ csr_path }}"
+        path: "{{ cert }}"
+        mode: "0640"
+      register: again
+    - ansible.builtin.assert:
+        that:
+          - again is not changed
+          - again.action == 'unchanged'
+          - again.fingerprint == issued.fingerprint
+
+    - name: Check mode inside the renewal window reports a change and writes nothing
+      kryptkeeper.pki.certificate:
+        <<: *common
+        ca_id: "{{ ca_id }}"
+        template_id: "{{ template_id }}"
+        csr_path: "{{ csr_path }}"
+        path: "{{ cert }}"
+        renew_before_days: 3650
+      check_mode: true
+      register: dry
+    - ansible.builtin.assert:
+        that: dry is changed
+    - ansible.builtin.stat:
+        path: "{{ cert }}"
+        checksum_algorithm: sha256
+      register: st_before_renew
+
+    - name: Renew (renew_before_days larger than the validity)
+      kryptkeeper.pki.certificate:
+        <<: *common
+        ca_id: "{{ ca_id }}"
+        template_id: "{{ template_id }}"
+        csr_path: "{{ csr_path }}"
+        path: "{{ cert }}"
+        renew_before_days: 3650
+      register: renewed
+    - ansible.builtin.stat:
+        path: "{{ cert }}"
+        checksum_algorithm: sha256
+      register: st_after_renew
+    - ansible.builtin.assert:
+        that:
+          - renewed is changed
+          - renewed.action == 'renewed'
+          - renewed.fingerprint != issued.fingerprint
+          - st_after_renew.stat.checksum != st_before_renew.stat.checksum
+
+    - name: Old certificate is marked renewed, new one active
+      kryptkeeper.pki.certificate_info:
+        <<: *common
+        fingerprint: "{{ item }}"
+      loop: ["{{ issued.fingerprint }}", "{{ renewed.fingerprint }}"]
+      register: infos
+    - ansible.builtin.assert:
+        that:
+          - infos.results[0].certificates[0].renewal_status == 'renewed'
+          - infos.results[1].certificates[0].renewal_status == 'active'
+
+    - name: Look up by serial
+      kryptkeeper.pki.certificate_info:
+        <<: *common
+        serial: "{{ infos.results[1].certificates[0].serial_number }}"
+      register: by_serial
+    - ansible.builtin.assert:
+        that: by_serial.certificates | length == 1
+
+    - name: Revoke the certificate on disk, check mode first
+      kryptkeeper.pki.certificate:
+        <<: *common
+        state: absent
+        path: "{{ cert }}"
+        reason: cessation_of_operation
+      check_mode: true
+      register: revoke_dry
+    - ansible.builtin.assert:
+        that: revoke_dry is changed
+
+    - name: Revoke
+      kryptkeeper.pki.certificate:
+        <<: *common
+        state: absent
+        path: "{{ cert }}"
+        reason: cessation_of_operation
+      register: revoked
+    - ansible.builtin.assert:
+        that:
+          - revoked is changed
+          - revoked.fingerprint == renewed.fingerprint
+          - revoked.revocation_scope == 'ca'
+
+    - name: Revoking again is a no-op
+      kryptkeeper.pki.certificate:
+        <<: *common
+        state: absent
+        path: "{{ cert }}"
+      register: revoked_again
+    - ansible.builtin.assert:
+        that: revoked_again is not changed
+
+    - name: Hub agrees
+      kryptkeeper.pki.certificate_info:
+        <<: *common
+        fingerprint: "{{ renewed.fingerprint }}"
+      register: final
+    - ansible.builtin.assert:
+        that: final.certificates[0].renewal_status == 'revoked'
+
+    - name: A wrong token surfaces the hub's own error and does not leak the token
+      kryptkeeper.pki.certificate_info:
+        <<: *common
+        token: not-a-real-token-sentinel
+        fingerprint: "{{ renewed.fingerprint }}"
+      register: bad
+      ignore_errors: true
+    - ansible.builtin.assert:
+        that:
+          - bad is failed
+          - "'HTTP 401' in bad.msg"
+          - "'not-a-real-token-sentinel' not in (bad | to_json)"

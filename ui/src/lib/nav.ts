@@ -123,6 +123,7 @@ export const navSections: NavSection[] = [
     // Groups) together pushed it past the 8-item scan limit.
     label: "Connect",
     items: [
+      { to: "/issuers", label: "Issuers", icon: Plug },
       { to: "/acme", label: "ACME", icon: Plug, permission: canManageUsers },
       { to: "/enrollment", label: "Enrollment Protocols", icon: Plug, permission: canManageEnrollment },
       {

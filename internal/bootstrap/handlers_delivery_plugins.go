@@ -53,7 +53,7 @@ func registerDeliveryPluginHandlers(mux *http.ServeMux, auth *Authenticator, mgr
 			writeNotFound(w, err.Error())
 		case errors.Is(err, errPluginVersionExists), errors.Is(err, errPluginInUse):
 			writeConflict(w, err.Error())
-		case errors.Is(err, delivery.ErrHashMismatch), errors.Is(err, delivery.ErrGrantExceedsManifest), strings.HasPrefix(err.Error(), "manifest:"),
+		case errors.Is(err, delivery.ErrHashMismatch), errors.Is(err, delivery.ErrGrantExceedsManifest), errors.Is(err, delivery.ErrKindNotRunnable), strings.HasPrefix(err.Error(), "manifest:"),
 			errors.Is(err, errPluginSignature), strings.HasPrefix(err.Error(), "plugin signature:"),
 			strings.HasPrefix(err.Error(), "compile plugin"), strings.Contains(err.Error(), "does not export"):
 			writeBadRequest(w, err.Error())
@@ -208,7 +208,7 @@ func registerDeliveryPluginHandlers(mux *http.ServeMux, auth *Authenticator, mgr
 }
 
 func pluginAuditDetail(v DeliveryPluginVersion) string {
-	d := fmt.Sprintf("version=%s sha256=%s capabilities=%s trust=%s", v.Version, v.SHA256, v.CapabilityTier, v.Tier)
+	d := fmt.Sprintf("kind=%s version=%s sha256=%s capabilities=%s trust=%s", v.Kind, v.Version, v.SHA256, v.CapabilityTier, v.Tier)
 	if v.SignerKeyID != "" {
 		d += " signer=" + v.SignerKeyID
 	}

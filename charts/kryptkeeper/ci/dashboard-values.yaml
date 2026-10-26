@@ -4,7 +4,7 @@ secrets:
 dashboard:
   enabled: true
   hubCA:
-    existingSecret: kryptkeeper-ca
+    existingSecret: lab-hub-ca
 ingress:
   enabled: true
   hosts:

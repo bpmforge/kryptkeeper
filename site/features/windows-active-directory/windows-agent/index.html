@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Enroll an agent on a server · Windows and Active Directory · Kryptkeeper</title>
+<meta name="description" content="Name the agent, choose its host type, generate an enrollment token and find the install steps.">
+<meta property="og:title" content="Enroll an agent on a server · Windows and Active Directory · Kryptkeeper">
+<meta property="og:description" content="Name the agent, choose its host type, generate an enrollment token and find the install steps.">
+<meta property="og:url" content="https://kryptkeeper.io/features/windows-active-directory/windows-agent/">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://kryptkeeper.io/features/windows-active-directory/windows-agent/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<div class="crumb-row"><nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/features/">Features</a></li><li><a href="/features/windows-active-directory/">Windows and Active Directory</a></li><li aria-current="page">Enroll an agent on a server</li></ol></nav></div>
+<header class="page-head">
+  <span class="label">Walkthrough · 7 steps</span>
+  <h1>Enroll an agent on a server</h1>
+  <p class="lede">Name the agent, choose its host type, generate an enrollment token and find the install steps.</p>
+  <p class="as">As <span class="pill role">pki-admin</span></p>
+</header>
+<ol class="steps">
+  <li class="step"><div class="step-head"><span class="label">Step <b>1</b></span><p>Open /targets/setup</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-29/01-target-setup-agent-card.webp"><img src="/shots/U-29/01-target-setup-agent-card.webp" width="1440" height="900" alt="Open /targets/setup" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>2</b></span><p>Fill <strong>Agent name</strong> with &quot;web-02.acme.test&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-29/02-Agent name.webp"><img src="/shots/U-29/02-Agent name.webp" width="1440" height="900" alt="Fill Agent name with &quot;web-02.acme.test&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>3</b></span><p>Select &quot;Linux&quot; in <strong>Host type</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-29/03-Host type.webp"><img src="/shots/U-29/03-Host type.webp" width="1440" height="900" alt="Select &quot;Linux&quot; in Host type" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>4</b></span><p>Click <strong>Generate token</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-29/04-token-generated-once.webp"><img src="/shots/U-29/04-token-generated-once.webp" width="1440" height="900" alt="Click Generate token" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>5</b></span><p>Locate <strong>Revoke token datacenter-a</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-29/05-unused-tokens.webp"><img src="/shots/U-29/05-unused-tokens.webp" width="1440" height="900" alt="Locate Revoke token datacenter-a" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>6</b></span><p>Open /agents</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-29/06-agents-list.webp"><img src="/shots/U-29/06-agents-list.webp" width="1440" height="900" alt="Open /agents" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>7</b></span><p>Locate <strong>Install an Agent</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-29/07-agent-install-quickstart.webp"><img src="/shots/U-29/07-agent-install-quickstart.webp" width="1440" height="900" alt="Locate Install an Agent" loading="lazy" decoding="async"></a></figure></li>
+</ol>
+<aside class="path-box" aria-labelledby="in-paths"><h2 id="in-paths">Part of these paths</h2><ul><li>Step 6 of 6 in <a href="/paths/replace-adcs/">Replace ADCS for your Windows domain</a>. <span class="muted">Last step.</span></li></ul></aside>
+<nav class="pager" aria-label="More in Windows and Active Directory"><a class="prev" href="/features/windows-active-directory/import-adcs-templates/"><span class="label">Previous</span>Import templates from ADCS</a><a class="next" href="/features/windows-active-directory/scan-windows-stores/"><span class="label">Next</span>Scan for certificates in use</a></nav>
+<aside class="path-box" aria-labelledby="hub-docs"><h2 id="hub-docs">Docs for Windows and Active Directory</h2><ul class="link-list"><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/guides/replace-adcs.md">Replace ADCS with Kryptkeeper</a></li><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/ops/WSTEP_AUTOENROLLMENT.md">GPO autoenrollment runbook</a></li><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/ops/WINDOWS_AGENT.md">Windows agent</a></li><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/ops/WINRM_ENABLEMENT.md">Enable WinRM for agentless Windows</a></li><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/guides/intune-byoca.md">Intune BYOCA</a></li></ul></aside>
+
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

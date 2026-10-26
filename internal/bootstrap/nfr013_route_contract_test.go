@@ -52,15 +52,24 @@ var nfr013KeyFields = map[string]bool{
 
 // File -> why it may mention a private-key encoding. Exact grep result today.
 var nfr013KeyEmitterFiles = map[string]string{
-	"internal/bootstrap/renewal_executor.go":         "generates, installs and zeroizes; never in a response",
-	"internal/bootstrap/spiffe_workload.go":          "gRPC workload API, not HTTP",
-	"internal/bootstrap/handlers_spiffe.go":          "known violation: /spiffe/svid key_pem (nfr013KnownViolations)",
-	"internal/bootstrap/connector_acme.go":           "ACME account key is an input",
-	"internal/bootstrap/handlers_tsa.go":             "reads the operator-provisioned TSA signing key from a file; never in a response",
-	"internal/bootstrap/handlers_bulk_import.go":     "rejects private keys",
-	"internal/bootstrap/connector_acme_dns01.go":     "names private_key only to reject it in config_json",
-	"internal/bootstrap/connector_acme_dns01_gcp.go": "reads a service-account key as a credential input; never emitted",
-	"cmd/kryptkeeper/tls.go":                         "listener certificate loading",
+	"internal/bootstrap/renewal_executor.go":            "generates, installs and zeroizes; never in a response",
+	"internal/bootstrap/inventory_source_ejbca.go":      "resolves the mTLS client key from the credential store for the TLS handshake only (D-307); never in a response",
+	"internal/bootstrap/inventory_source_entrust.go":    "resolves the mTLS client key from the credential store for the TLS handshake only (D-307); never in a response",
+	"internal/bootstrap/connector_upstream.go":          "resolves vendor mTLS client keys and service-account keys per call for the outbound client only, zeroized after use (D-307); never in a response",
+	"internal/bootstrap/connector_acme_revoke.go":       "loads the stored ACME account key to sign revokeCert (RFC 8555 §7.6); never in a response",
+	"internal/bootstrap/inventory_source_globalsign.go": "resolves the mTLS client key from the credential store for the TLS handshake only (D-307); never in a response",
+	"internal/bootstrap/pqc_wave_deliver.go":            "exports a PQC successor key for ssh install and zeroizes it; no route, never in a response",
+	"internal/bootstrap/spiffe_workload.go":             "gRPC workload API, not HTTP",
+	"internal/bootstrap/handlers_spiffe.go":             "known violation: /spiffe/svid key_pem (nfr013KnownViolations)",
+	"internal/bootstrap/connector_acme.go":              "ACME account key is an input",
+	"internal/bootstrap/handlers_tsa.go":                "reads the operator-provisioned TSA signing key from a file; never in a response",
+	"internal/bootstrap/handlers_bulk_import.go":        "rejects private keys",
+	"internal/bootstrap/handlers_scep_labels.go":        "only mentions private_key_pem in a message: a label names the Entra app credential by reference, and the handler never resolves, stores or returns it (the key is parsed in internal/intune to sign a token request, D-327)",
+	"internal/bootstrap/connector_acme_dns01.go":        "names private_key only to reject it in config_json",
+	"internal/bootstrap/connector_acme_dns01_gcp.go":    "reads a service-account key as a credential input; never emitted",
+	"internal/bootstrap/credential_external.go":         "fetches an external credential's secret from the source per use for the caller only, zeroized by the caller; the audit row and error text never carry it (D-324); never in a response",
+	"internal/bootstrap/credential_external_payload.go": "assembles an ssh_key payload from fields the secret manager returned and validates it; never in a response (D-324)",
+	"cmd/kryptkeeper/tls.go":                            "listener certificate loading",
 }
 
 type nfr013Route struct{ method, path string } // path: openapi template, no /api/v1 prefix

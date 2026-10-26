@@ -95,3 +95,32 @@ func TestAgilityRejectsBadDeadlineAndRequiresAuth(t *testing.T) {
 		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 }
+
+// W31F-04: every rejected request audits exactly one failure row.
+func TestAgilityValidationFailuresAudit(t *testing.T) {
+	cases := map[string]string{
+		"bad_json":     `{not json`,
+		"empty_policy": `{"name":"empty"}`,
+		"bad_deadline": `{"name":"x","algorithms":["RSA"],"deadline":"January 2030"}`,
+		"wrong_type":   `[]`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			audit := &memAuditProvider{}
+			mux := http.NewServeMux()
+			registerAgilityHandler(mux, newReportsTestAuth(t), &reportCertProvider{}, audit)
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, authedReq(http.MethodPost, "/api/v1/crypto-agility/roadmap", []byte(body)))
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d", rec.Code)
+			}
+			if len(audit.entries) != 1 {
+				t.Fatalf("expected exactly 1 audit row, got %d", len(audit.entries))
+			}
+			e := audit.entries[0]
+			if e.Action != "crypto_agility.roadmap" || e.Outcome != AuditOutcomeFailure || e.ChangeSummary == "" {
+				t.Fatalf("unexpected audit row: %+v", e)
+			}
+		})
+	}
+}

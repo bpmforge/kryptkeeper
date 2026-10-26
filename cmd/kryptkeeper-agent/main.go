@@ -28,6 +28,11 @@
 // Flags:
 //
 //	--generate-systemd   Print a systemd unit file to stdout and exit
+//	--generate-sudoers   Print the sudoers drop-in
+//	--generate-trust-store-sudoers  Print the separate, opt-in sudoers drop-in for trust store push
+//	--trust-store-apply  Root half of trust store push (reached only through sudo; see docs/ops/TRUST_STORE_PUSH.md)
+//
+// Trust store push (W40-03) is off unless KRYPTKEEPER_TRUST_STORE_PUSH=true.
 package main
 
 import (
@@ -81,6 +86,11 @@ func main() {
 			}
 			fmt.Print(out)
 			os.Exit(0)
+		case "--generate-trust-store-sudoers":
+			fmt.Print(trustStoreSudoers("kryptkeeper-agent"))
+			os.Exit(0)
+		case "--trust-store-apply":
+			os.Exit(runTrustStoreHelper(os.Stdin, os.Stdout, newTrustApplier(runtime.GOOS)))
 		case "--version":
 			fmt.Printf("kryptkeeper-agent %s (commit %s, built %s)\n", version, commit, date)
 			os.Exit(0)
@@ -226,8 +236,13 @@ func run(ctx context.Context) {
 	logging.Infof("agent %s starting; hub=%s poll=%s", client.AgentID, hubURL, pollInterval)
 
 	guard := newRenewGuard()
+	guard.enableHTTP01Preflight(runtime.GOOS, webRoot)
+	trust := newTrustPusher(trustStorePushEnabled(os.Getenv), newTrustApplier(runtime.GOOS))
 	for {
 		runCycle(client, guard, disc, scanPaths, configPaths, webRoot, hubRootCAs)
+		tctx, tcancel := context.WithTimeout(ctx, 5*time.Minute)
+		trust.poll(tctx, client)
+		tcancel()
 		select {
 		case <-ctx.Done():
 			return
@@ -585,6 +600,9 @@ Environment=KRYPTKEEPER_AGENT_TOKEN=<token-from-registration>
 # install + web-server reload), set this to false AND install the sudoers
 # drop-in (kryptkeeper-agent --generate-sudoers). Leave true for
 # discovery+renew-only operation.
+# Trust store push (KRYPTKEEPER_TRUST_STORE_PUSH=true) also needs
+# NoNewPrivileges=false, the --generate-trust-store-sudoers drop-in, and
+# ReadWritePaths for the anchor directory it writes (docs/ops/TRUST_STORE_PUSH.md).
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only

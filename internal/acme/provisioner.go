@@ -77,11 +77,11 @@ func ValidateProvisioner(p Provisioner) error {
 	}
 	for _, c := range p.Challenges {
 		switch c {
-		case "http-01", "dns-01":
+		case "http-01", "dns-01", challengeDeviceAttest:
 		case "tls-alpn-01":
 			return errors.New(`challenge "tls-alpn-01" is not supported`)
 		default:
-			return fmt.Errorf("challenge %q is not supported; use http-01 or dns-01", c)
+			return fmt.Errorf("challenge %q is not supported; use http-01, dns-01 or device-attest-01", c)
 		}
 	}
 	return nil

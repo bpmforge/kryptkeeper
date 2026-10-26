@@ -110,6 +110,17 @@ closes the "direct-CA import" hole inside Tier-1 capability #1 of the competitiv
 
 Scope recorded (D-106): KMIP deferred until customer pull; PGP/OpenPGP out of scope.
 
+## CA choice (1.1, W36)
+
+| ID | Tier | Requirement | Acceptance sketch | Traces | Status |
+|---|---|---|---|---|---|
+| FR-P93 | T1 | **External CA behind every front door**: a CA row of type external delegates signing to an issuer connector; REST, ACME, EST, SCEP, CMP, WSTEP, cert-manager and Terraform issue through it with hub template policy enforced first | an ACME order against an external CA returns a certificate issued by the upstream; a response whose key, SANs, CA flag or validity differs from the request is rejected and audited | D-304, D-305 | planned (W36-02) |
+| FR-P94 | T1 | **Upstream revocation**: revoking a certificate issued through a revoke-capable connector revokes it at the upstream CA first and fails loudly when the upstream refuses | upstream success gives revocation_scope upstream; upstream failure returns 502 and leaves the certificate unrevoked; inventory-only is an explicit admin choice | D-306 | planned (W36-01, W36-03) |
+| FR-P95 | T1 | **Upstream CA breadth**: issue and revoke through Vault PKI, EJBCA, AWS Private CA, Google CAS, Sectigo, GlobalSign, Entrust, DigiCert and any ACME CA | each type passes fixture tests pinned to the vendor API; Vault PKI and EJBCA pass live container runs | D-307 | planned (W36-04..W36-11) |
+| FR-P96 | T1 | **Issuers UI**: add, test, use and remove upstream CAs without the API, including ACME presets | an operator adds a Vault PKI issuer, tests it and creates an external CA from the wizard; delete is blocked while referenced | D-304 | planned (W36-12..W36-14) |
+| FR-P97 | T1 | **External CA tenancy**: an external CA, its connector and its credential share a tenant under multi-tenancy | cross-tenant binding refused at create, update and issue | D-308 | planned (W36-02) |
+| FR-P98 | T1 | **Easy adoption**: one-command trial with demo data, and installs from Helm (OCI), Homebrew, apt/yum, the Terraform registries and Ansible Galaxy, each verified after release | a new user reaches a seeded dashboard in five minutes; every channel installs the release in CI | D-309..D-312 | planned (W37) |
+
 ## Code-signing lifecycle (UC-B09)
 
 | ID | Tier | Requirement | Acceptance sketch | Traces | Status |

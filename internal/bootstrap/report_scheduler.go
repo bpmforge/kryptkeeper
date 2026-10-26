@@ -207,6 +207,10 @@ func (s *ReportScheduler) renderScheduledReport(ctx context.Context, sched Repor
 			}
 		}
 		summary := computeExecutiveSummary(ctx, all.Items, cas.Items, activeFindingExceptions(ctx, s.exceptionStore))
+		// Scheduled reports are fleet-wide (super-admin only), so the hub-wide
+		// key counts apply, as in the HTTP handler for an unscoped caller.
+		ks := summarizeKeyPQC(collectKeyInventory(ctx))
+		summary.KeyPQC = &ks
 		trend, terr := loadExecutiveTrend(ctx, s.postureStore, now)
 		if terr != nil {
 			// The trend is a chart on the page, not the report: degrade like
@@ -222,20 +226,32 @@ func (s *ReportScheduler) renderScheduledReport(ctx context.Context, sched Repor
 		return pdf, filename, reportContentTypePDF, nil
 	}
 
-	var header []string
-	var rows [][]string
-	switch sched.Report {
-	case reportInventory:
-		header = inventoryExportColumns
-		for _, c := range all.Items {
-			rows = append(rows, inventoryExportRow(c))
-		}
-	case reportFindings:
-		header = findingsExportColumns
-		rows = findingsExportRows(all.Items)
-	default:
+	def, ok := reportScheduleCatalog[sched.Report]
+	if !ok || (def.table == nil && def.pdf == nil) {
 		return nil, "", "", fmt.Errorf("unknown report %q", sched.Report)
 	}
+	in := scheduledReportInputs{certs: all.Items, exceptions: activeFindingExceptions(ctx, s.exceptionStore)}
+	if def.needsCAs && s.caProvider != nil {
+		cas, cerr := s.caProvider.ListCAs(ctx, CAListQuery{Limit: 1000})
+		if cerr != nil {
+			return nil, "", "", fmt.Errorf("list CAs: %w", cerr)
+		}
+		in.cas = cas.Items
+	}
+	if sched.Format == "pdf" {
+		if def.pdf == nil {
+			return nil, "", "", fmt.Errorf("unsupported format %q for %s", sched.Format, sched.Report)
+		}
+		pdf, perr := def.pdf(in, now)
+		if perr != nil {
+			return nil, "", "", fmt.Errorf("render %s: %w", sched.Report, perr)
+		}
+		return pdf, filename, reportContentTypePDF, nil
+	}
+	if def.table == nil {
+		return nil, "", "", fmt.Errorf("unsupported format %q for %s", sched.Format, sched.Report)
+	}
+	header, rows := def.table(in)
 	var buf bytes.Buffer
 	switch sched.Format {
 	case "csv":

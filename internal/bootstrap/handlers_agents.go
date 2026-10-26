@@ -221,10 +221,17 @@ func sanitizeAgentVersion(v string) string {
 type AgentStore interface {
 	register(name string, agentType AgentType) (id, token string, err error)
 	heartbeat(agentID, token string) error
+	// verifyAgent checks (agentID, token) with no side effect, for agent
+	// routes that are not a heartbeat (W40-03 trust tasks).
+	verifyAgent(agentID, token string) error
 	submitInventory(agentID, token string, certs []AgentDiscoveredCert, endpoints []AgentEndpoint) error
 	getTasks(agentID, token string) ([]AgentRenewalTask, error)
 	submitRenewalResult(agentID, token string, result AgentRenewalResult) error
 	endpointsFor(agentID string) []AgentEndpoint
+	// inventoryOf returns the certificates an agent last reported, for the
+	// admin view GET /api/v1/agents/{id}/inventory (W24-45). Nil for an
+	// unknown agent or on a read error.
+	inventoryOf(agentID string) []AgentDiscoveredCert
 	// tasksFor returns an agent's currently-queued tasks without an agent
 	// token -- the admin-facing counterpart to getTasks (which the agent
 	// itself calls, token-authenticated). Used by GET
@@ -394,6 +401,15 @@ func (s *memAgentStore) heartbeat(agentID, token string) error {
 	}
 	now := time.Now().UTC()
 	r.info.LastSeen = &now
+	return nil
+}
+
+func (s *memAgentStore) verifyAgent(agentID, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r, ok := s.records[agentID]; !ok || r.token != token {
+		return ErrAgentUnauthorized
+	}
 	return nil
 }
 
@@ -636,6 +652,18 @@ func (s *memAgentStore) endpointsFor(agentID string) []AgentEndpoint {
 	}
 	out := make([]AgentEndpoint, len(r.endpoints))
 	copy(out, r.endpoints)
+	return out
+}
+
+func (s *memAgentStore) inventoryOf(agentID string) []AgentDiscoveredCert {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.records[agentID]
+	if !ok {
+		return nil
+	}
+	out := make([]AgentDiscoveredCert, len(r.inventory))
+	copy(out, r.inventory)
 	return out
 }
 
@@ -1075,18 +1103,27 @@ func registerAgentHandlers(mux routeRegistrar, auth *Authenticator, store AgentS
 			writeErrorEnvelope(w, http.StatusUnauthorized, "unauthorized", "unauthorized")
 			return
 		}
+		rest := strings.TrimPrefix(r.URL.Path, "/api/v1/agents/")
 		// D-203: agents carry no tenant column, so the fleet view is global.
-		if denyNonSuperAdminGlobal(w, r, auditProvider, pd, "agent.tasks", "agent", strings.TrimPrefix(r.URL.Path, "/api/v1/agents/")) {
+		action := "agent.tasks"
+		if strings.HasSuffix(rest, "/inventory") {
+			action = "agent.inventory"
+		}
+		if denyNonSuperAdminGlobal(w, r, auditProvider, pd, action, "agent", rest) {
 			return
 		}
-		rest := strings.TrimPrefix(r.URL.Path, "/api/v1/agents/")
 		id, sub, ok := strings.Cut(rest, "/")
-		if !ok || sub != "tasks" || id == "" {
+		if !ok || id == "" || (sub != "tasks" && sub != "inventory") {
 			http.NotFound(w, r)
 			return
 		}
-		if !agentExists(store, id) {
+		info, found := agentByID(store, id)
+		if !found {
 			writeNotFound(w, "agent not found")
+			return
+		}
+		if sub == "inventory" {
+			writeAgentInventory(w, r, auditProvider, pd, store, info)
 			return
 		}
 		result := mergeAgentTaskResults(store.tasksFor(id), store.resultsFor(id))
@@ -1135,6 +1172,16 @@ func registerAgentRemoveHandler(mux routeRegistrar, auth *Authenticator, store A
 		emitAuditEvent(r, auditProvider, pd.ID, "agent.remove", "agent", id, AuditOutcomeSuccess)
 		w.WriteHeader(http.StatusNoContent)
 	})
+}
+
+// agentByID returns the registered agent with this id.
+func agentByID(store AgentStore, agentID string) (AgentInfo, bool) {
+	for _, a := range store.list() {
+		if a.ID == agentID {
+			return a, true
+		}
+	}
+	return AgentInfo{}, false
 }
 
 // agentExists reports whether agentID is registered. list() is the only

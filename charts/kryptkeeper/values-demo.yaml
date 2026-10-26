@@ -1,0 +1,58 @@
+# Try Kryptkeeper on a throwaway cluster (W37-08, D-310):
+#
+#   kind create cluster --name kk-try
+#   helm install kk charts/kryptkeeper -f charts/kryptkeeper/values-demo.yaml
+#   kubectl port-forward svc/kk-kryptkeeper-dashboard 3000:80
+#
+# then open http://localhost:3000 and sign in as admin@demo.test with the
+# password kryptkeeper-demo. A post-install Job seeds the demo data.
+#
+# THIS IS A DEMO, NOT A DEPLOYMENT: the credentials below are published in this
+# file, the hub runs one replica on SQLite with TLS off, and nothing is
+# exposed outside the cluster. For a real install start from values.yaml.
+
+replicaCount: 1
+
+# Until a release with `kryptkeeper demo` (1.1) is published, build the image
+# and load it: `podman build -t kryptkeeper:try . && kind load image-archive ...`
+# then set image.repository/tag/pullPolicy to match.
+image:
+  pullPolicy: IfNotPresent
+
+config:
+  environment: trial
+  dbMode: sqlite
+  authMode: bootstrap
+
+tls:
+  enabled: false
+
+persistence:
+  size: 1Gi
+
+pdb:
+  enabled: false
+
+secrets:
+  bootstrapToken: trial-only-bootstrap-token-0123456789abcdef
+  keystorePassphrase: trial-only-keystore-passphrase-0123456789
+
+# The console login. Password: kryptkeeper-demo
+extraEnv:
+  - {name: APP_AUTH_LOGIN_ENABLED, value: "true"}
+  - {name: APP_AUTH_LOGIN_ACTIVE, value: "true"}
+  - {name: APP_AUTH_LOGIN_EMAIL, value: admin@demo.test}
+  - {name: APP_AUTH_LOGIN_SUBJECT, value: demo.admin}
+  - {name: APP_AUTH_LOGIN_ROLE, value: pki-admin}
+  - {name: APP_AUTH_LOGIN_PASSWORD_PEPPER, value: kryptkeeper-demo-pepper}
+  - name: APP_AUTH_LOGIN_PASSWORD_HASH
+    value: "$argon2id$v=19$m=19456,t=2,p=1$bvNRhbuKXGpnTuleaViPLw$6PVdo2HUq9JC0vhJSqnR/Qm6bSlqvONhtoBIGkqoyJE"
+  - {name: APP_AUTH_LOGIN_SIGNING_SECRET, value: trial-only-signing-secret-0123456789abcdef}
+  - {name: APP_AUTH_ACCESS_TTL_SEC, value: "28800"}
+  - {name: APP_AUTH_IDLE_TIMEOUT_SEC, value: "28800"}
+
+dashboard:
+  enabled: true
+
+demo:
+  enabled: true

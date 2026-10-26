@@ -82,4 +82,16 @@ pass "default render: 1 PDB, replicas 2"
 
 [ "$(grep -c 'until W6-01' $CHART/values.yaml || true)" = 0 ] || fail "stale W6-01 comment remains"
 pass "W6-01 comment removed"
+# --- W37-08 demo values ---
+DEMO=charts/kryptkeeper/values-demo.yaml
+helm lint "$CHART" -f "$DEMO" >/dev/null || fail "lint with demo values"
+DO=$(helm template t "$CHART" -f "$DEMO")
+[ "$(count '^kind: Job' <<<"$DO")" = 1 ] || fail "demo values should render exactly one Job"
+grep -q 'helm.sh/hook": post-install' <<<"$DO" || fail "demo seed Job is not a post-install hook"
+grep -q -- '- --hub=http://t-kryptkeeper:8080' <<<"$DO" || fail "demo seed Job does not target the hub Service"
+grep -q 'KRYPTKEEPER_ENV: "trial"' <<<"$DO" || fail "demo values do not set KRYPTKEEPER_ENV"
+[ "$(helm template t "$CHART" "${SEC[@]}" | count '^kind: Job')" = 0 ] || fail "Job rendered while demo is disabled"
+expect_fail "demo.enabled requires tls.enabled=false" -f "$DEMO" --set tls.enabled=true
+expect_fail "cannot be combined with config.environment=production" -f "$DEMO" --set config.environment=production
+pass "demo values: seed Job renders, refuses TLS and production"
 echo "ALL PASS"

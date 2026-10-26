@@ -1,0 +1,17 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "kind": "dns01",
+  "id": "kryptkeeper.ns1-dns",
+  "name": "NS1 DNS (ACME DNS-01)",
+  "version": "1.0.0",
+  "publisher": "Kryptkeeper Authors",
+  "license": "Apache-2.0",
+  "source": "https://github.com/bpmforge/kryptkeeper/tree/main/plugins/ns1-dns",
+  "artifact": {"file": "plugin.wasm", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "capabilities": {
+    "network": {"hosts": ["api.nsone.net"]}
+  },
+  "credential_schema": {
+    "api_key": {"type": "string", "required": true, "secret": true}
+  }
+}

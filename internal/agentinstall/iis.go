@@ -207,7 +207,7 @@ func (in *IISInstaller) Install(ctx context.Context, req IISInstallRequest) (Ins
 
 	// 4. Reload so IIS/HTTP.sys present the new binding on new handshakes.
 	if _, err := in.exec.Run(ctx, "iisreset", "/noforce"); err != nil {
-		rolledBack, detail := in.rollback(ctx, req.IPPort, store, prior, err.Error())
+		rolledBack, detail := in.rollback(ctx, req.IPPort, store, prior, thumbprint, err.Error())
 		return InstallResult{Installed: true, RolledBack: rolledBack, Outcome: OutcomeReloadFailed, Detail: detail},
 			fmt.Errorf("iis install: reload failed: %w", err)
 	}
@@ -217,12 +217,12 @@ func (in *IISInstaller) Install(ctx context.Context, req IISInstallRequest) (Ins
 	if req.VerifyHostPort != "" && req.ExpectedFingerprint != "" {
 		served, err := in.verify(ctx, req.VerifyHostPort)
 		if err != nil {
-			rolledBack, detail := in.rollback(ctx, req.IPPort, store, prior, err.Error())
+			rolledBack, detail := in.rollback(ctx, req.IPPort, store, prior, thumbprint, err.Error())
 			return InstallResult{Installed: true, Reloaded: true, RolledBack: rolledBack, Outcome: OutcomeVerifyFailed, Detail: detail},
 				fmt.Errorf("iis install: verify failed: %w", err)
 		}
 		if normalizeFingerprint(served) != normalizeFingerprint(req.ExpectedFingerprint) {
-			rolledBack, detail := in.rollback(ctx, req.IPPort, store, prior,
+			rolledBack, detail := in.rollback(ctx, req.IPPort, store, prior, thumbprint,
 				"served fingerprint does not match renewed cert")
 			return InstallResult{
 					Installed: true, Reloaded: true, RolledBack: rolledBack,
@@ -498,21 +498,7 @@ func (in *IISInstaller) importCert(ctx context.Context, store string, certPEM, k
 // inherit. On any failure, including the icacls step, the (possibly
 // unlocked, but still empty) directory is removed rather than left behind.
 func (in *IISInstaller) createLockedStageDir(ctx context.Context, dir string) error {
-	if _, err := in.exec.Run(ctx, "cmd", "/C", "mkdir", dir); err != nil {
-		return fmt.Errorf("create stage dir: %w", err)
-	}
-	if _, err := in.exec.Run(ctx, "icacls", dir, "/inheritance:r",
-		"/grant:r", sidLocalSystem+":(OI)(CI)F", sidAdministrators+":(OI)(CI)F"); err != nil {
-		// The directory exists but is NOT locked down. If cleanup also
-		// fails, say so — an unrestricted staging directory is exactly what
-		// the ACL step was protecting against, and silence would leave it
-		// there unnoticed.
-		if _, rmErr := in.exec.Run(ctx, "cmd", "/C", "rmdir", "/S", "/Q", dir); rmErr != nil {
-			return fmt.Errorf("restrict stage dir acl: %w (and the unrestricted directory %s could not be removed: %v)", err, dir, rmErr)
-		}
-		return fmt.Errorf("restrict stage dir acl: %w", err)
-	}
-	return nil
+	return createLockedStageDir(ctx, in.exec, dir)
 }
 
 // certDERFromPEM extracts the raw DER bytes of a "CERTIFICATE" PEM block.
@@ -617,7 +603,7 @@ func winJoin(parts ...string) string {
 // failed. A host whose binding is neither the new certificate nor the old
 // one is serving nothing, and telling the operator it was rolled back
 // sends them to look somewhere else. Same rule as the F5 and K8s pushers.
-func (in *IISInstaller) rollback(ctx context.Context, ipPort, store string, prior sslBinding, detail string) (bool, string) {
+func (in *IISInstaller) rollback(ctx context.Context, ipPort, store string, prior sslBinding, newThumb, detail string) (bool, string) {
 	if err := in.restorePriorBinding(ctx, ipPort, store, prior); err != nil {
 		return false, detail + "; ROLLBACK FAILED (the binding may serve neither certificate): " + err.Error()
 	}
@@ -626,7 +612,7 @@ func (in *IISInstaller) rollback(ctx context.Context, ipPort, store string, prio
 	// binding is already correct on disk, so a failed reload only delays
 	// it taking effect — it does not change what was restored.
 	_, _ = in.exec.Run(ctx, "iisreset", "/noforce") //nolint:errcheck // see above: outcome does not depend on it
-	return true, detail
+	return true, detail + removeRolledBackCert(ctx, in.exec, store, newThumb, prior.certHash)
 }
 
 var (

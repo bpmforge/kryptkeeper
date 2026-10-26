@@ -86,6 +86,13 @@ type CA struct {
 	// claim about key custody, not a cosmetic label. Empty for CAs with no
 	// keystore-backed key (ImportCA/ImportCAChain).
 	KeyStorageType string
+	// ConnectorID names the issuer connector an external CA (Type "external")
+	// delegates signing to; empty for hub CAs (W36-02, D-304).
+	ConnectorID string
+	// ExternalTrustPEM is the PEM bundle of CA certificates every upstream
+	// response must chain to. It is the operator's statement of which CA the
+	// upstream may sign with, so an upstream cannot silently switch issuers.
+	ExternalTrustPEM []byte
 }
 
 // IssuanceRequest contains the parameters for certificate issuance.
@@ -135,6 +142,11 @@ type IssuanceRequest struct {
 	// engine itself controls (SANs, key usage, constraints, AIA), and an
 	// extra extension with the same OID would replace the engine's.
 	ExtraExtensions []pkix.Extension
+	// PermanentIdentifiers are written into the SAN as RFC 4043
+	// PermanentIdentifier otherNames (W40-02 device attestation). Only a hub
+	// CA can carry them: an external CA signs its own SAN, so the issuer
+	// refuses the request rather than issue without the identifier.
+	PermanentIdentifiers []PermanentIdentifier
 }
 
 // IssuedCertificate is the result of a successful issuance.
@@ -143,6 +155,10 @@ type IssuedCertificate struct {
 	CertPEM      []byte
 	SerialNumber *big.Int
 	Fingerprint  string
+	// ChainPEM is the verified issuer chain (leaf excluded, self-signed root
+	// excluded) when the certificate came from an external CA; empty for hub
+	// CAs, whose chain callers build from GetCAChain.
+	ChainPEM []byte
 }
 
 // Service is the CA engine interface.

@@ -66,6 +66,7 @@ function CATreeNode({
           {node.display_name || node.name || node.id}
         </span>{" "}
         <span className="text-xs text-muted-foreground">{humanizeEnum(node.type)}</span>{" "}
+        {node.type === "external" ? <Badge tone="neutral">External</Badge> : null}{" "}
         {node.active_issued_certificates != null && (
           <>
             <span className="text-xs text-muted-foreground">
@@ -433,6 +434,19 @@ export default function CAs() {
     void queryClient.invalidateQueries({ queryKey: ["pending-actions"] });
   };
 
+  const connectorsQuery = useQuery({
+    queryKey: ["connectors"],
+    queryFn: () => api.connectors(),
+    retry: false,
+  });
+  const connectorNames = new Map(
+    (connectorsQuery.data?.data ?? []).map((c) => [c.id, c.name] as const),
+  );
+  const viaConnector = (ca: CaRecord) =>
+    ca.connector_id ? (connectorNames.get(ca.connector_id) ?? ca.connector_id) : "";
+  // An external CA's key, CRL and OCSP belong to the upstream issuer, so the hub
+  // offers no key lifecycle or revocation-publishing controls for it.
+  const isExternalCa = selected?.type === "external";
   const isOfflineRoot =
     selected?.type === "root" && selected?.key_storage_type === "external";
   const awaitingCert = selected?.status === "pending_certificate";
@@ -1105,6 +1119,12 @@ export default function CAs() {
                         <div className="mt-1 text-sm text-muted-foreground">
                           {humanizeEnum(ca.type)} · {humanizeEnum(ca.key_storage_type)}
                         </div>
+                        {ca.type === "external" ? (
+                          <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+                            <Badge tone="neutral">External</Badge>
+                            {ca.connector_id ? <span>via {viaConnector(ca)}</span> : null}
+                          </div>
+                        ) : null}
                       </div>{" "}
                       <Badge
                         tone={
@@ -1185,6 +1205,12 @@ export default function CAs() {
                       {selected.display_name || selected.name}
                     </h2>
                     <p className="mt-1 text-sm text-muted-foreground">{selected.id}</p>
+                    {isExternalCa ? (
+                      <p className="mt-1 flex items-center gap-2 text-sm text-muted-foreground">
+                        <Badge tone="neutral">External</Badge>
+                        {selected.connector_id ? <span>via {viaConnector(selected)}</span> : null}
+                      </p>
+                    ) : null}
                   </div>
                   <div className="grid grid-cols-2 gap-3 text-sm">
                     <div>
@@ -1229,6 +1255,12 @@ export default function CAs() {
                       Use suspend/activate when managing trust posture or
                       maintenance windows.
                     </p>
+                    {isExternalCa ? (
+                      <p className="mt-2">
+                        This CA issues through an external issuer. Its key, CRL and OCSP
+                        are operated there, so Kryptkeeper publishes none of them.
+                      </p>
+                    ) : null}
                     {isRevoked ? (
                       <StateMessage
                         title="CA revoked"
@@ -1261,8 +1293,12 @@ export default function CAs() {
                             Revoke CA
                           </Button>
                         ) : null}
-                        <Button onClick={openUpdate}>Update</Button>
-                        <Button onClick={openRekey}>Re-key</Button>
+                        {isExternalCa ? null : (
+                          <>
+                            <Button onClick={openUpdate}>Update</Button>
+                            <Button onClick={openRekey}>Re-key</Button>
+                          </>
+                        )}
                         {isOfflineRoot ? (
                           <>
                             <Button onClick={openCsr}>

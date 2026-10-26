@@ -28,6 +28,9 @@ func newDeliveryPluginManager(coreDB *sql.DB, isPostgres bool) *bootstrap.Delive
 		}
 	}
 	mgr := bootstrap.NewDeliveryPluginManager(coreDB, isPostgres, bootstrap.NewPendingActionStoreFromEnv(), trust)
+	if mgr != nil {
+		mgr.EnableCatalogue(bootstrap.PluginCatalogueURLFromEnv(), version)
+	}
 	switch {
 	case mgr != nil:
 		fp, verified := trust.Counts()

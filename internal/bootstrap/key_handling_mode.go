@@ -62,7 +62,7 @@ func keyModeInstallModes(mode string) (allowed string, ok bool) {
 	case KeyModeClientCSR:
 		return "agent|acme|cloud", true
 	case KeyModeHubGenerated:
-		return "ssh|f5|citrix|k8s|iis|plugin", true
+		return "ssh|f5|citrix|k8s|iis|sqlserver|rdp|exchange|plugin", true
 	case KeyModeMacOSNonExtractable:
 		return "keychain", true
 	}
@@ -115,7 +115,7 @@ func effectiveKeyHandlingMode(t ManagedTarget) (mode, source string) {
 		return KeyModeClientCSR, keyModeSourceDerived
 	case "keychain":
 		return KeyModeMacOSNonExtractable, keyModeSourceDerived
-	default: // ssh, f5, citrix, k8s, iis, plugin
+	default: // ssh, f5, citrix, k8s, iis, sqlserver, rdp, exchange, plugin
 		return KeyModeHubGenerated, keyModeSourceDerived
 	}
 }

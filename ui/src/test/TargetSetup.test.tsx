@@ -351,6 +351,10 @@ describe("TargetSetup — credential preflight (W18-11)", () => {
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.selectOptions(screen.getByLabelText(/discovery mode/i), "winrm");
     await user.click(screen.getByRole("button", { name: "Next" }));
+    // Exchange is offered next to IIS for Windows hosts (W35-03).
+    expect(
+      within(screen.getByLabelText(/install mode/i)).getByRole("option", { name: /Microsoft Exchange/i }),
+    ).toBeTruthy();
     await user.selectOptions(screen.getByLabelText(/install mode/i), "iis");
     await user.click(screen.getByRole("button", { name: "Next" }));
 

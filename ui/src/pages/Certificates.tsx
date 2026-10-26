@@ -22,6 +22,7 @@ import {
 } from "../components/ops-ui";
 import {
   BlastRadiusImpact,
+  BulkBlastRadiusImpact,
   approveEnabled,
   type ImpactState,
 } from "../components/BlastRadiusImpact";
@@ -31,6 +32,7 @@ import { PageHeader } from "../components/PageHeader";
 import { canManageCertificates, useAuthz } from "../lib/auth";
 import { extractList } from "../lib/models";
 import { useCaNames } from "../lib/useResourceNames";
+import { EXTERNAL_REVOKE_NOTE, UPSTREAM_REVOKE_NOTE, revokeScopeNote } from "../lib/revokeNotes";
 import { savePemFile } from "../lib/utils";
 import { hostForCert } from "../lib/certHost";
 import {
@@ -1098,10 +1100,33 @@ function ReassignOrphansDialog({
   );
 }
 
-// Imported, discovered and synced certificates have no issuing CA in this hub, so there is no
-// CRL or OCSP responder to publish to: the revocation is an inventory record only.
-const EXTERNAL_REVOKE_NOTE =
-  "Marked revoked in inventory — revoke at the issuing CA. This hub is not the issuer.";
+// Shown in the revoke dialog when an upstream CA is in the loop; only a pki-admin
+// may record the revocation here without asking the CA (backend 403s others).
+export function UpstreamRevokeControls({
+  isAdmin,
+  recordOnly,
+  onRecordOnlyChange,
+}: {
+  isAdmin: boolean;
+  recordOnly: boolean;
+  onRecordOnlyChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="space-y-2 text-sm text-foreground">
+      <p className="text-muted-foreground">{UPSTREAM_REVOKE_NOTE}</p>
+      {isAdmin ? (
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={recordOnly}
+            onChange={(e) => onRecordOnlyChange(e.target.checked)}
+          />
+          <span>Record here only (I revoked it at the CA myself)</span>
+        </label>
+      ) : null}
+    </div>
+  );
+}
 
 export default function Certificates() {
   const queryClient = useQueryClient();
@@ -1157,6 +1182,9 @@ export default function Certificates() {
     "renew" | "revoke" | "import" | "bulk-renew" | "bulk-revoke" | null
   >(null);
   const [revokeConfirm, setRevokeConfirm] = useState("");
+  const [recordOnly, setRecordOnly] = useState(false);
+  const [revokeScopes, setRevokeScopes] = useState<Record<string, string>>({});
+  const [bulkImpact, setBulkImpact] = useState({ done: false, failed: 0 });
   const [revokeImpact, setRevokeImpact] = useState<ImpactState>("loading");
   const [bulkProgress, setBulkProgress] = useState<{
     done: number;
@@ -1244,6 +1272,18 @@ export default function Certificates() {
   const selectedCert =
     pageHit ?? certById.data ?? (selectedKey ? null : (certs[0] ?? null));
   const canManage = canManageCertificates(authz.data?.role, authz.data?.scopes);
+  const isPkiAdmin = (authz.data?.role ?? "").trim() === "pki-admin";
+  const connectorsQuery = useQuery({
+    queryKey: ["connectors"],
+    queryFn: () => api.connectors(),
+    retry: false,
+  });
+  const connectorName = (id?: string) =>
+    id ? ((connectorsQuery.data?.data ?? []).find((c) => c.id === id)?.name ?? id) : "";
+  const issuerName = connectorName(selectedCert?.renewal_connector_id);
+  const issuingCa = cas.find((c) => c.id === selectedCert?.ca_id);
+  const upstreamRevoke =
+    issuingCa?.type === "external" || Boolean(selectedCert?.renewal_connector_id);
   const allVisibleSelected =
     certs.length > 0 &&
     certs.every((cert) =>
@@ -1286,10 +1326,14 @@ export default function Certificates() {
       return api.revokeCertificate(selectedCert.fingerprint_sha256, {
         reason_code: Number(form.reasonCode),
         reason_text: form.reasonText,
+        ...(recordOnly && isPkiAdmin ? { scope: "inventory_only" } : {}),
       });
     },
     onSuccess: async (res) => {
       const scope = res?.data?.revocation_scope;
+      if (scope && selectedCert) {
+        setRevokeScopes((m) => ({ ...m, [selectedCert.fingerprint_sha256]: scope }));
+      }
       const inventoryOnly = scope
         ? scope === "inventory_only"
         : !selectedCert?.ca_id;
@@ -1300,7 +1344,9 @@ export default function Certificates() {
           : "Certificate revoked",
         message: inventoryOnly
           ? EXTERNAL_REVOKE_NOTE
-          : "The certificate is now marked revoked.",
+          : scope === "upstream"
+            ? revokeScopeNote(scope, issuerName)
+            : "The certificate is now marked revoked.",
       });
       setAction(null);
       await refresh();
@@ -1446,7 +1492,9 @@ export default function Certificates() {
     next: "renew" | "revoke" | "import" | "bulk-renew" | "bulk-revoke",
   ) => {
     setRevokeConfirm("");
+    setRecordOnly(false);
     setRevokeImpact("loading");
+    setBulkImpact({ done: false, failed: 0 });
     setAction(next);
     setStatusMessage(null);
     setBulkProgress(null);
@@ -2162,6 +2210,14 @@ export default function Certificates() {
                     )}
                   </div>
                 </div>
+                {selectedCert.renewal_connector_id ? (
+                  <div>
+                    <div className="text-muted-foreground">Issuer</div>
+                    <div className="text-foreground">
+                      Issued through {issuerName}
+                    </div>
+                  </div>
+                ) : null}
                 <div>
                   <div className="text-muted-foreground">Grade</div>
                   <div className="text-foreground">
@@ -2217,6 +2273,12 @@ export default function Certificates() {
                       {EXTERNAL_REVOKE_NOTE}
                     </div>
                   )}
+                  {revokeScopes[selectedCert.fingerprint_sha256] ? (
+                    <div className="mt-1 text-xs text-state-over">
+                      Revocation scope: {revokeScopes[selectedCert.fingerprint_sha256].replace("_", " ")}.{" "}
+                      {revokeScopeNote(revokeScopes[selectedCert.fingerprint_sha256], issuerName)}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               {(selectedCert.subject_alt_names ?? []).length > 0 ? (
@@ -2410,7 +2472,7 @@ export default function Certificates() {
         open={action === "revoke"}
         title="Revoke certificate"
         description={
-          selectedCert?.ca_id
+          selectedCert?.ca_id || upstreamRevoke
             ? "Mark this certificate revoked for the provided reason."
             : `Mark this certificate revoked for the provided reason. ${EXTERNAL_REVOKE_NOTE}`
         }
@@ -2451,6 +2513,13 @@ export default function Certificates() {
               placeholder="Optional explanation"
             />
           </label>
+          {upstreamRevoke ? (
+            <UpstreamRevokeControls
+              isAdmin={isPkiAdmin}
+              recordOnly={recordOnly}
+              onRecordOnlyChange={setRecordOnly}
+            />
+          ) : null}
           {selectedCert ? (
             <BlastRadiusImpact
               action="revoke"
@@ -2665,6 +2734,12 @@ export default function Certificates() {
               placeholder="Reason for bulk revocation"
             />
           </label>
+          {action === "bulk-revoke" ? (
+            <BulkBlastRadiusImpact
+              targets={selectedFingerprints}
+              onStateChange={setBulkImpact}
+            />
+          ) : null}
           <label className="block space-y-2 text-sm text-foreground">
             <span>
               Type <strong>REVOKE</strong> to confirm
@@ -2700,7 +2775,9 @@ export default function Certificates() {
               tone="danger"
               type="submit"
               disabled={
-                bulkRevokeMutation.isPending || revokeConfirm !== "REVOKE"
+                bulkRevokeMutation.isPending ||
+                revokeConfirm !== "REVOKE" ||
+                !bulkImpact.done
               }
             >
               {bulkRevokeMutation.isPending

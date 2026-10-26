@@ -109,8 +109,12 @@ type gcpCert struct {
 	SelfManaged struct {
 		PemCertificate string `json:"pemCertificate"`
 	} `json:"selfManaged"`
-	Labels map[string]string `json:"labels"`
-	Scope  string            `json:"scope"`
+	// PemCertificate is the output-only certificate chain, leaf first
+	// (selfManaged.pemCertificate above is input-only and never returned).
+	// https://docs.cloud.google.com/certificate-manager/docs/reference/certificate-manager/rest/v1/projects.locations.certificates
+	PemCertificate string            `json:"pemCertificate"`
+	Labels         map[string]string `json:"labels"`
+	Scope          string            `json:"scope"`
 }
 
 func (c *GCPCertManagerConnector) listPage(ctx context.Context, pageToken string) ([]CloudCertificate, string, error) {
@@ -155,6 +159,8 @@ func (c *GCPCertManagerConnector) listPage(ctx context.Context, pageToken string
 			CommonName: gcpCertCommonName(item),
 			DNSNames:   gcpCertDNSNames(item),
 			Status:     strings.ToLower(item.Managed.State),
+
+			CertificatePEM: item.PemCertificate,
 		}
 		if item.ExpireTime != "" {
 			if t, err := time.Parse(time.RFC3339, item.ExpireTime); err == nil {

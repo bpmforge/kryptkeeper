@@ -25,9 +25,10 @@ const itsmDrainInterval = 60 * time.Second
 // and the "itsm" delivery channel is not registered.
 //
 // Connectors register by kind in the factories map; W32-11 (servicenow) and
-// W32-14 (jira) add theirs. A connection whose kind has no factory keeps its
+// W32-14 (jira) add theirs; a "plugin" connection is built by the ticket plugin
+// factory (W38-09) from the plugin manager. A connection whose kind has no factory keeps its
 // events queued rather than losing them.
-func newITSMService(coreDB *sql.DB, isPostgres bool, audit bootstrap.AuditProvider) *itsm.Service {
+func newITSMService(coreDB *sql.DB, isPostgres bool, audit bootstrap.AuditProvider, plugins *bootstrap.DeliveryPluginManager) *itsm.Service {
 	if coreDB == nil {
 		return nil
 	}
@@ -35,7 +36,8 @@ func newITSMService(coreDB *sql.DB, isPostgres bool, audit bootstrap.AuditProvid
 	factories := map[string]itsm.Factory{"servicenow": servicenow.Factory, "jira": jira.Factory}
 	svc := itsm.NewService(itsm.Config{
 		Store: store,
-		Conns: itsm.NewConnectorSource(store, bootstrap.ITSMCredentialResolverFromEnv(), itsm.NewHTTPClient(), factories),
+		Conns: itsm.NewConnectorSource(store, bootstrap.ITSMCredentialResolverFromEnv(), itsm.NewHTTPClient(), factories,
+			bootstrap.NewITSMPluginConnectors(func() *bootstrap.DeliveryPluginManager { return plugins }, audit).Factory()),
 		Audit: bootstrap.ITSMAuditSink(audit),
 		Alert: func(_ context.Context, class, detail string) { logging.Warnf("ALERT itsm: %s %s", class, detail) },
 	})

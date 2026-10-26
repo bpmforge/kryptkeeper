@@ -81,6 +81,9 @@ type Plugin struct {
 // Manifest returns the plugin's manifest.
 func (p *Plugin) Manifest() abi.Manifest { return p.manifest }
 
+// Kind returns the plugin's kind (D-321); a manifest without one is delivery.
+func (p *Plugin) Kind() string { return p.manifest.Kind }
+
 // Granted returns the capabilities the plugin runs with.
 func (p *Plugin) Granted() abi.Capabilities { return p.granted }
 
@@ -89,6 +92,13 @@ var (
 	ErrHashMismatch = errors.New("plugin module does not match the manifest's sha256")
 	// ErrGrantExceedsManifest means a grant wider than what was declared.
 	ErrGrantExceedsManifest = errors.New("granted capabilities exceed the manifest's")
+	// ErrKindNotRunnable means a manifest names a kind this hub has no
+	// operations for yet (ticket, inventory and credentials arrive with W38-07
+	// and W38-09).
+	ErrKindNotRunnable = errors.New("this hub does not run plugins of that kind yet")
+	// ErrOpNotForKind means the hub itself tried an operation the plugin's kind
+	// does not define; a plugin never sees it.
+	ErrOpNotForKind = errors.New("operation is not defined for this plugin's kind")
 )
 
 // Load checks the manifest and the module against it and compiles the
@@ -102,6 +112,9 @@ func (r *Runtime) Load(ctx context.Context, manifestJSON, wasm []byte, granted a
 	sum := sha256.Sum256(wasm)
 	if hex.EncodeToString(sum[:]) != m.Artifact.SHA256 {
 		return nil, ErrHashMismatch
+	}
+	if !abi.Runnable(m.Kind) {
+		return nil, fmt.Errorf("%w: kind %q", ErrKindNotRunnable, m.Kind)
 	}
 	if !granted.Within(m.Capabilities) {
 		return nil, ErrGrantExceedsManifest
@@ -125,6 +138,11 @@ func (p *Plugin) Close(ctx context.Context) error { return p.compiled.Close(ctx)
 // invoke runs one operation in a fresh instance and returns the plugin's
 // Response result.
 func (p *Plugin) invoke(ctx context.Context, st *callState, op string, in []byte) ([]byte, error) {
+	// Checked before any instance exists: a notify plugin is never asked to
+	// push a certificate, and a delivery plugin is never asked to send an alert.
+	if !abi.OpAllowed(p.manifest.Kind, op) {
+		return nil, fmt.Errorf("%w: %q on a %s plugin", ErrOpNotForKind, op, p.manifest.Kind)
+	}
 	if p.invokeHook != nil {
 		return p.invokeHook(ctx, op, in)
 	}

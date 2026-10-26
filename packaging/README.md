@@ -276,3 +276,13 @@ done when every agent in it reports the new version.
   (`docs/deployment.md`, "Satellite agent systemd unit") and doesn't need a
   package manager to install cleanly; adding a `.deb`/`.rpm` for it is a
   natural follow-up, not required by this ticket's acceptance criteria.
+
+## Public release pipeline
+
+`packaging/public/github-release.yml` is the release workflow of the public
+repository (`bpmforge/kryptkeeper`). The public snapshot installs it as
+`.github/workflows/release.yml`. It builds with goreleaser, signs keyless with
+the workflow's GitHub OIDC identity, publishes images and the Helm chart
+(`oci://ghcr.io/bpmforge/charts/kryptkeeper`, W37-01) to ghcr, and then
+verifies everything it published from a clean job (D-312). This repository's
+own `.github/workflows/release.yml` is the internal the self-hosted forge pipeline (D-210).

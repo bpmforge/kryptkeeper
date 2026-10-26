@@ -1,0 +1,23 @@
+namespace: kryptkeeper
+name: pki
+version: 1.1.0
+readme: README.md
+authors:
+  - Kryptkeeper Authors
+description: Issue, renew, revoke and inspect certificates and enrol agents on a Kryptkeeper hub.
+license:
+  - Apache-2.0
+tags:
+  - pki
+  - certificates
+  - security
+  - tls
+repository: https://github.com/bpmforge/kryptkeeper
+documentation: https://github.com/bpmforge/kryptkeeper/tree/main/ansible/kryptkeeper/pki
+homepage: https://github.com/bpmforge/kryptkeeper
+issues: https://github.com/bpmforge/kryptkeeper/issues
+build_ignore:
+  - tests/output
+  - "*.tar.gz"
+  - .pytest_cache
+  - __pycache__

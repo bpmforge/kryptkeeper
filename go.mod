@@ -2,7 +2,7 @@ module kryptkeeper
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 // SQL Server's default TLS certificate has a negative serial number. Go 1.23+
 // refuses to parse such a certificate, which made the handshake to every default
@@ -41,16 +41,21 @@ require (
 
 require github.com/tetratelabs/wazero v1.12.0
 
-require github.com/pavlo-v-chernykh/keystore-go/v4 v4.5.0
+require (
+	github.com/aws/aws-sdk-go-v2/service/acmpca v1.46.13
+	github.com/fxamacker/cbor/v2 v2.9.6
+	github.com/pavlo-v-chernykh/keystore-go/v4 v4.5.0
+)
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
 )
 
 require (
 	github.com/Azure/go-ntlmssp v0.1.1 // indirect
-	github.com/aws/aws-sdk-go-v2/credentials v1.19.14 // indirect
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.14
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.21 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.22 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.22 // indirect
@@ -60,7 +65,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.15 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.19 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.10 // indirect
-	github.com/aws/smithy-go v1.25.0 // indirect
+	github.com/aws/smithy-go v1.25.0
 	github.com/bpmforge/kryptkeeper/sdk/delivery-go v0.0.0-00010101000000-000000000000
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-asn1-ber/asn1-ber v1.5.8 // indirect

@@ -81,6 +81,9 @@ func (s *Service) TestConnection(ctx context.Context, connectionID string) error
 	if err != nil {
 		return err
 	}
+	if p, ok := conn.(Prober); ok {
+		return p.Probe(ctx)
+	}
 	_, err = conn.Find(ctx, "kk-connection-test")
 	return err
 }

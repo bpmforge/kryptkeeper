@@ -1,7 +1,7 @@
 # Live validation W26-13: WSTEP/XCEP matrix (v0.14 kit, run for v1 on 2026-10-18)
 
 Date: 2026-10-18. Hub: `lab-hub` (192.0.2.106), build `qa/v1-final` at `936b3c7b` (v1 QA upgrade, 12:11Z).
-Kit: `tests/live/wstep/matrix/`. Evidence: the lab evidence pack (not published).
+Kit: `tests/live/wstep/matrix/`. Evidence: `docs/release/proof-pack/windows-v1/`.
 Rows follow actual build numbers, not marketing names. lab-win11 reports 10.0.26200 (25H2), not 24H2 (26100).
 
 ## Verdict: PARTIAL - enroll and template filter PASS; renew and post-fix skew re-run NOT RUN
@@ -21,12 +21,12 @@ refused the template PATCH needed for the revision bump, even with the lead's re
 | OS (build) | Enroll (GPO, no manual action) | Renew (`wstep.renew` + predecessor) | Template filter (user tmpl not offered) | Skew > 5 min refused |
 |---|---|---|---|---|
 | Windows 11 Enterprise (26200), lab-win11 | PASS (second pass; first pass FAIL, RSA-2048 vs Baseline) | NOT RUN (template revision bump refused by gate) | PASS | PASS pre-fix 12:36Z; post-fix re-run NOT RUN |
-| Windows Server 2022 Standard (20348), LAB-WS22 | PASS (second pass; first pass FAIL, same refusal) | NOT RUN | PASS (machine list is KKMachine only; user-context list measured on lab-win11) | PASS pre-fix 12:39Z; post-fix re-run NOT RUN |
-| Windows Server 2025 Standard (26100), lab-dc01 / LAB-CA01 | BLOCKED: see note 1 | BLOCKED | BLOCKED | BLOCKED: see note 2 |
+| Windows Server 2022 Standard (20348), lab-ws22 | PASS (second pass; first pass FAIL, same refusal) | NOT RUN | PASS (machine list is KKMachine only; user-context list measured on lab-win11) | PASS pre-fix 12:39Z; post-fix re-run NOT RUN |
+| Windows Server 2025 Standard (26100), lab-dc01 / lab-ca01 | BLOCKED: see note 1 | BLOCKED | BLOCKED | BLOCKED: see note 2 |
 | Windows 10 | BLOCKED: no ISO in the lab | BLOCKED | BLOCKED | BLOCKED |
 | Windows Server 2019 | BLOCKED: no ISO in the lab | BLOCKED | BLOCKED | BLOCKED |
 
-1. lab-dc01 and LAB-CA01 hold no hub certificate and made no hub request in the window. Neither trusts the
+1. lab-dc01 and lab-ca01 hold no hub certificate and made no hub request in the window. Neither trusts the
    hub root (`LocalMachine\Root` has no "KK UAT Lab Root CA" on lab-dc01; a read-only `certutil -Template`
    against the hub hung there on the TLS trust prompt and was killed). Installing the root on a DC or
    the Enterprise CA, or forcing a pulse there, would change the CA role hosts, so it was not done.
@@ -36,7 +36,7 @@ refused the template PATCH needed for the revision bump, even with the lead's re
 
 ## Measured evidence
 
-Template filter. Machine context (admin, lab-win11 and LAB-WS22) is offered only `KKMachine`
+Template filter. Machine context (admin, lab-win11 and lab-ws22) is offered only `KKMachine`
 (`CT_FLAG_MACHINE_TYPE`, min key 2048). User context (`CORP\corp-user1`, scheduled task on lab-win11, policy cache
 deleted first) is offered only `KKUser`. The hub logged `corp-user1@CORP.EXAMPLE.TEST - SPNEGO authentication succeeded`
 for that request. Files: `*/templates-machine.txt`, `lab-win11-attempt1-baseline-rsa2048/templates-user.txt`.
@@ -44,7 +44,7 @@ for that request. Files: `*/templates-machine.txt`, `lab-win11-attempt1-baseline
 discarded.)
 
 Skew. +10 min on the client. Hub log: `SPNEGO validation error: ... KRB_AP_ERR_SKEW ... greater than 5m0s`, `POST /xcep 401`,
-audit row `xcep.policy denied "Kerberos authentication failed"` (12:36:58Z lab-win11, 12:39:48Z LAB-WS22). No certificate issued.
+audit row `xcep.policy denied "Kerberos authentication failed"` (12:36:58Z lab-win11, 12:39:48Z lab-ws22). No certificate issued.
 `hub-checks.sh <host> --skew-denied` printed `PASS denied wstep.enroll/xcep.policy rows`. Clock restored on both
 (`w32tm /resync`, source LAB-DC01). Note the skew refusal alone proves little while enrollment is refused for a
 different reason; the hub-side KRB_AP_ERR_SKEW line is what separates the two causes. Re-run after the fix.
@@ -58,7 +58,7 @@ SOAP `s:Client` fault returned as HTTP 500, client side `RESULT enrolled=false a
 | Host / OS | enroll seconds | Cert thumbprint | Key | .evtx / .etl / .pcapng |
 |---|---|---|---|---|
 | lab-win11 / 26200 | 6 | 782D4CE3BEDC9461CFC6983F0A2689A7463C3E23 | RSA-3072 | `lab-win11-enroll-ok/` (SHA256SUMS) |
-| LAB-WS22 / 20348 | 6 | 3E988FB42DAE3BBEE9BFEBABA51771BC1EAA0D54 | RSA-3072 | `LAB-WS22-enroll-ok/` |
+| lab-ws22 / 20348 | 6 | 3E988FB42DAE3BBEE9BFEBABA51771BC1EAA0D54 | RSA-3072 | `lab-ws22-enroll-ok/` |
 
 NotBefore is backdated 5 min, so "issued after 12:11Z" is proven by the audit rows (`hub-audit-wstep-2026-10-18.json`) not NotBefore.
 The hub rows for the denied-audit change (`wstep.enroll denied` principal rows after the fix) were not exercised: no refusal occurred
@@ -91,12 +91,12 @@ the user must allow those Bash actions (or run them).
 
 ## Evidence per target (first attempt, failed; sizes under 5 MB)
 
-Directory: the lab evidence pack (not published) (SHA-256 in `SHA256SUMS`; VM-side hashes match).
+Directory: `docs/release/proof-pack/windows-v1/<host>-attempt1-baseline-rsa2048/` (SHA-256 in `SHA256SUMS`; VM-side hashes match).
 
 | Host / OS | enroll seconds | Cert thumbprint | .evtx | .etl / .pcapng | Renewal audit | Skew denied excerpt |
 |---|---|---|---|---|---|---|
 | lab-win11 / 26200 | none (120 s timeout) | none | `events-...Lifecycle-System_Operational.evtx` | `wstep.etl`, `wstep.pcapng` | NOT RUN | `xcep.policy denied` 12:36:58Z, KRB_AP_ERR_SKEW |
-| LAB-WS22 / 20348 | none (60 s timeout) | none | same | same | NOT RUN | `xcep.policy denied` 12:39:48Z |
+| lab-ws22 / 20348 | none (60 s timeout) | none | same | same | NOT RUN | `xcep.policy denied` 12:39:48Z |
 | Windows 10, Server 2019 | BLOCKED: no ISO | | | | | |
 
 Hub-side: `hub-journal-wstep-2026-10-18.txt`, `hub-audit-wstep-2026-10-18.json`, per-host `hub-checks.txt`.

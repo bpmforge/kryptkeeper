@@ -395,3 +395,33 @@ func TestExecutiveSummary_TrendHiddenFromTenantScoped(t *testing.T) {
 		t.Fatalf("tenant-scoped: code=%d has trend=%v (must be omitted)", code, ok)
 	}
 }
+
+// W24-49: the PDF prints the same key counts as the JSON (the PQC posture
+// page's key inventory), and omits the line when they are not provided.
+func TestExecutiveSummaryPDF_KeyReadinessLine(t *testing.T) {
+	prev := pdfCompression
+	pdfCompression = false
+	t.Cleanup(func() { pdfCompression = prev })
+	withKeyPQCFixtures(t)
+	at := time.Date(2026, 6, 17, 12, 0, 0, 0, time.UTC)
+
+	s := computeExecutiveSummary(context.Background(), buildTestCerts(), nil, nil)
+	ks := summarizeKeyPQC(collectKeyInventory(context.Background()))
+	s.KeyPQC = &ks
+	b, err := renderExecutiveSummaryPDF(s, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "Keys ready / not ready / unknown for PQC migration: 1 / 3 / 2"; !strings.Contains(pdfText(b), want) {
+		t.Errorf("PDF lacks %q", want)
+	}
+
+	s.KeyPQC = nil
+	b, err = renderExecutiveSummaryPDF(s, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(pdfText(b), "Keys ready") {
+		t.Error("tenant-scoped summary must not print key counts")
+	}
+}

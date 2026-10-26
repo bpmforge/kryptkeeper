@@ -120,6 +120,7 @@ func (p *fileTemplateProvider) CreateTemplate(_ context.Context, req TemplateUps
 		SSHPolicy:             req.SSHPolicy,
 		NamePolicy:            req.NamePolicy,
 		EnrollmentPermissions: enrollPerms,
+		DeviceAttestation:     req.DeviceAttestation,
 		Revision:              1,
 		SchemaVersion:         1,
 		IssuedCount:           0,
@@ -178,6 +179,7 @@ func (p *fileTemplateProvider) ReplaceTemplate(_ context.Context, id string, req
 		items[i].SSHPolicy = req.SSHPolicy
 		items[i].NamePolicy = req.NamePolicy
 		items[i].EnrollmentPermissions = enrollPerms
+		items[i].DeviceAttestation = req.DeviceAttestation
 		items[i].Revision++
 		items[i].UpdatedAt = now
 
@@ -223,6 +225,8 @@ func (p *fileTemplateProvider) CloneTemplate(_ context.Context, id string, req T
 	clone.OID = ""
 	clone.Active = false
 	clone.AutoEnroll = false
+	// Device attestation is an explicit grant per template; a clone starts without it.
+	clone.DeviceAttestation = false
 	clone.Revision = 1
 	clone.IssuedCount = 0
 	clone.CreatedAt = now

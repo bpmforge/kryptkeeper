@@ -78,7 +78,7 @@ func newWinRMTargetScanner(targets ManagedTargetStore, creds OutboundCredentialS
 		}
 		plaintext, err := creds.Resolve(ctx, t.CredentialRef)
 		if err != nil {
-			return fail(t.Host, fmt.Errorf("credential %q could not be resolved", t.CredentialRef))
+			return fail(t.Host, resolveFailure(t.CredentialRef, err))
 		}
 		var payload struct {
 			BaseURL  string `json:"base_url"`

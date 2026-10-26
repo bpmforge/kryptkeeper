@@ -1,0 +1,3 @@
+plugins/modules/agent.py validate-modules:missing-gplv3-license
+plugins/modules/certificate.py validate-modules:missing-gplv3-license
+plugins/modules/certificate_info.py validate-modules:missing-gplv3-license

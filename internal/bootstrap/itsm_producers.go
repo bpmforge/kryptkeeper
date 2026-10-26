@@ -119,6 +119,36 @@ func announceRenewalFailed(ctx context.Context, notifs NotificationProvider, cer
 		func() string { return itsmCertMessage(itsmClassRenewalFailed, id, cert, now) })
 }
 
+// manualRenewalFailedEventID is the per-certificate id of a failed manual
+// renewal. The scheduler's id embeds an episode time, which a manual run has
+// no equivalent of; a fixed id makes repeated manual failures of one
+// certificate share one ticket (the ITSM store dedupes on event id), and the
+// ticket is closed by the verified-renewal hook when a later renewal succeeds.
+func manualRenewalFailedEventID(fingerprint string) string {
+	return itsmClassRenewalFailed + ":" + fingerprint + ":manual"
+}
+
+// announceManualRenewalFailed opens (once per certificate) the renewal_failed
+// ITSM ticket for a manual execute that failed (W32-32). It runs on the
+// request path, so it only enqueues; the response never waits on ITSM.
+func announceManualRenewalFailed(ctx context.Context, notifs NotificationProvider, certs CertificateProvider, fingerprint string) {
+	if notifs == nil || certs == nil || fingerprint == "" {
+		return
+	}
+	// The request context ends with the response; the enqueue must not.
+	ctx = context.WithoutCancel(ctx)
+	detail, ok, err := certs.GetCertificate(ctx, fingerprint)
+	if err != nil || !ok {
+		logging.Warnf("itsm: manual renewal failure for %s not announced: certificate lookup: %v", fingerprint, err)
+		return
+	}
+	cert := detail.CertificateItem
+	id := manualRenewalFailedEventID(cert.FingerprintSHA256)
+	now := time.Now().UTC()
+	announceITSM(ctx, notifs, fmt.Sprintf("manual renewal failed %s", cert.FingerprintSHA256), itsmCertVisible(ctx, cert),
+		func() string { return itsmCertMessage(itsmClassRenewalFailed, id, cert, now) })
+}
+
 // noOwnerAnnouncer emits expiry_no_owner once per certificate. The event id
 // is the certificate's fingerprint, so the ITSM store dedupes across restarts
 // and replicas; the in-memory set only keeps the hourly sweep from re-queueing

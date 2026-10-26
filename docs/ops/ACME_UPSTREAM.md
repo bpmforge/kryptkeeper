@@ -14,8 +14,10 @@ renewal loop. This is the "renew upstream" path of the estate takeover
 | `http-01` (default) | The CA can reach the hub on port 80 at the certificate's name | `http01_listen`, e.g. `":80"` |
 | `dns-01` | The hub is internal (the usual case), or the name is a wildcard | A DNS provider API credential |
 
-`dns-01` providers: **Cloudflare**. Others can be added behind the same
-interface.
+`dns-01` providers: **Cloudflare**, Route 53, Azure DNS, Google Cloud DNS,
+RFC 2136, CNAME delegation (`delegated`), and **`plugin`**: a signed DNS plugin
+(DigitalOcean, GoDaddy, NS1 and Akamai Edge DNS ship with Kryptkeeper; see
+[`dns_provider: plugin`](#dns_provider-plugin-a-signed-dns-plugin)).
 
 ## 2. Credential (dns-01 via Cloudflare)
 
@@ -87,6 +89,57 @@ connector's cleanup is a no-op.
 Set `dns_propagation` to `resolver`, `doh` or `none` for this provider. The
 `authoritative` check asks the zone's own nameservers, which do not follow the
 out-of-zone `_acme-challenge` CNAME to the acme-dns name.
+
+### `dns_provider: plugin`: a signed DNS plugin
+
+DNS providers without a built-in adapter run as signed WebAssembly plugins of
+kind `dns01` (see [`docs/plugins/README.md`](../plugins/README.md#the-dns01-kind)).
+The plugin only writes and deletes the TXT record. The hub still checks that
+the record is visible (`dns_propagation`, below) and the CA still validates,
+so a plugin cannot make a challenge pass.
+
+1. Install the plugin (`POST /api/v1/delivery-plugins`, or the Plugins page)
+   and have a second person enable it: it reaches the provider's API host, so
+   it is a High capability. The first-party ones are built by
+   `bash scripts/build-plugins.sh` into `dist/plugins/`.
+2. Create an outbound credential of type `api_token` whose secret is a JSON
+   object of the plugin's credential fields:
+
+   | Plugin | Secret JSON |
+   |---|---|
+   | `kryptkeeper.digitalocean-dns` | `{"api_token":"..."}` (scopes: domain read, create, delete) |
+   | `kryptkeeper.godaddy-dns` | `{"api_key":"...","api_secret":"..."}` (a production key) |
+   | `kryptkeeper.ns1-dns` | `{"api_key":"..."}` |
+   | `kryptkeeper.akamai-edgedns` | `{"host":"https://akab-xxxx.luna.akamaiapis.net","client_token":"...","client_secret":"...","access_token":"..."}` (the `.edgerc` values; `host` as an `https://` URL; read-write access to Edge DNS) |
+
+3. Point the connector at both, with `dns_provider` `plugin`:
+
+   ```json
+   {"directory_url":"https://acme-v02.api.letsencrypt.org/directory","email":"pki@example.com",
+    "challenge":"dns-01","dns_provider":"plugin",
+    "dns_plugin_id":"kryptkeeper.digitalocean-dns","dns_plugin_credential":"cred-do-dns"}
+   ```
+
+   `dns_plugin_id` and `dns_plugin_credential` are names, not secrets. The
+   credential must belong to the connector's tenant. The connector's own
+   `credential_ref` still holds only the ACME account key and EAB.
+
+The plugin finds the zone itself, longest parent first, so a delegated
+subdomain managed as its own zone wins. GoDaddy's minimum TTL is 600 seconds,
+so with that plugin the record stays cached up to ten minutes: leave
+`dns_propagation` on `auto` rather than `none`.
+
+Each present and cleanup writes an audit row (`delivery_plugin.dns01_present`,
+`delivery_plugin.dns01_cleanup`) with the plugin version and module hash. A
+cleanup that fails is logged and does not fail an order that already issued; a
+leftover challenge record is untidy, not unsafe. When plugins are turned off
+(`KRYPTKEEPER_DELIVERY_PLUGINS=off`), or the plugin is disabled or is not a
+`dns01` plugin, an order fails at the first challenge, before any plugin call
+(the order is already open at the CA by then).
+
+GoDaddy: the plugin uses the v1 API with the classic `sso-key` developer key.
+GoDaddy lists that credential as deprecated for Domains through 2026; a v3
+plugin with personal access tokens is on the roadmap.
 
 ## How propagation is checked (`dns_propagation`)
 
@@ -165,12 +218,35 @@ The hub reaches the CA through a guarded client (FG-8, OWASP-A10-002):
 error is written to the server log (`acme connector <id>: health probe
 failed`), not returned to API callers.
 
-## Known limitation: Retry-After does not survive a restart (v1)
+## Retry-After survives restarts and is shared by replicas
 
-The connector backoff and the upstream Retry-After gate are held in process memory. A hub restarted (or failed
-over) while a CA is answering 429 forgets the remaining Retry-After and may place a few orders before it ends;
-the CA simply answers 429 again and the hub backs off from there. Measured in the renewal storm (leg B, a graceful
-restart during a 429 window): 3 orders up to 2.8 s early, no lost or duplicate issuance from this cause. With
-several replicas the gate is also per replica, not shared. Plan for it with CAs that penalise early retries (a
-stricter rate-limit tier): stagger restarts away from a known 429 window. Tracked as W35-01 (persist the gate
-across restarts and replicas). See `tests/live/storm/README.md`.
+When a CA answers 429, the hub stores the deadline for that connector
+(`connector_retry_gate`, migration 000360) and reads it before every order.
+A hub restarted inside the window places no order before `retry_at` (renewals
+are deferred as `reason=backoff`, without using an attempt), and replicas
+sharing the database hold each other: a 429 seen by one stops the others. When
+two replicas save at once the later deadline wins.
+
+If the database cannot be read, the hub **fails open**: it keeps using the hold
+it holds in memory and logs `connectors: retry gate store unavailable` (at most
+every 30 s). It does not stop issuing. Failing closed would stop every expiring
+certificate from renewing on a database blip, while the worst fail-open result is
+one order the CA refuses with another 429, which the in-memory hold then
+catches. A restart during a database outage therefore loses the hold; avoid
+restarting the hub inside a known 429 window while the database is down.
+
+## Rolling issuance budget
+
+To stay under a CA's published limit (for example 300 new orders per 3 hours),
+set a window and a budget on the connector, in its `config_json`:
+`"rate_window":"3h","rate_budget":300`. The operator can instead set
+`KRYPTKEEPER_CONNECTOR_LIMITS` (`{"<connector id>":{"window":"3h","window_budget":300}}`),
+which wins over the connector's own keys. The hub refuses order N+1 inside any
+window with `reason=window_budget` and retries once the oldest order has left
+it. Orders are logged in `connector_issue_log` (migration 000361), so a restart
+does not reset the count. Revocations are not counted. The renewal SLO
+report's `connector_budgets` show `window_used`, `window_limit` and
+`window_seconds`. The existing daily budget is unchanged and applies as well.
+Only the replica holding the renewal scheduler lease issues, so the count is
+per hub; if you run several issuing replicas against one CA, split the budget.
+

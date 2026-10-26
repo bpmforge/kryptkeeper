@@ -92,6 +92,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/demo/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Whether this hub holds demo data (W37-07)
+         * @description `demo` is true after `kryptkeeper demo seed` has set the `demo.seeded_at` runtime setting and false after `kryptkeeper demo reset` cleared it. The UI shows its Demo data banner from this. The marker is written through `PUT /config/demo.seeded_at` (audited as config.set and demo.marker.update), which a hub with KRYPTKEEPER_ENV=production refuses with 409.
+         */
+        get: operations["getDemoStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/certificate-requests": {
         parameters: {
             query?: never;
@@ -214,7 +234,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Revoke certificate */
+        /**
+         * Revoke certificate
+         * @description D-306: a certificate issued through an external CA, or renewed through a connector that can revoke, is revoked at the upstream CA first. If the upstream accepts, the certificate is marked revoked with `revocation_scope` `upstream`. If it refuses or is unreachable the certificate is NOT marked revoked (502). `scope=inventory_only` (admin only) records the revocation here without asking the upstream, for an operator who already revoked it at the CA.
+         */
         post: operations["revokeCertificate"];
         delete?: never;
         options?: never;
@@ -272,6 +295,23 @@ export interface paths {
         post?: never;
         /** Delete an issuer connector */
         delete: operations["deleteConnector"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connectors/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test an issuer connection (health plus a dry run where the vendor has one; pki-admin) */
+        post: operations["testConnector"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -829,6 +869,26 @@ export interface paths {
         put?: never;
         /** Reissue multiple certificates */
         post: operations["bulkReissueCertificates"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cas/external": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create an external CA that issues through an issuer connector (pki-admin)
+         * @description Admin only. D-122 dual control: when on, the first call proposes (202 + `data.action_id`), a different human approves it in the pending-actions queue, and the proposer repeats the call with `approved_action_id` (201).
+         */
+        post: operations["createExternalCA"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1850,6 +1910,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/notifications/ownerless": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List expiring certificates that have no owner team
+         * @description Active certificates with no owner team whose expiry is within `within_days`
+         *     (already-expired ones included), soonest first. Same "unowned" definition as
+         *     the dashboard count and `GET /certificates?owner=unassigned`. Alerts for
+         *     these certificates go to the routes whose owner_team is `!ownerless` (the
+         *     ownerless queue), else the global inbox, else the dashboard queue.
+         *     Tenant-scoped callers see only their own tenant's certificates.
+         */
+        get: operations["listOwnerlessExpiringCertificates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/notifications/team-routes": {
         parameters: {
             query?: never;
@@ -1862,7 +1947,7 @@ export interface paths {
         put?: never;
         /**
          * Create an owner-team notification route
-         * @description Used by alert rules whose target is @owner_team. owner_team `*` is the global inbox, used when the certificate's own team has no route on the rule's channel.
+         * @description Used by alert rules whose target is @owner_team. owner_team `*` is the global inbox, used when the certificate's own team has no route on the rule's channel. owner_team `!ownerless` is the ownerless queue, the routes used for certificates with no owner team (tried before the global inbox).
          */
         post: operations["createNotificationTeamRoute"];
         delete?: never;
@@ -2320,9 +2405,26 @@ export interface paths {
         put?: never;
         /**
          * Create a scheduled report delivery
-         * @description Allowed report/format pairs are executive-summary with pdf, and inventory or findings with csv or xlsx. Delivery is retried 3 times, then the report.delivery_failed alert event is raised. Audited as report.schedule_create.
+         * @description Allowed report/format pairs are listed by GET /reports/schedules/catalog (executive-summary pdf; estate csv, xlsx or pdf; inventory, findings, crypto-posture, expiry-timeline, ca-health and algorithm-sunset csv or xlsx). Cadence is daily, weekly or monthly. Delivery is retried 3 times, then the report.delivery_failed alert event is raised. Audited as report.schedule_create.
          */
         post: operations["createReportSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/reports/schedules/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the reports a schedule can deliver and each report's formats */
+        get: operations["getReportScheduleCatalog"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2381,7 +2483,7 @@ export interface paths {
         put?: never;
         /**
          * Connect a ticketing system (admin role required, W32-10)
-         * @description base_url must be https (http only for a loopback host). credential_ref names an entry in the encrypted outbound credential store; for ServiceNow its api_token payload is {"username","password"}, for Jira {"email","api_token"}.
+         * @description base_url must be https (http only for a loopback host). credential_ref names an entry in the encrypted outbound credential store; for ServiceNow its api_token payload is {"username","password"}, for Jira {"email","api_token"}. Kind plugin (D-326) names an enabled ticket plugin in plugin_id, takes no base_url, and its credential is an api_token credential holding the plugin's credential_schema fields (which include the service's subdomain address). Plugin connections cannot carry approval_pending: approval sync stays native-only.
          */
         post: operations["createItsmConnection"];
         delete?: never;
@@ -2465,8 +2567,71 @@ export interface paths {
         /**
          * Store an outbound credential, encrypted at rest (admin role required)
          * @description The payload is the secret material, shaped by its consumer (an SSH key + user, a WinRM URL + password, a device API login). It goes IN and never comes back out - the response is metadata only, and there is deliberately no update or read-back route.
+         *
+         *     With `source: external` (W38-07, D-324) the hub stores no secret at all: send `source_id` (a credential source of the caller's tenant), `reference` and optionally `static`, and no payload. The secret is fetched from the manager at each use and validated against the credential type's shape then; see docs/ops/CREDENTIAL_SOURCES.md.
          */
         post: operations["createCredential"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/credential-sources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List credential sources of the caller's tenant (admin role required)
+         * @description A source says where external credentials fetch their secrets from (W38-07, D-324): HashiCorp Vault or OpenBao KV v2, or a `credentials` plugin. Nothing in a source is secret; its login is a local api_token credential named by credential_ref.
+         */
+        get: operations["listCredentialSources"];
+        put?: never;
+        /**
+         * Create a credential source (admin role required)
+         * @description credential_ref must be a local api_token credential of the same tenant holding the manager login: {"token"} or {"role_id","secret_id"} for Vault and OpenBao, the plugin's credential fields for a plugin source. A plugin source needs an enabled `credentials` plugin, which a second person approved (provide_credentials is a Critical capability).
+         */
+        post: operations["createCredentialSource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/credential-sources/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete a credential source no credential uses (admin role required) */
+        delete: operations["deleteCredentialSource"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/credential-sources/{id}/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fetch a reference through a source and report the field names (admin role required)
+         * @description Runs the real fetch and payload validation for a credential type, so the operator sees a bad path, a denied policy or a missing field before relying on it. Only field names come back, never values. A failed fetch is a 200 with ok=false and the reason. The attempt is audited as credential.resolve.
+         */
+        post: operations["testCredentialSource"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3950,6 +4115,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/scep/labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List SCEP labels (pki-admin; W20-23)
+         * @description A label publishes a named SCEP endpoint, /scep/{label}, whose challenge mode is "intune": the hub validates each device's challenge through the Microsoft Intune SCEP validation API before issuing. The bare /scep route keeps the hub's one-time challenges.
+         */
+        get: operations["listSCEPLabels"];
+        put?: never;
+        /**
+         * Create an Intune-mode SCEP label (pki-admin)
+         * @description credential_ref names an api_token credential in the outbound credential store whose payload is {"client_secret": "..."} or {"certificate_pem": "...", "private_key_pem": "..."} for the Entra app. The secret is never accepted, stored in the label or returned here.
+         */
+        post: operations["createSCEPLabel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/scep/labels/{label}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete a SCEP label (pki-admin) */
+        delete: operations["deleteSCEPLabel"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/acme/eab-keys": {
         parameters: {
             query?: never;
@@ -3983,6 +4189,47 @@ export interface paths {
         post?: never;
         /** Revoke an ACME EAB credential; its next newAccount fails (pki-admin) */
         delete: operations["revokeACMEEABKey"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/acme/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the ACME device inventory visible to the caller (pki-admin; W40-02) */
+        get: operations["listACMEDevices"];
+        put?: never;
+        /**
+         * Add a device to the ACME device inventory (pki-admin; W40-02)
+         * @description device-attest-01 issues only to identifiers in this inventory: attestation proves the hardware, the inventory proves ownership. The identifier is the order value verbatim (case-sensitive, at most 64 bytes, optional "/assigner-OID" suffix per draft-ietf-acme-device-attest section 3.1) and is unique across the hub. With MULTI_TENANCY on the entry belongs to the caller's tenant and only CAs of that tenant issue to it.
+         */
+        post: operations["addACMEDevice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/acme/devices/{identifier}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove a device from the ACME device inventory (pki-admin; W40-02)
+         * @description Takes effect at once: an order already attested is refused at finalize. The identifier is percent-encoded because it may contain "/".
+         */
+        delete: operations["removeACMEDevice"];
         options?: never;
         head?: never;
         patch?: never;
@@ -4107,6 +4354,68 @@ export interface paths {
          * @description Standard capabilities, or an upgrade that adds none, are enabled at once (200). High or Critical capabilities create a pending action that a different pki-admin must approve (202); the previously enabled version keeps running until then (D-116).
          */
         post: operations["enableDeliveryPluginVersion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugin-catalogue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the signed plugin catalogue with install status (pki-admin, W38-11)
+         * @description Fetches catalogue.json and its cosign bundle through the egress guard (only when called; the hub never polls), verifies the signature against the compiled-in first-party key or KRYPTKEEPER_PLUGIN_TRUSTED_KEYS, and marks each entry available, installed or upgradable. The URL is KRYPTKEEPER_PLUGIN_CATALOGUE_URL (default https://kryptkeeper.io/plugins/catalogue.json; empty disables it).
+         */
+        get: operations["listPluginCatalogue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugin-catalogue/{id}/install": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Install a plugin version from the catalogue, disabled (pki-admin, W38-11)
+         * @description Downloads the manifest, cosign bundle and module, checks the module against the catalogue's and the manifest's SHA-256, then runs the same install as a manual upload (same trust tiers). Enabling is a separate step and High or Critical capabilities still need a second pki-admin.
+         */
+        post: operations["installPluginFromCatalogue"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/plugin-catalogue/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Install a plugin from catalogue files carried in by hand (pki-admin, W38-11)
+         * @description For air-gapped hubs. Send the catalogue.json and catalogue.json.bundle from a release asset plus one plugin's manifest.json, its bundle and plugin.wasm. The catalogue signature is verified exactly as for an online fetch; nothing touches the network.
+         */
+        post: operations["importPluginFromCatalogueFiles"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4941,6 +5250,81 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/trust-bundles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List approved trust bundles with per-host status counts (W40-03) */
+        get: operations["listTrustBundles"];
+        put?: never;
+        /**
+         * Propose pushing CA certificates to agents' OS trust stores (dual control, Critical)
+         * @description Queues the bundle in the approval queue; nothing reaches an agent until a different approver approves it (proposer is never the approver). The hub refuses bundles holding any block other than CERTIFICATE, any certificate that is not a CA, and (for `add`) any expired or not yet valid certificate. A `remove` bundle that names the root of a hub CA that issued live managed certificates returns `warnings`, which the approver also sees. Targets are resolved now: a union of `agent_ids`, `agent_types` and `all`. An agent applies the bundle only if its own configuration opts in (`KRYPTKEEPER_TRUST_STORE_PUSH=true`).
+         */
+        post: operations["proposeTrustBundle"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/trust-bundles/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** One trust bundle with its per-host result (applied, refused_not_opted_in, failed, pending) */
+        get: operations["getTrustBundle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/trust-tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Fetch trust bundles queued for this agent (X-Agent-ID + X-Agent-Token headers)
+         * @description Bundles that target this agent and have no applied result. The agent acts only if it opted in locally; otherwise it reports refused_not_opted_in.
+         */
+        get: operations["getAgentTrustTasks"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/trust-result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Report what the agent did with a trust bundle (X-Agent-ID + X-Agent-Token headers) */
+        post: operations["submitAgentTrustResult"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/renewal-result": {
         parameters: {
             query?: never;
@@ -5007,6 +5391,26 @@ export interface paths {
          * @description W19-26: today the audit log is the only durable evidence of what an agent was asked to do and what happened -- this exposes the same history resultsFor already tracked internally. Authorized the same way as GET /agents (bearer JWT); agents carry no tenant column in the schema, so there is no tenant dimension to scope this by.
          */
         get: operations["getAgentTaskResults"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agents/{id}/inventory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What one agent discovered, certificates and files (admin view)
+         * @description W24-45: the certificates the agent last pushed (the fields it sent: no PEM, no key) and the files its host pass flagged (non-standard posture or findings; a key file is a path with no bytes), with counts of every statted file by posture. Pages by limit and offset, applied to each list separately. Authorized like GET /agents/{id}/tasks: agents carry no tenant column (D-203), so under multi-tenancy only a platform super-admin may read it; a tenant-scoped principal gets 403, audited. Audited as agent.inventory.
+         */
+        get: operations["getAgentInventory"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5526,6 +5930,34 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Everything about a source that is not secret. */
+        CredentialSourceConfig: {
+            /** @description vault_kv2: the Vault or OpenBao address. */
+            base_url?: string;
+            /** @description vault_kv2: X-Vault-Namespace. */
+            namespace?: string;
+            /** @description vault_kv2: the KV v2 mount path (default secret). */
+            mount?: string;
+            /** @description vault_kv2: the AppRole auth mount (default approle). */
+            approle_mount?: string;
+            /** @description vault_kv2: pins a private server CA (public material). */
+            ca_cert_pem?: string;
+            /** @description plugin: the enabled credentials plugin. */
+            plugin_id?: string;
+            /** @description 0 (default) fetches at every use and keeps nothing; otherwise the fetched credential is held in memory this long. */
+            cache_ttl_seconds?: number;
+        };
+        CredentialSource: {
+            id?: string;
+            name?: string;
+            /** @enum {string} */
+            kind?: "vault_kv2" | "plugin";
+            tenant?: string;
+            credential_ref?: string;
+            config?: components["schemas"]["CredentialSourceConfig"];
+            created_at?: string;
+            updated_at?: string;
+        };
         PrivilegePreflight: {
             /** Format: date-time */
             checked_at: string;
@@ -5566,6 +5998,24 @@ export interface components {
             /** Format: date-time */
             updated_at?: string;
             /** @description <KRYPTKEEPER_BASE_URL>/.well-known/est/<label>/ */
+            url?: string;
+        };
+        /** @description A named SCEP endpoint in Intune challenge mode (W20-23). */
+        SCEPLabel: {
+            label?: string;
+            /** @enum {string} */
+            mode?: "intune";
+            template_id?: string;
+            intune_tenant_id?: string;
+            intune_client_id?: string;
+            /** @description Id of the outbound credential; never the secret */
+            credential_ref?: string;
+            issuing_authority?: string;
+            description?: string;
+            created_by?: string;
+            /** Format: date-time */
+            created_at?: string;
+            /** @description <KRYPTKEEPER_BASE_URL>/scep/<label> */
             url?: string;
         };
         ESTUser: {
@@ -5744,6 +6194,45 @@ export interface components {
             error_code?: string;
             message?: string;
         };
+        TrustBundleSummary: {
+            id?: string;
+            name?: string;
+            /** @enum {string} */
+            action?: "add" | "remove";
+            certs?: {
+                sha256?: string;
+                subject?: string;
+                issuer?: string;
+                /** Format: date-time */
+                not_after?: string;
+                root?: boolean;
+            }[];
+            selector?: {
+                agent_ids?: string[];
+                agent_types?: string[];
+                all?: boolean;
+            };
+            agent_ids?: string[];
+            created_by?: string;
+            approved_by?: string;
+            action_id?: string;
+            /** Format: date-time */
+            created_at?: string;
+            targets?: number;
+            applied?: number;
+            refused_not_opted_in?: number;
+            failed?: number;
+            pending?: number;
+        };
+        TrustHostStatus: {
+            agent_id?: string;
+            agent_name?: string;
+            /** @enum {string} */
+            outcome?: "applied" | "refused_not_opted_in" | "failed" | "pending";
+            detail?: string;
+            /** Format: date-time */
+            reported_at?: string;
+        };
         CodesignTrustRule: {
             id?: string;
             provider?: string;
@@ -5802,10 +6291,10 @@ export interface components {
             revoked_at?: string;
             revocation_reason?: number;
             /**
-             * @description `ca`: recorded against the issuing CA, so CRL and OCSP reflect it. `inventory_only`: the certificate has no issuing CA in this hub (imported, discovered or synced); only the hub inventory was marked, and the operator must still revoke it at the real issuer.
+             * @description `ca`: recorded against the issuing CA, so CRL and OCSP reflect it. `upstream`: the issuing CA is external (or the certificate has a renewal connector that can revoke) and it accepted the revocation first; relying parties see it through that CA's own CRL and OCSP. `inventory_only`: the certificate has no issuing CA in this hub (imported, discovered or synced); only the hub inventory was marked, and the operator must still revoke it at the real issuer.
              * @enum {string}
              */
-            revocation_scope?: "ca" | "inventory_only";
+            revocation_scope?: "ca" | "inventory_only" | "upstream";
         };
         CertificateItem: {
             fingerprint_sha256?: string;
@@ -5830,6 +6319,17 @@ export interface components {
             risk_score?: number;
             /** @enum {string} */
             renewal_status?: "active" | "renewed" | "revoked" | "expired" | "reissue_required";
+            /** @description Issuing CA in this hub; empty for imported, discovered or synced certificates. */
+            ca_id?: string;
+            /**
+             * @description Where the certificate came from.
+             * @enum {string}
+             */
+            origin?: "internal" | "imported" | "discovered" | "synced";
+            /** @enum {string} */
+            management_state?: "managed" | "external" | "unmanaged";
+            /** @description Issuer connector that renews (and, when it supports it, revokes) this certificate. Absent for the internal renewal path. */
+            renewal_connector_id?: string;
             trust_class?: components["schemas"]["TrustClass"];
             /** @description The chain as this hub issued or ingested it. ABSENT for discovery-found certs (`origin` = discovered): whether a served chain is complete is a fact about an endpoint, so it is reported per endpoint (`mapped_certs[].chain_complete` on /discovery/endpoints) and never as a certificate-level value that could contradict it. A hub-issued cert served without its intermediate is complete here and incomplete on that endpoint. */
             chain_complete?: boolean;
@@ -6040,6 +6540,8 @@ export interface components {
             ssh_policy?: components["schemas"]["SSHPolicy"];
             name_policy?: components["schemas"]["NamePolicy"];
             enrollment_permissions?: components["schemas"]["EnrollmentPermissions"];
+            /** @description Explicitly allows ACME device-attest-01 issuance from this template (W40-02, D-317). Needs attestation roots configured on the hub and the device in the inventory (/acme/devices). Set on create or replace (PUT), not PATCH; a clone starts without it. */
+            device_attestation?: boolean;
             revision?: number;
         };
         TemplateRevision: {
@@ -6166,8 +6668,31 @@ export interface components {
                 [key: string]: string;
             };
         };
+        PluginCatalogueEntry: {
+            id?: string;
+            kind?: string;
+            name?: string;
+            publisher?: string;
+            version?: string;
+            description?: string;
+            manifest_url?: string;
+            wasm_url?: string;
+            bundle_url?: string;
+            sha256?: string;
+            capabilities?: string[];
+            min_hub_version?: string;
+            /** @enum {string} */
+            status?: "available" | "installed" | "upgradable";
+            installed_version?: string;
+            compatible?: boolean;
+        };
         DeliveryPluginVersion: {
             plugin_id?: string;
+            /**
+             * @description What the plugin does (manifest kind; absent in a manifest means delivery). The hub runs delivery and notify plugins today.
+             * @enum {string}
+             */
+            kind?: "delivery" | "notify" | "ticket" | "dns01" | "inventory" | "credentials";
             version?: string;
             sha256?: string;
             /** @enum {string} */
@@ -6194,8 +6719,16 @@ export interface components {
             template_id?: string;
             /** @description Lowercase exact names or *.suffix entries */
             allow_names: string[];
-            /** @description Empty means both */
-            challenges?: ("http-01" | "dns-01")[];
+            /** @description Empty means http-01 and dns-01 (and device-attest-01 when the template allows it and roots are configured) */
+            challenges?: ("http-01" | "dns-01" | "device-attest-01")[];
+        };
+        ACMEDevice: {
+            identifier: string;
+            label?: string;
+            tenant_id: string;
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
         };
         ACMEProvisioner: {
             name: string;
@@ -6208,16 +6741,19 @@ export interface components {
         ItsmEventClass: {
             /** @enum {string} */
             class: "renewal_failed" | "approval_pending" | "expiry_no_owner";
-            /** @description ServiceNow incident or change_request; Jira an issue-type name (default Task when omitted on create). */
+            /** @description ServiceNow incident or change_request; Jira an issue-type name (default Task when omitted on create); a plugin connection takes free text the ticket plugin interprets (empty means its default). */
             ticket_type: string;
         };
         ItsmConnection: {
             id: string;
             /** @enum {string} */
-            kind: "servicenow" | "jira";
+            kind: "servicenow" | "jira" | "plugin";
             name: string;
+            /** @description Empty for a plugin connection; the credential holds the service address. */
             base_url: string;
             credential_ref: string;
+            /** @description The ticket plugin of a plugin connection (D-326); absent for ServiceNow and Jira. */
+            plugin_id?: string;
             event_classes: components["schemas"]["ItsmEventClass"][];
             enabled: boolean;
             tenant: string;
@@ -6361,13 +6897,13 @@ export interface components {
             /** @enum {string} */
             discovery_mode?: "agent" | "network" | "cloud" | "winrm" | "none";
             /** @enum {string} */
-            install_mode?: "agent" | "ssh" | "f5" | "citrix" | "k8s" | "iis" | "keychain" | "cloud" | "acme" | "plugin";
+            install_mode?: "agent" | "ssh" | "f5" | "citrix" | "k8s" | "iis" | "sqlserver" | "rdp" | "exchange" | "keychain" | "cloud" | "acme" | "plugin";
             /** @enum {string} */
             renewal_method?: "acme" | "est" | "scep" | "manual";
             /** @description Delivery plugin for install_mode=plugin (W20-20) */
             plugin_id?: string;
             /**
-             * @description W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode.
+             * @description W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/sqlserver/rdp/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode.
              * @enum {string}
              */
             key_handling_mode?: "client_csr" | "hub_generated" | "hsm_resident_ca" | "macos_non_extractable";
@@ -7030,15 +7566,15 @@ export interface components {
         };
         ReportSchedule: {
             id?: string;
-            /** @enum {string} */
-            report: "executive-summary" | "inventory" | "findings";
+            /** @description A report name from GET /reports/schedules/catalog */
+            report: string;
             /** @enum {string} */
             format: "csv" | "xlsx" | "pdf";
             /**
              * @default monthly
              * @enum {string}
              */
-            cadence: "weekly" | "monthly";
+            cadence: "daily" | "weekly" | "monthly";
             recipients: string[];
             /** @default true */
             enabled: boolean;
@@ -7349,6 +7885,8 @@ export interface operations {
                     "application/json": {
                         service?: string;
                         version?: string;
+                        /** @description Deployment environment name from KRYPTKEEPER_ENV (APP_ENV when unset). `kryptkeeper demo seed` refuses a hub that reports `production`. */
+                        environment?: string;
                         /** @description Live FIPS 140-3 posture of this process (W23-32). */
                         fips?: {
                             mode_140_3?: boolean;
@@ -7358,6 +7896,49 @@ export interface operations {
                         };
                     };
                 };
+            };
+        };
+    };
+    getDemoStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Demo marker */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            demo?: boolean;
+                            /**
+                             * Format: date-time
+                             * @description Present when demo is true.
+                             */
+                            seeded_at?: string;
+                        };
+                    };
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Config store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };
@@ -7553,6 +8134,20 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description The external CA's upstream is rate limiting (error upstream_rate_limited); Retry-After when the upstream sent one. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description External CA (W36): upstream_issue_failed when the upstream refused or could not be reached, or upstream_response_rejected when it returned a certificate that does not match the request (audited as certificate.issue.upstream_rejected). Nothing is stored. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
             /** @description Team policy or quota could not be evaluated; issuance is refused (fail closed). */
             503: {
                 headers: {
@@ -7717,7 +8312,10 @@ export interface operations {
     };
     revokeCertificate: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Record the revocation in this hub only. Admin only. */
+                scope?: "inventory_only";
+            };
             header?: never;
             path: {
                 fingerprint: string;
@@ -7729,6 +8327,11 @@ export interface operations {
                 "application/json": {
                     reason_code?: number;
                     reason_text?: string;
+                    /**
+                     * @description Same as the `scope` query parameter; the query wins when both are sent.
+                     * @enum {string}
+                     */
+                    scope?: "inventory_only";
                 };
             };
         };
@@ -7744,8 +8347,22 @@ export interface operations {
                     };
                 };
             };
-            /** @description Already revoked */
+            /** @description A non-admin set `scope` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already revoked, or the connector cannot revoke upstream (error `upstream_revoke_unsupported`; use `scope=inventory_only`) */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The upstream CA refused or could not be reached (error `upstream_revoke_failed`, message scrubbed of secrets). The certificate is not marked revoked. */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -7773,7 +8390,7 @@ export interface operations {
                             id?: string;
                             name?: string;
                             /** @enum {string} */
-                            type?: "internal" | "acme" | "digicert" | "scep" | "est" | "wstep";
+                            type?: "internal" | "acme" | "digicert" | "scep" | "est" | "wstep" | "vault_pki" | "ejbca" | "aws_pca" | "gcp_cas" | "sectigo" | "globalsign" | "entrust";
                             config_json?: string;
                             credential_ref?: string;
                             tenant?: string;
@@ -7800,8 +8417,8 @@ export interface operations {
                 "application/json": {
                     name: string;
                     /** @enum {string} */
-                    type: "internal" | "acme" | "digicert" | "scep" | "est" | "wstep";
-                    /** @description No secrets — credentials go in credential_ref (W5-10 store). For acme connectors with dns-01: optional dns_propagation (auto|authoritative|resolver|doh|none), dns_resolver, dns_doh_url, dns_propagation_timeout (max 10m), dns_propagation_delay; see docs/ops/ACME_UPSTREAM.md. Upstream types (W27-35), all non-secret: digicert {base_url?, organization_id, product_name_id?, validity_years?}; scep {endpoint_url}; est {base_url, username}; wstep {endpoint_url, username, template_name}. api_key, password, secret or token anywhere in config_json is refused 400. */
+                    type: "internal" | "acme" | "digicert" | "scep" | "est" | "wstep" | "vault_pki" | "ejbca" | "aws_pca" | "gcp_cas" | "sectigo" | "globalsign" | "entrust";
+                    /** @description No secrets — credentials go in credential_ref (W5-10 store). For acme connectors with dns-01: optional dns_propagation (auto|authoritative|resolver|doh|none), dns_resolver, dns_doh_url, dns_propagation_timeout (max 10m), dns_propagation_delay; see docs/ops/ACME_UPSTREAM.md. Upstream types (W27-35), all non-secret: digicert {base_url?, organization_id, product_name_id?, validity_years?}; scep {endpoint_url}; est {base_url, username}; wstep {endpoint_url, username, template_name}. W36 upstream CAs: vault_pki {base_url, role, mount?, namespace?, ttl?, approle_mount?, ca_cert_pem?}; ejbca {base_url, certificate_profile_name, end_entity_profile_name, certificate_authority_name, username_prefix?, ca_cert_pem?}; aws_pca {certificate_authority_arn, region, signing_algorithm?, validity_days?, template_arn?, endpoint_url?, auth? static|ambient}; gcp_cas {project, location, ca_pool, certificate_authority_id?, certificate_template?, lifetime_days?, auth? service_account|ambient}; sectigo {base_url?, customer_uri, org_id, cert_type, term_days}; globalsign {base_url?, validity_days?, ca_cert_pem?}; entrust {base_url?, client_id, cert_type, validity_days|cert_lifetime, requester_name, requester_email, requester_phone}. Secrets and mTLS client cert/key go in the credential store (docs/ops/UPSTREAM_CAS.md). api_key, password, secret or token anywhere in config_json is refused 400. */
                     config_json?: string;
                     credential_ref?: string;
                 };
@@ -7895,6 +8512,55 @@ export interface operations {
                 content?: never;
             };
             /** @description Connector not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Referenced by an external CA or takeover; the message names the referencing object */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    testConnector: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Probe result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        status?: "healthy" | "degraded" | "unknown";
+                        detail?: string;
+                    };
+                };
+            };
+            /** @description Not a pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Connector not found (or in another tenant) */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -9201,6 +9867,8 @@ export interface operations {
                     owner_email?: string;
                     owner_team?: string;
                     service_name?: string;
+                    /** @description Free-form labels; omitted leaves them untouched. Demo data carries `demo=true` (W37-07). */
+                    labels?: string[];
                 };
             };
         };
@@ -9481,7 +10149,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Bulk revoke result (per-item outcomes). Each `succeeded` item carries `revocation_scope` (`ca` or `inventory_only`). */
+            /** @description Bulk revoke result (per-item outcomes). Each `succeeded` item carries `revocation_scope` (`ca`, `inventory_only` or `upstream`); a `failed` item whose upstream refused carries `revocation_scope: upstream_failed`. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -9491,11 +10159,13 @@ export interface operations {
                         succeeded?: {
                             fingerprint?: string;
                             /** @enum {string} */
-                            revocation_scope?: "ca" | "inventory_only";
+                            revocation_scope?: "ca" | "inventory_only" | "upstream";
                         }[];
                         failed?: {
                             fingerprint?: string;
                             error?: string;
+                            /** @enum {string} */
+                            revocation_scope?: "upstream_failed";
                         }[];
                     };
                 };
@@ -9526,6 +10196,81 @@ export interface operations {
             };
         };
     };
+    createExternalCA: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    connector_id: string;
+                    /** @description CA certificate chain (PEM) that upstream responses must chain to. */
+                    trust_pem: string;
+                    /** @description Pending action approved by a different human (dual control). */
+                    approved_action_id?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Created; a CA list item with type external and connector_id */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            id?: string;
+                            name?: string;
+                            /** @enum {string} */
+                            type?: "external";
+                            connector_id?: string;
+                            status?: string;
+                        };
+                    };
+                };
+            };
+            /** @description Dual control proposal filed; body carries `data.action_id` */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Invalid name */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not an admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description External CAs are not supported by this provider */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listCAs: {
         parameters: {
             query?: never;
@@ -9547,7 +10292,9 @@ export interface operations {
                             name?: string;
                             display_name?: string;
                             /** @enum {string} */
-                            type?: "root" | "intermediate" | "issuing";
+                            type?: "root" | "intermediate" | "issuing" | "external";
+                            /** @description Issuer connector that signs for an external CA; absent for hub CAs. */
+                            connector_id?: string;
                             /** @enum {string} */
                             status?: "active" | "suspended" | "revoked" | "expired" | "pending_ceremony" | "pending_certificate";
                             /** @description PKCS#10 request of an issuing CA in status pending_certificate; absent otherwise. */
@@ -11921,8 +12668,11 @@ export interface operations {
         requestBody?: {
             content: {
                 "application/json": {
-                    /** @enum {string} */
-                    channel?: "email" | "slack" | "pagerduty" | "webhook";
+                    /**
+                     * @description plugin sends through a notify plugin; its target is <plugin_id>/<credential_id>
+                     * @enum {string}
+                     */
+                    channel?: "email" | "slack" | "pagerduty" | "webhook" | "plugin";
                 };
             };
         };
@@ -11996,8 +12746,8 @@ export interface operations {
                     /** @description Scope the rule to one template; template-scoped rules override global ones for that template. */
                     template_id?: string;
                     /** @enum {string} */
-                    channel: "email" | "slack" | "pagerduty" | "webhook" | "itsm";
-                    /** @description Destination for the channel (for itsm, the id of an existing ITSM connection visible to the caller tenant), or the literal @owner_team to route each alert to the certificate owner team's /notifications/team-routes on this channel, else the global inbox (owner_team *), else the dashboard queue with nothing sent externally. */
+                    channel: "email" | "slack" | "pagerduty" | "webhook" | "itsm" | "plugin";
+                    /** @description Destination for the channel (for itsm, the id of an existing ITSM connection visible to the caller tenant; for plugin, <plugin_id>/<credential_id> naming an enabled notify plugin and an api_token credential holding its credential fields), or the literal @owner_team to route each alert to the certificate owner team's /notifications/team-routes on this channel, else the global inbox (owner_team *), else the dashboard queue with nothing sent externally. */
                     target: string;
                 };
             };
@@ -12160,6 +12910,61 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listOwnerlessExpiringCertificates: {
+        parameters: {
+            query?: {
+                within_days?: number;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ownerless expiring certificates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            items?: {
+                                fingerprint_sha256?: string;
+                                common_name?: string;
+                                /** Format: date-time */
+                                valid_until?: string;
+                                /** @description Negative when already expired */
+                                days_left?: number;
+                                owner_email?: string;
+                                ca_id?: string;
+                            }[];
+                        };
+                        meta?: {
+                            /** @description Matches before `limit` is applied */
+                            total?: number;
+                            within_days?: number;
+                        };
+                    };
+                };
+            };
+            /** @description within_days or limit out of range */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller may not read operational summaries */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -12908,7 +13713,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Renewal SLO. failed_renewals is one list of agent-reported failures (type agent_result) and the scheduler's durable failure queue (type execute_failure with attempt, max_attempts, next_attempt_at, gave_up; type notification_dead_letter once the notification retry budget is spent). Queue entries survive a hub restart. The queue object (W27-33) reports the sweep backlog: depth, eta_seconds (eta_known=false until one job has finished), workers, and per connector the throttle state (connectors: in_flight, max_concurrent, waiting, rate_limited_total, blocked_until, daily_budget, daily_used) repeated compactly as connector_budgets (connector_id, in_flight, cap, daily_used, daily_limit). Upstream 429/Retry-After responses back a connector off exponentially (30 s doubling, capped at 1 h) and are audited as connector.rate_limited; a throttled renewal is audited as certificate.renew_execute_deferred and does not consume an attempt. slos (W30-05) is the per-SLO 30-day error budget and 1h/6h burn rates. */
+            /** @description Renewal SLO. failed_renewals is one list of agent-reported failures (type agent_result) and the scheduler's durable failure queue (type execute_failure with attempt, max_attempts, next_attempt_at, gave_up; type notification_dead_letter once the notification retry budget is spent). Queue entries survive a hub restart. The queue object (W27-33) reports the sweep backlog: depth, eta_seconds (eta_known=false until one job has finished), workers, and per connector the throttle state (connectors: in_flight, max_concurrent, waiting, rate_limited_total, blocked_until, daily_budget, daily_used) repeated compactly as connector_budgets (connector_id, in_flight, cap, daily_used, daily_limit, and window_used, window_limit, window_seconds when a rolling issuance window is set, W27-39). Upstream 429/Retry-After responses back a connector off exponentially (30 s doubling, capped at 1 h) and are audited as connector.rate_limited; a throttled renewal is audited as certificate.renew_execute_deferred and does not consume an attempt. slos (W30-05) is the per-SLO 30-day error budget and 1h/6h burn rates. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -13057,6 +13862,39 @@ export interface operations {
             };
         };
     };
+    getReportScheduleCatalog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Schedulable reports */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            report: string;
+                            title: string;
+                            formats: ("csv" | "xlsx" | "pdf")[];
+                        }[];
+                    };
+                };
+            };
+            /** @description Tenant-scoped principals cannot use fleet-wide report schedules */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     deleteReportSchedule: {
         parameters: {
             query?: never;
@@ -13174,10 +14012,13 @@ export interface operations {
             content: {
                 "application/json": {
                     /** @enum {string} */
-                    kind: "servicenow" | "jira";
+                    kind: "servicenow" | "jira" | "plugin";
                     name: string;
-                    base_url: string;
+                    /** @description Required for servicenow and jira; must be empty for plugin. */
+                    base_url?: string;
                     credential_ref: string;
+                    /** @description Required for kind plugin: the id of an enabled ticket plugin. */
+                    plugin_id?: string;
                     /** @description Only these event classes create tickets, each with its ticket type; empty means all classes with the connector default. The array is stored and returned verbatim. */
                     event_classes?: components["schemas"]["ItsmEventClass"][];
                     /** @default true */
@@ -13654,6 +14495,21 @@ export interface operations {
                                 /** @description auto:<source> or manual:<principal> */
                                 privileged_set_by?: string;
                                 privileged_set_at?: string;
+                                /**
+                                 * @description Where the secret lives (W38-07). local is the encrypted row; external is a reference fetched from source_id's secret manager at each use.
+                                 * @enum {string}
+                                 */
+                                source?: "local" | "external";
+                                /** @description The credential source an external credential fetches from. */
+                                source_id?: string;
+                                /** @description External only: where in the manager the secret is (vault_kv2: path, version). */
+                                reference?: {
+                                    [key: string]: string;
+                                };
+                                /** @description External only: fixed non-secret payload fields (host_public_key, base_url). */
+                                static?: {
+                                    [key: string]: string;
+                                };
                             }[];
                         };
                     };
@@ -13695,8 +14551,23 @@ export interface operations {
                     name: string;
                     /** @enum {string} */
                     credential_type: "ssh_key" | "api_token" | "cloud_iam" | "windows_password";
+                    /**
+                     * @default local
+                     * @enum {string}
+                     */
+                    source?: "local" | "external";
+                    /** @description external only: the credential source to fetch from. */
+                    source_id?: string;
+                    /** @description external only: where the secret is. vault_kv2 sources take `path` (under the source's mount) and optionally `version` (whole number; absent or 0 reads the latest). Plugin sources take the plugin's keys (CyberArk safe/object, Secret Server secret_id) and `map` (SourceField:payload_field pairs). */
+                    reference?: {
+                        [key: string]: string;
+                    };
+                    /** @description external only: fixed payload fields the manager does not hold (host_public_key, base_url). Names that look like secrets are refused. */
+                    static?: {
+                        [key: string]: string;
+                    };
                     /** @description Consumer-shaped secret material. Never echoed back. For ssh_key the privilege fields are validated on create: sudo_password is required for, and only allowed with, sudo_mode password; helper_sha256 is required for, and only allowed with, sudo_mode helper. */
-                    payload: {
+                    payload?: {
                         /**
                          * @description ssh_key only. How the SSH account is elevated on the target (none = no elevation).
                          * @default none
@@ -13744,6 +14615,230 @@ export interface operations {
             };
             /** @description Credential store not configured */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listCredentialSources: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sources */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            items?: components["schemas"]["CredentialSource"][];
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Credential source store not configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createCredentialSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    /** @enum {string} */
+                    kind: "vault_kv2" | "plugin";
+                    credential_ref: string;
+                    config: components["schemas"]["CredentialSourceConfig"];
+                };
+            };
+        };
+        responses: {
+            /** @description Created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["CredentialSource"];
+                    };
+                };
+            };
+            /** @description Invalid source */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Credential source store not configured */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteCredentialSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Source not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Credentials still use this source */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    testCredentialSource: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    credential_type: "ssh_key" | "api_token" | "cloud_iam" | "windows_password";
+                    reference: {
+                        [key: string]: string;
+                    };
+                    static?: {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description The probe's result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            ok?: boolean;
+                            /** @description Names of the payload fields the manager's secret yielded. */
+                            fields?: string[];
+                            /** @description Why the fetch or the shape check failed; never carries a secret. */
+                            error?: string;
+                        };
+                    };
+                };
+            };
+            /** @description Missing credential_type or an invalid reference */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Admin role required */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Source not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -17417,6 +18512,151 @@ export interface operations {
             };
         };
     };
+    listSCEPLabels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Labels */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["SCEPLabel"][];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createSCEPLabel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    label: string;
+                    /** @enum {string} */
+                    mode: "intune";
+                    /** @description Its enrollment_permissions gate the label (role protocol:scep) */
+                    template_id: string;
+                    /** @description Entra tenant GUID or domain */
+                    intune_tenant_id: string;
+                    /** @description Entra app (client) id */
+                    intune_client_id: string;
+                    credential_ref: string;
+                    /** @description certIssuingAuthority reported to Intune; defaults to the certificate issuer */
+                    issuing_authority?: string;
+                    description?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Label created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["SCEPLabel"];
+                    };
+                };
+            };
+            /** @description Invalid label, mode or tenant, or the template or credential is not usable */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Label already exists */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    deleteSCEPLabel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                label: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such label */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listACMEEABKeys: {
         parameters: {
             query?: never;
@@ -17575,6 +18815,147 @@ export interface operations {
             };
             /** @description Already revoked */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listACMEDevices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Devices by identifier */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ACMEDevice"][];
+                    };
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    addACMEDevice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    identifier: string;
+                    label?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Added */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["ACMEDevice"];
+                    };
+                };
+            };
+            /** @description Invalid identifier or label */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The identifier is already in the inventory */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Inventory unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    removeACMEDevice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identifier: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Caller is not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such device (or it belongs to another tenant) */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -18004,6 +19385,180 @@ export interface operations {
             };
             /** @description No such plugin version */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listPluginCatalogue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Catalogue entries */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            generated_at?: string;
+                            entries?: components["schemas"]["PluginCatalogueEntry"][];
+                        };
+                    };
+                };
+            };
+            /** @description Not pki-admin */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The catalogue could not be fetched or its signature does not verify */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The catalogue is disabled or plugins are turned off */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    installPluginFromCatalogue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @description Defaults to the highest version listed. */
+                    version?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Installed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["DeliveryPluginVersion"];
+                    };
+                };
+            };
+            /** @description Hash mismatch, manifest not matching the entry, or a signature that does not verify */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not in the catalogue */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Already installed, or the version needs a newer hub */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Download failed or the catalogue signature does not verify */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The catalogue is disabled */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    importPluginFromCatalogueFiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    id: string;
+                    version?: string;
+                    catalogue_base64: string;
+                    catalogue_bundle: string;
+                    manifest_base64: string;
+                    bundle: string;
+                    wasm_base64: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Installed */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["DeliveryPluginVersion"];
+                    };
+                };
+            };
+            /** @description Bad files, hash mismatch, or a signature that does not verify */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not in the catalogue */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description That version is already installed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The catalogue signature does not verify */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -19297,7 +20852,7 @@ export interface operations {
                     /** @enum {string} */
                     discovery_mode?: "agent" | "network" | "cloud" | "winrm" | "none";
                     /** @enum {string} */
-                    install_mode?: "agent" | "ssh" | "f5" | "citrix" | "k8s" | "iis" | "keychain" | "cloud" | "acme" | "plugin";
+                    install_mode?: "agent" | "ssh" | "f5" | "citrix" | "k8s" | "iis" | "sqlserver" | "rdp" | "exchange" | "keychain" | "cloud" | "acme" | "plugin";
                     /** @enum {string} */
                     renewal_method?: "acme" | "est" | "scep" | "manual";
                     /** @description 1 to 365; 0 or omitted means use the RENEWAL_THRESHOLD_DAYS env default */
@@ -19305,7 +20860,7 @@ export interface operations {
                     /** @description Delivery plugin for install_mode=plugin (W20-20); required then, refused otherwise */
                     plugin_id?: string;
                     /**
-                     * @description W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode.
+                     * @description W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/sqlserver/rdp/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode.
                      * @enum {string}
                      */
                     key_handling_mode?: "client_csr" | "hub_generated" | "hsm_resident_ca" | "macos_non_extractable";
@@ -19504,7 +21059,7 @@ export interface operations {
                     /** @enum {string} */
                     discovery_mode?: "agent" | "network" | "cloud" | "winrm" | "none";
                     /** @enum {string} */
-                    install_mode?: "agent" | "ssh" | "f5" | "citrix" | "k8s" | "iis" | "keychain" | "cloud" | "acme" | "plugin";
+                    install_mode?: "agent" | "ssh" | "f5" | "citrix" | "k8s" | "iis" | "sqlserver" | "rdp" | "exchange" | "keychain" | "cloud" | "acme" | "plugin";
                     /** @enum {string} */
                     renewal_method?: "acme" | "est" | "scep" | "manual";
                     /** @description 1 to 365; 0 clears the override, reverting to the env default */
@@ -19512,7 +21067,7 @@ export interface operations {
                     /** @description Delivery plugin for install_mode=plugin (W20-20); required then, refused otherwise */
                     plugin_id?: string;
                     /**
-                     * @description W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode.
+                     * @description W23-46: where the private key is created and held; omit to derive from install_mode. windows_cng and tpm are rejected (planned for v1.x). client_csr needs agent/acme/cloud, hub_generated needs ssh/f5/citrix/k8s/iis/sqlserver/rdp/plugin, macos_non_extractable needs keychain; hsm_resident_ca is a label accepted with any install_mode.
                      * @enum {string}
                      */
                     key_handling_mode?: "client_csr" | "hub_generated" | "hsm_resident_ca" | "macos_non_extractable";
@@ -20534,6 +22089,250 @@ export interface operations {
             };
         };
     };
+    listTrustBundles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Trust bundles, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["TrustBundleSummary"][];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Instance-wide setting, platform super-admin required when multi-tenancy is on */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Trust bundle store unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    proposeTrustBundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    name: string;
+                    /** @enum {string} */
+                    action: "add" | "remove";
+                    /** @description PEM CA certificates only; at most 20 */
+                    cert_pem: string;
+                    selector: {
+                        agent_ids?: string[];
+                        agent_types?: ("linux" | "mac" | "windows")[];
+                        all?: boolean;
+                    };
+                    rationale?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Pending approval */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            action_id?: string;
+                            status?: string;
+                            targets?: number;
+                            warnings?: string[];
+                        };
+                    };
+                };
+            };
+            /** @description Not a CA bundle, expired certificate, empty or unknown selector */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Role may not propose, or platform super-admin required under multi-tenancy */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Approval queue unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getTrustBundle: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bundle and per-host status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: {
+                            bundle?: components["schemas"]["TrustBundleSummary"];
+                            hosts?: components["schemas"]["TrustHostStatus"][];
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unknown bundle */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAgentTrustTasks: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Agent-ID": string;
+                "X-Agent-Token": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Trust tasks */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        tasks?: {
+                            bundle_id?: string;
+                            name?: string;
+                            /** @enum {string} */
+                            action?: "add" | "remove";
+                            cert_pem?: string;
+                        }[];
+                    };
+                };
+            };
+            /** @description Bad agent credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    submitAgentTrustResult: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Agent-ID": string;
+                "X-Agent-Token": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    bundle_id: string;
+                    /** @enum {string} */
+                    outcome: "applied" | "refused_not_opted_in" | "failed";
+                    detail?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Missing credentials or unknown outcome */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Bad agent credentials */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The bundle does not target this agent */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     submitAgentRenewalResult: {
         parameters: {
             query?: never;
@@ -20679,6 +22478,94 @@ export interface operations {
             };
             /** @description Unauthorized */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Agent not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getAgentInventory: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of the agent's inventory */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        agent_id: string;
+                        certificates: {
+                            fingerprint: string;
+                            subject: string;
+                            issuer: string;
+                            /** Format: date-time */
+                            not_before: string;
+                            /** Format: date-time */
+                            not_after: string;
+                            /** @description Where the agent found it: a file path or a store such as jks:/path. */
+                            source: string;
+                            auto_renewable: boolean;
+                            dns_names?: string[];
+                        }[];
+                        total_certificates: number;
+                        files: {
+                            path: string;
+                            /** @enum {string} */
+                            kind: "pem" | "jks" | "p12" | "key" | "config";
+                            owner?: string;
+                            group?: string;
+                            mode?: string;
+                            posture: string;
+                            service_tech?: string;
+                            findings?: string[];
+                        }[];
+                        total_files: number;
+                        file_posture_counts?: {
+                            [key: string]: number;
+                        };
+                        /** @description False when the agent has sent no host pass; its files are unknown, not empty. */
+                        files_known: boolean;
+                        limit: number;
+                        offset: number;
+                    };
+                };
+            };
+            /** @description Bad limit or offset */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Tenant-scoped principals cannot read agent inventory (agents have no tenant) */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

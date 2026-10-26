@@ -28,6 +28,8 @@ type EvidenceSchedule struct {
 // cadenceInterval returns the delivery period for a cadence.
 func cadenceInterval(cadence string) time.Duration {
 	switch strings.ToLower(cadence) {
+	case "daily":
+		return 24 * time.Hour
 	case "weekly":
 		return 7 * 24 * time.Hour
 	case "monthly":

@@ -127,6 +127,7 @@ extraEnv: []
 
 config:
   authMode: bootstrap
+  environment: ""  # KRYPTKEEPER_ENV; "production" makes the hub refuse demo seeding
   # After SIGTERM the hub reports /readyz 503 but keeps serving this long so
   # Service endpoint removal propagates before the listener closes (distroless
   # image: no shell for a sleep preStop). 0 = close immediately. Max 120.
@@ -269,3 +270,10 @@ networkPolicy:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# W37-08: seed a labelled demo estate on first install (post-install hook that
+# runs `kryptkeeper demo seed`). Only for trials: see values-demo.yaml.
+demo:
+  enabled: false
+  wait: 5m          # how long the Job waits for the hub to become ready
+  targets: []       # host:port TLS endpoints to scan once, e.g. ["demo-web1:8443"]

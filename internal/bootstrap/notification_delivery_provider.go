@@ -19,9 +19,15 @@ import (
 
 // deliveryNotificationProvider wraps the real delivery engine behind the NotificationProvider interface.
 type deliveryNotificationProvider struct {
-	worker *delivery.Worker
-	rules  notificationRuleStore
-	mu     sync.RWMutex
+	// retrier wraps every channel's Send with persisted, backed-off retries
+	// (W32-31); channel types are invisible to it.
+	retrier *delivery.Retrier
+	// retryPoll is how often due retries are claimed.
+	retryPoll time.Duration
+	// audit receives each final delivery outcome (W32-31); nil = none.
+	audit AuditProvider
+	rules notificationRuleStore
+	mu    sync.RWMutex
 	// In-memory delivery log, bounded to deliveryLogMax entries (oldest
 	// dropped): it is a recent-activity view, not durable history.
 	log *deliveryLog
@@ -53,6 +59,12 @@ type deliveryJob struct {
 	id    string
 	event delivery.Event
 }
+
+const (
+	auditActionDeliverySettled = "notification.delivery.settled"
+	// retryPollInterval is the production cadence for claiming due retries.
+	retryPollInterval = 5 * time.Second
+)
 
 const (
 	// deliveryLogMax bounds the in-memory delivery log (ring buffer).
@@ -114,26 +126,87 @@ type notificationRuleStore interface {
 }
 
 // NewDeliveryNotificationProviderWithEscalation creates a notification provider
-// backed by delivery channels, with failure escalation: a delivery that fails after maxRetries attempts
-// raises one alert on the channel resolve names.
-func NewDeliveryNotificationProviderWithEscalation(channels []delivery.Channel, maxRetries int, resolve EscalationResolver) NotificationProvider {
-	p := newDeliveryNotificationProvider(channels, maxRetries, newDBNotificationProviderFromEnv())
+// backed by delivery channels. Every send is retried per policy with state in
+// store, so a restart resumes pending retries; a delivery that exhausts its
+// attempts is audited and raises one alert on the channel resolve names.
+func NewDeliveryNotificationProviderWithEscalation(channels []delivery.Channel, policy delivery.Policy, store delivery.Store, audit AuditProvider, resolve EscalationResolver) NotificationProvider {
+	// Poll finer than the base delay, or short delays would round up to the poll.
+	poll := min(retryPollInterval, max(250*time.Millisecond, policy.Base/2))
+	p := newDeliveryProvider(channels, policy, store, time.Now, newDBNotificationProviderFromEnv(), poll)
 	p.escalate = resolve
+	p.audit = audit
+	// Eager: entries persisted before a restart are due without any new send.
+	p.startPool()
+	return p
+}
+
+func newDeliveryProvider(channels []delivery.Channel, policy delivery.Policy, store delivery.Store, now func() time.Time, rules notificationRuleStore, poll time.Duration) *deliveryNotificationProvider {
+	p := &deliveryNotificationProvider{
+		retrier:   delivery.NewRetrier(channels, policy, store, now),
+		retryPoll: poll,
+		rules:     rules,
+		log:       newDeliveryLog(deliveryLogMax),
+	}
+	p.retrier.OnSettled = p.onSettled
 	return p
 }
 
 func newDeliveryNotificationProviderForTest(channels []delivery.Channel, maxRetries int, retryDelay time.Duration, rules notificationRuleStore, resolve EscalationResolver) *deliveryNotificationProvider {
-	return &deliveryNotificationProvider{
-		worker:   delivery.NewWorker(channels, maxRetries, retryDelay),
-		rules:    rules,
-		log:      newDeliveryLog(deliveryLogMax),
-		escalate: resolve,
-	}
+	pol := delivery.Policy{MaxAttempts: maxRetries, Base: retryDelay, Cap: retryDelay, Jitter: 0, Lease: time.Minute}
+	p := newDeliveryProvider(channels, pol, nil, nil, rules, time.Millisecond)
+	p.escalate = resolve
+	return p
 }
 
 func newDeliveryNotificationProvider(channels []delivery.Channel, maxRetries int, rules notificationRuleStore) *deliveryNotificationProvider {
-	worker := delivery.NewWorker(channels, maxRetries, 5*time.Second)
-	return &deliveryNotificationProvider{worker: worker, rules: rules, log: newDeliveryLog(deliveryLogMax)}
+	pol := delivery.Policy{MaxAttempts: maxRetries, Base: 5 * time.Second, Cap: time.Minute}
+	return newDeliveryProvider(channels, pol, nil, nil, rules, retryPollInterval)
+}
+
+// onSettled records a final outcome: the log row, an audit entry, and, for a
+// failure, the single escalation alert. It also runs for deliveries resumed
+// after a restart, which have no log row (setStatus ignores those).
+func (p *deliveryNotificationProvider) onSettled(ctx context.Context, ev delivery.Event, res delivery.Result) {
+	status := delivery.StatusFailed
+	if res.Status == delivery.StatusSent {
+		status = delivery.StatusSent
+	}
+	if reason, ok := egress.ExplainBlocked(res.Error); ok && status == delivery.StatusFailed {
+		p.setFailureReason(ev.ID, reason)
+	}
+	p.setStatus(ev.ID, status)
+	p.auditSettled(ctx, ev, res)
+	if status == delivery.StatusFailed {
+		p.escalateFailure(deliveryJob{id: ev.ID, event: ev}, res)
+	}
+}
+
+func (p *deliveryNotificationProvider) auditSettled(ctx context.Context, ev delivery.Event, res delivery.Result) {
+	if p.audit == nil {
+		return
+	}
+	outcome := AuditOutcomeSuccess
+	if res.Status != delivery.StatusSent {
+		outcome = AuditOutcomeFailure
+	}
+	// The target is omitted: it may embed a webhook credential.
+	detail := fmt.Sprintf("channel=%s attempts=%d", ev.Channel, res.Attempts)
+	if res.Error != "" {
+		detail += " error=" + delivery.RedactURLs(res.Error)
+	}
+	err := p.audit.AppendEntry(ctx, AuditEntry{
+		Timestamp:     time.Now().UTC().Format(time.RFC3339),
+		Action:        auditActionDeliverySettled,
+		ActorType:     "system",
+		ActorID:       "notification-delivery",
+		ResourceType:  "notification",
+		ResourceID:    ev.ID,
+		Outcome:       outcome,
+		ChangeSummary: detail,
+	})
+	if err != nil {
+		slog.Warn("delivery audit append failed", "error", err.Error())
+	}
 }
 
 func (p *deliveryNotificationProvider) GetSummary(_ context.Context) (NotificationSummary, error) {
@@ -144,7 +217,7 @@ func (p *deliveryNotificationProvider) GetSummary(_ context.Context) (Notificati
 	cutoff := time.Now().Add(-24 * time.Hour)
 	p.log.each(func(d NotificationDelivery) {
 		switch d.Status {
-		case "queued", "sending":
+		case "queued", "sending", delivery.StatusRetrying:
 			pending++
 		case "failed":
 			if t, err := time.Parse(time.RFC3339, d.QueuedAt); err == nil && t.After(cutoff) {
@@ -322,29 +395,24 @@ func (p *deliveryNotificationProvider) QueueDashboard(_ context.Context, _, _ st
 	return d
 }
 
-// startPool launches the fixed send workers on first use. They live for the
-// process, like the provider.
+// startPool launches the fixed send workers and the retry loop on first use.
+// They live for the process, like the provider.
 func (p *deliveryNotificationProvider) startPool() {
 	p.poolOnce.Do(func() {
 		p.jobs = make(chan deliveryJob, deliveryQueueDepth)
 		for i := 0; i < deliverySendWorkers; i++ {
 			go func() {
 				for job := range p.jobs {
-					result := p.worker.Deliver(context.Background(), job.event)
-					status := "failed"
-					if result.Status == "sent" {
-						status = "sent"
-					}
-					if reason, ok := egress.ExplainBlocked(result.Error); ok && status == "failed" {
-						p.setFailureReason(job.id, reason)
-					}
-					p.setStatus(job.id, status)
-					if result.Status == "failed" {
-						p.escalateFailure(job, result)
+					// The first attempt runs here; later ones belong to the
+					// retry loop. A non-final result leaves the row "retrying".
+					res := p.retrier.Deliver(context.Background(), job.event)
+					if res.Status == delivery.StatusRetrying {
+						p.setStatusIf(job.id, "queued", delivery.StatusRetrying)
 					}
 				}
 			}()
 		}
+		go p.retrier.Run(context.Background(), p.retryPoll)
 	})
 }
 
@@ -400,6 +468,17 @@ func (p *deliveryNotificationProvider) setStatus(id, status string) {
 	p.mu.Lock()
 	if d := p.log.find(id); d != nil {
 		d.Status = status
+	}
+	p.mu.Unlock()
+}
+
+// setStatusIf moves a row from one status to another only if it still has the
+// first: the retry loop may already have settled it by the time the first
+// attempt's caller reports "retrying".
+func (p *deliveryNotificationProvider) setStatusIf(id, from, to string) {
+	p.mu.Lock()
+	if d := p.log.find(id); d != nil && d.Status == from {
+		d.Status = to
 	}
 	p.mu.Unlock()
 }

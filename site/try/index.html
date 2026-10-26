@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Try Kryptkeeper in five minutes · Kryptkeeper</title>
+<meta name="description" content="One command starts a Kryptkeeper hub with labelled demo data: two CAs, about 40 certificates in mixed states, and a discovery scan. Nothing to configure, and one command removes it.">
+<meta property="og:title" content="Try Kryptkeeper in five minutes">
+<meta property="og:description" content="One command, a seeded hub on localhost, and a one-click reset.">
+<meta property="og:url" content="https://kryptkeeper.io/try/">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<header class="page-head">
+  <span class="label">Trial</span>
+  <h1>Try Kryptkeeper in five minutes</h1>
+  <p class="lede">One command starts a hub with sample data, so the first screen you see is a working estate instead of an empty console. Everything it creates is labelled <code>demo=true</code>, and one command removes it.</p>
+</header>
+
+<section>
+  <h2>1. Start it</h2>
+  <p>You need Docker (or Podman) with Compose. The first run pulls five small images; after that it starts in about ten seconds.</p>
+  <div class="code">
+    <button class="copy" type="button" data-copy="up">Copy</button>
+<pre id="up">git clone https://github.com/bpmforge/kryptkeeper.git
+cd kryptkeeper
+docker compose -f deploy/try/compose.yaml up</pre>
+  </div>
+  <p>This starts the hub on PostgreSQL, the web console, two small TLS servers for the hub to discover, and a one-shot seeder that fills the hub through its public API.</p>
+</section>
+
+<section>
+  <h2>2. Sign in</h2>
+  <p>Open <code>http://localhost:3000</code> and sign in as <code>admin@demo.test</code> with the password <code>kryptkeeper-demo</code>. You land on a dashboard with two CAs, about 40 certificates (active, expiring within two weeks, expired, revoked, and one with a weak 1024-bit RSA key and a SHA-1 signature), plus the two certificates the hub found on the demo servers. A banner marks it all as demo data.</p>
+  <p>A good first tour: <strong>Certificates</strong> to filter by state, <strong>Discovery</strong> for the two servers that were scanned, and <strong>Compliance</strong> to see which certificates are not quantum-safe.</p>
+</section>
+
+<section>
+  <h2>3. Reset it</h2>
+  <p>As an admin, choose <strong>Reset demo data</strong> in the banner. That revokes the certificates labelled <code>demo=true</code> and clears the banner. To fill the hub again:</p>
+  <div class="code">
+    <button class="copy" type="button" data-copy="reseed">Copy</button>
+<pre id="reseed">docker compose -f deploy/try/compose.yaml run --rm seeder</pre>
+  </div>
+</section>
+
+<section>
+  <h2>4. Remove it</h2>
+  <div class="code">
+    <button class="copy" type="button" data-copy="down">Copy</button>
+<pre id="down">docker compose -f deploy/try/compose.yaml down -v</pre>
+  </div>
+  <p>That deletes the containers and every volume, including the demo CA keys.</p>
+</section>
+
+<section>
+  <h2>This is a demo, not a deployment</h2>
+  <p>The sign-in, the API token and the signing secret are published in the compose file, so every port is bound to localhost and the hub says so by reporting the <code>trial</code> environment. The seeder refuses any hub that reports <code>production</code>, and any hub that already holds certificates that are not demo data.</p>
+  <p>On Kubernetes, <code>helm install kk charts/kryptkeeper -f charts/kryptkeeper/values-demo.yaml</code> does the same on a throwaway cluster. For a real install, start from the <a href="/#install">quick start</a> and the <a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/deployment.md">deployment guide</a>.</p>
+</section>
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+<script>
+document.querySelectorAll("button.copy").forEach(function (btn) {
+  btn.addEventListener("click", function () {
+    var pre = document.getElementById(btn.dataset.copy);
+    var text = pre.innerText;
+    function done(label) { btn.textContent = label; setTimeout(function () { btn.textContent = "Copy"; }, 1600); }
+    function selectIt() {
+      var r = document.createRange(); r.selectNodeContents(pre);
+      var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+      done("Selected");
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done("Copied"); }, selectIt);
+    } else { selectIt(); }
+  });
+});
+</script>
+</body>
+</html>

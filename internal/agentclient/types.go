@@ -187,3 +187,20 @@ type RenewalResult struct {
 	RolledBack        bool   `json:"rolled_back"`
 	Detail            string `json:"detail,omitempty"`
 }
+
+// TrustTask asks the agent to add or remove CA certificates in the host's OS
+// trust store (W40-03). The agent acts only when its own configuration opts in
+// (D-319); otherwise it reports refused_not_opted_in.
+type TrustTask struct {
+	BundleID string `json:"bundle_id"`
+	Name     string `json:"name"`
+	Action   string `json:"action"` // add | remove
+	CertPEM  string `json:"cert_pem"`
+}
+
+// TrustResult is the per-host outcome the agent reports for one bundle.
+type TrustResult struct {
+	BundleID string `json:"bundle_id"`
+	Outcome  string `json:"outcome"` // applied | refused_not_opted_in | failed
+	Detail   string `json:"detail,omitempty"`
+}

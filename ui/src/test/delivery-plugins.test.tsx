@@ -10,6 +10,8 @@ vi.mock("../lib/api", () => ({
     authzCheck: vi.fn(),
     deliveryPlugins: vi.fn(),
     installDeliveryPlugin: vi.fn(),
+    pluginCatalogue: vi.fn(),
+    installFromPluginCatalogue: vi.fn(),
     enableDeliveryPlugin: vi.fn(),
     disableDeliveryPlugin: vi.fn(),
     removeDeliveryPlugin: vi.fn(),
@@ -111,6 +113,18 @@ describe("capability wording (W20-21)", () => {
     expect(lines.every((l) => l.enforced)).toBe(true);
   });
 
+  it("words provide_credentials as Critical, reserved for the credentials kind", () => {
+    const lines = capabilityLines({ provide_credentials: true });
+    expect(lines[0]).toMatchObject({
+      key: "provide_credentials",
+      tier: "critical",
+    });
+    expect(lines[0].text).toBe(
+      "This plugin returns credentials the hub uses to log in to your systems.",
+    );
+    expect(capabilityTier({ provide_credentials: true })).toBe("critical");
+  });
+
   it("matches the hub's tiers", () => {
     // SUP-A08-1: a credential-named host is network access, so High (was
     // "standard", which let one admin enable it without a second approver).
@@ -141,6 +155,34 @@ describe("Delivery Plugins page", () => {
     expect(
       await screen.findByRole("button", { name: /disable/i }),
     ).toBeInTheDocument();
+  });
+
+  it("shows the plugin kind; a manifest without one is a delivery plugin", async () => {
+    const notifyPlugin = {
+      id: "kryptkeeper.pagerduty",
+      versions: [
+        {
+          ...plugin.versions[0],
+          plugin_id: "kryptkeeper.pagerduty",
+          kind: "notify",
+          capability_tier: "high",
+          status: "installed",
+          manifest: {
+            ...manifest,
+            id: "kryptkeeper.pagerduty",
+            name: "PagerDuty alerts",
+            kind: "notify",
+            capabilities: { network: { hosts_from_credential: "api_base" } },
+          },
+        },
+      ],
+    };
+    vi.mocked(api.deliveryPlugins).mockResolvedValue({
+      data: [plugin, notifyPlugin],
+    } as never);
+    renderPage(<DeliveryPlugins />);
+    expect(await screen.findByText("Notification plugin")).toBeInTheDocument();
+    expect(screen.getByText("Delivery plugin")).toBeInTheDocument();
   });
 
   it("says plainly when plugins are turned off", async () => {
@@ -270,5 +312,57 @@ describe("Pending Actions: plugin enable review", () => {
     ).toBeInTheDocument();
     // The proposer cannot approve their own request.
     expect(screen.getByRole("button", { name: /approve/i })).toBeDisabled();
+  });
+});
+
+describe("Catalogue tab (W38-11)", () => {
+  const entry = {
+    id: "kryptkeeper.example-device",
+    kind: "delivery",
+    name: "Example HTTPS device",
+    publisher: "Kryptkeeper Authors",
+    version: "1.0.0",
+    description: "d",
+    sha256: "ab".repeat(32),
+    capabilities: ["receive_private_key", "network"],
+    status: "available",
+    compatible: true,
+  };
+
+  it("does not touch the catalogue until the tab is opened, then installs", async () => {
+    vi.mocked(api.deliveryPlugins).mockResolvedValue({ data: [] } as never);
+    vi.mocked(api.pluginCatalogue).mockResolvedValue({
+      data: { generated_at: "2026-10-25T00:00:00Z", entries: [entry] },
+    } as never);
+    vi.mocked(api.installFromPluginCatalogue).mockResolvedValue({
+      data: {},
+    } as never);
+    renderPage(<DeliveryPlugins />);
+    const tab = await screen.findByRole("tab", { name: "Catalogue" });
+    expect(api.pluginCatalogue).not.toHaveBeenCalled();
+    await userEvent.click(tab);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Install" }),
+    );
+    await waitFor(() =>
+      expect(api.installFromPluginCatalogue).toHaveBeenCalledWith(
+        "kryptkeeper.example-device",
+        "1.0.0",
+      ),
+    );
+  });
+
+  it("says so when the hub has the catalogue turned off", async () => {
+    vi.mocked(api.deliveryPlugins).mockResolvedValue({ data: [] } as never);
+    vi.mocked(api.pluginCatalogue).mockRejectedValue(
+      new Error("the plugin catalogue is turned off"),
+    );
+    renderPage(<DeliveryPlugins />);
+    await userEvent.click(
+      await screen.findByRole("tab", { name: "Catalogue" }),
+    );
+    expect(
+      await screen.findByText("The catalogue is turned off"),
+    ).toBeInTheDocument();
   });
 });

@@ -6,6 +6,9 @@ metadata:
     {{- include "kryptkeeper.labels" . | nindent 4 }}
 data:
   AUTH_MODE: {{ .Values.config.authMode | quote }}
+  {{- if .Values.config.environment }}
+  KRYPTKEEPER_ENV: {{ .Values.config.environment | quote }}
+  {{- end }}
   KRYPTKEEPER_DB_MODE: {{ .Values.config.dbMode | quote }}
   APP_CERTIFICATE_PROVIDER: {{ .Values.config.certificateProvider | quote }}
   APP_DISCOVERY_PROVIDER: {{ .Values.config.discoveryProvider | quote }}

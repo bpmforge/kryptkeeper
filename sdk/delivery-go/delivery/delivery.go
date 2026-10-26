@@ -38,10 +38,25 @@ type Verifier interface {
 	Verify(h *Host, req abi.VerifyRequest) (abi.VerifyResult, error)
 }
 
-var registered Plugin
+// Handler serves one kk_invoke operation for a plugin of any kind: it decodes
+// in, runs op, and returns the JSON result. The delivery kind's handler is
+// built by Register; other kinds' SDK packages (sdk/delivery-go/notify, ...)
+// build theirs and install it with RegisterHandler, so one kk_invoke export
+// serves every kind.
+type Handler func(h *Host, op string, in []byte) (json.RawMessage, error)
 
-// Register sets the plugin this module serves. Call it from init.
-func Register(p Plugin) { registered = p }
+var registered Handler
+
+// Register sets the delivery plugin this module serves. Call it from init.
+func Register(p Plugin) {
+	registered = func(h *Host, op string, in []byte) (json.RawMessage, error) {
+		return dispatch(p, h, op, in)
+	}
+}
+
+// RegisterHandler sets the handler for a non-delivery kind. A module
+// registers exactly one handler.
+func RegisterHandler(fn Handler) { registered = fn }
 
 // HostCall performs one host operation: op and a JSON input, a JSON
 // HostReply back. The wasip1 build wires it to the kk_host import; tests
@@ -123,12 +138,29 @@ func (h *Host) Logf(format string, args ...any) {
 // JSON Response. It is what kk_invoke calls; it is exported for tests that
 // drive a plugin without WebAssembly.
 func Dispatch(call HostCall, op string, in []byte) []byte {
-	return DispatchTo(registered, call, op, in)
+	return DispatchHandler(registered, call, op, in)
 }
 
-// DispatchTo is Dispatch for a given plugin.
+// DispatchTo is Dispatch for a given delivery plugin.
 func DispatchTo(p Plugin, call HostCall, op string, in []byte) []byte {
-	result, err := dispatch(p, NewHost(call), op, in)
+	if p == nil {
+		return DispatchHandler(nil, call, op, in)
+	}
+	return DispatchHandler(func(h *Host, op string, in []byte) (json.RawMessage, error) {
+		return dispatch(p, h, op, in)
+	}, call, op, in)
+}
+
+// DispatchHandler runs op through fn and wraps the outcome as the JSON
+// Response kk_invoke returns. A nil fn is a plugin that never registered.
+func DispatchHandler(fn Handler, call HostCall, op string, in []byte) []byte {
+	var result json.RawMessage
+	var err error
+	if fn == nil {
+		err = errors.New("no plugin registered (call delivery.Register or a kind's Register in init)")
+	} else {
+		result, err = fn(NewHost(call), op, in)
+	}
 	resp := abi.Response{Result: result}
 	if err != nil {
 		resp.Error = err.Error()
@@ -141,9 +173,6 @@ func DispatchTo(p Plugin, call HostCall, op string, in []byte) []byte {
 }
 
 func dispatch(p Plugin, h *Host, op string, in []byte) (json.RawMessage, error) {
-	if p == nil {
-		return nil, errors.New("no plugin registered (call delivery.Register in init)")
-	}
 	switch op {
 	case abi.OpValidate:
 		var req abi.ValidateRequest

@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"kryptkeeper/internal/ca"
+	"kryptkeeper/internal/connectors"
 	"kryptkeeper/internal/logging"
 	"kryptkeeper/internal/metrics"
 	"net/url"
@@ -54,6 +55,9 @@ type caCertificateProvider struct {
 	// RevokeCertificate still updates revStore, it just can't clear OCSP's
 	// cache for the serial.
 	ocspInvalidator ca.RevocationCacheInvalidator
+	// upstreamRevoker revokes certificates at the upstream CA behind their
+	// connector (W36-03); nil keeps the pre-1.1 inventory-only behaviour.
+	upstreamRevoker UpstreamRevoker
 	// Lazy pickup of rows other writers (discovery, peer hub replicas) add or
 	// change in the certificates table after startup; see
 	// certificate_discovery_refresh.go.
@@ -486,11 +490,18 @@ func (p *caCertificateProvider) IssueCertificate(ctx context.Context, req Certif
 		// addLocked derives this on the stored copy only; the response item is a
 		// separate value and would otherwise omit it.
 		item.KeyAlgorithmDisplay = keyAlgorithmDisplay(issued.Certificate)
+		p.markExternalIssuance(&item)
 
+		// An external CA's chain is the one its response verified (W36-02);
+		// GetCAChain only knows the operator's trust anchor.
+		storedPEM := issued.CertPEM
+		if len(issued.ChainPEM) > 0 {
+			storedPEM = append(append([]byte(nil), issued.CertPEM...), issued.ChainPEM...)
+		}
 		p.mu.Lock()
 		p.addLocked(issued.Fingerprint, &storedCert{
 			item:    item,
-			certPEM: issued.CertPEM,
+			certPEM: storedPEM,
 			x509:    issued.Certificate,
 		})
 		p.mu.Unlock()
@@ -504,7 +515,7 @@ func (p *caCertificateProvider) IssueCertificate(ctx context.Context, req Certif
 		// consumed serial; success would hand out a credential this system can
 		// never inventory, renew, expire or revoke.
 		if p.db != nil {
-			if err := p.writeCertToDB(item, issued.CertPEM); err != nil {
+			if err := p.writeCertToDB(item, storedPEM); err != nil {
 				p.mu.Lock()
 				p.removeLocked(issued.Fingerprint)
 				p.mu.Unlock()
@@ -562,10 +573,15 @@ func (p *caCertificateProvider) reuseIssued(ctx context.Context, req Certificate
 	return CertificateIssueResult{CertificateItem: item, Reused: true}, true
 }
 
-func (p *caCertificateProvider) RevokeCertificate(_ context.Context, fingerprint string, req CertificateRevokeRequest) (CertificateRevokeResult, error) {
+func (p *caCertificateProvider) RevokeCertificate(ctx context.Context, fingerprint string, req CertificateRevokeRequest) (CertificateRevokeResult, error) {
 	p.ensureCertLoaded(fingerprint)
 	p.mu.Lock()
-	defer p.mu.Unlock()
+	locked := true
+	defer func() {
+		if locked {
+			p.mu.Unlock()
+		}
+	}()
 
 	stored, ok := p.certs[fingerprint]
 	if !ok {
@@ -576,22 +592,81 @@ func (p *caCertificateProvider) RevokeCertificate(_ context.Context, fingerprint
 		metrics.CertRevokeErrors.Inc()
 		return CertificateRevokeResult{}, errCertificateConflict
 	}
+	if req.Scope != "" && req.Scope != RevocationScopeInventoryOnly {
+		metrics.CertRevokeErrors.Inc()
+		return CertificateRevokeResult{}, fmt.Errorf("%w: scope must be empty or inventory_only", errCertificateInvalid)
+	}
+
+	external := p.isExternalCA(stored.item.CAID)
+	hubCA := stored.item.CAID != "" && !external
+	connID := stored.item.RenewalConnectorID
+	scope := RevocationScopeCA
+	switch {
+	case req.Scope == RevocationScopeInventoryOnly:
+		if hubCA {
+			metrics.CertRevokeErrors.Inc()
+			return CertificateRevokeResult{}, fmt.Errorf("%w: inventory_only applies only to certificates no hub CA issued", errCertificateInvalid)
+		}
+		scope = RevocationScopeInventoryOnly
+	case connID != "" && p.upstreamRevoker != nil && p.upstreamRevoker.SupportsRevoke(ctx, connID) && !hubCA:
+		scope = RevocationScopeUpstream
+	case external:
+		// D-306: an external CA's certificate is revoked at that CA or, by an
+		// admin's explicit choice, only here -- never silently only here.
+		metrics.CertRevokeErrors.Inc()
+		return CertificateRevokeResult{}, ErrUpstreamRevokeUnsupported
+	case stored.item.CAID == "":
+		// A certificate with no issuing CA in this hub (imported, discovered,
+		// synced) has no CRL or OCSP responder to publish to, and revStore
+		// keys rows by (serial, ca_id) so it can never match one. Record the
+		// revocation in the inventory row by fingerprint instead of failing
+		// the request with a misleading 503; revoking at the real issuer stays
+		// the operator's job.
+		scope = RevocationScopeInventoryOnly
+	}
+
+	if scope == RevocationScopeUpstream {
+		if stored.x509 == nil {
+			metrics.CertRevokeErrors.Inc()
+			return CertificateRevokeResult{}, fmt.Errorf("%w: certificate body unavailable for upstream revocation", errCertificateInvalid)
+		}
+		upReq := connectors.RevokeRequest{
+			SerialHex:      fmt.Sprintf("%x", stored.x509.SerialNumber),
+			CertificatePEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: stored.x509.Raw})),
+			Reason:         req.ReasonCode,
+		}
+		// The upstream call can take seconds; never hold the inventory lock
+		// across it.
+		p.mu.Unlock()
+		locked = false
+		err := p.upstreamRevoker.RevokeUpstream(ctx, connID, upReq)
+		if err != nil {
+			metrics.CertRevokeErrors.Inc()
+			return CertificateRevokeResult{}, &UpstreamRevokeError{ConnectorID: connID, Err: err}
+		}
+		p.mu.Lock()
+		locked = true
+		stored, ok = p.certs[fingerprint]
+		if !ok {
+			metrics.CertRevokeErrors.Inc()
+			return CertificateRevokeResult{}, errCertificateNotFound
+		}
+		if stored.item.RevokedAt != nil {
+			metrics.CertRevokeErrors.Inc()
+			return CertificateRevokeResult{}, errCertificateConflict
+		}
+	}
 
 	now := time.Now().UTC()
 	nowStr := now.Format(time.RFC3339)
-	scope := RevocationScopeCA
 
-	// A certificate with no issuing CA in this hub (imported, discovered,
-	// synced) has no CRL or OCSP responder to publish to, and revStore keys
-	// rows by (serial, ca_id) so it can never match one. Record the
-	// revocation in the inventory row by fingerprint instead of failing the
-	// request with a misleading 503; revoking at the real issuer stays the
-	// operator's job.
-	if stored.item.CAID == "" {
-		scope = RevocationScopeInventoryOnly
+	if scope != RevocationScopeCA {
 		if p.db != nil {
 			if err := p.persistInventoryRevocation(fingerprint, req.ReasonCode, nowStr); err != nil {
 				metrics.CertRevokeErrors.Inc()
+				if scope == RevocationScopeUpstream {
+					logging.Warnf("REVOKED UPSTREAM BUT NOT RECORDED: fingerprint=%s connector=%s: %v", fingerprint, connID, err)
+				}
 				return CertificateRevokeResult{}, fmt.Errorf("persist revocation: %w", err)
 			}
 		}
@@ -626,6 +701,23 @@ func (p *caCertificateProvider) RevokeCertificate(_ context.Context, fingerprint
 		RevocationReason:  req.ReasonCode,
 		RevocationScope:   scope,
 	}, nil
+}
+
+// isExternalCA reports whether caID names an external CA (W36-02).
+func (p *caCertificateProvider) isExternalCA(caID string) bool {
+	if caID == "" || p.engine == nil {
+		return false
+	}
+	c, err := p.engine.GetCA(caID)
+	return err == nil && c.Type == ca.CATypeExternal
+}
+
+// SetUpstreamRevoker attaches the connector bridge used for upstream
+// revocation (W36-03). Set once at startup.
+func (p *caCertificateProvider) SetUpstreamRevoker(u UpstreamRevoker) {
+	p.mu.Lock()
+	p.upstreamRevoker = u
+	p.mu.Unlock()
 }
 
 func (p *caCertificateProvider) persistInventoryRevocation(fingerprint string, reason int, at string) error {
@@ -992,6 +1084,7 @@ func (p *caCertificateProvider) RecordIssuedCertificateWithTemplate(ctx context.
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	p.markExternalIssuance(&item)
 
 	p.mu.Lock()
 	p.addLocked(fingerprint, &storedCert{
@@ -1750,8 +1843,8 @@ INSERT INTO certificates
      signature_algorithm, extended_key_usage, key_usage,
      chain_complete, chain_trusted, pqc_vulnerable, pqc_readiness,
      risk_score, risk_flags, grade, renewal_method, renewal_status,
-     source, raw_cert_b64, created_at, updated_at, origin, management_state, template_revision)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
+     source, raw_cert_b64, created_at, updated_at, origin, management_state, template_revision, renewal_connector_id)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
 ON CONFLICT (fingerprint_sha256) DO NOTHING`
 	} else {
 		query = `
@@ -1762,8 +1855,8 @@ INSERT OR IGNORE INTO certificates
      signature_algorithm, extended_key_usage, key_usage,
      chain_complete, chain_trusted, pqc_vulnerable, pqc_readiness,
      risk_score, risk_flags, grade, renewal_method, renewal_status,
-     source, raw_cert_b64, created_at, updated_at, origin, management_state, template_revision)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+     source, raw_cert_b64, created_at, updated_at, origin, management_state, template_revision, renewal_connector_id)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 	}
 
 	teamID := sql.NullString{String: item.TeamID, Valid: item.TeamID != ""}
@@ -1819,7 +1912,7 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
 		item.RiskScore, riskFlagsArg, item.Grade, renewalMethod, item.RenewalStatus,
 		item.Source, rawCertB64, now, now,
 		estateOrigin(item), estateManagementState(item),
-		templateRevisionArg,
+		templateRevisionArg, sql.NullString{String: item.RenewalConnectorID, Valid: item.RenewalConnectorID != ""},
 	)
 	if err != nil {
 		return err
@@ -2049,4 +2142,19 @@ func nextRowStamp(prev string) string {
 		t = p.UTC().Truncate(time.Millisecond).Add(time.Millisecond)
 	}
 	return t.Format("2006-01-02T15:04:05.000Z")
+}
+
+// markExternalIssuance records a certificate signed by an external CA
+// (W36-02, D-304) as synced from upstream, with the CA's connector as its
+// renewal and revocation path.
+func (p *caCertificateProvider) markExternalIssuance(item *CertificateItem) {
+	if item.CAID == "" || p.engine == nil {
+		return
+	}
+	c, err := p.engine.GetCA(item.CAID)
+	if err != nil || c.Type != ca.CATypeExternal {
+		return
+	}
+	item.Origin = "synced"
+	item.RenewalConnectorID = c.ConnectorID
 }

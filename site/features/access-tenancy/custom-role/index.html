@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Create a least-privilege role · Access and tenancy · Kryptkeeper</title>
+<meta name="description" content="Build a role with only the permissions a job needs.">
+<meta property="og:title" content="Create a least-privilege role · Access and tenancy · Kryptkeeper">
+<meta property="og:description" content="Build a role with only the permissions a job needs.">
+<meta property="og:url" content="https://kryptkeeper.io/features/access-tenancy/custom-role/">
+<meta property="og:type" content="website">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<div class="crumb-row"><nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/features/">Features</a></li><li><a href="/features/access-tenancy/">Access and tenancy</a></li><li aria-current="page">Create a least-privilege role</li></ol></nav></div>
+<header class="page-head">
+  <span class="label">Walkthrough · 9 steps</span>
+  <h1>Create a least-privilege role</h1>
+  <p class="lede">Build a role with only the permissions a job needs.</p>
+  <p class="as">As <span class="pill role">pki-admin</span></p>
+</header>
+<ol class="steps">
+  <li class="step"><div class="step-head"><span class="label">Step <b>1</b></span><p>Open /roles</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-39/01-roles-list.webp"><img src="/shots/U-39/01-roles-list.webp" width="1440" height="900" alt="Open /roles" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>2</b></span><p>Click <strong>New role</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-39/02-new-role-panel.webp"><img src="/shots/U-39/02-new-role-panel.webp" width="1440" height="900" alt="Click New role" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>3</b></span><p>Fill <strong>Role name</strong> with &quot;cert-reader&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-39/03-Role name.webp"><img src="/shots/U-39/03-Role name.webp" width="1440" height="900" alt="Fill Role name with &quot;cert-reader&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>4</b></span><p>Fill <strong>Description</strong> with &quot;Read-only access to certificates and reports&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-39/04-Description.webp"><img src="/shots/U-39/04-Description.webp" width="1440" height="900" alt="Fill Description with &quot;Read-only access to certificates and reports&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>5</b></span><p>Tick <strong>certificate.read</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-39/05-read-permissions.webp"><img src="/shots/U-39/05-read-permissions.webp" width="1440" height="900" alt="Tick certificate.read" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>6</b></span><p>Tick <strong>report.read</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-39/06-report.read.webp"><img src="/shots/U-39/06-report.read.webp" width="1440" height="900" alt="Tick report.read" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>7</b></span><p>Tick <strong>audit.read</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-39/07-audit.read.webp"><img src="/shots/U-39/07-audit.read.webp" width="1440" height="900" alt="Tick audit.read" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>8</b></span><p>Click <strong>Create role</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-39/08-role-created.webp"><img src="/shots/U-39/08-role-created.webp" width="1440" height="900" alt="Click Create role" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>9</b></span><p>Creating a role with a name that already exists shows an error</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-39/12-duplicate-role-error.webp"><img src="/shots/U-39/12-duplicate-role-error.webp" width="1440" height="900" alt="Creating a role with a name that already exists shows an error" loading="lazy" decoding="async"></a></figure></li>
+</ol>
+<aside class="path-box" aria-labelledby="in-paths"><h2 id="in-paths">Part of these paths</h2><ul><li>Step 1 of 7 in <a href="/paths/govern-prove/">Govern it and prove it</a>. <a href="/features/approvals-guardrails/approve-request/">Next: Approve a pending request →</a></li></ul></aside>
+<nav class="pager" aria-label="More in Access and tenancy"><a class="prev" href="/features/access-tenancy/invite-user/"><span class="label">Previous</span>Invite a user and assign a role</a><a class="next" href="/features/access-tenancy/access-review/"><span class="label">Next</span>Run an access review</a></nav>
+
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

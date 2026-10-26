@@ -74,38 +74,52 @@ func TestSectigoSourcePagingAndStatus(t *testing.T) {
 }
 
 func TestEntrustSourceListsAndDetails(t *testing.T) {
+	var requests []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer entrust-key" {
+		requests = append(requests, r.URL.Path+"?"+r.URL.RawQuery)
+		if u, p, ok := r.BasicAuth(); !ok || u != "api-user" || p != "entrust-key" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		switch r.URL.Path {
-		case "/cvs/api/v1/certificates":
+		case "/certificates":
 			_ = json.NewEncoder(w).Encode(map[string]any{"certificates": []map[string]any{
 				{"trackingId": 10, "status": "ACTIVE"},
 				{"trackingId": 11, "status": "PENDING"}, // skipped
+				{"trackingId": 12, "status": "REVOKED"},
 			}})
-		case "/cvs/api/v1/certificates/10":
-			_ = json.NewEncoder(w).Encode(map[string]any{"certificate": "-----BEGIN CERTIFICATE-----\nMTA=\n-----END CERTIFICATE-----"})
+		case "/certificates/10", "/certificates/12":
+			_ = json.NewEncoder(w).Encode(map[string]any{"endEntityCert": "-----BEGIN CERTIFICATE-----\nMTA=\n-----END CERTIFICATE-----"})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	t.Cleanup(srv.Close)
 
+	_, certPEM, keyPEM := ejbcaTestCert(t, "api-user", 7, true)
+	credJSON, _ := json.Marshal(map[string]string{"username": "api-user", "api_key": "entrust-key", "client_cert_pem": certPEM, "client_key_pem": keyPEM})
 	src, err := newEntrustSource(context.Background(),
-		fmt.Sprintf(`{"base_url":%q}`, srv.URL),
-		"cred-c", commercialCreds(t, `{"api_key":"entrust-key"}`))
+		fmt.Sprintf(`{"base_url":%q}`, srv.URL), "cred-c", commercialCreds(t, string(credJSON)))
 	if err != nil {
 		t.Fatalf("source: %v", err)
 	}
-	src.(*entrustSource).client = srv.Client()
+	src.(*entrustSource).client = srv.Client() // the stub is plain http; the real client is mTLS
 	certs, err := src.Fetch(context.Background())
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
-	if len(certs) != 1 || certs[0].UpstreamStatus != "active" || !strings.Contains(certs[0].PEM, "BEGIN CERTIFICATE") {
+	if len(certs) != 2 || certs[0].UpstreamStatus != "active" || certs[1].UpstreamStatus != "revoked" || !strings.Contains(certs[0].PEM, "BEGIN CERTIFICATE") {
 		t.Fatalf("entrust results: %+v", certs)
+	}
+	if !strings.HasPrefix(requests[0], "/certificates?offset=0&limit=") {
+		t.Fatalf("listing request shape: %v", requests)
+	}
+}
+
+func TestEntrustSourceRequiresFullCredential(t *testing.T) {
+	_, err := newEntrustSource(context.Background(), `{}`, "cred-c", commercialCreds(t, `{"username":"u","api_key":"k"}`))
+	if err == nil {
+		t.Fatal("a credential without the client certificate pair must be refused")
 	}
 }
 
@@ -199,7 +213,7 @@ func TestGCPCASSourcePagingAndRevocation(t *testing.T) {
 }
 
 func TestCommercialSourceTypesRegistered(t *testing.T) {
-	for _, typ := range []string{"sectigo", "entrust", "aws_pca", "gcp_cas"} {
+	for _, typ := range []string{"sectigo", "entrust", "aws_pca", "gcp_cas", "globalsign", "vault_pki", "ejbca"} {
 		if !validInventorySourceTypes[typ] {
 			t.Fatalf("type %q not registered", typ)
 		}

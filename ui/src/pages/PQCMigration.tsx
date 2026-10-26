@@ -32,31 +32,29 @@ import { opLabel, opTone } from "../lib/operationStatus";
 import { PageHeader } from "../components/PageHeader";
 import { Wizard, type WizardStepDef } from "../components/Wizard";
 
-const PQC_LABEL_EXPLANATIONS: Record<
-  string,
-  { title: string; text: string }
-> = {
-  quantum_safe: {
-    title: "Quantum safe",
-    text: "Leaf key and every signature up to the root use post-quantum algorithms.",
-  },
-  quantum_safe_leaf_only: {
-    title: "Leaf-only PQC",
-    text: "The certificate's own key is post-quantum, but a classical signature remains somewhere in its chain, so the chain can still be forged by a quantum attacker. This is NOT quantum safe.",
-  },
-  migration_ready: {
-    title: "Migration ready",
-    text: "Classical, but short-lived (100 days or less) or hybrid, so it can be rotated to post-quantum before the deadline.",
-  },
-  vulnerable: {
-    title: "Vulnerable",
-    text: "Long-lived classical certificate that needs active migration planning.",
-  },
-  not_applicable: {
-    title: "Not applicable",
-    text: "Key type not recognised or not subject to this assessment.",
-  },
-};
+const PQC_LABEL_EXPLANATIONS: Record<string, { title: string; text: string }> =
+  {
+    quantum_safe: {
+      title: "Quantum safe",
+      text: "Leaf key and every signature up to the root use post-quantum algorithms.",
+    },
+    quantum_safe_leaf_only: {
+      title: "Leaf-only PQC",
+      text: "The certificate's own key is post-quantum, but a classical signature remains somewhere in its chain, so the chain can still be forged by a quantum attacker. Hybrid certificates under a classical CA count here too. This is NOT quantum safe.",
+    },
+    migration_ready: {
+      title: "Migration ready",
+      text: "Classical, but short-lived (100 days or less), so it can be rotated to post-quantum before the deadline.",
+    },
+    vulnerable: {
+      title: "Vulnerable",
+      text: "Long-lived classical certificate that needs active migration planning.",
+    },
+    not_applicable: {
+      title: "Not applicable",
+      text: "Key type not recognised or not subject to this assessment.",
+    },
+  };
 
 // Mirrors pqc.Timeline (GET /reports/pqc-migration). Optional so the UI
 // degrades honestly against a hub that predates the field.
@@ -92,28 +90,28 @@ function TimelinePanel({ timeline }: { timeline?: PQCTimeline }) {
             />
           </div>
           <div className="overflow-x-auto" {...scrollableProps}>
-          <table className="w-full min-w-[20rem] text-sm">
-            <thead>
-              <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
-                <th className="py-2 pr-4">Quarter</th>
-                <th className="py-2 pr-4">Due</th>
-                <th className="py-2 pr-4">Migrated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {timeline.quarters.map((q) => (
-                <tr
-                  key={q.quarter}
-                  data-testid="pqc-quarter"
-                  className="border-b border-border"
-                >
-                  <td className="py-2 pr-4 text-foreground">{q.quarter}</td>
-                  <td className="py-2 pr-4 text-foreground">{q.due}</td>
-                  <td className="py-2 pr-4 text-foreground">{q.migrated}</td>
+            <table className="w-full min-w-[20rem] text-sm">
+              <thead>
+                <tr className="border-b border-border text-left text-xs uppercase tracking-wide text-muted-foreground">
+                  <th className="py-2 pr-4">Quarter</th>
+                  <th className="py-2 pr-4">Due</th>
+                  <th className="py-2 pr-4">Migrated</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {timeline.quarters.map((q) => (
+                  <tr
+                    key={q.quarter}
+                    data-testid="pqc-quarter"
+                    className="border-b border-border"
+                  >
+                    <td className="py-2 pr-4 text-foreground">{q.quarter}</td>
+                    <td className="py-2 pr-4 text-foreground">{q.due}</td>
+                    <td className="py-2 pr-4 text-foreground">{q.migrated}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -439,6 +437,7 @@ function MigrationJourneyPanel({
   const [targetDate, setTargetDate] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [templateId, setTemplateId] = useState("");
+  const [targetAlgorithm, setTargetAlgorithm] = useState("");
   const [result, setResult] = useState<{
     waveName: string;
     actionId: string | null;
@@ -462,6 +461,11 @@ function MigrationJourneyPanel({
       (t.allowed_algorithms ?? []).some((a) => a.includes("ML-DSA")),
   );
 
+  // Options come from the chosen template; an unresolved template offers
+  // only the default (no target_algorithm sent).
+  const targetOptions =
+    pqcTemplates.find((t) => t.id === templateId)?.allowed_algorithms ?? [];
+
   const toggle = (fp: string) =>
     setSelected((prev) => {
       const next = new Set(prev);
@@ -476,6 +480,8 @@ function MigrationJourneyPanel({
     setOwner("");
     setTargetDate("");
     setSelected(new Set());
+    setTemplateId("");
+    setTargetAlgorithm("");
     setFinishError(null);
   };
 
@@ -503,7 +509,13 @@ function MigrationJourneyPanel({
       let proposeError: string | null = null;
       if (templateId) {
         try {
-          const proposed = await api.proposePqcWaveExecute(waveId, templateId);
+          const proposed = targetAlgorithm
+            ? await api.proposePqcWaveExecute(
+                waveId,
+                templateId,
+                targetAlgorithm,
+              )
+            : await api.proposePqcWaveExecute(waveId, templateId);
           actionId = proposed.data.id;
         } catch (err) {
           proposeError =
@@ -628,12 +640,30 @@ function MigrationJourneyPanel({
             <select
               className="mt-1 block rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground"
               value={templateId}
-              onChange={(e) => setTemplateId(e.target.value)}
+              onChange={(e) => {
+                setTemplateId(e.target.value);
+                setTargetAlgorithm("");
+              }}
             >
               <option value="">— select a PQC-capable template —</option>
               {pqcTemplates.map((t) => (
                 <option key={t.id} value={t.id}>
                   {t.display_name || t.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm text-foreground">
+            Target algorithm
+            <select
+              className="mt-1 block rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground"
+              value={targetAlgorithm}
+              onChange={(e) => setTargetAlgorithm(e.target.value)}
+            >
+              <option value="">Template default (PQC)</option>
+              {targetOptions.map((a) => (
+                <option key={a} value={a}>
+                  {a}
                 </option>
               ))}
             </select>
@@ -837,7 +867,7 @@ export default function PQCMigration() {
 
           <Panel
             title="Migration roadmap"
-            subtitle={`${roadmap.items.length} certificate{roadmap.items.length === 1 ? "" : "s"} need{roadmap.items.length === 1 ? "s" : ""} action, highest priority first`}
+            subtitle={`${roadmap.items.length} certificate${roadmap.items.length === 1 ? "" : "s"} need${roadmap.items.length === 1 ? "s" : ""} action, highest priority first`}
           >
             {roadmap.items.length === 0 ? (
               <p className="text-sm text-state-auto">
@@ -852,11 +882,16 @@ export default function PQCMigration() {
                       <th className="py-2 pr-4">Priority</th>
                       <th className="py-2 pr-4">Certificate</th>
                       <th className="py-2 pr-4 min-w-[14rem]">Why</th>
-                      <th className="py-2 pr-4 min-w-[14rem]">Recommended action</th>
+                      <th className="py-2 pr-4 min-w-[14rem]">
+                        Recommended action
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
-                    {(showAllRoadmap ? roadmap.items : roadmap.items.slice(0, ROADMAP_PREVIEW)).map((item) => (
+                    {(showAllRoadmap
+                      ? roadmap.items
+                      : roadmap.items.slice(0, ROADMAP_PREVIEW)
+                    ).map((item) => (
                       <tr
                         key={item.fingerprint}
                         className="border-b border-border align-top"

@@ -29,7 +29,7 @@ var errManagedTargetInvalidMode = errors.New("invalid discovery_mode, install_mo
 // CHECK constraints are a second, not the only, line of defense.
 var (
 	validDiscoveryModes = map[string]bool{"agent": true, "network": true, "cloud": true, "winrm": true, "none": true}
-	validInstallModes   = map[string]bool{"agent": true, "ssh": true, "f5": true, "citrix": true, "k8s": true, "iis": true, "keychain": true, "cloud": true, "acme": true, "plugin": true}
+	validInstallModes   = map[string]bool{"agent": true, "ssh": true, "f5": true, "citrix": true, "k8s": true, "iis": true, "sqlserver": true, "rdp": true, "exchange": true, "keychain": true, "cloud": true, "acme": true, "plugin": true}
 	validRenewalMethods = map[string]bool{"acme": true, "est": true, "scep": true, "manual": true}
 )
 
@@ -291,7 +291,7 @@ CREATE TABLE IF NOT EXISTS managed_targets (
     discovery_mode TEXT NOT NULL DEFAULT 'agent'
                    CHECK (discovery_mode IN ('agent', 'network', 'cloud', 'winrm', 'none')),
     install_mode   TEXT NOT NULL DEFAULT 'agent'
-                   CHECK (install_mode IN ('agent', 'ssh', 'f5', 'citrix', 'k8s', 'iis', 'keychain', 'cloud', 'acme', 'plugin')),
+                   CHECK (install_mode IN ('agent', 'ssh', 'f5', 'citrix', 'k8s', 'iis', 'keychain', 'cloud', 'acme', 'plugin', 'sqlserver', 'rdp', 'exchange')),
     renewal_method TEXT NOT NULL DEFAULT 'acme'
                    CHECK (renewal_method IN ('acme', 'est', 'scep', 'manual')),
     renewal_threshold_days INTEGER

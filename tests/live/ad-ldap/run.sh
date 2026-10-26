@@ -162,7 +162,7 @@ done
 # 2. Seed data: 3 users, 2 computers, attach real certs to two objects'
 #    userCertificate attribute, export the DC's TLS cert for LDAPS trust.
 # ---------------------------------------------------------------------------
-BASE_DN="DC=kkuat,DC=local"
+BASE_DN="DC=corp,DC=local"
 STEP "seed users and computers"
 for u in alice bob carol; do
   "$CE" exec "$DC_CTR" samba-tool user create "$u" "${BINDPASS}x1!" >>"$WORK/seed.log" 2>&1 \

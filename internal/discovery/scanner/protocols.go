@@ -320,8 +320,11 @@ func readNameList(b []byte, off int) ([]string, int, error) {
 }
 
 // ScanRDP negotiates RDP's TLS security layer (X.224 Connection Request
-// with an RDP Negotiation Request for PROTOCOL_SSL) and captures the
-// cert.
+// with an RDP Negotiation Request offering PROTOCOL_SSL|PROTOCOL_HYBRID) and
+// captures the cert. Offering HYBRID matters because NLA-only hosts refuse a
+// SSL-only request; with HYBRID they select it and begin CredSSP, whose first
+// step is the TLS handshake we capture. We close right after the handshake,
+// so no credential or CredSSP token is ever sent.
 func (p *ProtocolScanner) ScanRDP(ctx context.Context, host string, port int) DiscoveredEndpoint {
 	tag := "rdp"
 	conn, err := p.dial(ctx, host, port)
@@ -332,7 +335,7 @@ func (p *ProtocolScanner) ScanRDP(ctx context.Context, host string, port int) Di
 	req := []byte{
 		0x03, 0x00, 0x00, 0x13, // TPKT: version 3, length 19
 		0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, // X.224 CR (len 14, CR PDU, dst/src ref, class)
-		0x01, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00, // RDP Neg Req: type 1, flags 0, len 8, PROTOCOL_SSL
+		0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00, // RDP Neg Req: type 1, flags 0, len 8, PROTOCOL_SSL|PROTOCOL_HYBRID
 	}
 	if _, err := conn.Write(req); err != nil {
 		conn.Close()
@@ -362,6 +365,11 @@ func (p *ProtocolScanner) ScanRDP(ctx context.Context, host string, port int) Di
 	// The RDP Negotiation Response type byte follows the 7-byte X.224
 	// CC header (rest[7]); 0x02 = TYPE_RDP_NEG_RSP granting a protocol.
 	if len(rest) < 8 || rest[7] != 0x02 {
+		conn.Close()
+		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Reachable: true, Error: "server declined TLS security"}
+	}
+	// selectedProtocol 0 is standard RDP security: no TLS follows.
+	if len(rest) < 15 || binary.LittleEndian.Uint32(rest[11:15]) == 0 {
 		conn.Close()
 		return DiscoveredEndpoint{Host: host, Port: port, Protocol: tag, Reachable: true, Error: "server declined TLS security"}
 	}

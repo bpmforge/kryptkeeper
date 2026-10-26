@@ -1,4 +1,5 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -10,6 +11,9 @@ vi.mock("../lib/api", () => ({
     cryptoPosture: vi.fn(),
     pqcWaves: vi.fn(),
     templates: vi.fn(),
+    createPqcWave: vi.fn(),
+    addPqcWaveMember: vi.fn(),
+    proposePqcWaveExecute: vi.fn(),
   },
   downloadAuthedFile: vi.fn(),
 }));
@@ -138,5 +142,144 @@ describe("PQCMigration", () => {
     ).toBeInTheDocument();
     expect(screen.queryAllByTestId("pqc-quarter")).toHaveLength(0);
     expect(screen.queryByText("Expire before 2030")).not.toBeInTheDocument();
+  });
+
+  describe("target algorithm on wave execution", () => {
+    async function runJourney(pick?: { template: string; algorithm?: string }) {
+      mockApi(true);
+      vi.mocked(api.pqcMigration).mockResolvedValue({
+        data: {
+          ...roadmap(true),
+          items: [
+            {
+              fingerprint: "fp-aaaaaaaaaaaaaaaaaa",
+              common_name: "svc.example",
+              priority: "high",
+              reason: "RSA",
+            },
+          ],
+        },
+      } as unknown as never);
+      vi.mocked(api.templates).mockResolvedValue({
+        data: [
+          {
+            id: "t1",
+            name: "pqc",
+            active: true,
+            allowed_algorithms: ["ML-DSA-65", "ECDSA-P384"],
+          },
+        ],
+      } as unknown as never);
+      vi.mocked(api.createPqcWave).mockResolvedValue({
+        data: { id: "w1" },
+      } as unknown as never);
+      vi.mocked(api.addPqcWaveMember).mockResolvedValue({
+        data: { status: "ok" },
+      } as unknown as never);
+      const user = userEvent.setup();
+      renderPage();
+      await user.click(
+        await screen.findByRole("button", { name: /start migration wave/i }),
+      );
+      await user.type(screen.getByLabelText(/wave name/i), "w");
+      await user.click(screen.getByRole("button", { name: "Next" }));
+      await user.click(await screen.findByRole("checkbox"));
+      await user.click(screen.getByRole("button", { name: "Next" }));
+      const tmpl = await screen.findByLabelText(/issuance template/i);
+      await screen.findByRole("option", { name: "pqc" });
+      if (pick) await user.selectOptions(tmpl, pick.template);
+      const target = screen.getByLabelText(/target algorithm/i);
+      if (pick?.algorithm) await user.selectOptions(target, pick.algorithm);
+      await user.click(screen.getByRole("button", { name: "Next" }));
+      await user.click(screen.getByRole("button", { name: "Finish" }));
+      return target;
+    }
+
+    it("offers only the default until a template is chosen, then its algorithms", async () => {
+      mockApi(true);
+      vi.mocked(api.pqcMigration).mockResolvedValue({
+        data: {
+          ...roadmap(true),
+          items: [
+            {
+              fingerprint: "fp-aaaaaaaaaaaaaaaaaa",
+              common_name: "svc.example",
+              priority: "high",
+              reason: "RSA",
+            },
+          ],
+        },
+      } as unknown as never);
+      vi.mocked(api.templates).mockResolvedValue({
+        data: [
+          {
+            id: "t1",
+            name: "pqc",
+            active: true,
+            allowed_algorithms: ["ML-DSA-65", "ECDSA-P384"],
+          },
+        ],
+      } as unknown as never);
+      const user = userEvent.setup();
+      renderPage();
+      await user.click(
+        await screen.findByRole("button", { name: /start migration wave/i }),
+      );
+      await user.type(screen.getByLabelText(/wave name/i), "w");
+      await user.click(screen.getByRole("button", { name: "Next" }));
+      await user.click(await screen.findByRole("checkbox"));
+      await user.click(screen.getByRole("button", { name: "Next" }));
+      const target = await screen.findByLabelText(/target algorithm/i);
+      expect(within(target).getAllByRole("option")).toHaveLength(1);
+      await screen.findByRole("option", { name: "pqc" });
+      await user.selectOptions(
+        screen.getByLabelText(/issuance template/i),
+        "t1",
+      );
+      const names = within(target)
+        .getAllByRole("option")
+        .map((o) => o.textContent);
+      expect(names).toEqual([
+        "Template default (PQC)",
+        "ML-DSA-65",
+        "ECDSA-P384",
+      ]);
+    });
+
+    it("default sends no target_algorithm", async () => {
+      vi.mocked(api.proposePqcWaveExecute).mockResolvedValue({
+        data: { id: "a1", status: "PROPOSED" },
+      } as unknown as never);
+      await runJourney({ template: "t1" });
+      await waitFor(() =>
+        expect(api.proposePqcWaveExecute).toHaveBeenCalledWith(
+          "w1", "t1",
+        ),
+      );
+    });
+
+    it("selecting ECDSA-P384 sends it", async () => {
+      vi.mocked(api.proposePqcWaveExecute).mockResolvedValue({
+        data: { id: "a1", status: "PROPOSED" },
+      } as unknown as never);
+      await runJourney({ template: "t1", algorithm: "ECDSA-P384" });
+      await waitFor(() =>
+        expect(api.proposePqcWaveExecute).toHaveBeenCalledWith(
+          "w1",
+          "t1",
+          "ECDSA-P384",
+        ),
+      );
+    });
+
+    it("shows the server message on a 400 rejection", async () => {
+      vi.mocked(api.proposePqcWaveExecute).mockRejectedValue(
+        new Error("target_algorithm is not a supported transition target"),
+      );
+      await runJourney({ template: "t1", algorithm: "ECDSA-P384" });
+      expect(
+        await screen.findByText(/not a supported transition target/),
+      ).toBeInTheDocument();
+    });
   });
 });

@@ -37,6 +37,8 @@ CREATE TABLE certificate_authorities (
     csr_pem      TEXT,
     status       TEXT NOT NULL DEFAULT 'active',
     parent_ca_id TEXT,
+    connector_id TEXT,
+    external_trust_pem TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 )`)

@@ -280,7 +280,7 @@ func (st *callState) httpDo(ctx context.Context, req abi.HTTPRequest) (*abi.HTTP
 	client.CheckRedirect = func(r *http.Request, _ []*http.Request) error {
 		h, p, err := hostPort(r.URL)
 		if err != nil || r.URL.Scheme != "https" || !st.allowedHost(h, p) {
-			return st.refuse("redirect to %s is outside the grant", r.URL.Redacted())
+			return st.refuse("redirect to %s is outside the grant", r.URL.Host)
 		}
 		return nil
 	}
@@ -297,7 +297,10 @@ func (st *callState) httpDo(ctx context.Context, req abi.HTTPRequest) (*abi.HTTP
 	if err != nil {
 		return nil, err
 	}
-	st.event("http", fmt.Sprintf("%s %s -> %d", method, u.Redacted(), resp.StatusCode))
+	// Scheme and host only: webhook-style services carry their credential in
+	// the path or query (Teams Workflows sig=, Slack hooks), and an event
+	// detail reaches logs.
+	st.event("http", sanitize(fmt.Sprintf("%s %s://%s -> %d", method, u.Scheme, u.Host, resp.StatusCode), st.redact))
 	headers := make(map[string]string, len(resp.Header))
 	for k := range resp.Header {
 		headers[k] = resp.Header.Get(k)

@@ -1,0 +1,18 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "kind": "dns01",
+  "id": "kryptkeeper.godaddy-dns",
+  "name": "GoDaddy DNS (ACME DNS-01)",
+  "version": "1.0.0",
+  "publisher": "Kryptkeeper Authors",
+  "license": "Apache-2.0",
+  "source": "https://github.com/bpmforge/kryptkeeper/tree/main/plugins/godaddy-dns",
+  "artifact": {"file": "plugin.wasm", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "capabilities": {
+    "network": {"hosts": ["api.godaddy.com"]}
+  },
+  "credential_schema": {
+    "api_key": {"type": "string", "required": true, "secret": true},
+    "api_secret": {"type": "string", "required": true, "secret": true}
+  }
+}

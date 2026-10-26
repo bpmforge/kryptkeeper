@@ -27,7 +27,7 @@ import (
 // credential, and an opted-in target that cannot be executed is skipped with a
 // logged reason rather than silently.
 func TestAutoRenewTargetsIncludePushModes(t *testing.T) {
-	for _, mode := range []string{"f5", "citrix", "k8s", "iis"} {
+	for _, mode := range []string{"f5", "citrix", "k8s", "iis", "sqlserver", "rdp"} {
 		t.Run(mode, func(t *testing.T) {
 			var logs bytes.Buffer
 			prev := log.Writer()

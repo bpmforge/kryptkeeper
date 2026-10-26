@@ -131,6 +131,66 @@ describe("ItsmConnection", () => {
     ]);
   });
 
+  it("adds a ticket-plugin connection with the plugin's credential fields", async () => {
+    const zendesk = {
+      id: "kryptkeeper.zendesk",
+      enabled_version: "1.0.0",
+      versions: [{
+        version: "1.0.0", kind: "ticket",
+        manifest: { name: "Zendesk tickets", credential_schema: {
+          base_url: { type: "url", required: true },
+          email: { type: "string", required: true },
+          api_token: { type: "string", required: true, secret: true },
+        } },
+      }],
+    };
+    const notify = { id: "kryptkeeper.pagerduty", enabled_version: "1.0.0", versions: [{ version: "1.0.0", kind: "notify", manifest: { name: "PD", credential_schema: {} } }] };
+    vi.mocked(fetchJSON).mockImplementation((async (path: string, init?: RequestInit) => {
+      if (path === "/delivery-plugins") return { data: [zendesk, notify] };
+      if (init?.method === "POST" && path === "/itsm/connections") return { data: conn };
+      return { data: { items: [conn] } };
+    }) as never);
+    const user = userEvent.setup();
+    renderPanel();
+    await user.selectOptions(await screen.findByLabelText("ITSM kind"), "plugin");
+    expect(screen.queryByLabelText("ITSM URL")).toBeNull();
+    expect(screen.queryByLabelText("Ticket type for approval_pending")).toBeNull();
+    const picker = await screen.findByLabelText("Ticket plugin");
+    await waitFor(() => expect(picker.querySelectorAll("option")).toHaveLength(2));
+    await user.type(screen.getByLabelText("ITSM name"), "Desk");
+    await user.selectOptions(picker, "kryptkeeper.zendesk");
+    await user.type(screen.getByLabelText("Plugin credential base_url"), "https://acme.zendesk.com");
+    await user.type(screen.getByLabelText("Plugin credential email"), "ops@acme.example");
+    await user.type(screen.getByLabelText("Plugin credential api_token"), TOKEN);
+    await user.click(screen.getByRole("button", { name: "Add connection" }));
+    await waitFor(() =>
+      expect(api.createCredential).toHaveBeenCalledWith({
+        name: "Desk ITSM",
+        credential_type: "api_token",
+        payload: { base_url: "https://acme.zendesk.com", email: "ops@acme.example", api_token: TOKEN },
+      }),
+    );
+    const post = await waitFor(() => {
+      const c = vi.mocked(fetchJSON).mock.calls.find((x) => (x[1] as RequestInit | undefined)?.method === "POST" && x[0] === "/itsm/connections");
+      expect(c).toBeTruthy();
+      return c!;
+    });
+    expect(JSON.parse((post[1] as RequestInit).body as string)).toEqual({
+      kind: "plugin", name: "Desk", plugin_id: "kryptkeeper.zendesk", credential_ref: "cred-9",
+      event_classes: [{ class: "renewal_failed", ticket_type: "" }, { class: "expiry_no_owner", ticket_type: "" }],
+    });
+  });
+
+  it("a plugin connection needs a plugin and its required fields", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await user.selectOptions(await screen.findByLabelText("ITSM kind"), "plugin");
+    await user.type(screen.getByLabelText("ITSM name"), "Desk");
+    await user.click(screen.getByRole("button", { name: "Add connection" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/choose an enabled ticket plugin/i);
+    expect(api.createCredential).not.toHaveBeenCalled();
+  });
+
   it("never renders a secret", async () => {
     const user = userEvent.setup();
     renderPanel();

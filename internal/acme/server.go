@@ -73,6 +73,8 @@ type Server struct {
 	provisioners ProvisionerStore
 	provGate     func(templateID string) EnrollmentGate
 	provisioner  *Provisioner
+	// device is nil unless an operator configured attestation roots (W40-02).
+	device *deviceAttestation
 }
 
 // IssuedCertificateRecorder persists a certificate issued through this ACME
@@ -375,6 +377,11 @@ func (s *Server) handleNewOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if hasPermanentIdentifier(req.Identifiers) {
+		s.handleNewDeviceOrder(w, r, accountID, req.Identifiers)
+		return
+	}
+
 	// Validate every identifier before creating any state. Only "dns" is
 	// supported: an "ip" order validated over http-01 must never be able to
 	// authorise DNS names (OWASP-A04-001).
@@ -533,7 +540,13 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 	authzID := segments[0]
 	challengeType := segments[1]
 
-	vjws, ok := s.verifyOuterJWS(w, r, false, 8*1024)
+	// A tpm attestation object carries a certificate chain and exceeds the
+	// 8 KiB an http-01/dns-01 response needs.
+	bodyCap := int64(8 * 1024)
+	if challengeType == challengeDeviceAttest {
+		bodyCap = 64 * 1024
+	}
+	vjws, ok := s.verifyOuterJWS(w, r, false, bodyCap)
 	if !ok {
 		return
 	}
@@ -581,6 +594,12 @@ func (s *Server) handleChallenge(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Link", fmt.Sprintf(`<%s/acme/authz/%s>;rel="up"`, s.baseURL, authzID))
 		json.NewEncoder(w).Encode(validSnapshot)
+		return
+	}
+
+	if challengeType == challengeDeviceAttest {
+		// Verified synchronously inside; it takes over the held s.mu.
+		s.handleDeviceChallenge(w, r, vjws.Payload, authz, found, accountID)
 		return
 	}
 
@@ -700,11 +719,31 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	}
 
 	acctKey, _ := s.resolveAccountKey(vjws.KID)
-	dnsNames := sortedIdentifierValues(order.Identifiers)
-	if err := checkFinalizeCSR(csr, dnsNames, acctKey); err != nil {
-		logging.Infof("acme finalize: order %q CSR rejected: %v", orderID, err)
-		rejectCSR(err.Error())
-		return
+	var dnsNames []string
+	var deviceID *ca.PermanentIdentifier
+	if isDeviceOrder(order) {
+		id, derr := s.checkDeviceFinalize(r, accountID, order, csr, acctKey)
+		if derr != nil {
+			if derr.status == http.StatusBadRequest && derr.problem == "urn:ietf:params:acme:error:badCSR" {
+				rejectCSR(derr.detail)
+				return
+			}
+			s.mu.Lock()
+			order.Status = "invalid"
+			s.store.SaveOrder(order)
+			s.mu.Unlock()
+			metrics.ACMEOrdersInvalid.Inc()
+			s.writeACMEError(w, derr.status, derr.problem, derr.detail)
+			return
+		}
+		deviceID = id
+	} else {
+		dnsNames = sortedIdentifierValues(order.Identifiers)
+		if err := checkFinalizeCSR(csr, dnsNames, acctKey); err != nil {
+			logging.Infof("acme finalize: order %q CSR rejected: %v", orderID, err)
+			rejectCSR(err.Error())
+			return
+		}
 	}
 
 	if s.enrollGate != nil {
@@ -732,15 +771,24 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		s.writeACMEError(w, http.StatusServiceUnavailable, "urn:ietf:params:acme:error:serverInternal", noCADetail(rerr))
 		return
 	}
-	issued, err := s.caEngine.IssueCertificate(issuerID, ca.IssuanceRequest{
+	issueReq := ca.IssuanceRequest{
 		CSR:             csr,
 		Validity:        90 * 24 * time.Hour,
 		DNSNames:        dnsNames,
-		Subject:         &pkix.Name{CommonName: dnsNames[0]},
 		CallerNamesOnly: true,
 		KeyUsage:        x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	})
+	}
+	if deviceID != nil {
+		// The identifier comes from the order the attestation was verified
+		// against, never from the CSR.
+		issueReq.Subject = &pkix.Name{CommonName: deviceID.Value}
+		issueReq.PermanentIdentifiers = []ca.PermanentIdentifier{*deviceID}
+		issueReq.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
+	} else {
+		issueReq.Subject = &pkix.Name{CommonName: dnsNames[0]}
+	}
+	issued, err := s.caEngine.IssueCertificate(issuerID, issueReq)
 	if err != nil {
 		logging.Warnf("acme finalize issuance failed: %v", err)
 		// W22-14: an issuance-policy refusal is the requester's to fix, so it
@@ -774,7 +822,11 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	// still ships the leaf certificate the client is entitled to rather than
 	// failing an already-successful issuance).
 	chainPEM := issued.CertPEM
-	if issuerCA, caErr := s.caEngine.GetCA(s.activeCAID()); caErr == nil && len(issuerCA.CertPEM) > 0 {
+	if len(issued.ChainPEM) > 0 {
+		// An external CA (W36-02) returns the chain it verified; its CA row
+		// holds the operator's trust anchor, which may be a root.
+		chainPEM = append(append([]byte(nil), issued.CertPEM...), issued.ChainPEM...)
+	} else if issuerCA, caErr := s.caEngine.GetCA(s.activeCAID()); caErr == nil && len(issuerCA.CertPEM) > 0 {
 		chainPEM = append(append([]byte(nil), issued.CertPEM...), issuerCA.CertPEM...)
 	} else if caErr != nil {
 		logging.Warnf("acme finalize: issuer CA chain unavailable for %s, serving leaf-only cert: %v", s.activeCAID(), caErr)
@@ -789,6 +841,9 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	snapshot := *order
 	s.mu.Unlock()
 	metrics.ACMEOrdersFinalized.Inc()
+	if deviceID != nil {
+		s.auditDevice(r, "acme.device_attest.issue", accountID, "success", "issued certificate with permanent identifier SAN; identifier="+order.Identifiers[0].Value)
+	}
 
 	// Record into the hub's inventory outside s.mu -- the client already has
 	// its certificate at this point (SaveCert above), so a recorder failure

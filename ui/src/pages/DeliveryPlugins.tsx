@@ -9,6 +9,7 @@ import {
   capabilityTier,
   sha256Hex,
   tierLabel,
+  kindLabel,
   tierTone,
   toBase64,
   type DeliveryPlugin,
@@ -25,6 +26,7 @@ import {
 } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
 import { CapabilityList } from "../components/PluginCapabilities";
+import { PluginCatalogueTab } from "../components/PluginCatalogueTab";
 
 function statusTone(
   s: DeliveryPluginVersion["status"],
@@ -210,6 +212,7 @@ function InstallDialog({
                 {manifest.name}
               </span>
               <Badge tone="info">{manifest.version}</Badge>
+              <Badge tone="info">{kindLabel(manifest.kind)} plugin</Badge>
               <Badge tone={tierTone(tier)}>
                 {tierLabel(tier)} capabilities
               </Badge>
@@ -375,6 +378,7 @@ function PluginCard({
           ) : (
             <Badge tone="neutral">Not running</Badge>
           )}
+          <Badge tone="info">{kindLabel(shown.kind)} plugin</Badge>
           <Badge tone={tierTone(shown.capability_tier)}>
             {tierLabel(shown.capability_tier)} capabilities
           </Badge>
@@ -479,6 +483,7 @@ export default function DeliveryPlugins() {
   const authz = useAuthz();
   const isAdmin = authz.data?.role === "pki-admin";
   const [installing, setInstalling] = useState(false);
+  const [tab, setTab] = useState<"installed" | "catalogue">("installed");
   const { data, isLoading, error } = useQuery({
     queryKey: ["delivery-plugins"],
     queryFn: api.deliveryPlugins,
@@ -503,7 +508,30 @@ export default function DeliveryPlugins() {
         }
       />
 
-      {isLoading ? (
+      {isAdmin && !off && (
+        <div role="tablist" aria-label="Plugin views" className="flex gap-2">
+          {(["installed", "catalogue"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              role="tab"
+              aria-selected={tab === t}
+              onClick={() => setTab(t)}
+              className={`rounded-lg border px-3 py-1.5 text-sm ${
+                tab === t
+                  ? "border-primary bg-primary/10 font-semibold"
+                  : "border-border text-muted-foreground"
+              }`}
+            >
+              {t === "installed" ? "Installed" : "Catalogue"}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === "catalogue" && isAdmin && !off ? (
+        <PluginCatalogueTab />
+      ) : isLoading ? (
         <StateMessage title="Loading" message="Fetching delivery plugins…" />
       ) : off ? (
         <StateMessage

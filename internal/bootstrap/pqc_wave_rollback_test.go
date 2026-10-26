@@ -31,7 +31,7 @@ type waveFakeDeliverer struct {
 
 func (d *waveFakeDeliverer) Supports(ManagedTarget) (bool, string) { return true, "" }
 
-func (d *waveFakeDeliverer) Deliver(_ context.Context, _ ManagedTarget, oldFP, newFP string) (waveDelivery, error) {
+func (d *waveFakeDeliverer) Deliver(_ context.Context, _ ManagedTarget, oldFP, newFP, _ string) (waveDelivery, error) {
 	d.delivered++
 	backup := d.files[d.certPath]
 	d.files[d.certPath] = newFP

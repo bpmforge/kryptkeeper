@@ -238,6 +238,10 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 					_, _ = w.Write([]byte(body))
 					return
 				}
+				if writeExternalCAIssueError(w, err) {
+					emitAuditEvent(r, auditProvider, pd.ID, "certificate.issue", "certificate", "certificates", AuditOutcomeFailure)
+					return
+				}
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.issue", "certificate", "certificates", AuditOutcomeFailure)
 				logging.Warnf("certificate issue unavailable: %v", err)
 				writeServiceUnavailable(w, "certificate unavailable")
@@ -585,8 +589,32 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 				return
 			}
 
+			if q := r.URL.Query().Get("scope"); q != "" {
+				req.Scope = q
+			}
+			if req.Scope != "" && !isAdminRole(pd.Role) {
+				emitAuditEvent(r, auditProvider, pd.ID, "certificate.revoke", "certificate", fp, AuditOutcomeDenied)
+				writeForbidden(w, "admin role required to record a revocation inventory-only")
+				return
+			}
+
 			revoked, err := provider.RevokeCertificate(r.Context(), fp, req)
 			if err != nil {
+				var upErr *UpstreamRevokeError
+				if errors.As(err, &upErr) {
+					emitAuditEventDetail(r, auditProvider, pd.ID, "certificate.revoke.upstream_failed", "certificate", fp, AuditOutcomeFailure,
+						fmt.Sprintf(`{"fingerprint":%q,"reason":%d,"connector_id":%q}`, fp, req.ReasonCode, upErr.ConnectorID))
+					writeJSONStatus(w, http.StatusBadGateway, map[string]string{
+						"error":   "upstream_revoke_failed",
+						"message": scrubUpstreamError(upErr.Error()),
+					})
+					return
+				}
+				if errors.Is(err, ErrUpstreamRevokeUnsupported) {
+					emitAuditEvent(r, auditProvider, pd.ID, "certificate.revoke", "certificate", fp, AuditOutcomeFailure)
+					writeJSONStatus(w, http.StatusConflict, map[string]string{"error": "upstream_revoke_unsupported", "message": err.Error()})
+					return
+				}
 				if errors.Is(err, errCertificateNotFound) {
 					emitAuditEvent(r, auditProvider, pd.ID, "certificate.revoke", "certificate", fp, AuditOutcomeFailure)
 					writeNotFound(w, "certificate not found")
@@ -601,9 +629,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 				}
 				if errors.Is(err, errCertificateInvalid) {
 					emitAuditEvent(r, auditProvider, pd.ID, "certificate.revoke", "certificate", fp, AuditOutcomeFailure)
-					w.Header().Set("Content-Type", "application/json")
-					w.WriteHeader(http.StatusBadRequest)
-					_, _ = w.Write([]byte(`{"error":"bad_request","message":"invalid request body"}`))
+					writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": "bad_request", "message": err.Error()})
 					return
 				}
 				emitAuditEvent(r, auditProvider, pd.ID, "certificate.revoke", "certificate", fp, AuditOutcomeFailure)
@@ -612,7 +638,7 @@ func registerCertificateHandlers(mux *http.ServeMux, auth *Authenticator, provid
 				return
 			}
 
-			revokeSummary := fmt.Sprintf(`{"fingerprint":%q,"reason":%d,"revocation_scope":%q}`, fp, req.ReasonCode, revoked.RevocationScope)
+			revokeSummary := fmt.Sprintf(`{"fingerprint":%q,"reason":%d,"revocation_scope":%q,"connector_id":%q}`, fp, req.ReasonCode, revoked.RevocationScope, item.RenewalConnectorID)
 			emitAuditEventDetail(r, auditProvider, pd.ID, "certificate.revoke", "certificate", fp, AuditOutcomeSuccess, revokeSummary)
 			resp := struct {
 				Data CertificateRevokeResult `json:"data"`

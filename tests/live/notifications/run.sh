@@ -246,6 +246,7 @@ mkdir -p "$HUB_DIR" "$HUB_DIR/data"
 # (6 min at a 1h poll), which made the sweep's "scan on restart" nondeterministic.
 export APP_BOOTSTRAP_TOKEN="$TOKEN" AUTH_MODE=bootstrap APP_CERTIFICATE_PROVIDER=ca \
   KRYPTKEEPER_TLS_DISABLE=true \
+  KRYPTKEEPER_NOTIFY_RETRY_BASE=1s KRYPTKEEPER_NOTIFY_RETRY_CAP=2s \
   APP_DISCOVERY_PROVIDER=db APP_NOTIFICATION_PROVIDER=delivery \
   APP_CREDENTIAL_STORE_PASSPHRASE='uat-cred-passphrase-32-bytes-long!!' \
   KRYPTKEEPER_KEYSTORE_PASSPHRASE='uat-keystore-passphrase-32-bytes!!' \
@@ -343,10 +344,9 @@ resp="$(curlj -X POST "${HUB_BASE}/api/v1/notifications/test-delivery" -d "$(pyt
 echo "  resp=$resp"
 
 STEP "[webhook] echo receiver records the delivered JSON payload"
-# The worker retries up to 3x with 5s/10s backoff (delivery.go's
-# NewWorker(channels, maxRetries, 5*time.Second) via
-# notification_delivery_provider.go), so a transient first-attempt failure
-# can legitimately take ~15s to resolve -- give this margin.
+# The retrier (delivery/retry.go) retries a failed first attempt with
+# exponential backoff (1 s base in this fixture), so a transient failure can
+# legitimately take several seconds to resolve -- give this margin.
 if poll_echo "/webhook" "$WEBHOOK_MARKER" 30; then
   PASS "[webhook] echo receiver recorded a request containing the marker"
 else
@@ -487,20 +487,20 @@ fi
 
 # ---------------------------------------------------------------------------
 # 6d. W32-09 [webhook-failing] -- point webhook_url at a receiver that always
-#     answers 500 and watch the real delivery log. CONTRACT ASSERTED IS THE
-#     CURRENT ONE (3 attempts, linear 5s*n delay, cmd/kryptkeeper/main.go +
-#     delivery.Worker). UC-K04 asks for 8 attempts with exponential backoff;
-#     that is NOT implemented -- reported, not faked (follow-up ticket).
+#     answers 500 and watch the real delivery log. W32-31 contract: 8
+#     attempts, exponential backoff with jitter (production default base 1 min,
+#     cap 1 h; this fixture shrinks it to 1 s / 2 s through
+#     KRYPTKEEPER_NOTIFY_RETRY_BASE/_CAP so the run stays short), then failed.
 # ---------------------------------------------------------------------------
 STEP "[webhook-failing] webhook_url -> always-500 receiver"
-EXPECT_ATTEMPTS=3
+EXPECT_ATTEMPTS=8
 [ "$(curlj -o /dev/null -w '%{http_code}' -X PUT "${HUB_BASE}/api/v1/config/notifications.webhook_url" \
   -d "{\"value\":\"http://${ECHO_HOST}:${ECHO_PORT}/fail\"}")" = 204 ] \
   && PASS "[webhook-failing] webhook_url set via config API" || FAIL "[webhook-failing] could not set webhook_url"
 FAIL_START=$(date +%s)
 curlj -X POST "${HUB_BASE}/api/v1/notifications/test-delivery" -d '{"channel":"webhook","target":"unused","message":"uat-webhook-failing"}' >/dev/null
 failed_seen=""
-for _ in $(seq 1 60); do
+for _ in $(seq 1 120); do
   failed_seen="$(curlj "${HUB_BASE}/api/v1/notifications/deliveries?status=failed" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)['data']
@@ -510,10 +510,10 @@ print(len([i for i in items if i.get('channel')=='webhook']))" 2>/dev/null)"
   sleep 1
 done
 ELAPSED=$(( $(date +%s) - FAIL_START ))
-if [ -n "$failed_seen" ] && [ "$failed_seen" != "0" ] && [ "$ELAPSED" -lt 60 ]; then
-  PASS "[webhook-failing] delivery log shows status=failed after ${ELAPSED}s (<60s)"
+if [ -n "$failed_seen" ] && [ "$failed_seen" != "0" ] && [ "$ELAPSED" -lt 120 ]; then
+  PASS "[webhook-failing] delivery log shows status=failed after ${ELAPSED}s (<120s, shrunk backoff)"
 else
-  FAIL "[webhook-failing] no failed delivery within 60s (elapsed ${ELAPSED}s)"
+  FAIL "[webhook-failing] no failed delivery within 120s (elapsed ${ELAPSED}s)"
 fi
 sleep 2
 ATTEMPTS="$(python3 -c "
@@ -523,9 +523,8 @@ for l in open('$ECHO_LOG'):
     if json.loads(l)['path']=='/fail': n+=1
 print(n)")"
 [ "$ATTEMPTS" = "$EXPECT_ATTEMPTS" ] \
-  && PASS "[webhook-failing] receiver saw exactly $ATTEMPTS attempts then the worker stopped (current contract: 3)" \
+  && PASS "[webhook-failing] receiver saw exactly $ATTEMPTS attempts then the retrier stopped (contract: 8)" \
   || FAIL "[webhook-failing] receiver saw $ATTEMPTS attempts, expected $EXPECT_ATTEMPTS"
-echo "  NOTE: acceptance text says 'stops after 8 retries'; product today = $EXPECT_ATTEMPTS attempts, linear 5s*n. Discrepancy tracked as a follow-up (8 attempts / exponential backoff NOT implemented)."
 curlj -o /dev/null -X PUT "${HUB_BASE}/api/v1/config/notifications.webhook_url" -d "{\"value\":\"http://${ECHO_HOST}:${ECHO_PORT}/webhook\"}"
 
 # ---------------------------------------------------------------------------

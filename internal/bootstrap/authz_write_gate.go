@@ -145,8 +145,9 @@ var writeRoutes = []writeRoute{
 
 	// Protocols, dashboard.
 	{"/api/v1/protocols/**", "protocol.manage"},
+	{"/api/v1/scep/labels/**", permAdmin}, // W20-23: names an Entra credential; admin only, like EST labels
 	{"/api/v1/scep/**", "protocol.manage"},
-	{"/api/v1/acme/**", permAdmin}, // W26-01: EAB credentials
+	{"/api/v1/acme/**", permAdmin}, // W26-01: EAB credentials; W40-02: device inventory
 	{"/api/v1/est/**", permAdmin},  // W26-06 (rule lands with the first ACME/EST/CMP admin API)
 	{"/api/v1/cmp/**", permAdmin},  // W26-07/09
 	{"/api/v1/dashboard/**", "dashboard.manage"},
@@ -160,12 +161,17 @@ var writeRoutes = []writeRoute{
 	{"/api/v1/tenants/**", "tenant.manage"},
 
 	// Admin-only, named so the coverage test sees them as decided.
+	// W40-03: a trust bundle is only ever a proposal into the approval queue
+	// (Critical: a second human approves), so mcp-agent may propose it (D-029).
+	{"/api/v1/trust-bundles", permPropose},
 	{"/api/v1/agents/*", permAdmin}, // DELETE: remove an agent and revoke its token (W24-13)
 	{"/api/v1/api-keys/**", permAdmin},
 	{"/api/v1/credentials/**", permAdmin},
+	{"/api/v1/credential-sources/**", permAdmin}, // W38-07: where external credentials fetch their secrets from
 	{"/api/v1/config/**", permAdmin},
 	{"/api/v1/admin/**", permAdmin},
 	{"/api/v1/delivery-plugins/**", permAdmin},
+	{"/api/v1/plugin-catalogue/**", permAdmin},             // W38-11: install from the signed catalogue; High/Critical still need the enable approval
 	{"/api/v1/reports/compliance-attestations", permAdmin}, // W28-11: attesting a manual control is an administrator act
 	{"/api/v1/est/**", permAdmin},                          // EST Basic users (W26-07)
 	{"/api/v1/audit/archive", permAdmin},                   // W22-07: proposes deleting audit rows; a second admin must approve

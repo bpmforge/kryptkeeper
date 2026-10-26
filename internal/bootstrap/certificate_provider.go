@@ -168,6 +168,10 @@ type CertificateChainResult struct {
 type CertificateRevokeRequest struct {
 	ReasonCode int    `json:"reason_code"`
 	ReasonText string `json:"reason_text"`
+	// Scope "inventory_only" records the revocation here without asking the
+	// issuing upstream CA (D-306). Only an admin may set it, and only for a
+	// certificate no hub CA issued.
+	Scope string `json:"scope,omitempty"`
 }
 
 type CertificateRevokeResult struct {
@@ -186,6 +190,9 @@ type CertificateRevokeResult struct {
 const (
 	RevocationScopeCA            = "ca"
 	RevocationScopeInventoryOnly = "inventory_only"
+	// RevocationScopeUpstream: the issuing upstream CA accepted the
+	// revocation through its connector (W36-03, D-306).
+	RevocationScopeUpstream = "upstream"
 )
 
 type CertificateIssueRequest struct {

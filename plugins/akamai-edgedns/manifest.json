@@ -1,0 +1,20 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "kind": "dns01",
+  "id": "kryptkeeper.akamai-edgedns",
+  "name": "Akamai Edge DNS (ACME DNS-01)",
+  "version": "1.0.0",
+  "publisher": "Kryptkeeper Authors",
+  "license": "Apache-2.0",
+  "source": "https://github.com/bpmforge/kryptkeeper/tree/main/plugins/akamai-edgedns",
+  "artifact": {"file": "plugin.wasm", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "capabilities": {
+    "network": {"hosts_from_credential": "host"}
+  },
+  "credential_schema": {
+    "host": {"type": "url", "required": true},
+    "client_token": {"type": "string", "required": true, "secret": true},
+    "client_secret": {"type": "string", "required": true, "secret": true},
+    "access_token": {"type": "string", "required": true, "secret": true}
+  }
+}

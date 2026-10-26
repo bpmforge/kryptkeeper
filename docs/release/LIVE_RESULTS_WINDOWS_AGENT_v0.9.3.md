@@ -2,7 +2,7 @@
 
 Date: 2026-10-15. Validation only; no product code changed. Windows host:
 lab-win11 (Windows 11 Enterprise 26100, domain-joined to corp.example.test), reached over
-NTLM-sealed WinRM (http 5985, `~/.config/kryptkeeper-lab/wr.py`). Hub: the v0.9.3-source
+NTLM-sealed WinRM (http 5985, `a WinRM helper script`). Hub: the v0.9.3-source
 hub built linux/amd64, run on lab-runner (192.0.2.195:8447, TLS from the hub's
 own CA, enrollment secret configured, closed registration). Agent and MSI built
 from the same commit (windows/amd64, `wixl` 0.106). The MSI was copied to the
@@ -80,7 +80,7 @@ UNVERIFIED.
 ## Cleanup
 
 lab-win11: service/files/event-source removed via MSI; `C:\ProgramData\Kryptkeeper`,
-`C:\kkuat-live`, `C:\kkuat-stage` removed; no firewall or other settings touched;
+`C:\corp-live`, `C:\corp-stage` removed; no firewall or other settings touched;
 no certificates were added to the cert stores. lab-runner: hub and HTTP file server
 stopped, `~/kkhub` removed, ports 8447/8099 not listening. Local: generated secrets,
 env and PowerShell files deleted from the scratchpad. No lab secret was printed.

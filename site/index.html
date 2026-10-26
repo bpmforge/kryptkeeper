@@ -9,13 +9,15 @@
 <meta property="og:description" content="Self-hosted PKI and certificate lifecycle management. Apache 2.0.">
 <meta property="og:url" content="https://kryptkeeper.io/">
 <meta property="og:type" content="website">
-<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
 </head>
 <body>
+<a class="skip" href="#main">Skip to content</a>
 <div class="wrap">
 
 <header class="site">
@@ -24,25 +26,25 @@
     <span class="word">Kryptkeeper</span>
   </a>
   <nav class="top" aria-label="Site">
-    <a href="#capabilities">Capabilities</a>
-    <a href="tour.html">Tour</a>
-    <a href="#protocols">Protocols</a>
-    <a href="#install">Install</a>
-    <a href="#maturity">Maturity</a>
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/#install">Install</a>
     <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
   </nav>
 </header>
 
-<main>
+<main id="main">
 <div class="hero">
   <div class="stack">
     <span class="label">Open-source PKI · Apache 2.0</span>
     <h1 style="margin-top:1rem">Run your own certificate authority, and stop finding out about expiry from an outage.</h1>
     <p class="lede">Kryptkeeper is a self-hosted CA and certificate lifecycle platform. It issues over ACME, EST, SCEP, CMP and Windows autoenrollment, finds the certificates you didn't know about, and renews and installs them without a person in the loop.</p>
     <div class="cta">
-      <a class="btn primary" href="https://github.com/bpmforge/kryptkeeper/releases/tag/v0.9.4">Download v0.9.4</a>
+      <a class="btn primary" href="https://github.com/bpmforge/kryptkeeper/releases/tag/v1.0.0">Download v1.0.0</a>
       <a class="btn" href="https://github.com/bpmforge/kryptkeeper">View on GitHub</a>
-      <a class="btn" href="tour.html">See it in action</a>
+      <a class="btn" href="/features/">See it in action</a>
+      <a class="btn" href="/try/">Try it in five minutes</a>
     </div>
     <p class="meta-line">Single Go binary · SQLite or PostgreSQL · signed releases</p>
   </div>
@@ -76,31 +78,98 @@
     <span class="label">Capabilities</span>
     <h2>The whole certificate lifecycle in one place</h2>
   </div>
-  <div class="caps">
-    <div class="cap">
-      <h3>Certificate authority</h3>
-      <p>Root and intermediate CAs, templates with name, key-strength and SSH policy, CSR-in issuance, renew, revoke and import. Post-quantum ML-DSA and hybrid certificates with software keys.</p>
-    </div>
-    <div class="cap">
-      <h3>Unattended renewal</h3>
-      <p>Renews and installs on nginx, Apache and HAProxy over SSH, on hosts running the agent, and on Kubernetes, IIS, F5 and Citrix targets. Checks the served certificate, rolls back on failure, and tells the owner when it gives up.</p>
-    </div>
-    <div class="cap">
-      <h3>Discovery and inventory</h3>
-      <p>Scans hosts and subnets for every TLS endpoint, puts the certificates it finds into the inventory, and labels whose each one is: yours, public, another private CA or self-signed. Flags expired, weak, mismatched, untrusted and incomplete chains, old TLS versions and ports that aren't TLS at all. Also Kubernetes, service-mesh, WinRM, CT log and cloud key discovery.</p>
-    </div>
-    <div class="cap">
-      <h3>Windows autoenrollment</h3>
-      <p>Native MS-XCEP and MS-WSTEP servers, so domain machines enroll through Group Policy without an ADCS server.</p>
-    </div>
-    <div class="cap">
-      <h3>Governance</h3>
-      <p>Append-only audit log with SIEM forwarding, an approval queue that keeps proposer and approver apart, key dual control on by default, custom roles, OIDC, SAML and SCIM.</p>
-    </div>
-    <div class="cap">
-      <h3>Revocation built in</h3>
-      <p>OCSP responder and CRL distribution ship in the open-source release, not behind a paid tier.</p>
-    </div>
+  <!-- hubs:start -->
+<div class="showcase">
+<figure class="shot">
+  <figcaption>
+    <h3><a href="/features/windows-active-directory/">Windows and Active Directory</a></h3>
+    <p>Autoenrollment for domain machines and users, without an ADCS server.</p>
+    <p>Kryptkeeper serves MS-XCEP and MS-WSTEP natively, so domain-joined Windows machines and users enroll through Group Policy with Kerberos, exactly as they did with ADCS. Templates say whether they are offered to machines or users, ADCS templates can be imported, and a Windows agent and WinRM scanning cover the machine stores.</p>
+    <a class="how-link" href="/features/windows-active-directory/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/templates</span></div>
+    <a href="/features/windows-active-directory/" tabindex="-1" aria-hidden="true"><img src="/shots/U-10/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Windows and Active Directory screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot flip">
+  <figcaption>
+    <h3><a href="/features/discovery-inventory/">Discovery and inventory</a></h3>
+    <p>Find the certificates you didn't know about.</p>
+    <p>Scan your network, pull inventory from other CAs, and watch Certificate Transparency logs for certificates issued in your name. Risky endpoints are flagged and can be accepted as risk with approval.</p>
+    <a class="how-link" href="/features/discovery-inventory/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/discovery</span></div>
+    <a href="/features/discovery-inventory/" tabindex="-1" aria-hidden="true"><img src="/shots/U-25/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Discovery and inventory screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot">
+  <figcaption>
+    <h3><a href="/features/automation-enrollment/">Automation and enrollment</a></h3>
+    <p>Speaks the protocols your clients already use.</p>
+    <p>Servers renew over ACME, devices enroll over SCEP, EST or CMP, and agents or agentless targets install certificates where they are used. Rollouts go to a canary first, and failures wait in one queue.</p>
+    <a class="how-link" href="/features/automation-enrollment/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/acme</span></div>
+    <a href="/features/automation-enrollment/" tabindex="-1" aria-hidden="true"><img src="/shots/U-27/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Automation and enrollment screen in Kryptkeeper"></a>
+  </div>
+</figure>
+<figure class="shot flip">
+  <figcaption>
+    <h3><a href="/features/approvals-guardrails/">Approvals and guardrails</a></h3>
+    <p>Sensitive changes need a second person, and show their impact first.</p>
+    <p>Requests, policies and exceptions can require a second approver. Before anything destructive, Kryptkeeper shows the blast radius: what will break and who owns it.</p>
+    <a class="how-link" href="/features/approvals-guardrails/">How it works &rarr;</a>
+  </figcaption>
+  <div class="frame">
+    <div class="bar"><i></i><i></i><i></i><span>kryptkeeper.example.com/inbox</span></div>
+    <a href="/features/approvals-guardrails/" tabindex="-1" aria-hidden="true"><img src="/shots/U-17/cover-dark.webp" width="1220" height="762" loading="lazy" decoding="async" alt="Approvals and guardrails screen in Kryptkeeper"></a>
+  </div>
+</figure>
+</div>
+<div class="more-hubs">
+  <h3>Everything else</h3>
+  <div class="more-cols">
+<div><span class="label">Set up</span><ul><li><a href="/features/getting-around/">Getting around</a></li><li><a href="/features/certificate-authorities/">Certificate authorities</a></li><li><a href="/features/templates-policy/">Templates and policy</a></li><li><a href="/features/keys-kms/">Keys and KMS</a></li></ul></div>
+<div><span class="label">Issue and renew</span><ul><li><a href="/features/linux-macos-hosts/">Linux and macOS hosts</a></li><li><a href="/features/issuing-certificates/">Issuing certificates</a></li><li><a href="/features/lifecycle/">Renewal and revocation</a></li></ul></div>
+<div><span class="label">Visibility</span><ul><li><a href="/features/alerts-notifications/">Alerts and notifications</a></li><li><a href="/features/compliance-risk/">Compliance, risk and post-quantum</a></li></ul></div>
+<div><span class="label">Govern and extend</span><ul><li><a href="/features/build-your-own/">Build your own integrations</a></li><li><a href="/features/access-tenancy/">Access and tenancy</a></li><li><a href="/features/machine-identity/">Machine and workload identity</a></li></ul></div>
+  </div>
+  <p class="all-link"><a href="/features/">All features &rarr;</a></p>
+</div>
+  <!-- hubs:end -->
+</section>
+
+<section id="paths">
+  <div class="section-head">
+    <span class="label">Paths</span>
+    <h2>Pick your path</h2>
+    <p class="muted">Walkthroughs in the order a role needs them, from an empty install to a working setup.</p>
+  </div>
+  <!-- paths:start -->
+<ul class="path-list">
+<li><span class="label">PKI administrator</span><h3><a class="stretch" href="/paths/stand-up-pki/">Stand up your own PKI</a></h3><p>From an empty install to a root, an issuing CA, templates and the first certificate.</p><span class="steps-n">7 steps &rarr;</span></li>
+<li><span class="label">Windows and AD administrator</span><h3><a class="stretch" href="/paths/replace-adcs/">Replace ADCS for your Windows domain</a></h3><p>Keep Group Policy autoenrollment and move the CA behind it to Kryptkeeper.</p><span class="steps-n">6 steps &rarr;</span></li>
+<li><span class="label">Platform and DevOps engineer</span><h3><a class="stretch" href="/paths/automate-renewal/">Automate renewal for servers and devices</a></h3><p>Get certificates renewing and installing themselves, and hear about it only when one can't.</p><span class="steps-n">8 steps &rarr;</span></li>
+<li><span class="label">Security lead</span><h3><a class="stretch" href="/paths/take-over-estate/">Take over an existing estate</a></h3><p>Find what you already have, give every certificate an owner, and bring it under renewal.</p><span class="steps-n">7 steps &rarr;</span></li>
+<li><span class="label">Security and audit</span><h3><a class="stretch" href="/paths/govern-prove/">Govern it and prove it</a></h3><p>Least privilege, a second person on sensitive changes, and evidence an auditor will accept.</p><span class="steps-n">7 steps &rarr;</span></li>
+<li><span class="label">Platform engineer</span><h3><a class="stretch" href="/paths/machine-identity/">Machine and workload identity</a></h3><p>Identities for workloads, SSH and code signing, approved before they exist.</p><span class="steps-n">4 steps &rarr;</span></li>
+<li><span class="label">Developer and integrator</span><h3><a class="stretch" href="/paths/extend/">Integrate with your own tools</a></h3><p>Write a plugin for a device we don't support, and send every event to the tools you already run.</p><span class="steps-n">4 steps &rarr;</span></li>
+</ul>
+  <!-- paths:end -->
+</section>
+
+<section id="build-your-own">
+  <div class="section-head">
+    <span class="label">Extend it</span>
+    <h2>Build your own integrations</h2>
+    <p class="muted">Delivery plugins are WASM modules with three functions: Validate, Push and Rollback. They run sandboxed, declare the capabilities they need, and come in signed tiers (first-party, verified, community); a new plugin starts disabled until an admin turns it on. Everything the console does is also in the REST API, with SDKs for Go, Python and TypeScript, a Terraform provider and an MCP server.</p>
+  </div>
+  <div class="cta" style="margin-top:0">
+    <a class="btn primary" href="/features/build-your-own/">See how it works</a>
+    <a class="btn" href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/plugins/README.md">Plugin guide</a>
   </div>
 </section>
 
@@ -149,9 +218,9 @@ docker compose up -d</pre>
       <p>Checksums and images are signed keyless with Sigstore cosign, bound to the GitHub release workflow. There is no long-lived signing key to fetch or trust.</p>
       <div class="code">
         <button class="copy" type="button" data-copy="vf">Copy</button>
-<pre id="vf">cosign verify ghcr.io/bpmforge/kryptkeeper:0.9.4 \
+<pre id="vf">cosign verify ghcr.io/bpmforge/kryptkeeper:1.0.0 \
   --certificate-identity \
-  "https://github.com/bpmforge/kryptkeeper/.github/workflows/release.yml@refs/tags/v0.9.4" \
+  "https://github.com/bpmforge/kryptkeeper/.github/workflows/release.yml@refs/tags/v1.0.0" \
   --certificate-oidc-issuer \
   "https://token.actions.githubusercontent.com"</pre>
       </div>
@@ -162,46 +231,45 @@ docker compose up -d</pre>
 
 <section id="maturity">
   <div class="section-head">
-    <span class="label">v0.9.4 status</span>
-    <h2>What's proven, what's beta</h2>
-    <p class="muted">The version number is below 1.0 on purpose. Each area is labelled by how it was tested: validated means run against real clients, not only unit tests.</p>
+    <span class="label">v1.0.0 status</span>
+    <h2>What's proven, what isn't yet</h2>
+    <p class="muted">Each area is labelled by how it was tested on the 1.0.0 lab pass: proven means run end to end against real clients and servers, not only unit tests.</p>
   </div>
   <div class="maturity">
     <div class="tier validated">
-      <h3>Validated</h3>
+      <h3>Proven in the lab</h3>
       <ul>
-        <li>ACME against certbot and lego</li>
-        <li>EST, SCEP, CMP, OCSP and CRL against openssl</li>
-        <li>SSH certificates with OpenSSH</li>
-        <li>Unattended renewal on nginx and Apache, with rollback</li>
-        <li>Windows autoenrollment on a Kerberos lab</li>
-        <li>Network discovery and issuer classification on a 17-host lab</li>
-        <li>Renewal from Let's Encrypt (staging) over ACME DNS-01 with Cloudflare</li>
-        <li>Agent on Windows (MSI) and macOS (Homebrew, LaunchDaemon)</li>
-        <li>SQLite and PostgreSQL, including upgrades</li>
+        <li>ACME, EST, SCEP, CMP, OCSP and CRL against real clients, plus renewal from Let's Encrypt (staging) over DNS-01</li>
+        <li>Windows Group Policy autoenrollment and renewal on Windows 11 and Server 2022</li>
+        <li>WinRM discovery, IIS install with rollback, and the Windows agent MSI</li>
+        <li>Unattended renewal and install on nginx, Apache, HAProxy and Tomcat, agent or agentless</li>
+        <li>Discovery with fingerprinting, privileged agentless Linux scans and inventory sync</li>
+        <li>CA hierarchy, offline root, key ceremony, escrow and PKCS#11 with dual control</li>
+        <li>Post-quantum ML-DSA certificates against OpenSSL 3.5, and code signing with cosign</li>
+        <li>SSO, SPIFFE, approvals, MCP, SIEM, ITSM and notifications</li>
+        <li>Kubernetes with cert-manager, Helm HA and air-gapped installs; SQLite and PostgreSQL</li>
       </ul>
     </div>
     <div class="tier beta">
-      <h3>Beta</h3>
+      <h3>Proven against emulators or stand-ins</h3>
       <ul>
-        <li>Reports, compliance evidence, CBOM, PQC readiness</li>
-        <li>SAML, OIDC and SCIM</li>
-        <li>CT monitoring and cloud inventory</li>
-        <li>Terraform provider, Helm chart, MCP server</li>
+        <li>F5 BIG-IP and Citrix delivery (mock appliance)</li>
+        <li>AWS KMS, Azure Key Vault and Google Cloud KMS (emulators)</li>
+        <li>ServiceNow, Jira Cloud, Slack and PagerDuty (local stand-ins)</li>
+        <li>Delivery to AWS, Azure and Google Cloud certificate services (Vault leg proven)</li>
       </ul>
     </div>
     <div class="tier exp">
-      <h3>Experimental or unverified</h3>
+      <h3>Not yet</h3>
       <ul>
-        <li>Multi-tenancy (not a security boundary yet)</li>
-        <li>HashiCorp Vault and GCP Cloud KMS key stores</li>
-        <li>F5 and Citrix plugins on real devices</li>
-        <li>SCEP from network devices</li>
-        <li>Missing intermediates from other private CAs (reported as unknown)</li>
+        <li>Install modes for SQL Server, Exchange and RDP</li>
+        <li>SCEP from vendor network appliances</li>
+        <li>Windows autoenrollment on Windows 10 and Server 2019</li>
+        <li>Multi-tenancy as a security boundary</li>
       </ul>
     </div>
   </div>
-  <p class="muted" style="margin-top:1.5rem">Full detail is in the <a href="https://github.com/bpmforge/kryptkeeper/releases/tag/v0.9.4">v0.9.4 release notes</a>.</p>
+  <p class="muted" style="margin-top:1.5rem">Full detail is in the <a href="https://github.com/bpmforge/kryptkeeper/releases/tag/v1.0.0">v1.0.0 release notes</a> and the <a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/ROADMAP.md">roadmap</a>.</p>
 </section>
 </main>
 

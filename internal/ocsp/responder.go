@@ -41,6 +41,11 @@ import (
 // error is a "tryLater". Neither is ever a signed "good".
 var ErrUnknownIssuer = errors.New("ocsp: issuer is not served by this responder")
 
+// ErrExternalIssuer is what an IssuerLookupFunc returns when the issuer is an
+// external CA: its OCSP is the upstream's, so the hub answers 404 rather than
+// a signed or "unauthorized" response (W36-02).
+var ErrExternalIssuer = errors.New("external_ca")
+
 // errSigning marks a failure to sign a response: internalError, not tryLater.
 var errSigning = errors.New("ocsp: signing failed")
 
@@ -203,6 +208,12 @@ func (r *Responder) Handler() http.Handler {
 		}
 
 		respBytes, nextUpdate, err := r.respond(ocspReq)
+		if errors.Is(err, ErrExternalIssuer) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"external_ca","message":"this CA is operated by an external issuer; use its own CRL and OCSP"}`))
+			return
+		}
 		if err != nil {
 			// Error responses are unsigned and carry no status for the
 			// certificate, so a client cannot mistake them for "good".

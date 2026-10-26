@@ -70,11 +70,13 @@ func registerAgilityHandler(mux *http.ServeMux, auth *Authenticator, certProvide
 
 		var req agilityRequest
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&req); err != nil {
+			emitAuditEventDetail(r, auditProvider, principal, "crypto_agility.roadmap", "policy", "crypto-agility", AuditOutcomeFailure, "reason=invalid_body")
 			writeBadRequest(w, "invalid policy body")
 			return
 		}
 		policy, err := req.toPolicy()
 		if err != nil {
+			emitAuditEventDetail(r, auditProvider, principal, "crypto_agility.roadmap", "policy", "crypto-agility", AuditOutcomeFailure, "reason=invalid_policy")
 			writeBadRequest(w, err.Error())
 			return
 		}

@@ -1,6 +1,6 @@
 # Third-party licenses
 
-Generated: 2026-10-17 by `scripts/check-licenses.sh generate` (go-licenses v2.0.1, `go list -deps -m`, `ui/package-lock.json`).
+Generated: 2026-10-25 by `scripts/check-licenses.sh generate` (go-licenses v2.0.1, `go list -deps -m`, `ui/package-lock.json`).
 Do not edit by hand; regenerate on every dependency change. CI fails if this file lags the dependencies.
 Go scope is the shipped binaries (`./cmd/...`), transitive dependencies included. Policy: [docs/LICENSING_AND_SUPPORT.md](docs/LICENSING_AND_SUPPORT.md).
 
@@ -16,6 +16,7 @@ Go scope is the shipped binaries (`./cmd/...`), transitive dependencies included
 | github.com/aws/aws-sdk-go-v2/internal/configsources | v1.4.22 | Apache-2.0 |
 | github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 | v2.7.22 | Apache-2.0 |
 | github.com/aws/aws-sdk-go-v2/service/acm | v1.38.2 | Apache-2.0 |
+| github.com/aws/aws-sdk-go-v2/service/acmpca | v1.46.13 | Apache-2.0 |
 | github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding | v1.13.7 | Apache-2.0 |
 | github.com/aws/aws-sdk-go-v2/service/internal/presigned-url | v1.13.21 | Apache-2.0 |
 | github.com/aws/aws-sdk-go-v2/service/kms | v1.50.4 | Apache-2.0 |
@@ -28,6 +29,7 @@ Go scope is the shipped binaries (`./cmd/...`), transitive dependencies included
 | github.com/bpmforge/kryptkeeper/sdk/delivery-go | v0.0.0-00010101000000-000000000000 | Apache-2.0 |
 | github.com/cloudflare/circl | v1.6.3 | BSD-3-Clause |
 | github.com/dustin/go-humanize | v1.0.1 | MIT |
+| github.com/fxamacker/cbor/v2 | v2.9.6 | MIT |
 | github.com/go-asn1-ber/asn1-ber | v1.5.8 | MIT |
 | github.com/go-ldap/ldap/v3 | v3.4.14 | MIT |
 | github.com/go-pdf/fpdf | v0.9.0 | MIT |
@@ -59,6 +61,7 @@ Go scope is the shipped binaries (`./cmd/...`), transitive dependencies included
 | github.com/spiffe/go-spiffe/v2 | v2.8.1 | Apache-2.0 |
 | github.com/tetratelabs/wazero | v1.12.0 | Apache-2.0 |
 | github.com/tink-crypto/tink-go/v2 | v2.8.0 | Apache-2.0 |
+| github.com/x448/float16 | v0.8.4 | MIT |
 | github.com/yosida95/uritemplate/v3 | v3.0.2 | BSD-3-Clause |
 | go.mozilla.org/pkcs7 | v0.10.0 | MIT |
 | golang.org/x/crypto | v0.57.0 | BSD-3-Clause |

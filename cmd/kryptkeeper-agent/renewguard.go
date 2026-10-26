@@ -129,6 +129,23 @@ func (g *renewGuard) dispatchRenewals(tasks []agentclient.RenewalTask, run func(
 	}
 }
 
+// http01Addr is the address the ACME renewer's HTTP-01 listener binds (its
+// default; the agent never overrides it).
+const http01Addr = ":80"
+
+// enableHTTP01Preflight arms the :80 probe where it can pay off. Only a
+// renewal without a web root binds :80 itself, and on Windows that port is
+// most often already owned by IIS/HTTP.sys; probing before the renewal turns
+// that into a clear, backed-off skip instead of a consumed ACME order and an
+// opaque challenge failure. With a web root the challenge file is served by
+// the existing web server, so there is nothing to bind and nothing to probe.
+func (g *renewGuard) enableHTTP01Preflight(goos, webRoot string) {
+	if goos != "windows" || webRoot != "" {
+		return
+	}
+	g.preflight = func() error { return probeHTTP01Port(http01Addr) }
+}
+
 // probeHTTP01Port tries to bind addr's port on each IP family and closes
 // immediately. With an empty host it probes tcp4 0.0.0.0 and tcp6 [::]
 // separately: on Windows a single dual-stack bind does not see an IPv4-only

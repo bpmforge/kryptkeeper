@@ -62,13 +62,13 @@ func (s *Store) q(query string) string {
 	return b.String()
 }
 
-const connCols = "id, kind, name, base_url, credential_ref, event_classes, enabled, tenant, created_at, updated_at"
+const connCols = "id, kind, name, base_url, credential_ref, plugin_id, event_classes, enabled, tenant, created_at, updated_at"
 
 func scanConn(sc interface{ Scan(...any) error }) (Connection, error) {
 	var c Connection
 	var classes, created, updated string
 	var enabled int
-	if err := sc.Scan(&c.ID, &c.Kind, &c.Name, &c.BaseURL, &c.CredentialRef, &classes, &enabled, &c.Tenant, &created, &updated); err != nil {
+	if err := sc.Scan(&c.ID, &c.Kind, &c.Name, &c.BaseURL, &c.CredentialRef, &c.PluginID, &classes, &enabled, &c.Tenant, &created, &updated); err != nil {
 		return Connection{}, err
 	}
 	c.Enabled = enabled != 0
@@ -113,8 +113,8 @@ func (s *Store) CreateConnection(ctx context.Context, c Connection, now time.Tim
 	if c.Enabled {
 		enabled = 1
 	}
-	_, err = s.db.ExecContext(ctx, s.q(`INSERT INTO itsm_connections (`+connCols+`) VALUES (?,?,?,?,?,?,?,?,?,?)`),
-		c.ID, c.Kind, c.Name, c.BaseURL, c.CredentialRef, string(classes), enabled, c.Tenant, fmtTS(now), fmtTS(now))
+	_, err = s.db.ExecContext(ctx, s.q(`INSERT INTO itsm_connections (`+connCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?)`),
+		c.ID, c.Kind, c.Name, c.BaseURL, c.CredentialRef, c.PluginID, string(classes), enabled, c.Tenant, fmtTS(now), fmtTS(now))
 	if err != nil {
 		return Connection{}, err
 	}

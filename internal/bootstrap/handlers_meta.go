@@ -105,7 +105,7 @@ func registerMetaHandlers(mux *http.ServeMux, ready ReadinessProbe) {
 			Service:     "kryptkeeper",
 			Version:     version,
 			Commit:      os.Getenv("APP_COMMIT"),
-			Environment: os.Getenv("APP_ENV"),
+			Environment: deploymentEnvironment(),
 			FIPS:        keystore.FIPSPosture(),
 		}
 

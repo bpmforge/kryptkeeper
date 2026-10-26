@@ -274,3 +274,52 @@ func (c *Client) setAgentHeaders(req *http.Request) {
 		req.Header.Set("X-Agent-Version", c.Version)
 	}
 }
+
+// GetTrustTasks fetches the trust-store bundles queued for this agent (W40-03).
+func (c *Client) GetTrustTasks(ctx context.Context) ([]TrustTask, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.HubURL+"/api/v1/agent/trust-tasks", nil)
+	if err != nil {
+		return nil, err
+	}
+	c.setAgentHeaders(req)
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get trust tasks: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return nil, fmt.Errorf("get trust tasks: hub returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var out struct {
+		Tasks []TrustTask `json:"tasks"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("get trust tasks: decode response: %w", err)
+	}
+	return out.Tasks, nil
+}
+
+// PostTrustResult reports what the agent did with one trust bundle.
+func (c *Client) PostTrustResult(ctx context.Context, result TrustResult) error {
+	body, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.HubURL+"/api/v1/agent/trust-result", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.setAgentHeaders(req)
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("post trust result: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("post trust result: hub returned %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
+}

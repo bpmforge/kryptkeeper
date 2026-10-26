@@ -5,7 +5,10 @@
 package bootstrap
 
 import (
+	"context"
+	"crypto/tls"
 	"crypto/x509"
+	"net"
 	"net/http"
 	"time"
 
@@ -48,6 +51,50 @@ func upstreamConnectorHTTPClient(timeout time.Duration, credentialed bool) *http
 		SameHostRedirectsOnly: true,
 		Timeout:               timeout,
 	}))
+}
+
+// upstreamConnectorMTLSClient is upstreamConnectorHTTPClient for the upstream CA
+// connectors that carry a client certificate and/or a private server root
+// (EJBCA, Sectigo, Entrust, GlobalSign, Vault). The material comes from
+// connectors.TLSMaterial; building it here keeps the dial behind the egress
+// guard instead of letting a connector assemble its own transport.
+func upstreamConnectorMTLSClient(timeout time.Duration, credentialed bool, certs []tls.Certificate, roots *x509.CertPool) *http.Client {
+	return egress.NewClient(egress.PolicyFromEnv(egress.Policy{
+		AllowPrivate:          true,
+		AllowLoopback:         egressAllowLoopback,
+		RequireHTTPS:          credentialed && !upstreamAllowPlainHTTP,
+		MaxRedirects:          3,
+		SameHostRedirectsOnly: true,
+		Timeout:               timeout,
+		RootCAs:               roots,
+		ClientCertificates:    certs,
+	}))
+}
+
+// gcpMetadataAddr is the GCE metadata server. The egress guard refuses
+// link-local space by design, so ambient workload identity gets this one
+// dedicated client instead of a policy exception.
+const gcpMetadataAddr = "169.254.169.254:80"
+
+// gcpMetadataDialAddr is a test seam for the one address the client may dial.
+var gcpMetadataDialAddr = gcpMetadataAddr
+
+// gcpMetadataHTTPClient can only ever reach the GCE metadata endpoint: the
+// dialer ignores the requested host and always connects to the fixed address,
+// there is no proxy, and redirects are not followed. No operator-supplied
+// host can reach it.
+func gcpMetadataHTTPClient() *http.Client {
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			Proxy: nil,
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, gcpMetadataDialAddr)
+			},
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }
 
 // upstreamAllowPlainHTTP is a test seam (httptest stubs are plain http);

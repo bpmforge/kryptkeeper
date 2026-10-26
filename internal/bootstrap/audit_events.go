@@ -184,6 +184,9 @@ func configKeyAuditAction(key string) (action string, ok bool) {
 	if key == "metrics.bearer_token" {
 		return "config.metrics_auth.update", true
 	}
+	if key == configKeyDemoSeededAt {
+		return "demo.marker.update", true
+	}
 	if strings.HasPrefix(key, "slo.") {
 		return "slo.objective.update", true
 	}

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -118,10 +119,22 @@ func TestIssueRefusal_AllowListOutsideTemplate(t *testing.T) {
 	requireRefusalRow(t, audit, "reason=allow_list algorithm="+string(keystore.MLDSA65))
 }
 
-func TestIssueRefusal_FIPSHybrid(t *testing.T) {
-	if !fips140.Enabled() {
-		t.Skip("run with GODEBUG=fips140=on")
+// skipOrFailUnlessFIPS skips when the required GODEBUG fips140 mode is not
+// active, except in CI (KRYPTKEEPER_REQUIRE_FIPS_TEST=1) where a misconfigured
+// step must fail instead of silently skipping.
+func skipOrFailUnlessFIPS(t *testing.T, active bool, mode string) {
+	t.Helper()
+	if active {
+		return
 	}
+	if os.Getenv("KRYPTKEEPER_REQUIRE_FIPS_TEST") == "1" {
+		t.Fatalf("KRYPTKEEPER_REQUIRE_FIPS_TEST=1 but GODEBUG=fips140=%s is not active", mode)
+	}
+	t.Skip("run with GODEBUG=fips140=" + mode)
+}
+
+func TestIssueRefusal_FIPSHybrid(t *testing.T) {
+	skipOrFailUnlessFIPS(t, fips140.Enabled(), "on")
 	provider, engine, keys := newTestMLDSACAProvider(t)
 	csr := hybridCSRPEM(t, keys, "fips-hybrid")
 	audit := &pqcRecAudit{}
@@ -134,9 +147,7 @@ func TestIssueRefusal_FIPSHybrid(t *testing.T) {
 }
 
 func TestIssueRefusal_FIPSOnlyMLDSA(t *testing.T) {
-	if !fips140.Enforced() {
-		t.Skip("run with GODEBUG=fips140=only")
-	}
+	skipOrFailUnlessFIPS(t, fips140.Enforced(), "only")
 	// The software keystore cannot persist keys under fips140=only (its GCM
 	// use is non-approved), so the key is generated in memory and the
 	// provider is a nil stub: the refusal must fire before it is called.

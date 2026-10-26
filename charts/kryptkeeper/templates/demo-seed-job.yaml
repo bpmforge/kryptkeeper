@@ -1,0 +1,65 @@
+{{- if .Values.demo.enabled }}
+{{- if .Values.tls.enabled }}
+{{- fail "demo.enabled requires tls.enabled=false: the seeding Job reaches the hub over the cluster network and cannot read the CA the hub self-issues onto its volume (use charts/kryptkeeper/values-demo.yaml)" }}
+{{- end }}
+{{- if eq (lower .Values.config.environment) "production" }}
+{{- fail "demo.enabled cannot be combined with config.environment=production" }}
+{{- end }}
+# W37-08: runs `kryptkeeper demo seed` once against the new hub. Post-install
+# only: a post-upgrade run would fail the release because the hub is already
+# seeded. The command waits for the hub itself, so hook ordering needs no help.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "kryptkeeper.fullname" . }}-demo-seed
+  labels:
+    {{- include "kryptkeeper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: demo-seed
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "kryptkeeper.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: demo-seed
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: seed
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          {{- if .Values.image.digest }}
+          image: "{{ .Values.image.repository }}@{{ .Values.image.digest }}"
+          {{- else }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - demo
+            - seed
+            - --hub=http://{{ include "kryptkeeper.fullname" . }}:{{ .Values.service.port }}
+            - --wait={{ .Values.demo.wait }}
+            {{- with .Values.demo.targets }}
+            - --targets={{ join "," . }}
+            {{- end }}
+          env:
+            - name: KRYPTKEEPER_DEMO_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kryptkeeper.secretName" . }}
+                  key: APP_BOOTSTRAP_TOKEN
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+{{- end }}

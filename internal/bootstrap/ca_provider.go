@@ -30,6 +30,8 @@ type CAListItem struct {
 	ParentCAID     *string `json:"parent_ca_id"`
 	Status         string  `json:"status"`
 	KeyStorageType string  `json:"key_storage_type"`
+	// ConnectorID names the issuer connector behind an external CA (W36-02).
+	ConnectorID string `json:"connector_id,omitempty"`
 	// RevocationSigning is how CRLs/OCSP for this CA are signed: ml-dsa for an
 	// ML-DSA CA key, else classical (W31-05).
 	RevocationSigning            string `json:"revocation_signing"`
@@ -149,6 +151,13 @@ type CAImporter interface {
 	ImportRootCA(ctx context.Context, name string, certPEM []byte) (CAListItem, error)
 	CheckTrustAnchorRemovable(ctx context.Context, id string) error
 	RemoveTrustAnchor(ctx context.Context, id string) error
+}
+
+// ExternalCACreator is an optional CAProvider capability (W36-02): record a CA
+// whose signing is delegated to an issuer connector. Only the engine-backed
+// provider implements it.
+type ExternalCACreator interface {
+	CreateExternalCA(ctx context.Context, name, connectorID string, trustPEM []byte) (CAListItem, error)
 }
 
 // CACSRProvider is an optional CAProvider capability (W23-04): the offline-root

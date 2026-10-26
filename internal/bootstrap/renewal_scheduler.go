@@ -920,8 +920,9 @@ func (s *RenewalScheduler) loadTeamRoutes(ctx context.Context) teamRouteIndex {
 }
 
 // resolveTeamRoutes picks the routes for a routed rule: the cert owner team's
-// routes on the rule's channel, else the global inbox's. Levels never combine,
-// so a team match suppresses the global inbox. A route created by one tenant
+// routes on the rule's channel, else the global inbox's. A certificate with no
+// owner team uses the ownerless queue's routes (W32-30) before the global
+// inbox. Levels never combine, so a team match suppresses the global inbox. A route created by one tenant
 // serves only that tenant's certificates, and an invisible team route does not
 // shadow the global inbox.
 func resolveTeamRoutes(ctx context.Context, idx teamRouteIndex, cert CertificateItem, channel string) []NotificationTeamRoute {
@@ -938,10 +939,12 @@ func resolveTeamRoutes(ctx context.Context, idx teamRouteIndex, cert Certificate
 		}
 		return out
 	}
-	if cert.OwnerTeam != "" {
-		if routes := visible(cert.OwnerTeam); len(routes) > 0 {
-			return routes
-		}
+	team := cert.OwnerTeam
+	if team == "" {
+		team = ownerlessQueueTeam
+	}
+	if routes := visible(team); len(routes) > 0 {
+		return routes
 	}
 	return visible(globalInboxTeam)
 }
@@ -1224,7 +1227,7 @@ func resolveThresholdDays(hostThresholds map[string]int, cert CertificateItem, d
 // A keychain target (W18-05) installs into the macOS keychain and has no
 // server type or paths to need. A plugin target (W20-21) needs its plugin;
 // the executor checks the plugin is enabled before issuing anything. The
-// push targets (f5, citrix, k8s, iis) keep their device or cluster details in
+// push targets (f5, citrix, k8s, iis, sqlserver, rdp) keep their device or cluster details in
 // the credential, so a credential is all they need here; the executor
 // resolves and type-checks it before issuing anything.
 //
@@ -1274,7 +1277,7 @@ func autoRenewSkipReason(t ManagedTarget) string {
 		if t.InstallServerType == "" || t.InstallCertPath == "" || t.InstallKeyPath == "" {
 			return "incomplete install profile (install_server_type, install_cert_path and install_key_path are required)"
 		}
-	case "keychain", "f5", "citrix", "k8s", "iis":
+	case "keychain", "f5", "citrix", "k8s", "iis", "sqlserver", "rdp", "exchange":
 	case "plugin":
 		if t.PluginID == "" {
 			return "no plugin_id"

@@ -176,6 +176,9 @@ func Fingerprint(certPEM string) string {
 // TLS dial; the Device then models a secret store.
 func Suite(t *testing.T, p *delivery.Plugin, dev Device) {
 	ctx := context.Background()
+	if p.Kind() != abi.KindDelivery {
+		t.Fatalf("plugin kind %q is not delivery; use the suite for its kind", p.Kind())
+	}
 	readback := p.Manifest().Verification == abi.VerificationReadback
 	servedVerifier := func(context.Context, string) (string, error) { return dev.Served(), nil }
 	staleVerifier := func(context.Context, string) (string, error) {

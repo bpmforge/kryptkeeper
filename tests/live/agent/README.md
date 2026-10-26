@@ -143,11 +143,13 @@ New checks (after the existing inventory-count check, 8 more checks, so 25 in
 a full run): JKS 3, PKCS#12 2, kubeconfig 1, 6 keystore-sourced rows in total;
 overwriting `/etc/ssl/certs-extra/extra1.pem` raises `CERTIFICATE_REPLACED`
 within `2 * poll interval + 10 s`, the inventory fingerprint changes, and no
-alert names a keystore source; the hub DB's `agent_*` tables hold 0 `PRIVATE KEY`
-headers.
+alert names a keystore source; the inventory API response and the hub DB's
+`agent_*` tables hold 0 `PRIVATE KEY` headers (one more check than the 25 above
+since W24-45; this harness edit has not been re-run live, see the W38-05 notes).
 
-Decisions: there is no hub API listing an agent's inventory, so the checks read
-the hub's SQLite file (copied with its WAL via `podman cp`), scoped to the
+Decisions: the inventory checks read `GET /api/v1/agents/{id}/inventory`
+(W24-45; they read the hub's SQLite file before that). The file is still copied
+with its WAL via `podman cp`, only for the `PRIVATE KEY` hygiene dump of the
 `agent_*` tables. The alert is observed in the audit trail
 (`discovery.scan_diff.certificate_replaced`), which the notifier always writes
 before fanning out, so the check does not depend on a delivering channel.

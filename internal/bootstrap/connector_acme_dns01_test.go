@@ -80,6 +80,13 @@ func (z *memZone) lookup(name string) ([]string, error) {
 
 func newDNS01Upstream(t *testing.T, zone *memZone) string {
 	t.Helper()
+	return newDNS01UpstreamWith(t, zone.lookup)
+}
+
+// newDNS01UpstreamWith is an ACME server whose dns-01 validator reads TXT
+// records through lookup.
+func newDNS01UpstreamWith(t *testing.T, lookup func(string) ([]string, error)) string {
+	t.Helper()
 	keys, err := keystore.NewSoftwareStore(t.TempDir(), []byte("acme-test-passphrase-32chars-ok!"))
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +98,7 @@ func newDNS01Upstream(t *testing.T, zone *memZone) string {
 	}
 	ts := httptest.NewServer(nil)
 	srv := kkacme.NewServerWithStore(ts.URL, engine, root.ID, kkacme.NewMemStore(), ca.NewMemRevocationStore())
-	srv.SetTXTResolver(zone.lookup)
+	srv.SetTXTResolver(lookup)
 	ts.Config.Handler = srv.Handler()
 	t.Cleanup(ts.Close)
 	return ts.URL

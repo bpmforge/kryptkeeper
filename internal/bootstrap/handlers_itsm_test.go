@@ -86,7 +86,7 @@ func newITSMHarness(t *testing.T) *itsmHarness {
 	})
 	audit := &scepRecordingAudit{}
 	mux := http.NewServeMux()
-	registerITSMHandlers(mux, auth, svc, creds, audit)
+	registerITSMHandlers(mux, auth, svc, creds, audit, nil)
 	_, opKey, err := auth.CreateAPIKey("operator", "operator-svc", "pki-operator", nil, "", "", time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -307,7 +307,7 @@ func TestITSMHandlers_EventsAndDeleteWithHistory(t *testing.T) {
 func TestITSMHandlers_UnconfiguredAnswers503AndAudits(t *testing.T) {
 	h := newITSMHarness(t)
 	mux := http.NewServeMux()
-	registerITSMHandlers(mux, h.auth, nil, nil, h.audit)
+	registerITSMHandlers(mux, h.auth, nil, nil, h.audit, nil)
 	h.mux = mux
 	rec := h.call(http.MethodPost, "/api/v1/itsm/connections", h.adminKey, map[string]any{})
 	if rec.Code != http.StatusServiceUnavailable {

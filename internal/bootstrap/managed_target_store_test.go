@@ -365,6 +365,8 @@ func TestManagedTargetModeVocabulariesAgree(t *testing.T) {
 
 	cases := []struct{ name, discovery, install string }{
 		{"iis over winrm", "winrm", "iis"},
+		{"sqlserver over winrm", "winrm", "sqlserver"},
+		{"rdp over winrm", "winrm", "rdp"},
 		{"keychain (macOS)", "none", "keychain"},
 		{"k8s", "none", "k8s"},
 		{"ssh", "none", "ssh"},

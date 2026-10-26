@@ -90,6 +90,14 @@ func parseCRLRequest(p string) (crlRequest, bool) {
 	return crlRequest{CAID: caID, Shard: -1, Delta: delta}, true
 }
 
+// RequestCAID names the CA a CRL request path ("/crl/{ca}.crl", delta and
+// shard forms included) addresses, so a front handler can answer for CAs this
+// generator cannot sign for.
+func RequestCAID(p string) (string, bool) {
+	req, ok := parseCRLRequest(p)
+	return req.CAID, ok
+}
+
 // idpExtension is the critical Issuing Distribution Point (RFC 5280 5.2.5)
 // naming url as the CRL's distributionPoint.
 func idpExtension(url string) pkix.Extension {

@@ -6,14 +6,20 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/x509"
 	"database/sql"
+	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"kryptkeeper/internal/bootstrap"
 	"kryptkeeper/internal/ca"
+	"kryptkeeper/internal/logging"
 	"kryptkeeper/internal/scep"
 )
 
@@ -79,4 +85,50 @@ func scepChallengeOption(auth *bootstrap.Authenticator, store *scep.DBChallengeS
 	return bootstrap.WithExtraHandlers(func(mux *http.ServeMux) {
 		bootstrap.RegisterSCEPChallengeHandlers(mux, auth, store, caID, audit)
 	})
+}
+
+// configureSCEPLabels enables /scep/<label> endpoints in Intune challenge mode
+// (W20-23, D-327) and returns the option that mounts /api/v1/scep/labels. With
+// no database there are no labels and /scep/<label> answers 404. Each label's
+// gate is the enrollment_permissions of its template, role protocol:scep.
+func configureSCEPLabels(srv *scep.Server, coreDB *sql.DB, isPostgres bool, auth *bootstrap.Authenticator, templates bootstrap.TemplateProvider, audit bootstrap.AuditProvider, rev ca.RevocationStore, caID string) bootstrap.ServerOption {
+	if coreDB == nil {
+		return nil
+	}
+	mgr, creds, err := bootstrap.NewSCEPIntune("Kryptkeeper/" + version)
+	if err != nil {
+		logging.Infof("SCEP labels disabled: %v", err)
+		return nil
+	}
+	store := scep.NewDBLabelStore(coreDB, isPostgres)
+	srv.WithLabels(store, mgr, func(templateID string) scep.EnrollmentGate {
+		return bootstrap.NewProtocolEnrollmentGate(templates, templateID, "scep", audit)
+	})
+	if rev != nil {
+		// A certificate signed but never released (Intune could not be told) is revoked: reason 5, cessationOfOperation.
+		srv.WithWithdrawer(func(_ context.Context, c *x509.Certificate) error {
+			return rev.Revoke(c.SerialNumber, caID, 5, time.Now().UTC(), ca.CertMeta{
+				FingerprintSHA256: fmt.Sprintf("%x", sha256.Sum256(c.Raw)), CommonName: c.Subject.CommonName, SubjectDN: c.Subject.String(),
+				SubjectAltNames: ca.SubjectAltNameStrings(c), IssuerDN: c.Issuer.String(), IssuerCN: c.Issuer.CommonName,
+				NotBefore: c.NotBefore, NotAfter: c.NotAfter, PublicKeyAlgorithm: ca.StoredPublicKeyAlgorithm(c),
+				KeySizeBits: ca.PublicKeyBits(c.PublicKey), SignatureAlgorithm: c.SignatureAlgorithm.String(), Source: "scep",
+				CertPEM: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw}),
+			})
+		})
+	}
+	logging.Info("SCEP labels enabled (POST /api/v1/scep/labels, served at /scep/<label>)")
+	return bootstrap.WithExtraHandlers(func(mux *http.ServeMux) {
+		bootstrap.RegisterSCEPLabelHandlers(mux, auth, store, templates, creds, audit)
+	})
+}
+
+// joinServerOptions runs each non-nil option in order.
+func joinServerOptions(opts ...bootstrap.ServerOption) bootstrap.ServerOption {
+	return func(c *bootstrap.ServerConfig) {
+		for _, o := range opts {
+			if o != nil {
+				o(c)
+			}
+		}
+	}
 }

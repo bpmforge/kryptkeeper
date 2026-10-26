@@ -174,7 +174,7 @@ func newSSHTargetScanner(targets ManagedTargetStore, creds OutboundCredentialSto
 		}
 		plaintext, err := creds.Resolve(ctx, t.CredentialRef)
 		if err != nil {
-			return fail(t.Host, fmt.Errorf("credential %q could not be resolved", t.CredentialRef))
+			return fail(t.Host, resolveFailure(t.CredentialRef, err))
 		}
 		defer zeroize(plaintext)
 		var payload sshCredentialPayload

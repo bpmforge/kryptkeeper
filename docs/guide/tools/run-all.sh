@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Ordered capture run on a fresh hub. Env: RUN (work dir with pid/log/token files), BIN (hub binary),
 # STAGE=main|finals|all  (default all). Stops only PIDs recorded under $RUN.
+# After a run, refresh the website from these screenshots: see docs/site/README.md.
 set -uo pipefail
 H="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; REPO="$H/../../.."; cd "$REPO"
 : "${RUN:?}" "${BIN:?}"

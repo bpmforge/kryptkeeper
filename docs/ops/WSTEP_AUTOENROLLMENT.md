@@ -321,7 +321,7 @@ Set-GPRegistryValue -Name $name -Key $ps -ValueName Flags        -Type DWord  -V
 Set-GPRegistryValue -Name $name -Key $ps -ValueName AuthFlags    -Type DWord  -Value 2   # Kerberos
 Set-GPRegistryValue -Name $name -Key $ps -ValueName Cost         -Type DWord  -Value 1
 Set-GPRegistryValue -Name $name -Key 'HKLM\Software\Policies\Microsoft\Cryptography\AutoEnrollment' -ValueName AEPolicy -Type DWord -Value 7  # enroll + renew + update
-New-GPLink -Name $name -Target 'DC=kkuat,DC=lab'
+New-GPLink -Name $name -Target 'DC=corp,DC=example,DC=test'
 # A GPO at the domain root also reaches the Domain Controllers OU. Filter it
 # to member machines so DCs do not autoenroll from the hub:
 Set-GPPermission -Name $name -TargetName 'Domain Computers' -TargetType Group -PermissionLevel GpoApply

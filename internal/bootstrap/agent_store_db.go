@@ -383,6 +383,10 @@ func (s *dbAgentStore) heartbeat(agentID, token string) error {
 	return nil
 }
 
+func (s *dbAgentStore) verifyAgent(agentID, token string) error {
+	return s.authToken(context.Background(), s.db, agentID, token)
+}
+
 func (s *dbAgentStore) submitInventory(agentID, token string, certs []AgentDiscoveredCert, endpoints []AgentEndpoint) error {
 	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -648,6 +652,14 @@ func (s *dbAgentStore) endpointsFor(agentID string) []AgentEndpoint {
 	return out
 }
 
+func (s *dbAgentStore) inventoryOf(agentID string) []AgentDiscoveredCert {
+	out, err := s.inventoryFor(context.Background(), agentID)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
 func (s *dbAgentStore) resultsTx(ctx context.Context, q rowQuerier, agentID string) ([]AgentRenewalResult, error) {
 	rows, err := q.QueryContext(ctx,
 		fmt.Sprintf("SELECT task_id, fingerprint, outcome, served_fingerprint, rolled_back, detail, reported_at FROM agent_results WHERE agent_id = %s ORDER BY reported_at ASC", s.ph(1)), agentID)
@@ -842,6 +854,14 @@ func (l *lazyAgentStore) heartbeat(agentID, token string) error {
 	return s.heartbeat(agentID, token)
 }
 
+func (l *lazyAgentStore) verifyAgent(agentID, token string) error {
+	s, err := l.get()
+	if err != nil {
+		return err
+	}
+	return s.verifyAgent(agentID, token)
+}
+
 func (l *lazyAgentStore) submitInventory(agentID, token string, certs []AgentDiscoveredCert, eps []AgentEndpoint) error {
 	s, err := l.get()
 	if err != nil {
@@ -869,6 +889,13 @@ func (l *lazyAgentStore) submitRenewalResult(agentID, token string, r AgentRenew
 func (l *lazyAgentStore) endpointsFor(agentID string) []AgentEndpoint {
 	if s, err := l.get(); err == nil {
 		return s.endpointsFor(agentID)
+	}
+	return nil
+}
+
+func (l *lazyAgentStore) inventoryOf(agentID string) []AgentDiscoveredCert {
+	if s, err := l.get(); err == nil {
+		return s.inventoryOf(agentID)
 	}
 	return nil
 }

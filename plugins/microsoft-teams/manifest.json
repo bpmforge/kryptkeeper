@@ -1,0 +1,17 @@
+{
+  "api_version": "kryptkeeper.delivery/v1",
+  "kind": "notify",
+  "id": "kryptkeeper.microsoft-teams",
+  "name": "Microsoft Teams alerts",
+  "version": "1.0.0",
+  "publisher": "Kryptkeeper Authors",
+  "license": "Apache-2.0",
+  "source": "https://github.com/bpmforge/kryptkeeper/tree/main/plugins/microsoft-teams",
+  "artifact": {"file": "plugin.wasm", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+  "capabilities": {
+    "network": {"hosts_from_credential": "webhook_url"}
+  },
+  "credential_schema": {
+    "webhook_url": {"type": "url", "required": true, "secret": true}
+  }
+}

@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import type { AgentInfo, AgentStatus } from "../lib/models";
 import { Badge, Button, Panel, StateMessage } from "../components/ui";
 import { PageHeader } from "../components/PageHeader";
+import { TrustStoresPanel } from "./TrustStores";
 
 type StatusTone = "success" | "warning" | "danger" | "neutral";
 
@@ -192,6 +193,8 @@ export default function Agents() {
           </div>
         )}
       </Panel>
+
+      <TrustStoresPanel agents={agents} />
 
       {/* Setup instructions */}
       <Panel
