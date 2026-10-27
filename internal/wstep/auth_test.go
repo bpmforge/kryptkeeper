@@ -61,7 +61,7 @@ type auditLog struct{ events []AuditEvent }
 
 func (a *auditLog) fn(_ context.Context, ev AuditEvent) { a.events = append(a.events, ev) }
 
-func csrFor(t *testing.T, tmpl *x509.CertificateRequest) []byte {
+func csrFor(t testing.TB, tmpl *x509.CertificateRequest) []byte {
 	t.Helper()
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -137,7 +137,7 @@ func (r rstr) leaf(t *testing.T) *x509.Certificate {
 
 // hostileCSR names someone else and asks for foreign SANs; only its key may
 // reach the certificate.
-func hostileCSR(t *testing.T) []byte {
+func hostileCSR(t testing.TB) []byte {
 	return csrFor(t, &x509.CertificateRequest{
 		Subject:     pkix.Name{CommonName: "Administrator", Organization: []string{"Domain Admins"}},
 		DNSNames:    []string{"dc01.corp.example", "evil.example"},

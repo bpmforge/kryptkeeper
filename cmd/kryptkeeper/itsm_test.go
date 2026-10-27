@@ -38,7 +38,10 @@ func (f *resolveFake) Resolve(_ context.Context, ref itsm.TicketRef, _ string) e
 }
 
 func TestItsmRenewalResolver_ResolvesTicketsOfReplacedCertificate(t *testing.T) {
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "itsm.db"))
+	// busy_timeout: the poll below reads while the async resolve writes; with
+	// no timeout SQLite answers the writer SQLITE_BUSY at once, the resolve
+	// fails, and the event never leaves "created" (seen on a loaded runner).
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "itsm.db")+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}

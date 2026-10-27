@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -165,6 +166,7 @@ func (m *DeliveryPluginManager) Install(ctx context.Context, manifestJSON, wasm 
 		return DeliveryPluginVersion{}, err
 	}
 	_ = p.Close(ctx)
+	warnIfDeprecated(man.ID, man.Version)
 
 	now := m.stamp()
 	tx, err := m.db.BeginTx(ctx, nil)
@@ -484,8 +486,17 @@ func (m *DeliveryPluginManager) Enabled(ctx context.Context, id string) (*delive
 	if err != nil {
 		return nil, v, err
 	}
+	warnIfDeprecated(v.Manifest.ID, v.Version)
 	m.mu.Lock()
 	m.cache[v.SHA256] = loaded
 	m.mu.Unlock()
 	return loaded, v, nil
+}
+
+// warnIfDeprecated logs once per install and once per loaded version, so an
+// operator still running a deprecated plugin sees why and when it goes.
+func warnIfDeprecated(id, version string) {
+	if d, ok := delivery.Deprecated(id); ok {
+		slog.Warn("plugin is deprecated", "plugin", id, "version", version, "removal", d.Removal, "reason", d.Reason)
+	}
 }

@@ -26,3 +26,6 @@ Only ssh targets with nginx/apache profiles are delivered; other modes report `d
 
 ## W40-01: haproxy and Kubernetes legs
 `bash tests/live/pqc-wave/run-w40.sh` (needs kind) delivers to two ssh haproxy endpoints (one misdirected, rolls back) and a kind TLS Secret; see `docs/release/LIVE_RESULTS_PQC_W40_v1.1.md`.
+
+## Apache and Kubernetes Secret rollback (gap P13)
+`bash tests/live/pqc-wave/run-apache-k8s.sh` (needs kind) delivers to an Apache httpd endpoint, rolls back a second Apache and a kind TLS Secret after forced verify failures; see `docs/release/LIVE_RESULTS_PQC_APACHE_K8S_ROLLBACK_v1.1.md`.

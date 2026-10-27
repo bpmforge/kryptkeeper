@@ -16,8 +16,10 @@ A PR that defers something without a roadmap row is not ready to merge.
 1. Pick the theme section that fits; add a section only if none does.
 2. Write the item and its "why it matters" for a customer, in plain language. Describe
    the missing capability, not the internal finding.
-3. Give one target: `1.1`, `Later`, or `Needs partner hardware` (built and tested
-   against stand-ins, waiting on the real system).
+3. Give one target: `1.1`, `Later`, `Needs an account` (a cheap or free trial, or a cloud or
+   SaaS account), `Needs partner or hardware` (a vendor, customer or purchase), or
+   `Not planned` (with the reason in the row). The two `Needs` targets mean built and tested
+   against stand-ins, waiting on the real system.
 4. Put the ticket or decision id in `Ref` so the next thread can see the item is
    already listed.
 5. Update the "Last updated" date.

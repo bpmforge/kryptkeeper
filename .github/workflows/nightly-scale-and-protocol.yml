@@ -55,7 +55,9 @@ jobs:
       - name: Run full Go test suite
         env:
           KRYPTKEEPER_SCALE_TESTS: "1"
-        run: go test ./... -count=1
+        # -timeout 30m: internal/bootstrap alone (2,700+ serial tests) runs ~5 min
+        # on an M4 Max and exceeds the default 10 min on a 4-vCPU hosted runner.
+        run: go test ./... -count=1 -timeout 30m
 
   keycloak-sso:
     runs-on: ubuntu-latest

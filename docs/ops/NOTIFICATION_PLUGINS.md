@@ -92,8 +92,11 @@ Needs `APP_NOTIFICATION_PROVIDER=delivery`, like every sending channel.
   `.resolved` event posts to `/v2/alerts/{alias}/close?identifierType=alias`.
   Opsgenie accepts with 202 and processes asynchronously, so a 202 means
   "accepted", not "created". Source: https://docs.opsgenie.com/docs/alert-api.
-  Atlassian has announced the retirement of Opsgenie; confirm its current dates
-  before building an on-call process on it.
+  **Deprecated (D-329).** Atlassian stopped selling Opsgenie on 2025-06-04 and
+  ends support on 2027-04-05. The plugin still works, but it will not be
+  validated against a real Opsgenie team, the hub logs a warning when it is
+  installed or loaded, and it is removed in 2.0. Move alerts to Jira Service
+  Management, PagerDuty or a webhook.
 
 ## When a send fails
 

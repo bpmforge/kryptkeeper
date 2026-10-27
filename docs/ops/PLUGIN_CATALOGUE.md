@@ -136,7 +136,7 @@ approver to enable. Operator guide: [NOTIFICATION_PLUGINS.md](NOTIFICATION_PLUGI
 |---|---|---|---|---|
 | `kryptkeeper.microsoft-teams` (`plugins/microsoft-teams`) | Teams channel through a Workflows webhook | shipped (in tree); stand-in receiver only | credential host `webhook_url` | W38-02, W32-29 |
 | `kryptkeeper.pagerduty` (`plugins/pagerduty`) | PagerDuty Events API v2 (trigger, resolve) | shipped (in tree); stand-in receiver only | credential host `api_base` (default events.pagerduty.com) | W38-02 |
-| `kryptkeeper.opsgenie` (`plugins/opsgenie`) | Opsgenie Alerts API (create, close) | shipped (in tree); stand-in receiver only | credential host `api_base` (default api.opsgenie.com) | W38-02 |
+| `kryptkeeper.opsgenie` (`plugins/opsgenie`) | Opsgenie Alerts API (create, close) | deprecated (D-329), removal in 2.0; stand-in receiver only | credential host `api_base` (default api.opsgenie.com) | W38-02 |
 
 ### DNS-01 plugins (kind `dns01`, W38-08)
 

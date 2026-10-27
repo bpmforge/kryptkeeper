@@ -73,7 +73,7 @@ describe("Dashboard", () => {
     vi.mocked(api.dashboardSummary).mockResolvedValue(summary as never);
     renderDashboard();
     expect(
-      await screen.findByRole("button", { name: /^Expiring 30d: 4, needs renewal$/ }),
+      await screen.findByRole("button", { name: /^4 Expiring 30d needs renewal$/ }),
     ).toBeInTheDocument();
   });
 

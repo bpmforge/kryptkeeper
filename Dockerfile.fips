@@ -14,7 +14,7 @@
 #
 # Real mode only; there is no placeholder fallback for a FIPS image.
 
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH=arm64
@@ -32,6 +32,7 @@ COPY . /src
 RUN --mount=type=cache,target=/root/.cache/go-build <<'EOF'
 set -eu
 mkdir -p /out
+mkdir -p /out/state/data /out/state/keys /out/state/tls-trust
 
 if [ ! -f /src/go.mod ]; then
   echo "Dockerfile.fips requires go.mod at repository root" >&2
@@ -66,6 +67,8 @@ LABEL io.kryptkeeper.fips.module="Go Cryptographic Module ${GOFIPS140}"
 COPY --from=builder /out/kryptkeeper /kryptkeeper
 COPY --from=builder /out/kryptkeeper-mcp /kryptkeeper-mcp
 COPY --from=builder /out/healthcheck /healthcheck
+# Same as Dockerfile: volumes mounted at /var/kryptkeeper must inherit nonroot ownership on Docker Engine.
+COPY --from=builder --chown=65532:65532 /out/state /var/kryptkeeper
 
 ENV HEALTHCHECK_URL=${HEALTHCHECK_URL}
 # Keep serving 5s after SIGTERM with /readyz 503 so endpoint removal propagates; 0 disables.

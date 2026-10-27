@@ -13,7 +13,7 @@
 #   docker buildx build --platform linux/amd64,linux/arm64 \
 #     -f Dockerfile.agent -t kryptkeeper-agent:local .
 
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64

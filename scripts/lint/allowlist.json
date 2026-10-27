@@ -1,0 +1,221 @@
+{
+ "_comment": "Findings the profile lint job tolerates. class: not-applicable (rule does not apply to a private PKI, or a deliberate choice), known-gap (optional improvement), known-defect (real defect, not yet fixed). Every entry needs a reason; unused entries are reported as stale.",
+ "entries": [
+  {
+   "linter": "zlint",
+   "code": "e_sub_cert_cert_policy_empty",
+   "applies_to": [
+    "tls-server"
+   ],
+   "class": "not-applicable",
+   "reason": "Requires a CABF certificatePolicies reserved OID. CA/B Forum rule for publicly trusted TLS; Kryptkeeper issues private-PKI certificates that carry no CABF policy OID."
+  },
+  {
+   "linter": "zlint",
+   "code": "e_sub_cert_certificate_policies_missing",
+   "applies_to": [
+    "tls-server"
+   ],
+   "class": "not-applicable",
+   "reason": "Requires a CABF certificatePolicies reserved OID. CA/B Forum rule for publicly trusted TLS; Kryptkeeper issues private-PKI certificates that carry no CABF policy OID."
+  },
+  {
+   "linter": "pkilint-cabf-serverauth",
+   "code": "cabf.serverauth.subscriber.certificate_policies_extension_absent",
+   "applies_to": [
+    "tls-server"
+   ],
+   "class": "not-applicable",
+   "reason": "Requires a CABF certificatePolicies reserved OID. CA/B Forum rule for publicly trusted TLS; Kryptkeeper issues private-PKI certificates that carry no CABF policy OID."
+  },
+  {
+   "linter": "zlint",
+   "code": "w_subject_common_name_included",
+   "applies_to": [
+    "tls-server"
+   ],
+   "class": "not-applicable",
+   "reason": "BR 7.1.2.7.9 deprecates subject CN for public TLS. The hub keeps CN for private clients that still key on it; RFC 5280 permits it."
+  },
+  {
+   "linter": "pkilint-cabf-serverauth",
+   "code": "cabf.serverauth.dv.common_name_attribute_present",
+   "applies_to": [
+    "tls-server"
+   ],
+   "class": "not-applicable",
+   "reason": "Same as w_subject_common_name_included: public-TLS DV rule, RFC 5280 permits CN."
+  },
+  {
+   "linter": "zlint",
+   "code": "w_ext_subject_key_identifier_not_recommended_subscriber",
+   "applies_to": [
+    "tls-server"
+   ],
+   "class": "not-applicable",
+   "reason": "BR discourages a leaf SKI to save bytes. RFC 5280 recommends it and chain building in private hierarchies uses it."
+  },
+  {
+   "linter": "pkilint-cabf-serverauth",
+   "code": "cabf.serverauth.subscriber.subject_key_identifier_extension_present",
+   "applies_to": [
+    "tls-server"
+   ],
+   "class": "not-applicable",
+   "reason": "Same as w_ext_subject_key_identifier_not_recommended_subscriber."
+  },
+  {
+   "linter": "pkilint-cabf-serverauth",
+   "code": "cabf.serverauth.subscriber_rsa_digitalsignature_and_keyencipherment_present",
+   "applies_to": [
+    "tls-server-rsa"
+   ],
+   "class": "not-applicable",
+   "reason": "RSA serverAuth leaves keep keyEncipherment on purpose: TLS 1.2 RSA key-exchange peers require it. Not a standards violation; the BR only discourages it."
+  },
+  {
+   "linter": "zlint",
+   "code": "e_sub_cert_aia_missing",
+   "applies_to": [
+    "tls-server-short-lived"
+   ],
+   "class": "not-applicable",
+   "reason": "Short-lived (<=7 day) leaves deliberately omit CRL/OCSP pointers (internal/ca shortLivedMax), modelled on the BR short-lived exemption."
+  },
+  {
+   "linter": "pkilint-cabf-serverauth",
+   "code": "cabf.serverauth.subscriber.revocation_information_absent",
+   "applies_to": [
+    "tls-server-short-lived"
+   ],
+   "class": "not-applicable",
+   "reason": "Same as e_sub_cert_aia_missing: short-lived certificates intentionally carry no revocation pointers."
+  },
+  {
+   "linter": "pkilint-cabf-serverauth",
+   "code": "msft.end_entity.revocation_information_absent",
+   "applies_to": [
+    "tls-server-short-lived"
+   ],
+   "class": "not-applicable",
+   "reason": "Same as e_sub_cert_aia_missing: short-lived certificates intentionally carry no revocation pointers."
+  },
+  {
+   "linter": "pkilint-cabf-serverauth",
+   "code": "cabf.serverauth.subscriber.authority_info_access_extension_absent",
+   "applies_to": [
+    "tls-server-short-lived"
+   ],
+   "class": "not-applicable",
+   "reason": "Same as e_sub_cert_aia_missing: short-lived certificates intentionally carry no revocation pointers."
+  },
+  {
+   "linter": "zlint",
+   "code": "w_root_ca_basic_constraints_path_len_constraint_field_present",
+   "applies_to": [
+    "root-*"
+   ],
+   "class": "not-applicable",
+   "reason": "Roots set pathLenConstraint=1 deliberately to bound hierarchy depth; the BR advice to omit it is for public roots."
+  },
+  {
+   "linter": "zlint",
+   "code": "e_invalid_ca_certificate_policies",
+   "applies_to": [
+    "intermediate-*"
+   ],
+   "class": "not-applicable",
+   "reason": "Requires a CABF certificatePolicies reserved OID. CA/B Forum rule for publicly trusted TLS; Kryptkeeper issues private-PKI certificates that carry no CABF policy OID."
+  },
+  {
+   "linter": "zlint",
+   "code": "e_sub_ca_certificate_policies_missing",
+   "applies_to": [
+    "intermediate-*"
+   ],
+   "class": "not-applicable",
+   "reason": "Requires a CABF certificatePolicies reserved OID. CA/B Forum rule for publicly trusted TLS; Kryptkeeper issues private-PKI certificates that carry no CABF policy OID."
+  },
+  {
+   "linter": "zlint",
+   "code": "e_ocsp_cert_cdp_forbidden",
+   "applies_to": [
+    "ocsp-signing"
+   ],
+   "class": "not-applicable",
+   "reason": "CABF TLS BR 7.1.2.8.2 only; RFC 6960 does not forbid a CRL pointer on a delegated responder certificate."
+  },
+  {
+   "linter": "pkilint-cabf-smime",
+   "code": "cabf.smime.common_name_value_unknown_source",
+   "applies_to": [
+    "smime"
+   ],
+   "class": "not-applicable",
+   "reason": "Public S/MIME BR rules (validated-name sources, reserved policy OIDs). CA/B Forum rule for publicly trusted TLS; Kryptkeeper issues private-PKI certificates that carry no CABF policy OID."
+  },
+  {
+   "linter": "pkilint-cabf-smime",
+   "code": "cabf.smime.certificate_policies_extension_missing",
+   "applies_to": [
+    "smime"
+   ],
+   "class": "not-applicable",
+   "reason": "Public S/MIME BR rules (validated-name sources, reserved policy OIDs). CA/B Forum rule for publicly trusted TLS; Kryptkeeper issues private-PKI certificates that carry no CABF policy OID."
+  },
+  {
+   "linter": "zlint",
+   "code": "e_sub_ca_crl_distribution_points_missing",
+   "applies_to": [
+    "intermediate-*"
+   ],
+   "class": "known-gap",
+   "reason": "Hub-issued intermediates carry no cRLDistributionPoints or AIA. Optional in RFC 5280 for a private hierarchy, but relying parties cannot revocation-check or fetch the issuer from the CA certificate. Improvement, not a defect."
+  },
+  {
+   "linter": "zlint",
+   "code": "w_sub_ca_aia_missing",
+   "applies_to": [
+    "intermediate-*"
+   ],
+   "class": "known-gap",
+   "reason": "Hub-issued intermediates carry no cRLDistributionPoints or AIA. Optional in RFC 5280 for a private hierarchy, but relying parties cannot revocation-check or fetch the issuer from the CA certificate. Improvement, not a defect."
+  },
+  {
+   "linter": "zlint",
+   "code": "w_sub_cert_aia_does_not_contain_issuing_ca_url",
+   "applies_to": [
+    "tls-server"
+   ],
+   "class": "known-gap",
+   "reason": "The hub never publishes a caIssuers URL for its CA certificates, so leaves carry only OCSP. Optional per RFC 5280; chains are delivered out of band. Improvement."
+  },
+  {
+   "linter": "pkilint-cabf-serverauth",
+   "code": "cabf.serverauth.subscriber.ca_issuers_aia_access_method_absent",
+   "applies_to": [
+    "tls-server"
+   ],
+   "class": "known-gap",
+   "reason": "Same as w_sub_cert_aia_does_not_contain_issuing_ca_url."
+  },
+  {
+   "linter": "pkilint-cabf-smime",
+   "code": "cabf.aia_ca_issuers_missing",
+   "applies_to": [
+    "smime"
+   ],
+   "class": "known-gap",
+   "reason": "Same: no caIssuers URL is published."
+  },
+  {
+   "linter": "pkilint-cabf-smime",
+   "code": "cabf.smime.san_extension_missing",
+   "applies_to": [
+    "smime"
+   ],
+   "class": "known-defect",
+   "reason": "The engine ignores CSR emailAddresses (leafIssuanceParams has no email field), so an emailProtection template yields a certificate with no rfc822Name SAN and no way to name the mailbox. S/MIME is not really supported; fixing it needs a name-policy design (who may claim which mailbox), not a drive-by change."
+  }
+ ]
+}

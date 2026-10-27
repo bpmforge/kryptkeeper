@@ -8,13 +8,36 @@
 
 > Guard your cryptographic trust
 
-Kryptkeeper is an open-source enterprise PKI and Crypto Trust Platform. It gives security teams complete visibility and control over their certificate infrastructure — from a full Certificate Authority to certificate lifecycle management, built-in discovery scanning, and a native ADCS replacement — all under the Apache 2.0 license.
+Kryptkeeper is a self-hosted certificate lifecycle hub for mid-market teams (roughly 500 to 5,000 people) that are replacing Active Directory Certificate Services (AD CS) or running beside it. ACME, EST, SCEP, CMP, Windows autoenrollment, Intune SCEP, an AD CS importer, certificate inventory and alerting are all free, on one Linux binary. It runs air-gapped. Apache 2.0.
 
-**Key differentiators vs step-ca and EJBCA:**
-- OCSP responder free in OSS (step-ca withholds it)
-- Built-in certificate discovery — network scanning, WinRM agentless, CT log monitoring (agentless SSH certificate discovery is planned, not yet wired)
-- Native MS-XCEP + MS-WSTEP server (first open-source ADCS replacement)
-- PQC-ready architecture (ML-DSA via FIPS 204)
+**What you get:**
+- A certificate authority (root and issuing CAs, templates, revocation) with OCSP and CRL responders
+- Enrollment over ACME, EST, SCEP, CMP and MS-XCEP/MS-WSTEP (Windows autoenrollment), plus Intune SCEP
+- An AD CS importer and a cutover path, so you can run beside AD CS first and move over later
+- Inventory from network scans, CT log monitoring, agentless WinRM and agentless SSH discovery
+- Expiry alerts to email, webhooks, Slack, PagerDuty and more
+- The option to issue through the CA you already run (see [Use your existing CA](#use-your-existing-ca))
+
+Kryptkeeper also has a PQC migration copilot, an MCP server for AI-assisted operations, SPIFFE support and flag-gated multi-tenancy. They are described lower down.
+
+## What's proven, and where
+
+Every line below points at a dated record in [`docs/release/`](docs/release/). If there is no record, we do not call it proven. The release gate and lab sweep for 1.0.0 are in [`LIVE_RESULTS_v1.0.0.md`](docs/release/LIVE_RESULTS_v1.0.0.md); the 1.1 records are listed at the end of [`RELEASE_NOTES_v1.1.0.md`](docs/release/RELEASE_NOTES_v1.1.0.md).
+
+- **Protocols and CA:** ACME, EST, SCEP, CMP, OCSP and CRL ran against real clients in the 1.0.0 lab pass ([`LIVE_RESULTS_v1.0.0.md`](docs/release/LIVE_RESULTS_v1.0.0.md)). SCEP from F5 and Palo Alto appliances has not been run.
+- **Windows:** GPO autoenrollment, WSTEP renewal and IIS push passed on Windows 11 25H2 and Server 2022 ([`LIVE_RESULTS_v1.0.0.md`](docs/release/LIVE_RESULTS_v1.0.0.md), [`LIVE_RESULTS_v1_WINDOWS.md`](docs/release/LIVE_RESULTS_v1_WINDOWS.md)). A new Server 2025 member enrolled the same way, and all three accepted the 1.1 key-usage profile with chains validating ([`LIVE_RESULTS_WINDOWS_KU_WS2025_v1.1.md`](docs/release/LIVE_RESULTS_WINDOWS_KU_WS2025_v1.1.md)). Windows 10 and Server 2019 were not tested.
+- **Discovery:** TLS, protocol and agentless SSH certificate discovery passed on real sshd and seeded endpoints ([`LIVE_RESULTS_v1.0.0.md`](docs/release/LIVE_RESULTS_v1.0.0.md), [`LIVE_INVENTORY_v1.md`](docs/release/LIVE_INVENTORY_v1.md)).
+- **Single sign-on:** OIDC, SAML and SCIM passed 39 of 39 checks against a real Keycloak 26 container ([`LIVE_RESULTS_KEYCLOAK_v0.21.md`](docs/release/LIVE_RESULTS_KEYCLOAK_v0.21.md)). We have not tested other identity providers.
+- **Key storage:** PKCS#11 on SoftHSM2, and Vault transit against a Vault dev server, passed ([`LIVE_RESULTS_v1.0.0.md`](docs/release/LIVE_RESULTS_v1.0.0.md)). AWS KMS, Azure Key Vault and GCP Cloud KMS passed against emulators only. No vendor HSM and no real cloud KMS account has been tried.
+- **Kubernetes:** the Helm chart installed on kind, and the two-replica failover and drain tests passed on kind ([`LIVE_RESULTS_v1.0.0.md`](docs/release/LIVE_RESULTS_v1.0.0.md), [`UAT_HELM_HA_v0.13.md`](docs/release/UAT_HELM_HA_v0.13.md)). It has not been run on a managed cluster (EKS, AKS, GKE).
+- **Existing CAs:** Vault PKI and EJBCA ran live; AWS Private CA ran on an emulator; Sectigo, GlobalSign, Entrust, DigiCert and Google CAS were tested against recorded API responses ([`RELEASE_NOTES_v1.1.0.md`](docs/release/RELEASE_NOTES_v1.1.0.md), [`LIVE_RESULTS_UPSTREAM_CAS_v1.1.md`](docs/release/LIVE_RESULTS_UPSTREAM_CAS_v1.1.md)).
+- **Post-quantum:** ML-DSA issuance interoperates with OpenSSL 3.5, and PQC waves installed on nginx and HAProxy over SSH and on a Kubernetes TLS Secret, with rollback shown on nginx and HAProxy ([`LIVE_RESULTS_PQC_v0.19.md`](docs/release/LIVE_RESULTS_PQC_v0.19.md), [`LIVE_RESULTS_PQC_W40_v1.1.md`](docs/release/LIVE_RESULTS_PQC_W40_v1.1.md)). Apache httpd 2.4 on OpenSSL 3.5 took an ML-DSA-65 wave, and both Apache and a Kubernetes Secret rolled back after a forced verify failure ([`LIVE_RESULTS_PQC_APACHE_K8S_ROLLBACK_v1.1.md`](docs/release/LIVE_RESULTS_PQC_APACHE_K8S_ROLLBACK_v1.1.md)).
+- **Full regression on 1.1.0:** the 1.0.0 lab sweep was re-run on the v1.1.0 commit; smoke 446 of 446, no product regressions, with the failures and their causes listed ([`LIVE_RESULTS_v1.1.0_REGRESSION.md`](docs/release/LIVE_RESULTS_v1.1.0_REGRESSION.md)).
+- **CT log monitoring:** a live run against crt.sh and Cert Spotter found the domain's certificates from another CA, notified once per finding and stayed silent on a re-scan ([`LIVE_RESULTS_CT_v1.1.md`](docs/release/LIVE_RESULTS_CT_v1.1.md)).
+- **Trust-store push:** a real hub pushed and then removed a root on real agents in Debian 12 and Rocky 9, with two-person approval enforced (49 of 49 steps on Postgres and on SQLite; [`LIVE_RESULTS_TRUST_STORE_E2E_v1.1.md`](docs/release/LIVE_RESULTS_TRUST_STORE_E2E_v1.1.md)). Windows and macOS hosts have not been run.
+- **Appliances and vendor services:** F5, Citrix, Intune, ServiceNow, Jira, Slack, PagerDuty and the cloud DNS and delivery plugins ran against mocks or stand-ins only. The list, and what each one needs, is in [`docs/ROADMAP.md`](docs/ROADMAP.md#proven-against-real-systems).
+
+The proof pack (FIPS statement, control mapping, competitive matrix, draft pen-test scope) is in [`docs/release/proof-pack/`](docs/release/proof-pack/README.md). It dates from v0.21 and is due a 1.1 refresh. It has no customer references yet.
 
 ---
 
@@ -165,7 +188,7 @@ port (default `8080`) — they are joined to form the listen address.
 | `KRYPTKEEPER_DB_MODE` | No | `sqlite` (default) or `postgres` |
 | `KRYPTKEEPER_DB_MAX_OPEN_CONNS` / `KRYPTKEEPER_DB_MAX_IDLE_CONNS` | No | PostgreSQL pool size per store (defaults `3` / `1`); see [deployment.md](docs/deployment.md) |
 | `KRYPTKEEPER_DB_DSN` / `DATABASE_URL` | If postgres | PostgreSQL connection string |
-| `KRYPTKEEPER_KEY_BACKEND` | No | `software` (default, PKCS#8), `pkcs11`, `cloudkms` (with `KRYPTKEEPER_KMS_PROVIDER=aws\|gcp\|azure`), `vault` — see [Key Storage](#key-storage) for maturity |
+| `KRYPTKEEPER_KEY_BACKEND` | No | `software` (default, PKCS#8), `pkcs11`, `cloudkms` (with `KRYPTKEEPER_KMS_PROVIDER=aws\|gcp\|azure`), `vault` — see [Key Storage](#key-storage) for what is tested |
 | `KRYPTKEEPER_KEYSTORE_PASSPHRASE` | **Yes** (software keystore) | Encrypts CA private keys at rest; required by Compose and must differ from `APP_BOOTSTRAP_TOKEN` |
 | `KRYPTKEEPER_ALLOW_MISSING_CA_KEYS` | No | Recovery only: start even though an active CA has no key in the keystore (default: the hub refuses to start) |
 | `KEYSTORE_SIGNER_TTL_MINUTES` | No | Idle eviction for decrypted CA signers (default 60) |
@@ -318,7 +341,8 @@ GET    /reports/algorithm-sunset  — post-2030 non-compliant certs
 | 1 | Encrypted PKCS#8 PEM (Argon2id KDF) | Default; used by every test harness |
 | 2 | PKCS#11 HSM via ThalesGroup/crypto11 | Tested on SoftHSM2; no vendor HSM tested |
 | 3 | AWS KMS, Azure Key Vault | Validated against emulators only (moto, Lowkey Vault); not tried against real cloud accounts |
-| 4 | HashiCorp Vault transit, GCP Cloud KMS | Experimental (untested) |
+| 4 | HashiCorp Vault transit | Tested against a Vault dev server |
+| 4 | GCP Cloud KMS | Tested against an in-repo emulator only; not tried against a real account |
 
 All signing goes through Go's `crypto.Signer` interface — swapping providers never changes CA logic.
 
@@ -422,7 +446,9 @@ helm install kryptkeeper charts/kryptkeeper \
 
 For production, create a Secret yourself and set `secrets.existingSecret`
 instead of passing values inline. The chart renders with `helm template`, but
-it has not been install-tested on a cluster (beta).
+it installs and fails over on kind (see [What's proven](#whats-proven-and-where));
+it has not been run on a managed Kubernetes service. A signed copy is published at
+`oci://ghcr.io/bpmforge/charts/kryptkeeper`.
 
 ### Binary
 
@@ -463,51 +489,11 @@ multi-tenancy), then pivoted to an estate-management direction — see
 [`docs/DECISIONS.md`](docs/DECISIONS.md) D-106 and
 [`docs/sdlc/phase-0-ideation/VISION_V5.md`](docs/sdlc/phase-0-ideation/VISION_V5.md)
 for the full strategy. For where that work stands today, see
-[`docs/ROADMAP.md`](docs/ROADMAP.md) for what is planned after 1.0.0,
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for what is not done yet,
 [`docs/HARDENING_ROADMAP.md`](docs/HARDENING_ROADMAP.md) for the hardening wave plan and
 [`docs/NEXT_HORIZON.md`](docs/NEXT_HORIZON.md) for what comes after it.
 [`CHANGELOG.md`](CHANGELOG.md) is the log of what has
 actually shipped.
-
----
-
-## Validation status
-
-Results from 2026-10-11 on v0.9.0-rc.7 (`main` at `2f9e766`) against real clients (full table in
-[`docs/release/LIVE_RESULTS_v0.9.md`](docs/release/LIVE_RESULTS_v0.9.md); per-feature status in
-[`docs/release/FEATURE_VALIDATION_v0.9.md`](docs/release/FEATURE_VALIDATION_v0.9.md)):
-
-| Suite | Result | Real peer |
-|-------|--------|-----------|
-| Smoke (`tests/smoke`) | 331/331 | hub binary, curl |
-| ACME (`tests/live/acme`) | 28/28 | certbot, lego |
-| Protocols (`tests/live/protocols`) | all steps passed | openssl EST/SCEP/CMP/OCSP/CRL |
-| TLS (`tests/live/tls`) | all steps passed | globalsign/est |
-| SSH CA (`tests/live/sshca`) | all steps passed | OpenSSH |
-| Autopilot (`tests/live/autopilot`) | all pass (29 checks) | nginx hosts and the agent |
-| Agent (`tests/live/agent`) | 18/18 | Linux container agent |
-| SSH install (`tests/live/ssh-install`) | all pass (nginx, apache, rollback) | OpenSSH, nginx, apache |
-| Plugins (`tests/live/plugins`) | all steps passed (27 checks) | example plugin, mock appliance |
-
-Upgrade test: full matrix on rc.5, spot-check on rc.7 (schema 76); see
-[`docs/release/UPGRADE_TEST_v0.9.md`](docs/release/UPGRADE_TEST_v0.9.md). Older dated runs
-(Kubernetes, mesh, notifications, PKCS#11, WSTEP/XCEP) are recorded in
-[`docs/UAT_PLAN.md`](docs/UAT_PLAN.md) and were not re-run on 2026-10-11.
-
-## Status of features in v0.9
-
-- **Validated against real clients:** CA and issuance, ACME (http-01), EST, SCEP, CMP, OCSP/CRL,
-  WSTEP/XCEP (Windows lab), SSH CA, agent, SSH/Kubernetes install (SSH install only; SSH certificate discovery is not wired), notifications, PKCS#11 (SoftHSM2).
-- **Beta (works; unit/integration-tested only):** reports, compliance evidence, CBOM and PQC
-  readiness; renewal autopilot, rollout groups and PQC waves; SAML/OIDC/SCIM (tested against
-  in-process IdPs); CT monitoring; cloud inventory; ADCS sync; Terraform provider; air-gap bundle;
-  MCP server; Helm chart.
-- **Experimental:** HashiCorp Vault and GCP Cloud KMS keystores.
-- **Not in v0.9:** agentless SSH certificate discovery (the scanner exists but nothing calls it yet); issuer connectors other than
-  `internal` and ACME (DigiCert, EST, SCEP and WSTEP upstream connectors). External CAs and the
-  Vault PKI, EJBCA, AWS Private CA, Google CAS, Sectigo, GlobalSign and Entrust connectors arrive in 1.1.
-- **Plugins:** the F5 and Citrix delivery plugins are verified against mock APIs only, not real
-  appliances.
 
 ---
 

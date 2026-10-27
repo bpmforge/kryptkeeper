@@ -109,6 +109,14 @@ jobs:
           name: playwright-report
           path: ui/playwright-report
           retention-days: 7
+      - name: Hub diagnostics
+        if: failure()
+        # Before teardown: a hub that crash-loops at startup is otherwise invisible
+        # (the artifact step only uploads Playwright output).
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml ps -a || true
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color kryptkeeper || true
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color dashboard || true
       - name: Tear down
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml down -v
@@ -168,6 +176,12 @@ jobs:
           name: playwright-report-onboarding
           path: ui/playwright-report
           retention-days: 7
+      - name: Hub diagnostics
+        if: failure()
+        run: |
+          docker compose -p "kkfr-${GITHUB_RUN_ID}" -f docker-compose.yml -f ui/e2e/onboarding/docker-compose.firstrun.yml ps -a || true
+          docker compose -p "kkfr-${GITHUB_RUN_ID}" -f docker-compose.yml -f ui/e2e/onboarding/docker-compose.firstrun.yml logs --no-color kryptkeeper || true
+          docker compose -p "kkfr-${GITHUB_RUN_ID}" -f docker-compose.yml -f ui/e2e/onboarding/docker-compose.firstrun.yml logs --no-color dashboard || true
       - name: Tear down
         if: always()
         run: docker compose -p "kkfr-${GITHUB_RUN_ID}" -f docker-compose.yml -f ui/e2e/onboarding/docker-compose.firstrun.yml down -v

@@ -1,34 +1,39 @@
 # Kryptkeeper roadmap
 
-This page lists what Kryptkeeper 1.0.0 does **not** do yet, and when we plan to do it.
-Everything here was found during the 1.0.0 build, lab testing or security review and
-was deliberately left out of the release, so it is written down rather than forgotten.
+This page lists what Kryptkeeper 1.1.0 does **not** do yet, and when we plan to do it.
+Everything here was found during the 1.0.0 and 1.1.0 builds, lab testing or security review
+and was deliberately left out of the release, so it is written down rather than forgotten.
 
 Each item has a target:
 
 - **1.1**: planned for the next feature release.
 - **Later**: planned, but not scheduled for 1.1. Some of these need a design decision first.
-- **Needs partner hardware**: the feature is built and tested against emulators or stand-ins,
-  but has not been proven against the real product or service. We need a customer, partner
-  or vendor lab with that system to finish the proof.
+- **Needs an account**: the feature is built and tested against emulators or stand-ins. The
+  real product or service is cheap or free to get (a trial, a free edition, a cloud or SaaS
+  account), so the live run is waiting on us setting one up.
+- **Needs partner or hardware**: the feature is built and tested against emulators or
+  stand-ins, but finishing the proof needs a vendor, a customer or a purchase (an HSM, a
+  hardware token, a sandbox contract, an appliance). We need that system in a lab.
+- **Not planned**: we decided not to do it. The row says why.
 
 The `Ref` column is our internal ticket or decision number, so you can ask about an item by
 name. This page is updated in the same change that defers anything new
 (see [ROADMAP_PROCESS.md](ROADMAP_PROCESS.md)).
 
-Last updated: 2026-10-25.
+Last updated: 2026-10-26.
 
 ## Windows and application installs
 
 | Item | Why it matters | Target | Ref |
 |---|---|---|---|
-| Windows autoenrollment proof on Windows 10 and Server 2019, plus a lab runbook | Autoenrollment is proven on Windows 11 and Server 2022; older versions and a step-by-step runbook are next. | 1.1 | W26-13, W26-14 |
+| Windows autoenrollment proof on Windows 10 and Server 2019, plus a lab runbook | Autoenrollment is proven on Windows 11, Server 2022 and Server 2025; Windows 10 and Server 2019 need ISOs the lab does not have (the owner-only); those versions and a step-by-step runbook are next. | 1.1 | W26-13, W26-14 |
 | Alerts page form for plugin notification channels | A notify plugin is chosen with channel `plugin` and target `<plugin_id>/<credential_id>` through the API; the Alerts page rule form does not offer it yet. | 1.1 | W38-02 |
 | Ticket plugins: find op and approval sync | Plugin connections cannot adopt a ticket made just before a hub crash (no `ticket.find`), and cannot carry approval sync, which stays native (ServiceNow, Jira). Both need their own design before third-party code gets them. | Later | D-326 |
 | Plugin SDK and runtime renamed from "delivery" to "plugin" | The SDK module (`sdk/delivery-go`) and runtime package (`internal/plugins/delivery`) now serve every plugin kind but keep their delivery names, so no plugin go.mod or import had to change (D-321). A rename is a mechanical follow-up with a compatibility module. | Later | D-321 |
 | NSS certificate databases | Applications that keep certificates in an NSS database (for example some Firefox, Chrome-on-Linux and Red Hat directory server setups) are not discovered or updated today. | Later | lab coverage review, 2026-10-18 |
 | Push renewals to nginx, Apache or Tomcat running on Windows through the Windows agent | The Windows agent discovers certificates (machine store, PEM and PFX files) but refuses install tasks; Windows installs go through agentless WinRM to IIS today. | Later | v1 lab, 2026-10-18 |
-| Windows autoenrollment proof on Server 2025 as a member server | Proven on Windows 11 and Server 2022; the only Server 2025 machines in the lab are the domain controller and the CA, which the clock-skew test cannot use. | 1.1 | v1 lab, 2026-10-18 |
+| Server 2025 member: clock-skew refusal and the `wstep.renew` predecessor label | Autoenrollment and chain validation are proven on a Server 2025 member (lab-ws25, 2026-10-26). The Kerberos clock-skew test was not run there, and the last two renewals audited as `wstep.enroll`: Windows sent no old-certificate signature. | 1.1 | docs/release/LIVE_RESULTS_WINDOWS_KU_WS2025_v1.1.md |
+| ECDSA machine templates through GPO autoenrollment | XCEP advertises RSA only, so an ECDSA-only template is withheld from Windows. ECDSA leaves are proven to be accepted by Windows (certreq, certutil, Schannel) when issued by CSR, not by autoenrollment. | 1.1 | docs/release/LIVE_RESULTS_WINDOWS_KU_WS2025_v1.1.md |
 | Offer ECDSA keys to Windows clients over XCEP | XCEP advertises RSA key sizes the issuance policy accepts; templates whose policy allows only ECDSA are not offered to Windows yet. | Later | v1 lab, 2026-10-18 |
 
 ## Discovery and inventory
@@ -70,20 +75,24 @@ Last updated: 2026-10-25.
 
 | Item | Why it matters | Target | Ref |
 |---|---|---|---|
-| PQC wave delivery to F5, Citrix and plugin targets | Waves install ML-DSA certificates on SSH nginx, Apache and HAProxy servers and on Kubernetes TLS Secrets, and roll back on a failed check. F5 and Citrix targets and delivery plugins are still reported as "delivery unsupported": ML-DSA key import is not proven on those device APIs. | Needs partner hardware | D-300, D-315, W31F-06, W40-01 |
+| PQC wave delivery to F5, Citrix and plugin targets | Waves install ML-DSA certificates on SSH nginx, Apache and HAProxy servers and on Kubernetes TLS Secrets, and roll back on a failed check. Proven live: HAProxy and a kind Secret (W40-01), and Apache httpd 2.4 on OpenSSL 3.5 with Apache and Kubernetes Secret rollback after a forced verify failure (docs/release/LIVE_RESULTS_PQC_APACHE_K8S_ROLLBACK_v1.1.md). Not yet live: Debian or RHEL httpd packages and real ingress controllers. F5 and Citrix targets and delivery plugins are still reported as "delivery unsupported": ML-DSA key import is not proven on those device APIs. | Needs partner or hardware | D-300, D-315, W31F-06, W40-01, P13 |
+| Inventory-sources live harness uses the mTLS Entrust credential | W36-11 moved the Entrust source to client-certificate credentials; `tests/live/inventory-sources` still posts an API key to a plain-HTTP fixture, so the harness fails (docs/release/LIVE_RESULTS_v1.1.0_REGRESSION.md). Needs a TLS fixture with a client certificate. | 1.1 | P17 |
+| S/MIME certificates carry the mailbox as an email SAN | The engine ignores CSR email addresses, so `emailProtection` templates issue certificates with no rfc822Name SAN (pkilint, allowlisted as known-defect in scripts/lint/allowlist.json). Needs a name policy for who may claim which mailbox. | Later | T6 |
+| Kubernetes Secret rollback without a window of the unverified certificate | After a failed verify the hub restores the Secret byte for byte, but the workload can serve the unverified successor until the kubelet syncs the volume again (seen live, docs/release/LIVE_RESULTS_PQC_APACHE_K8S_ROLLBACK_v1.1.md). Staging the successor in a second Secret, or verifying before the swap, would close it. | Later | P13 |
 | PQC wave delivery to Tomcat | Tomcat is reported as "delivery unsupported" in a wave: our installer writes a PKCS#12 or JKS keystore, which we cannot build around an ML-DSA key, and it does not switch the connector to PEM files (which Tomcat supports). Needs a PEM install mode and a proof on Tomcat with JDK 24 or later. | Later | D-315, W40-01 |
-| PQC wave delivery to Windows services (IIS, SQL Server, RDP, Exchange) | Reported as "delivery unsupported": these installers import a PFX file, we cannot build one around an ML-DSA key, and Microsoft documents ML-DSA certificate templates for AD CS (Windows Server 2025 with KB5087539 or later) but not Schannel serving ML-DSA certificates. Revisit once Microsoft documents it and a lab Windows host can prove it. | Needs partner hardware | D-315, W40-01 |
+| PQC wave delivery to Windows services (IIS, SQL Server, RDP, Exchange) | Reported as "delivery unsupported": these installers import a PFX file, we cannot build one around an ML-DSA key, and Microsoft documents ML-DSA certificate templates for AD CS (Windows Server 2025 with KB5087539 or later) but not Schannel serving ML-DSA certificates. Revisit once Microsoft documents it and a lab Windows host can prove it. | Needs partner or hardware | D-315, W40-01 |
 | Prove the PQC posture page against more certificate types | The posture page matched the API on a live mixed estate, but certificates expiring after 2030, unrecognised key types and RSA-2048 were not in that estate. | 1.1 | W31F-07 |
 | MCP tool to propose a trust bundle | The hub API already lets the MCP agent propose a trust bundle (a human still approves); an MCP tool would let an assistant draft a CA rollover. | Later | W40-03 |
 | Trust bundle targets by label and tenant | Agents carry neither today (D-203), so bundles target agent ids, a platform or all; labels would let you say "the web tier". | Later | W40-03 |
 | Trust store push on SUSE and other distributions | Debian, Ubuntu and RHEL-family hosts are supported and proven live; SUSE uses a different anchor directory and refuses with a clear message today. | Later | W40-03 |
-| Trust store push proven on Windows and macOS hosts | The Windows (certutil) and macOS (security) commands are covered by exact-command tests but have not run on real hosts. | Needs partner hardware | W40-03 |
+| Trust store push proven on Windows and macOS hosts | The Windows (certutil) and macOS (security) commands are covered by exact-command tests but have not run on real hosts. The Linux path is proven hub to agent in one run (debian:12, rockylinux:9; docs/release/LIVE_RESULTS_TRUST_STORE_E2E_v1.1.md). | Needs partner or hardware | W40-03 |
 | IETF LAMPS composite signatures | Our hybrid certificates use their own documented encoding; we will move to the standard composite format once it is an RFC and mainstream verifiers accept it. | Later | D-172 |
 
 ## Notifications, ITSM and reports
 
 | Item | Why it matters | Target | Ref |
 |---|---|---|---|
+| Opsgenie alerts plugin | The plugin is deprecated: Atlassian ends Opsgenie support on 2027-04-05, so we will not validate it against a real Opsgenie team. Use PagerDuty, Slack, Teams, email or a webhook. | Not planned | W38-02 |
 | Schedule the remaining reports and use cron-style timing | A schedule can deliver nine reports on a daily, weekly or monthly cadence. PQC migration, renewal SLO, key custody, revocation activity, issuance velocity, change audit, compliance evidence, PQC countdown and anomalies still need a flat-table shape of their own, and exact days or times need a cron expression. | Later | W38-06 |
 
 ## Security and multi-tenancy
@@ -103,13 +112,13 @@ Last updated: 2026-10-25.
 
 | Item | Why it matters | Target | Ref |
 |---|---|---|---|
-| Container images and Helm chart published by every release | 1.0.0 ships binaries, packages and the Windows MSI; images and the chart repository need their own publishing step on our release pipeline. | 1.1 | D-210 |
+| Container images published by every release | 1.0.0 ships binaries, packages and the Windows MSI; 1.1.0 publishes a signed Helm chart at `oci://ghcr.io/bpmforge/charts/kryptkeeper`. Images still need their own publishing step on our release pipeline. | 1.1 | D-210 |
 | Homebrew tap | One command to install and update on macOS, instead of downloading the formula from the release. | 1.1 | D-210, W25-10 |
 | Signed apt and yum repositories | Lets Debian, Ubuntu, RHEL and Rocky hosts install and update with their normal package manager. | 1.1 | D-210, W25-11 |
 | Reproducible-build check and post-release signature verification | Proves anyone can rebuild the same binaries and that published signatures verify. | 1.1 | W33-09 |
 | macOS notarization | Without it, Gatekeeper may quarantine a downloaded agent binary until you allow it. | 1.1 | macOS agent guide, W37 |
 | Terraform provider in a public registry | Today the provider is installed from the release; a registry entry makes `terraform init` just work. | 1.1 | S-04, W37 |
-| Ansible collection | Lets teams that run Ansible request, install and renew certificates from their playbooks. | 1.1 | W37 |
+| Ansible collection published on Galaxy | The `kryptkeeper.pki` collection is built in 1.1.0; publishing it on Galaxy needs a Galaxy namespace. | Needs an account | W37 |
 | Five-minute trial: one command brings up a hub with demo data | Evaluators should reach a working dashboard before they read a guide. | 1.1 | W37 |
 
 ## Website and walkthroughs
@@ -132,28 +141,38 @@ Last updated: 2026-10-25.
 |---|---|---|---|
 | Screen-reader pass with VoiceOver and NVDA, and an updated accessibility conformance report | Automated WCAG checks pass; a manual screen-reader pass is what confirms the dashboard is usable without sight. | 1.1 | W33-15 |
 
-## Proven against real partner systems
+## Proven against real systems
 
 These features work against emulators, mock devices or stand-in services in our lab. We
-will mark each one proven once it has run against the real system.
+will mark each one proven once it has run against the real system. They are split by what
+the proof needs, so you can see which ones are cheap to finish.
+
+### Needs an account (cheap or free)
 
 | Item | Why it matters | Target | Ref |
 |---|---|---|---|
-| F5 BIG-IP and Citrix ADC certificate delivery | Proven against a mock appliance only. | Needs partner hardware | W32-06, W19-11, W20-22 |
-| SCEP enrollment from F5 BIG-IP or Palo Alto appliances | Not yet run against a real appliance. | Needs partner hardware | W26-12 |
-| Intune SCEP enrollment against a real Intune tenant | Proven against a stand-in for Entra, Graph and the Intune service that follows Microsoft's published client; the exact scope string, the notification field formats (thumbprint case, serial, hResult sign) and the Intune checks have not run against a real tenant. | Needs partner hardware | W20-23, D-327 |
-| AWS KMS, Azure Key Vault and Google Cloud KMS as CA key stores | Proven against emulators; real cloud permissions and HSM tiers are not yet proven. | Needs partner hardware | W19-12 |
-| Disaster-recovery drill with CA keys in an external HSM or KMS | The drill passes with software and SoftHSM keys. | Needs partner hardware | W25-09 |
-| YubiKey attestation for code-signing requests | The refusal path is proven; the success path needs a real YubiKey. | Needs partner hardware | code-signing live results |
-| ACME device attestation on real devices | Proven with generated Apple-style and TPM attestation chains only; a real run needs an Apple MDM-managed device (Managed Device Attestation) and a TPM host with an AIK certificate issued by your attestation CA. | Needs partner hardware | W40-02 |
-| DigiCert inventory sync and upstream renewal | Proven with fixtures; the DigiCert sandbox run needs an account. | Needs partner hardware | inventory and upstream-renew live results |
-| ServiceNow, Jira Cloud, Zendesk and Freshservice connectors | Proven against stand-in services. Zendesk and Freshservice are ticket plugins; a run against a real Zendesk account and Freshservice domain (soft-delete behaviour, API-token auth, rate limits) needs those accounts. | Needs partner hardware | W32-18, W38-09 |
-| Target credentials from CyberArk and Delinea | HashiCorp Vault and OpenBao are proven live; the CyberArk Central Credential Provider and Delinea Secret Server plugins pass the credentials conformance suite and an in-hub test against mocks only. A run needs a CCP with an AppID and a Secret Server with an application account. | Needs partner hardware | W38-07 |
-| Slack, PagerDuty, Microsoft Teams and Opsgenie alerts | Proven against local receivers. PagerDuty and Opsgenie are also built as notify plugins, and Teams only as one (Workflows webhook); a run against a real Teams flow, PagerDuty service and Opsgenie team needs those tenants. | Needs partner hardware | W30-19, W38-02 |
-| DNS-01 challenges in Route 53, Azure DNS and Google Cloud DNS | Proven with local DNS and with Cloudflare against Let's Encrypt staging. | Needs partner hardware | ACME DNS providers live results |
-| DNS-01 through the DigitalOcean, GoDaddy, NS1 and Akamai Edge DNS plugins | Proven against local stand-ins shaped like each vendor's API (Akamai's EdgeGrid signature is checked against the vendor's test vectors); a run against a real account at each vendor, and against a public CA, needs those accounts. | Needs partner hardware | W38-08 |
-| Delivery to AWS, Azure and Google Cloud certificate services | Proven for HashiCorp Vault; the cloud legs need accounts. | Needs partner hardware | cloud delivery live results |
-| Terraform deployment into a real AWS account | The Terraform module validates; apply and destroy in a sandbox account are not yet run. | Needs partner hardware | W25-16 |
-| Service fingerprinting on Active Directory, F5 BIG-IP, Citrix ADC and other appliances | The fingerprint tells for these are tested against recorded fixtures only; real AD domain controllers, 389 Directory Server, F5, Citrix, Fortinet, Palo Alto, VMware, iDRAC/iLO and Exchange are needed to prove them. | Needs partner hardware | fingerprint recall v0.22 |
-| Issuance and revocation through Sectigo, GlobalSign, Entrust, DigiCert and Google CAS, and revocation through AWS Private CA | Built and tested against recorded API responses (AWS Private CA issuance also ran against the moto emulator, whose revoke is a no-op); a run against each real service needs an account. Vault PKI and EJBCA are proven against real containers. | Needs partner hardware | W36-07..W36-11, W36-16 |
+| F5 BIG-IP and Citrix NetScaler certificate delivery | Proven against a mock appliance only. F5 offers a 30-day trial; NetScaler VPX Express is free. | Needs an account | W32-06, W19-11, W20-22 |
+| SCEP enrollment from F5 BIG-IP | Not yet run against a real appliance (Palo Alto is in the next table). | Needs an account | W26-12 |
+| Intune SCEP enrollment against a real Intune tenant | Proven against a stand-in for Entra, Graph and the Intune service that follows Microsoft's published client; the exact scope string, the notification field formats (thumbprint case, serial, hResult sign) and the Intune checks have not run against a real tenant. A trial tenant is enough. | Needs an account | W20-23, D-327 |
+| AWS KMS, Azure Key Vault and Google Cloud KMS as CA key stores | Proven against emulators; real cloud permissions and HSM tiers are not yet proven. | Needs an account | W19-12 |
+| Disaster-recovery drill with CA keys in a cloud KMS | The drill passes with software and SoftHSM keys; the KMS half needs a cloud account. | Needs an account | W25-09 |
+| Delivery to AWS, Azure and Google Cloud certificate services | Proven for HashiCorp Vault; the cloud legs need accounts. | Needs an account | cloud delivery live results |
+| ServiceNow, Jira Cloud, Zendesk and Freshservice connectors | Proven against stand-in services. A run against real instances (Zendesk and Freshservice soft-delete behaviour, API-token auth, rate limits) needs those accounts. | Needs an account | W32-18, W38-09 |
+| Slack, PagerDuty and Microsoft Teams alerts | Proven against local receivers. PagerDuty is also built as a notify plugin, and Teams only as one (Workflows webhook); a run against a real Slack workspace, Teams flow and PagerDuty service needs those tenants. (Opsgenie is deprecated; see the Notifications section.) | Needs an account | W30-19, W38-02 |
+| DNS-01 challenges in Route 53, Azure DNS and Google Cloud DNS | Proven with local DNS and with Cloudflare against Let's Encrypt staging. | Needs an account | ACME DNS providers live results |
+| DNS-01 through the DigitalOcean, GoDaddy, NS1 and Akamai Edge DNS plugins | Proven against local stand-ins shaped like each vendor's API (Akamai's EdgeGrid signature is checked against the vendor's test vectors); a run against a real account at each vendor, and against a public CA, needs those accounts. | Needs an account | W38-08 |
+| Terraform deployment into a real AWS account | The Terraform module validates; apply and destroy in a sandbox account are not yet run. | Needs an account | W25-16 |
+
+### Needs partner or hardware
+
+| Item | Why it matters | Target | Ref |
+|---|---|---|---|
+| Disaster-recovery drill with CA keys in a vendor HSM | The drill passes with software and SoftHSM keys; a vendor HSM is not in our lab. | Needs partner or hardware | W25-09 |
+| YubiKey attestation for code-signing requests | The refusal path is proven; the success path needs a real YubiKey (a small purchase). | Needs partner or hardware | code-signing live results |
+| ACME device attestation on real devices | Proven with generated Apple-style and TPM attestation chains only; a real run needs an Apple MDM-managed device (Managed Device Attestation) and a TPM host with an AIK certificate issued by your attestation CA. | Needs partner or hardware | W40-02 |
+| SCEP enrollment from a Palo Alto appliance | Not yet run against a real appliance; it needs a Palo Alto VM-Series licence or a customer lab. | Needs partner or hardware | W26-12 |
+| DigiCert inventory sync and upstream renewal | Proven with fixtures; the DigiCert sandbox run needs a sandbox contract. | Needs partner or hardware | inventory and upstream-renew live results |
+| Target credentials from CyberArk and Delinea | HashiCorp Vault and OpenBao are proven live; the CyberArk Central Credential Provider and Delinea Secret Server plugins pass the credentials conformance suite and an in-hub test against mocks only. A run needs a CCP with an AppID and a Secret Server with an application account. | Needs partner or hardware | W38-07 |
+| Service fingerprinting on Active Directory, F5 BIG-IP, Citrix ADC and other appliances | The fingerprint tells for these are tested against recorded fixtures only; real AD domain controllers, 389 Directory Server, F5, Citrix, Fortinet, Palo Alto, VMware, iDRAC/iLO and Exchange are needed to prove them. | Needs partner or hardware | fingerprint recall v0.22 |
+| Issuance and revocation through Sectigo, GlobalSign, Entrust, DigiCert and Google CAS, and revocation through AWS Private CA | Built and tested against recorded API responses (AWS Private CA issuance also ran against the moto emulator, whose revoke is a no-op); a run against each real service needs a commercial account or contract. Vault PKI and EJBCA are proven against real containers. | Needs partner or hardware | W36-07..W36-11, W36-16 |
 | Reference deployments | Named or anonymised customer deployments come from real customers, not from us. | Later | W33-28 |

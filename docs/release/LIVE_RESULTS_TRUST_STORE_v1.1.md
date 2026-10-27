@@ -38,8 +38,7 @@ Commands exercised: Debian `update-ca-certificates` (add) and `update-ca-certifi
 
 ## Not proven here
 
-- The full hub to agent path in one run (hub approval, then agent apply). The two halves
-  are each proven; a combined run belongs with the next wave's integration live pass.
+- The full hub to agent path in one run: since proven, see `LIVE_RESULTS_TRUST_STORE_E2E_v1.1.md`.
 - Windows (`certutil`) and macOS (`security`) on real hosts. Check first: the agent treats a nonzero exit of
   `certutil -store <store> <sha1>` as "certificate not present" (Microsoft's page does not state that exit-code
   contract), and a zero exit as "already trusted before us, do not take ownership". Likewise on macOS it reads

@@ -1056,7 +1056,7 @@ func (e *Engine) issueLeafCertificate(caID string, req IssuanceRequest, params l
 		Subject:      params.subject,
 		NotBefore:    notBefore,
 		NotAfter:     notAfter,
-		KeyUsage:     req.KeyUsage,
+		KeyUsage:     leafKeyUsage(req.KeyUsage, req.ExtKeyUsage, params.pub),
 		ExtKeyUsage:  req.ExtKeyUsage,
 		DNSNames:     req.DNSNames,
 		IPAddresses:  req.IPAddresses,
@@ -1073,6 +1073,15 @@ func (e *Engine) issueLeafCertificate(caID string, req IssuanceRequest, params l
 		CRLDistributionPoints: crlDPs,
 
 		ExtraExtensions: extraExtensions,
+	}
+	profileExts, clearEKU := leafProfileExtensions(req.ExtKeyUsage)
+	for _, ext := range profileExts {
+		if !hasExtension(template.ExtraExtensions, ext.Id) {
+			template.ExtraExtensions = append(template.ExtraExtensions, ext)
+		}
+	}
+	if clearEKU {
+		template.ExtKeyUsage = nil
 	}
 	// The caller-supplied req.DNSNames/.IPAddresses/.URIs win when set,
 	// otherwise fall back to what the CSR itself carries (confirmed

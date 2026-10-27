@@ -1,0 +1,59 @@
+name: fuzz
+
+# Nightly native Go fuzzing of the network-facing parsers (trust gap T5).
+# Plain `go test` already replays the seed corpora; this job mutates them.
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "per-target fuzz duration (Go duration, e.g. 5m)"
+        required: false
+        default: "5m"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - { pkg: est, name: FuzzParseCSRFromRequest }
+          - { pkg: ca, name: FuzzParseCertificateRequestMLDSA }
+          - { pkg: wstep, name: FuzzRequestCSR }
+          - { pkg: wstep, name: FuzzCMCCertificationRequest }
+          - { pkg: cmp, name: FuzzParsePKIMessage }
+          - { pkg: cmp, name: FuzzParseCertReqMessages }
+          - { pkg: scep, name: FuzzParsePKIMessage }
+          - { pkg: acme, name: FuzzParseAndVerifyJWS }
+          - { pkg: acme, name: FuzzJWKPublicKey }
+          - { pkg: ctmonitor, name: FuzzCertSpotterIssuance }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          # false: matches the other workflows (persistent runner volumes).
+          cache: false
+      - name: Fuzz ${{ matrix.target.pkg }}/${{ matrix.target.name }}
+        env:
+          FUZZTIME: ${{ inputs.fuzztime || '5m' }}
+        run: go test -run='^$' -fuzz="^${{ matrix.target.name }}\$" -fuzztime="$FUZZTIME" ./internal/${{ matrix.target.pkg }}/
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-crashers-${{ matrix.target.pkg }}-${{ matrix.target.name }}
+          path: internal/${{ matrix.target.pkg }}/testdata/fuzz
+          if-no-files-found: ignore

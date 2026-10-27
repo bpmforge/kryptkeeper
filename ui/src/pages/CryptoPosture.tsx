@@ -841,7 +841,6 @@ export default function CryptoPosture() {
               href={RISK_SCORING_DOC_URL}
               target="_blank"
               rel="noreferrer"
-              aria-label="How risk scores are computed"
               title="Score = sum of risk-flag weights, capped at 100. A: 0-10, B: 11-30, C: 31-50, D: 51-70, F: 71-100. Click for the full formula."
               className="text-xs text-primary underline"
             >

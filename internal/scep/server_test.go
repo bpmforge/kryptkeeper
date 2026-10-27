@@ -121,7 +121,7 @@ type asn1CertificateRequestOuter struct {
 	SignatureValue     asn1.BitString
 }
 
-func selfSignedRSACert(t *testing.T, key *rsa.PrivateKey, cn string) *x509.Certificate {
+func selfSignedRSACert(t testing.TB, key *rsa.PrivateKey, cn string) *x509.Certificate {
 	t.Helper()
 	serial, err := rand.Int(rand.Reader, big.NewInt(1<<62))
 	if err != nil {
@@ -223,7 +223,7 @@ func buildCSRWithChallenge(t *testing.T, key *rsa.PrivateKey, cn, challenge stri
 // inside a CMS SignedData (signer: the client's self-signed identity cert),
 // exactly as RFC 8894 §3.2 requires. txID/nonce are returned so the caller
 // can check the CertRep echoes them.
-func buildPKIOperation(t *testing.T, caCert *x509.Certificate, clientKey *rsa.PrivateKey, clientCert *x509.Certificate, csrDER []byte) (msgDER []byte, txID string, nonce []byte) {
+func buildPKIOperation(t testing.TB, caCert *x509.Certificate, clientKey *rsa.PrivateKey, clientCert *x509.Certificate, csrDER []byte) (msgDER []byte, txID string, nonce []byte) {
 	t.Helper()
 	envelopeDER, err := pkcs7.Encrypt(csrDER, []*x509.Certificate{caCert})
 	if err != nil {

@@ -38,7 +38,7 @@ jobs:
       - name: Install golangci-lint (v2, pinned per .golangci.yml)
         run: |
           set -euo pipefail
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: make lint
         run: make lint
@@ -171,9 +171,34 @@ jobs:
           # no Go packages, so `go test ./tests/integration/...` matched nothing.
           pkgs=$(grep -rl --include='*_test.go' KRYPTKEEPER_TEST_POSTGRES_DSN ./internal | xargs -n1 dirname | sort -u)
           # -p 1: these packages DROP SCHEMA on the one shared database.
-          # -timeout 60m: internal/bootstrap under -race exceeds 30m on the shared runner
-          # on 2-vCPU hosted runners.
-          go test -race -count=1 -p 1 -timeout 60m $pkgs
+          # No -race here, as in ci-pr: internal/bootstrap under -race and -p 1
+          # passed 60 min on a hosted runner once 1.1 grew it (run 40331003189).
+          # Race coverage on main comes from unit-race, sharded below.
+          go test -count=1 -p 1 -timeout 45m $pkgs
+
+  unit-race:
+    runs-on: ubuntu-latest
+    needs: [build-binaries]
+    # 90 / 65m per shard: four shards on a 4-vCPU hosted runner do not get 4x
+    # the CPU, and bootstrap under -race passed 60 min serially there.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
+          # setup-go's cache re-downloaded ~2.7 GB over them on every job.
+          cache: false
+      - name: Backend unit tests under -race
+        env:
+          GO_TEST_FLAGS: -race -timeout 65m
+        run: |
+          set -euo pipefail
+          # Same as ci-pr's unit-backend: `go test ./... -race`, with
+          # internal/bootstrap split over 4 parallel processes.
+          bash scripts/test/go-unit-sharded.sh 4
 
   protocol-conformance:
     runs-on: ubuntu-latest
@@ -213,7 +238,7 @@ jobs:
     needs: [build-binaries]
     timeout-minutes: 20
     env:
-      GOVULNCHECK_VERSION: v1.1.4
+      GOVULNCHECK_VERSION: v1.9.0
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Setup Go
@@ -237,7 +262,7 @@ jobs:
 
   publish-ci-artifacts:
     runs-on: ubuntu-latest
-    needs: [protocol-conformance, security-policy]
+    needs: [protocol-conformance, security-policy, unit-race]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

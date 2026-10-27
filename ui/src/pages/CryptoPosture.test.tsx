@@ -138,7 +138,7 @@ describe("CryptoPosture trend", () => {
   it("score link points at the published formula", async () => {
     renderPage();
     const link = await screen.findByRole("link", {
-      name: /how risk scores are computed/i,
+      name: /how is this scored/i,
     });
     expect(link.getAttribute("href")).toContain("docs/guides/RISK_SCORING.md");
   });

@@ -149,7 +149,7 @@ func TestRequestCSRRejectsJunk(t *testing.T) {
 
 // cmcPKIDataFor builds RFC 5272 PKIData around csrs, the way CertEnroll
 // does for a CES request.
-func cmcPKIDataFor(t *testing.T, csrs ...[]byte) []byte {
+func cmcPKIDataFor(t testing.TB, csrs ...[]byte) []byte {
 	t.Helper()
 	empty, _ := asn1.Marshal([]asn1.RawValue{})
 	reqs := make([]asn1.RawValue, 0, len(csrs))
@@ -177,7 +177,7 @@ func cmcPKIDataFor(t *testing.T, csrs ...[]byte) []byte {
 	return der
 }
 
-func signedDataAround(t *testing.T, content []byte) []byte {
+func signedDataAround(t testing.TB, content []byte) []byte {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

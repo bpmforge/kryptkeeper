@@ -86,7 +86,7 @@ function StatTile({
     <button
       type="button"
       onClick={onClick}
-      aria-label={sub ? `${label}: ${value}, ${sub}` : `${label}: ${value}`}
+      // No aria-label: the name comes from the visible value/label/sub text (WCAG 2.5.3 Label in Name).
       className={`group glass gradient-border rounded-2xl p-5 text-left transition-all duration-200 hover:shadow-lg ${t.glow} ${t.border} focus:outline-none focus:ring-2 focus:ring-ring/50 ${t.bg}`}
     >
       <div className="flex items-start justify-between mb-3">

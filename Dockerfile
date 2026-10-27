@@ -18,7 +18,7 @@
 # - Placeholder fallback mode:
 #   docker build --build-arg BUILD_MODE=placeholder -t kryptkeeper:placeholder .
 
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 ARG TARGETOS=linux
 ARG TARGETARCH=arm64
@@ -40,6 +40,8 @@ COPY . /src
 RUN --mount=type=cache,target=/root/.cache/go-build <<'EOF'
 set -eu
 mkdir -p /out /tmp/generated
+# Empty state tree for the runtime image (see the COPY --chown below).
+mkdir -p /out/state/data /out/state/keys /out/state/tls-trust
 
 if [ "${BUILD_MODE}" = "real" ]; then
   if [ ! -f /src/go.mod ]; then
@@ -159,6 +161,13 @@ LABEL org.opencontainers.image.source="https://github.com/${GITHUB_REPOSITORY:-u
 COPY --from=builder /out/kryptkeeper /kryptkeeper
 COPY --from=builder /out/kryptkeeper-mcp /kryptkeeper-mcp
 COPY --from=builder /out/healthcheck /healthcheck
+# The hub runs as nonroot and writes under /var/kryptkeeper (data/, keys/,
+# tls-trust/). A named volume mounted over a path that does not exist in the
+# image is created root:root by Docker (Podman happens to chown it), so the hub
+# crash-looped with "mkdir /var/kryptkeeper/data: permission denied" on Docker
+# Engine. Shipping the tree owned by nonroot makes Docker's first-use volume
+# copy-up inherit that ownership, including for the nested tls-trust volume.
+COPY --from=builder --chown=65532:65532 /out/state /var/kryptkeeper
 
 ENV HEALTHCHECK_URL=${HEALTHCHECK_URL}
 # Keep serving 5s after SIGTERM with /readyz 503 so endpoint removal propagates; 0 disables.

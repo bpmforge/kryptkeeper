@@ -25,7 +25,7 @@ The placeholder form, for a release whose module has not been looked up:
 |---|---|
 | Build pin | `GOFIPS140=v1.0.0` (snapshot `v1.0.0-c2097c7c`, per `$(go env GOROOT)/lib/fips140/`) |
 | Reported `module_version` | `v1.0.0` (`GET /api/v1/meta`, `.fips.module_version`) |
-| Go toolchain | `go.mod` `toolchain` line, read at claim time (currently `go1.26.9`) |
+| Go toolchain | `go.mod` `toolchain` line, read at claim time (currently `go1.27.3`; the certificate follows the `GOFIPS140=v1.0.0` module pin, not the toolchain version, so the 1.26 to 1.27 bump does not change it) |
 | CMVP certificate number | [#5247](https://csrc.nist.gov/projects/cryptographic-module-validation-program/certificate/5247) (vendor Geomys LLC, "Go Cryptographic Module", FIPS 140-3, overall level 1) |
 | CMVP status | Active; sunset 2031-04-26 (validated 2026-04-27, updated 2026-07-07) |
 | Date checked | 2026-10-17 (NIST CMVP certificate page) |

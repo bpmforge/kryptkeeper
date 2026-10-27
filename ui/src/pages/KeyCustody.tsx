@@ -48,8 +48,8 @@ function fmt(x?: string): string {
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div data-testid={`field-${label}`} className="min-w-0">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <p className="text-sm text-foreground truncate">{value || "-"}</p>
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="text-sm text-foreground truncate">{value || "-"}</dd>
     </div>
   );
 }
@@ -63,7 +63,7 @@ function EventRow({ ev }: { ev: CustodyEvent }) {
           {fmt(ev.occurred_at)}
         </span>
       </div>
-      <div className="grid grid-cols-3 gap-3">
+      <dl className="grid grid-cols-3 gap-3">
         <Field label="Requester" value={ev.requester} />
         <Field
           label="Approver"
@@ -72,7 +72,7 @@ function EventRow({ ev }: { ev: CustodyEvent }) {
           }
         />
         <Field label="Redeemer" value={ev.redeemer} />
-      </div>
+      </dl>
     </li>
   );
 }

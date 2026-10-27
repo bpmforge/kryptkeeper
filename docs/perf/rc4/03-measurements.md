@@ -29,8 +29,9 @@ the p99 miss is a tail of roughly 1 s stalls, and the list run shows a ~1 s max 
 repeat it, so it is not noise. Issuance rps varied 595 to 1023 between runs. Peak RSS repeats at
 about 2.49 GiB (the hub hydrates the inventory in memory), over the 2 GiB bar.
 
-Acceptance status: 1 NOT MET (search p99 and RSS miss), 2 met (gate and nightly job in place,
-edge unit-tested), 3 PENDING-RUN. No baselines recorded because no run passed every bar.
+Acceptance status (this run, superseded below): search p99 and RSS missed; the W30-25 / W30-26 fix below
+cleared search p99, and the 2026-10-26 section at the end of this file records the nightly evidence and
+the remaining RSS and issue-rps work. No baselines recorded because no run passed every bar.
 
 ## W30-25 / W30-26 fix: before and after (100k certificates)
 
@@ -56,6 +57,46 @@ widely run to run (as it did before the fix); run 1 of the after pair fell below
 above, so that bar is not proven by this ticket. Residual RSS of ~1.7 GiB is the resident inventory
 (~17 KiB per certificate: PEM, parsed x509 and item), which fits the bar at 100k but is the scaling limit
 for larger estates (1M needs the lazy-parse redesign, not done here).
+
+## Hosted nightly evidence and the RSS / issue-rps fix (2026-10-26)
+
+Hosted `perf-regression` runs (GitHub `ubuntu-latest`, 4 vCPU, 100k certificates), nightly job log lines:
+
+| Night | Code | Failing metric | Value | Other metrics |
+|---|---|---|---:|---|
+| 2026-10-21 | 1.0 | issue_rps_c16 | 481.8 (bar >= 500) | |
+| 2026-10-23 | 1.0 | issue_rps_c16 | 313.9 | |
+| 2026-10-25 | 1.0 | rss_mib_peak | 2099 (bar < 2048) | |
+| 2026-10-26 | 1.1 | rss_mib_peak | 2121.7 | search p99 302.7, list p95 11.6, issue rps 797.1 |
+
+So the job is not a 1.1 regression, and the stale "NOT MET" status above (search p99) no longer applies: search
+p99 and list p95 pass on hosted runners. Two defects remained, both in the harness rather than the hub:
+
+1. RSS. The bench started the hub without `GOMEMLIMIT`, but every supported deployment sets it to
+   `1600MiB` against the 2Gi limit that the 2048 MiB bar represents (`docs/deployment.md` "Memory sizing",
+   `docker-compose.yml`, `charts/kryptkeeper/values.yaml`). Unbounded, the Go GC lets startup hydration and
+   refresh garbage lift RSS to ~2.1 GiB over a live heap that fits in 1.6 GiB. `bench.sh` now runs the hub
+   with `GOMEMLIMIT=1600MiB` (`HUB_GOMEMLIMIT` overrides). This measures the hub as shipped; the bar is unchanged.
+2. Issue throughput. One 5000-request pass (~6 s) on a runner shared by Postgres, the hub and the load tool is
+   dominated by scheduling noise (287 to 1205 req/s across runs here, 314 to 797 on hosted nights). `bench.sh`
+   now warms up (200 requests) and reports the median of three 3000-request passes, so one slow pass cannot
+   decide the result; the bar is still >= 500 req/s.
+
+Local check (Apple M4 Max, 64 GiB, shared with other sessions, so use relative RSS and not absolute rps;
+hosted runners are slower), commit base `66b2f9c0`, `PG_IMAGE=docker.io/library/postgres:16`:
+
+| Metric | Before (no GOMEMLIMIT, one pass) | GOMEMLIMIT only | After (both changes, run A) | After (run B) | Bar |
+|---|---:|---:|---:|---:|---|
+| peak RSS (MiB) | 2180.9 | 1646.2 | 1827.8 (+15k issued vs 5k) | 1810.0 | < 2048 |
+| search p99 (ms) | 126.0 | 104.6 | 101.0 | 130.0 | < 500 |
+| list p95 (ms) | 6.1 | 7.2 | 5.4 | 40.9 | < 300 |
+| issue rps c=16 | 1386.5 | 1532.8 | 1610.3 (median of 1610, 1690, 1433) | 730.3 (median of 730, 815, 508) | >= 500 |
+
+Run B shows the noise: the same code, minutes later under other sessions' load, ran at less than half the
+rate, and one of its three passes (508) nearly touched the bar while the median stayed above it.
+The `GOMEMLIMIT` cap did not cost latency. Not verified on a hosted runner; the next nightly is the check.
+The RSS margin is ~200 MiB under the bar, so the lazy-parse inventory redesign above remains the real
+scaling work.
 
 ## 1M certificates (no pass bar)
 

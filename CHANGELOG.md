@@ -8,7 +8,7 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-10-26
+## [1.1.0] - 2026-10-27
 
 Release notes: [docs/release/RELEASE_NOTES_v1.1.0.md](docs/release/RELEASE_NOTES_v1.1.0.md).
 
@@ -23,12 +23,21 @@ Release notes: [docs/release/RELEASE_NOTES_v1.1.0.md](docs/release/RELEASE_NOTES
 ### Changed
 
 - Notification retries: 8 attempts with exponential backoff (were 3).
-- Go toolchain 1.26.10 (GO-2026-6809).
+- Go toolchain 1.27.3.
 
 ### Fixed
 
+- PQC wave verification of ML-DSA deliveries: Go 1.26's TLS client offers no ML-DSA signature scheme, so the build uses Go 1.27.3 (go.mod and all Dockerfiles). The FIPS build keeps the `GOFIPS140=v1.0.0` module (CMVP #5247).
+- The hub container image ships `/var/kryptkeeper/{data,keys,tls-trust}` owned by the nonroot user. On Docker Engine a fresh named volume was created root-owned, so the hub could not create its database and restarted in a loop (`mkdir /var/kryptkeeper/data: permission denied`). Podman masked it by chowning new volumes.
+- Issued leaves no longer carry `keyEncipherment` on EC or ML-DSA keys, or on code-signing, time-stamping and OCSP-signing certificates (RFC 5280, RFC 8813). Time-stamping EKU is now critical (RFC 3161) and OCSP-signing certificates carry `id-pkix-ocsp-nocheck` (RFC 6960). Found by the new pkilint/zlint profile check in CI.
+- The nightly perf benchmark runs the hub with the documented `GOMEMLIMIT=1600MiB` and takes issue throughput as the median of three passes; the bars are unchanged.
+- LICENSE is the verbatim Apache License 2.0 text.
 - External-CA failures answer with their reason instead of a bare 503.
 - Plugin http events no longer log full URLs (webhook signatures).
+
+### Deprecated
+
+- The Opsgenie notify plugin (D-329). Atlassian ends Opsgenie support on 2027-04-05. The hub warns when the plugin is installed or loaded; it is removed in 2.0.
 
 ## [1.0.0] - 2026-10-18
 

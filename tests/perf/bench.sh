@@ -16,6 +16,14 @@ PG_IMAGE="${PG_IMAGE:-docker.io/library/postgres:16.15}"
 ENGINE="${CONTAINER_ENGINE:-podman}"
 LOADTOOL_SRC="$REPO_ROOT/docs/perf/rc1/harness/loadtool.go.txt"
 SEED_ROWS=500
+# The rss_mib_peak bar (2048 MiB) is the documented 2Gi container limit, and docs/deployment.md
+# ("Memory sizing"), docker-compose.yml and the Helm chart all run the hub with GOMEMLIMIT=1600MiB
+# (80% of that limit). The bench runs the hub the same way; without it the Go GC lets startup
+# hydration and refresh garbage inflate RSS to ~2.1 GiB on a heap that is ~1.6 GiB live.
+HUB_GOMEMLIMIT="${HUB_GOMEMLIMIT:-1600MiB}"
+# Issuance throughput is the median of ISSUE_PASSES timed passes after a warmup: one 5000-request (~6 s) pass on a
+# shared 4 vCPU runner varied 287 to 1205 req/s between nights, and a median is immune to one bad pass.
+ISSUE_PASSES="${ISSUE_PASSES:-3}"
 
 log() { printf '[perf %s] %s\n' "$(date '+%H:%M:%S')" "$*" >&2; }
 free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
@@ -43,6 +51,7 @@ start_hub() {
     APP_AUTH_LOGIN_SIGNING_SECRET="$SIGN" RENEWAL_POLL_MINUTES=1 \
     APP_TEMPLATE_FILE="$WORK/templates.json" \
     KRYPTKEEPER_DB_MODE=postgres DATABASE_URL="$PG_DSN" PORT="$HUB_PORT" APP_BIND_ADDR=127.0.0.1 \
+    GOMEMLIMIT="$HUB_GOMEMLIMIT" \
     nohup "$WORK/kryptkeeper" >>"$WORK/hub.log" 2>&1 &
   HUB_PID=$!
   export HUB_PID
@@ -252,12 +261,19 @@ perf_measure() {
   log "$line"
   list_p95="$(bench_field p95 <<<"$line")"
 
-  log "issuance at c=16"
+  log "issuance at c=16 (warmup, then median of $ISSUE_PASSES passes)"
   lt -issue -method POST -path /api/v1/certificates -ca "$CA_ID" -tpl "$TPL_ID" -n 200 -c 16 >/dev/null
-  line="$(lt -issue -method POST -path /api/v1/certificates -ca "$CA_ID" -tpl "$TPL_ID" -n 5000 -c 16)"
-  log "$line"
-  issue_rps="$(bench_field rps <<<"$line")"
-  issue_fail="$(bench_failures <<<"$line")"
+  local pass rps_list="" fail_total=0 f
+  for ((pass = 1; pass <= ISSUE_PASSES; pass++)); do
+    line="$(lt -issue -method POST -path /api/v1/certificates -ca "$CA_ID" -tpl "$TPL_ID" -n 3000 -c 16)"
+    log "pass $pass: $line"
+    rps_list+="$(bench_field rps <<<"$line") "
+    f="$(bench_failures <<<"$line")"
+    fail_total=$((fail_total + f))
+  done
+  issue_rps="$(python3 -c 'import statistics, sys; print(statistics.median(float(x) for x in sys.argv[1:]))' $rps_list)"
+  issue_fail="$fail_total"
+  log "issue rps per pass: $rps_list-> median $issue_rps"
 
   sleep 2
   ps -o rss= -p "$HUB_PID" >>"$rsslog" 2>/dev/null || true

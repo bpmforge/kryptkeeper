@@ -78,7 +78,14 @@ what 1.1.0 still does not do is on the public [roadmap](../ROADMAP.md).
 ## Upgrade notes
 
 - **Migrations:** 000350–000388 run automatically.
-- **Go toolchain:** 1.26.10 (GO-2026-6809).
+- **Go toolchain:** 1.27.3. Go 1.26's TLS client cannot handshake with an ML-DSA certificate, so
+  PQC wave verification needs 1.27. The FIPS build keeps the `GOFIPS140=v1.0.0` module (CMVP #5247).
+- **Container image:** `/var/kryptkeeper/{data,keys,tls-trust}` ship owned by the nonroot user,
+  so a fresh Docker Engine named volume is writable on first start.
+- **Issued certificate profiles:** no `keyEncipherment` on EC or ML-DSA keys or on code-signing,
+  time-stamping and OCSP-signing certificates; time-stamping EKU is critical; OCSP-signing
+  certificates carry `id-pkix-ocsp-nocheck`. Checked by pkilint and zlint in CI.
+- **Deprecated:** the Opsgenie notify plugin (Atlassian ends Opsgenie on 2027-04-05); removed in 2.0.
 - **Notification retries:** now 8 attempts with exponential backoff (were 3). The policy can be
   overridden with `KRYPTKEEPER_NOTIFY_RETRY_ATTEMPTS`, `_BASE` and `_CAP`.
 - **New settings:**

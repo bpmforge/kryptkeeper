@@ -78,7 +78,7 @@ func explicitContext(tag int, der []byte) asn1.RawValue {
 // containing one CertReqMsg: certReqId=0, CertTemplate{subject, publicKey},
 // and a POPOSigningKey signature over the CertRequest DER — RFC 4211 §4.1's
 // default (poposkInput absent) POPO, exactly what openssl's `-popo 1` sends.
-func buildCRMFIRBody(t *testing.T, priv *ecdsa.PrivateKey, cn string) []byte {
+func buildCRMFIRBody(t testing.TB, priv *ecdsa.PrivateKey, cn string) []byte {
 	t.Helper()
 	return buildCRMFBody(t, &priv.PublicKey, oidECDSAWithSHA256, func(h []byte) ([]byte, error) {
 		return ecdsa.SignASN1(rand.Reader, priv, h)
@@ -87,14 +87,14 @@ func buildCRMFIRBody(t *testing.T, priv *ecdsa.PrivateKey, cn string) []byte {
 
 // buildCRMFBody is buildCRMFIRBody generalised over key type so a test can
 // send an RSA request; sign receives the SHA-256 of the CertRequest DER.
-func buildCRMFBody(t *testing.T, pub crypto.PublicKey, algOID asn1.ObjectIdentifier, sign func(digest []byte) ([]byte, error), cn string) []byte {
+func buildCRMFBody(t testing.TB, pub crypto.PublicKey, algOID asn1.ObjectIdentifier, sign func(digest []byte) ([]byte, error), cn string) []byte {
 	t.Helper()
 	return buildCRMFBodySANs(t, pub, algOID, sign, cn, nil)
 }
 
 // buildCRMFBodySANs is buildCRMFBody with dNSName SANs in the CertTemplate's
 // extensions, the way a client asks for names (SUP-A04-2).
-func buildCRMFBodySANs(t *testing.T, pub crypto.PublicKey, algOID asn1.ObjectIdentifier, sign func(digest []byte) ([]byte, error), cn string, dnsNames []string) []byte {
+func buildCRMFBodySANs(t testing.TB, pub crypto.PublicKey, algOID asn1.ObjectIdentifier, sign func(digest []byte) ([]byte, error), cn string, dnsNames []string) []byte {
 	t.Helper()
 
 	subjectDER, err := asn1.Marshal(pkix.Name{CommonName: cn}.ToRDNSequence())
@@ -220,7 +220,7 @@ type pbmOptions struct {
 // senderNonce) + body + PBM protection, mirroring the production response
 // builder's shape in pkimessage.go / protection.go so tests exercise the
 // exact same DER structure as the server verifies.
-func buildProtectedPKIMessage(t *testing.T, bodyType int, bodyContent []byte, opts pbmOptions) []byte {
+func buildProtectedPKIMessage(t testing.TB, bodyType int, bodyContent []byte, opts pbmOptions) []byte {
 	t.Helper()
 
 	emptyDN, err := generalNameEmptyDirectoryName()

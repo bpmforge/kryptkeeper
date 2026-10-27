@@ -50,6 +50,12 @@ Negatives:
    `./hub-checks.sh <host> --skew-denied`.
 7. Fill the host's row in the results doc with evidence paths and SHA-256.
 
+## Key-usage check
+
+`ku-check.ps1 -HubCaSubject '<substring>'` pulses autoenrollment and prints the new certificate's key usage, EKU,
+key algorithm and `certutil -verify -urlfetch` result. Use it after any change to issued key usage
+(`docs/release/LIVE_RESULTS_WINDOWS_KU_WS2025_v1.1.md`).
+
 ## Evidence layout
 
 ```

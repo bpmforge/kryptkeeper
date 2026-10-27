@@ -1,0 +1,49 @@
+name: scorecard
+
+# OpenSSF Scorecard. publish_results needs the public repository
+# (bpmforge/kryptkeeper on GitHub): the Scorecard API only accepts results from
+# a public repo, so on the private repo or the the self-hosted forge mirror this workflow
+# cannot publish and should be left disabled there.
+
+on:
+  schedule:
+    - cron: '23 4 * * 1'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    # GitHub only: the action needs GitHub's OIDC and API, and only the public
+    # repo can publish results. On the the self-hosted forge runner the job is skipped, not red.
+    if: github.server_url == 'https://github.com' && github.repository == 'bpmforge/kryptkeeper'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      security-events: write # upload SARIF to code scanning
+      id-token: write # publish results (OIDC) to the Scorecard API
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Run analysis
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+      - name: Keep results as an artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          retention-days: 5
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: results.sarif

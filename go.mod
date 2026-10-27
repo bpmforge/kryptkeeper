@@ -1,8 +1,8 @@
 module kryptkeeper
 
-go 1.26.0
+go 1.27.0
 
-toolchain go1.26.10
+toolchain go1.27.3
 
 // SQL Server's default TLS certificate has a negative serial number. Go 1.23+
 // refuses to parse such a certificate, which made the handshake to every default

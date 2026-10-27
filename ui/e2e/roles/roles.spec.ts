@@ -15,6 +15,7 @@ const ALL_PATHS = [
   "/reports/revocation-activity", "/inventory/keys", "/inventory-sources", "/acme",
   "/enrollment", "/migration", "/users", "/access-review", "/tenants", "/policies",
   "/roles", "/settings",
+  "/blast-radius", "/issuers", "/nhi", "/reports/anomalies", "/reports/slo", "/reports/key-custody", "/targets",
 ];
 
 // requester has its own two-item nav and is covered by requester.spec.ts.
@@ -25,10 +26,11 @@ const HIDDEN: Record<MatrixRole, string[]> = {
   viewer: [
     "/ct-findings", "/integrations", "/audit", "/ceremonies", "/renewal/rollout-groups",
     "/acme", "/enrollment", "/users", "/access-review", "/policies", "/roles",
+    "/reports/key-custody",
   ],
   "pki-operator": [
     "/ceremonies", "/renewal/rollout-groups", "/acme", "/users", "/access-review",
-    "/policies", "/roles",
+    "/policies", "/roles", "/reports/key-custody",
   ],
   "pki-admin": [],
 };
