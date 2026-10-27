@@ -114,7 +114,8 @@ certificates to `.scep-out.*` next to the script (removed on exit).
      (`internal/cmp/cmp_test.go` `TestCMPHandlerKURReturnsKUPBodyType`).
    These fixes do not make SCEP/CMP interoperate with real clients — they
    fix bugs found while probing a still-fundamentally-incompatible wire
-   format, per CLAUDE.md's rule against loosening any verification path.
+   format, per the rule against loosening any verification path
+   ([SECURITY_PRINCIPLES.md](../../../docs/design/SECURITY_PRINCIPLES.md)).
 
 ## What passed
 

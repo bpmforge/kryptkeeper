@@ -14,6 +14,8 @@ Release notes: [docs/release/RELEASE_NOTES_v1.1.1.md](docs/release/RELEASE_NOTES
 
 ### Security
 
+Finding ids refer to [docs/security/V1.1_SCAN_2026-10-27.md](docs/security/V1.1_SCAN_2026-10-27.md).
+
 - Connectors check `credential_ref` against the caller's tenant and the connector type, so a stored credential can no longer be sent to a caller-chosen URL (C-02, D-330).
 - Ambient `gcp_cas` connectors only talk to Google's endpoint and ambient `aws_pca` connectors cannot set `endpoint_url`; under multi-tenancy only a super-admin creates them (C-01, C-03).
 - The root trust helper stages roots in a private 0700 directory with exclusive-create files and writes its state without following symlinks (B-01, B-04).
@@ -33,11 +35,11 @@ Release notes: [docs/release/RELEASE_NOTES_v1.1.0.md](docs/release/RELEASE_NOTES
 
 ### Added
 
-- External CAs behind every protocol (Vault PKI, EJBCA, AWS Private CA, Google CAS, Sectigo, GlobalSign, Entrust, DigiCert, any ACME CA), verified responses and upstream-first revocation; Issuers page and wizard (W36).
-- Five-minute trial with demo data, signed OCI Helm chart, post-release verification, Ansible collection (W37).
-- Plugin kinds (notify, ticket, dns01, credentials) with Teams, PagerDuty, Opsgenie, Zendesk, Freshservice, DigitalOcean, GoDaddy, NS1, Akamai, CyberArk and Delinea plugins; signed plugin catalogue; Vault/OpenBao credential sources; owner routing, durable retries, ITSM ticket on failed renewal; cloud certificates in inventory; scheduled reports; Intune SCEP (W38).
-- SQL Server, RDP and Exchange install modes, domain-account installs, NLA RDP discovery, persisted CA rate-limit hold and rolling issuance budget (W39).
-- PQC delivery to HAProxy and Kubernetes, ACME device attestation, trust store push (W40).
+- External CAs behind every protocol (Vault PKI, EJBCA, AWS Private CA, Google CAS, Sectigo, GlobalSign, Entrust, DigiCert, any ACME CA), verified responses and upstream-first revocation; Issuers page and wizard.
+- Five-minute trial with demo data, signed OCI Helm chart, post-release verification, Ansible collection.
+- Plugin kinds (notify, ticket, dns01, credentials) with Teams, PagerDuty, Opsgenie, Zendesk, Freshservice, DigitalOcean, GoDaddy, NS1, Akamai, CyberArk and Delinea plugins; signed plugin catalogue; Vault/OpenBao credential sources; owner routing, durable retries, ITSM ticket on failed renewal; cloud certificates in inventory; scheduled reports; Intune SCEP.
+- SQL Server, RDP and Exchange install modes, domain-account installs, NLA RDP discovery, persisted CA rate-limit hold and rolling issuance budget.
+- PQC delivery to HAProxy and Kubernetes, ACME device attestation, trust store push.
 
 ### Changed
 
@@ -65,8 +67,8 @@ Lab record: [docs/release/LIVE_RESULTS_v1.0.0.md](docs/release/LIVE_RESULTS_v1.0
 
 ### Added
 
-- Discovery fingerprinting, certificate classification and install-posture findings (W34).
-- Privileged agentless Linux scans through one privilege layer (none, nopasswd, password, helper) (W34).
+- Discovery fingerprinting, certificate classification and install-posture findings.
+- Privileged agentless Linux scans through one privilege layer (none, nopasswd, password, helper).
 - WSTEP/XCEP enforce every template enroll list, with a one-time upgrade (D-291).
 - Approver role decides certificate requests on templates that name it.
 - Readiness drain on shutdown (`KRYPTKEEPER_READINESS_DRAIN_SECONDS`) and prompt lease hand-back.
@@ -84,11 +86,11 @@ Lab record: [docs/release/LIVE_RESULTS_v1.0.0.md](docs/release/LIVE_RESULTS_v1.0
 
 ## [0.21.0] - 2026-10-17
 
-Release notes: [docs/release/RELEASE_NOTES_v0.21.0.md](docs/release/RELEASE_NOTES_v0.21.0.md).
+Release notes: [docs/release/PRE_1.0_INTERNAL_BUILDS.md](docs/release/PRE_1.0_INTERNAL_BUILDS.md#v0210).
 
 ### Added
 
-- **Adoption UX (W33-01..34).** Playwright harness and journeys, per-user
+- **Adoption UX.** Playwright harness and journeys, per-user
   onboarding dismissal, SAML/SCIM/key-backend config with source badges, SSO
   override lock-out guard, team policies with quotas, Requester role and My
   Requests, on-behalf-of requests, tenant-scoped single-use agent enrollment,
@@ -104,7 +106,7 @@ Release notes: [docs/release/RELEASE_NOTES_v0.21.0.md](docs/release/RELEASE_NOTE
 ### Changed
 
 - Unmounted `/api/` paths answer 404 JSON instead of the 200 text banner.
-- **A fresh hub can start with zero CAs (W33-32).** With no CA,
+- **A fresh hub can start with zero CAs.** With no CA,
   `KRYPTKEEPER_DEFAULT_CA_ID` unset and `KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT` off,
   the hub now logs `[FIRST-RUN]` and starts so the onboarding wizard can create
   the first root, instead of exiting with `no CA configured`. ACME, EST, CMP and
@@ -123,11 +125,11 @@ Release notes: [docs/release/RELEASE_NOTES_v0.21.0.md](docs/release/RELEASE_NOTE
 
 ## [0.20.0] - 2026-10-17
 
-Release notes: [docs/release/RELEASE_NOTES_v0.20.0.md](docs/release/RELEASE_NOTES_v0.20.0.md).
+Release notes: [docs/release/PRE_1.0_INTERNAL_BUILDS.md](docs/release/PRE_1.0_INTERNAL_BUILDS.md#v0200).
 
 ### Added
 
-- **Ecosystem (W32-01..33).** OpenAPI spec served at `/api/v1/openapi.yaml`,
+- **Ecosystem.** OpenAPI spec served at `/api/v1/openapi.yaml`,
   Go/TypeScript/Python SDK generation, Terraform provider tests and data sources,
   plugin registry page, HMAC-signed webhooks with rotation, ITSM framework with
   ServiceNow and Jira connectors, approval-via-ticket, CMDB ownership sync,
@@ -142,15 +144,15 @@ Release notes: [docs/release/RELEASE_NOTES_v0.20.0.md](docs/release/RELEASE_NOTE
 ### Fixed
 
 - The `itsm` channel could not be created in notification rules, so ITSM
-  producers never fired (W32-33).
+  producers never fired.
 
 ## [0.19.0] - 2026-10-17
 
-Release notes: [docs/release/RELEASE_NOTES_v0.19.0.md](docs/release/RELEASE_NOTES_v0.19.0.md).
+Release notes: [docs/release/PRE_1.0_INTERNAL_BUILDS.md](docs/release/PRE_1.0_INTERNAL_BUILDS.md#v0190).
 
 ### Added
 
-- **PQC agility (W31-01..21).** PQC readiness corpus and label fixtures,
+- **PQC agility.** PQC readiness corpus and label fixtures,
   ML-DSA signed CRL and OCSP (`internal/revsign`), FIPS/allow-list/HSM refusals
   (422), PQC migration waves with verify, rollback and approval expiry
   (`KRYPTKEEPER_PQC_WAVE_APPROVAL_TTL_HOURS`), non-PQC algorithm transitions
@@ -166,15 +168,15 @@ Release notes: [docs/release/RELEASE_NOTES_v0.19.0.md](docs/release/RELEASE_NOTE
 ### Fixed
 
 - A PQC wave no longer reports 4 of 4 migrated when members were undelivered
-  (W31-21).
+.
 
 ## [0.18.0] - 2026-10-17
 
-Release notes: [docs/release/RELEASE_NOTES_v0.18.0.md](docs/release/RELEASE_NOTES_v0.18.0.md).
+Release notes: [docs/release/PRE_1.0_INTERNAL_BUILDS.md](docs/release/PRE_1.0_INTERNAL_BUILDS.md#v0180).
 
 ### Added
 
-- **SRE and operations (W30-01..27).** Percent-of-lifetime expiry thresholds,
+- **SRE and operations.** Percent-of-lifetime expiry thresholds,
   owner-team notification routing, runtime-reloadable channels, SLO error
   budgets and burn rates with Grafana panels, propose-only anomaly remediation,
   natural-language policy drafting (`/policies/draft`), health and metrics
@@ -195,11 +197,11 @@ Release notes: [docs/release/RELEASE_NOTES_v0.18.0.md](docs/release/RELEASE_NOTE
 
 ## [0.17.0] - 2026-10-17
 
-Release notes: [docs/release/RELEASE_NOTES_v0.17.0.md](docs/release/RELEASE_NOTES_v0.17.0.md).
+Release notes: [docs/release/PRE_1.0_INTERNAL_BUILDS.md](docs/release/PRE_1.0_INTERNAL_BUILDS.md#v0170).
 
 ### Added
 
-- **Machine identity (W29-01..15).** SPIFFE Workload API conformance harness,
+- **Machine identity.** SPIFFE Workload API conformance harness,
   NHI revocation at the authorisation layer within 60 s, NHI management page,
   per-agent single-use enrollment tokens, live MCP client E2E with a
   `blast_radius` tool and tool-catalogue page, code-signing certificates from a
@@ -214,11 +216,11 @@ Release notes: [docs/release/RELEASE_NOTES_v0.17.0.md](docs/release/RELEASE_NOTE
 
 ## [0.16.0] - 2026-10-17
 
-Release notes: [docs/release/RELEASE_NOTES_v0.16.0.md](docs/release/RELEASE_NOTES_v0.16.0.md).
+Release notes: [docs/release/PRE_1.0_INTERNAL_BUILDS.md](docs/release/PRE_1.0_INTERNAL_BUILDS.md#v0160).
 
 ### Added
 
-- **Compliance reporting (W28-01..21).** Published risk-score formula with a
+- **Compliance reporting.** Published risk-score formula with a
   doc-versus-code test, crypto posture range picker and compare-two-dates view,
   posture snapshots with a 400-day retention floor, scheduled CSV/XLSX/PDF report
   delivery with retry, CSV formula-injection escaping, FedRAMP Moderate control
@@ -234,11 +236,11 @@ Release notes: [docs/release/RELEASE_NOTES_v0.16.0.md](docs/release/RELEASE_NOTE
 
 ## [0.15.0] - 2026-10-16
 
-Release notes: [docs/release/RELEASE_NOTES_v0.15.0.md](docs/release/RELEASE_NOTES_v0.15.0.md).
+Release notes: [docs/release/PRE_1.0_INTERNAL_BUILDS.md](docs/release/PRE_1.0_INTERNAL_BUILDS.md#v0150).
 
 ### Added
 
-- **Renewal and delivery (W27-01..38).** Explicit cert-to-target bindings with
+- **Renewal and delivery.** Explicit cert-to-target bindings with
   a one-time backfill, fleet target groups, a durable renewal failure queue
   with `POST /renewal/retry` and configurable backoff, per-connector throttle,
   worker pool, jitter and shutdown drain, ACME dns-01 (Route53, Azure DNS, GCP
@@ -270,11 +272,11 @@ Release notes: [docs/release/RELEASE_NOTES_v0.15.0.md](docs/release/RELEASE_NOTE
 
 ## [0.14.0] - 2026-10-16
 
-Release notes: [docs/release/RELEASE_NOTES_v0.14.0.md](docs/release/RELEASE_NOTES_v0.14.0.md).
+Release notes: [docs/release/PRE_1.0_INTERNAL_BUILDS.md](docs/release/PRE_1.0_INTERNAL_BUILDS.md#v0140).
 
 ### Added
 
-- **Enrollment (W26-01..32).** API and UI management for ACME EAB keys and
+- **Enrollment.** API and UI management for ACME EAB keys and
   provisioners, EST users and label routes, CMP credentials and SCEP
   challenges; ACME server ARI; ACME upstream ARI timing, Retry-After backoff
   and mass-revocation reaction; CMP rr, certConf and pollReq; SCEP renewal;
@@ -297,11 +299,11 @@ Release notes: [docs/release/RELEASE_NOTES_v0.14.0.md](docs/release/RELEASE_NOTE
 
 ## [0.13.0] - 2026-10-16
 
-Release notes: [docs/release/RELEASE_NOTES_v0.13.0.md](docs/release/RELEASE_NOTES_v0.13.0.md).
+Release notes: [docs/release/PRE_1.0_INTERNAL_BUILDS.md](docs/release/PRE_1.0_INTERNAL_BUILDS.md#v0130).
 
 ### Added
 
-- **Deploy and distribution (W25-01..21).** Prebuilt dashboard image for
+- **Deploy and distribution.** Prebuilt dashboard image for
   compose and Helm, Helm HA defaults (2 replicas, PDB, sqlite single-replica
   guard), `kryptkeeper migrate status|down`, SQLite backup and restore,
   air-gap bundle v2 with a signed manifest, signed apt/yum repository
@@ -322,11 +324,11 @@ Release notes: [docs/release/RELEASE_NOTES_v0.13.0.md](docs/release/RELEASE_NOTE
 
 ## [0.12.0] - 2026-10-16
 
-Release notes: [docs/release/RELEASE_NOTES_v0.12.0.md](docs/release/RELEASE_NOTES_v0.12.0.md).
+Release notes: [docs/release/PRE_1.0_INTERNAL_BUILDS.md](docs/release/PRE_1.0_INTERNAL_BUILDS.md#v0120).
 
 ### Added
 
-- **Discovery and inventory (W24-01..44).** Per-target scan schedules,
+- **Discovery and inventory.** Per-target scan schedules,
   agentless SSH discovery with host-key pinning, scan-diff and agent change
   alerts, LDAP StartTLS and RDP probes, JCEKS keystores, actionable CT
   findings with a second CT source, multi-account cloud and multi-cluster
@@ -346,11 +348,11 @@ Release notes: [docs/release/RELEASE_NOTES_v0.12.0.md](docs/release/RELEASE_NOTE
 
 ## [0.11.0] - 2026-10-16
 
-Release notes: [docs/release/RELEASE_NOTES_v0.11.0.md](docs/release/RELEASE_NOTES_v0.11.0.md).
+Release notes: [docs/release/PRE_1.0_INTERNAL_BUILDS.md](docs/release/PRE_1.0_INTERNAL_BUILDS.md#v0110).
 
 ### Added
 
-- **CA and key core (W23-01..54).** 9-algorithm CA matrix (Ed25519, RSA-3072
+- **CA and key core.** 9-algorithm CA matrix (Ed25519, RSA-3072
   added), external root import and offline-root CSR flow, per-CA key
   backends, dual-controlled re-key and cross-sign rollover with rollback, CA
   revocation, key compromise with re-issue, template enrollment permissions
@@ -371,7 +373,7 @@ Release notes: [docs/release/RELEASE_NOTES_v0.11.0.md](docs/release/RELEASE_NOTE
 
 ## [0.10.0] - 2026-10-16
 
-Release notes: [docs/release/RELEASE_NOTES_v0.10.0.md](docs/release/RELEASE_NOTES_v0.10.0.md).
+Release notes: [docs/release/PRE_1.0_INTERNAL_BUILDS.md](docs/release/PRE_1.0_INTERNAL_BUILDS.md#v0100).
 
 ### Security
 
@@ -383,8 +385,8 @@ Release notes: [docs/release/RELEASE_NOTES_v0.10.0.md](docs/release/RELEASE_NOTE
   the principal, never `X-Tenant`), search, CBOM, SSH certificates,
   connectors, inventory sources, users (now carry a tenant), custom roles
   (now carry `tenant_id`), list totals and the certificate summary
-  (W21-01..03, W22-01). The tenant-idor suite reports 0 leaks on both engines.
-- **The multi-tenancy experimental start-up gate is lifted** (W22-03, owner
+. The tenant-idor suite reports 0 leaks on both engines.
+- **The multi-tenancy experimental start-up gate is lifted** (owner
   decision 2026-10-16, `docs/release/MULTI_TENANCY_GATE_DECISION.md`).
   `KRYPTKEEPER_MULTI_TENANCY_GATE=enforce` restores the v0.9 refusal.
 
@@ -399,36 +401,35 @@ Release notes: [docs/release/RELEASE_NOTES_v0.10.0.md](docs/release/RELEASE_NOTE
   the policy and rule, instead of an opaque 500.
 
 - **Audit:** `kryptkeeper-audit-verify` offline verifier for audit records and
-  checkpoints (W22-04; the transparency signing seed is auto-provisioned);
-  streamed `GET /api/v1/audit/export?format=csv|json`, tenant-scoped (W22-05);
+  checkpoints (the transparency signing seed is auto-provisioned);
+  streamed `GET /api/v1/audit/export?format=csv|json`, tenant-scoped;
   retention archive `POST /api/v1/audit/archive` under dual control, writing a
-  signed, hash-chained archive before rows are deleted (W22-07).
-- **Approvals:** auto-reject after `APPROVAL_TTL_HOURS` (default 72) (W22-09);
-  n-of-m quorum per action type via `APPROVAL_QUORUM_POLICY` (W22-10);
-  dated approver delegation, max 30 days (W22-11); unified approvals inbox API
-  and `/inbox` page replacing the two approval pages (W22-12, W22-13).
+  signed, hash-chained archive before rows are deleted.
+- **Approvals:** auto-reject after `APPROVAL_TTL_HOURS` (default 72);
+  n-of-m quorum per action type via `APPROVAL_QUORUM_POLICY`;
+  dated approver delegation, max 30 days; unified approvals inbox API
+  and `/inbox` page replacing the two approval pages.
 - **Policy governance:** loosening an issuance policy needs a second approver,
-  tightening applies at once; version history and revert (W22-15); Policies
-  page with dry-run, issue wizard cites the violated rule (W22-16).
+  tightening applies at once; version history and revert; Policies
+  page with dry-run, issue wizard cites the violated rule.
 - **Roles UI** with permission builder, SoD checks and SSO role-map preview
-  (W22-18).
+.
 - **Ownership:** `ownership_source`, `?owner=unassigned` and a dashboard
-  unowned count (W22-24); CMDB ownership import (W22-25); orphaned-owner
-  detection and bulk reassignment (W22-26, W22-27).
+  unowned count; CMDB ownership import; orphaned-owner
+  detection and bulk reassignment.
 - **Risk exceptions:** `/api/v1/exceptions` behind the approval queue, tenant
-  scoped, with expiry warning and auto-reopen (W22-28, W22-31); accept-risk on
-  Discovery and Crypto Posture and the five-stage finding funnel (W22-29,
-  W22-30); accepted risks in compliance evidence packs (W22-32).
-- **Access governance:** API key `last_used_at` (W22-33); access review report
-  and recertification campaigns with a signed close (W22-34..36); break-glass
+  scoped, with expiry warning and auto-reopen; accept-risk on
+  Discovery and Crypto Posture and the five-stage finding funnel; accepted risks in compliance evidence packs.
+- **Access governance:** API key `last_used_at`; access review report
+  and recertification campaigns with a signed close; break-glass
   accounts with two-person activation, 4 h windows, alerting, review tasks,
-  IdP-down local login and quorum override (W22-37, W22-38).
-- **Protocol hardening:** per-credential protocol rate limits (W22-39); egress
-  lint for user-URL HTTP clients (W22-40); `docs/security/SECURITY_CLAIMS.md`
-  (W22-41).
+  IdP-down local login and quorum override.
+- **Protocol hardening:** per-credential protocol rate limits; egress
+  lint for user-URL HTTP clients; `docs/security/SECURITY_CLAIMS.md`
+.
 - **Tests:** `--suite tenant-idor` replays every OpenAPI route as four roles
   of one tenant against another tenant's data, on SQLite and PostgreSQL
-  (W22-02); Keycloak OIDC/SAML/SCIM live harness (W22-21, W22-22).
+; Keycloak OIDC/SAML/SCIM live harness.
 
 ### Changed
 
@@ -774,9 +775,9 @@ Release notes: [docs/release/RELEASE_NOTES_v0.10.0.md](docs/release/RELEASE_NOTE
 
 This is the first public release of Kryptkeeper. Earlier entries (under
 "Internal milestones" below) were internal milestones and were never
-released publicly. This release covers agentless Windows enrollment (W18), a
-real-client UAT programme (W19), and release readiness, delivery plugins,
-and a security hardening pass (W20).
+released publicly. This release covers agentless Windows enrollment, a
+real-client UAT programme, and release readiness, delivery plugins,
+and a security hardening pass.
 
 **Operators: read "Upgrade notes (breaking or behaviour changes)" below before
 starting a v0.9.0 hub.** Several secure-by-default changes need configuration.
@@ -789,7 +790,7 @@ starting a v0.9.0 hub.** Several secure-by-default changes need configuration.
   it Experimental. Tenant isolation is not a security boundary (audit A01-001,
   A01-002, A01-004/005, A01-006, A01S-3); fixes are scheduled for v0.10. See
   `docs/design/TENANCY_POSTURE.md`.
-- **WinRM/IIS agentless lifecycle** (W18): HTTPS WinRM discovery and IIS
+- **WinRM/IIS agentless lifecycle**: HTTPS WinRM discovery and IIS
   certificate install as a hub feature — credential preflight
   (`POST /api/v1/credentials/{id}/preflight`) that verifies a stored
   Windows credential without touching the host state; discovery, renewal,
@@ -797,38 +798,38 @@ starting a v0.9.0 hub.** Several secure-by-default changes need configuration.
   SCEP, and CMP issuance alike, all through one recorder seam. NTLM-sealed
   WinRM over plain HTTP is verified against a real Windows listener, and
   macOS agentless install into the System keychain over SSH is available.
-- **TLS-by-default hub listener** (W19): Compose now runs the API over
+- **TLS-by-default hub listener**: Compose now runs the API over
   HTTPS out of the box (`KRYPTKEEPER_TLS_DISABLE=false`), exporting the CA
   certificate (never key material) to a dedicated `tls-trust` volume for
   clients to trust; plain HTTP remains available as an explicit opt-out.
   The agent trusts a hub-issued certificate via `KRYPTKEEPER_HUB_CA_CERT`
   / `KRYPTKEEPER_HUB_CA_CERT_FILE` (no skip-verify option exists).
-- **Windows autoenrollment via WSTEP/XCEP** (W18-08, W19-10, W20-08): GPO-driven
+- **Windows autoenrollment via WSTEP/XCEP**: GPO-driven
   machine and user-context autoenrollment and renewal proven on a
   domain-joined Windows 11 client. WSTEP/XCEP is Kerberos-authenticated
   (keytab + SPN), and renewals are audited as renewals.
-- **WSTEP template policy** (W20-09, W20-15): the template a request names
+- **WSTEP template policy**: the template a request names
   is enforced (algorithms, minimum key size, EKUs, maximum validity), that
   validity is the issued validity, and the inventory row records the
   governing template.
-- **Template enrollee type** (W20-17): templates are for machines or users
+- **Template enrollee type**: templates are for machines or users
   (`enrollee_type`, default machine). XCEP offers, and WSTEP issues, only
   templates of the caller's own kind; the UI gains an "Issued to" selector.
-- **CRL/OCSP pointers on every issuing path** (W20-10, W20-12): ACME, EST,
+- **CRL/OCSP pointers on every issuing path**: ACME, EST,
   SCEP, CMP, WSTEP, the API, approvals and connectors all embed CRL/OCSP
   pointers (configured per CA or derived from
   `KRYPTKEEPER_REVOCATION_BASE_URL`); an opt-in plain-HTTP revocation
   listener (`KRYPTKEEPER_REVOCATION_HTTP_ADDR`) serves only `/crl/` and
   `/ocsp`, and the RFC 5019 OCSP GET form now works.
-- **EST authentication** (W20-14): HTTP Basic (bcrypt users limited to
+- **EST authentication**: HTTP Basic (bcrypt users limited to
   DNS suffixes) and TLS client-certificate authentication; re-enrollment
   requires a hub-issued certificate. EST enrollment is off unless configured.
-- **SCEP one-time challenges** (W20-16): enrollment needs a one-time
+- **SCEP one-time challenges**: enrollment needs a one-time
   challenge minted for one device's names via `POST /api/v1/scep/challenges`
   (pki-admin or pki-operator; default 1 h, at most 24 h; only the SHA-256 is
   stored). `KRYPTKEEPER_SCEP_ENABLED=true` turns SCEP on; the static shared
   challenge and the unauthenticated `/scep/mscep_admin` are gone.
-- **Delivery plugin system** (W20-19..22): WebAssembly delivery plugins
+- **Delivery plugin system**: WebAssembly delivery plugins
   run in a sandbox (wazero; no filesystem, environment or sockets; capped
   memory and time) with a Go SDK and conformance kit. The hub stores plugin
   versions, requires admin approval for High/Critical capabilities, and
@@ -838,21 +839,21 @@ starting a v0.9.0 hub.** Several secure-by-default changes need configuration.
   verified only against mock devices and have not yet been verified on a
   real F5 or Citrix device.** `KRYPTKEEPER_DELIVERY_PLUGINS=off` is the
   kill switch.
-- **Plugin signatures and trust tiers** (W20-24): publishers sign the
+- **Plugin signatures and trust tiers**: publishers sign the
   manifest with `cosign sign-blob`; the hub verifies offline. Plugins are
   first-party (key compiled into the hub), verified (key listed in
   `KRYPTKEEPER_PLUGIN_TRUSTED_KEYS`), or community (unsigned); a signature
   that verifies against neither is refused.
-- **ACME upstream dns-01 via Cloudflare** (W20-29): the upstream ACME
+- **ACME upstream dns-01 via Cloudflare**: the upstream ACME
   connector can validate with `challenge: "dns-01"`, `dns_provider:
   "cloudflare"`, with the token held in the connector's outbound
   credential. Covered by unit tests against an in-memory zone and a fake
   Cloudflare API; **the live Let's Encrypt staging run is still pending.**
-- **Release pipeline** (W20-02): a `v*` tag drives GoReleaser to build
+- **Release pipeline**: a `v*` tag drives GoReleaser to build
   archives, checksums, CycloneDX SBOMs, deb/rpm packages and multi-arch
   images, all signed keyless with Sigstore. The multi-arch image build and
   push has not been exercised end to end yet.
-- **SSH CA verified against real OpenSSH** (W20-26, FG-4): a live test with a
+- **SSH CA verified against real OpenSSH** (FG-4): a live test with a
   stock OpenSSH server that trusts only the hub's CA passes (22 checks),
   including refusals for `root`, a missing `template_id` and a host outside
   the template's `host_patterns`.
@@ -930,16 +931,16 @@ starting a v0.9.0 hub.** Several secure-by-default changes need configuration.
 
 ### Changed
 
-- **Project identity settled** (W20-06): GitHub `bpmforge/kryptkeeper`,
+- **Project identity settled**: GitHub `bpmforge/kryptkeeper`,
   images `ghcr.io/bpmforge/*`, security contact `security@kryptkeeper.io`;
   all references swept.
-- **CI fix and open-source hygiene** (W20-01, W20-03): `ci-main` gains lint,
+- **CI fix and open-source hygiene**: `ci-main` gains lint,
   UI-gate and OpenAPI-drift coverage; README quickstart matches the
   TLS-by-default Compose; lab addresses replaced with documentation-range
   placeholders.
-- **TLS client certificate request is opt-in** (W20-13): the hub no longer
+- **TLS client certificate request is opt-in**: the hub no longer
   requests one unless `KRYPTKEEPER_TLS_REQUEST_CLIENT_CERT=true`.
-- **API spec** (W20-28): `docs/openapi.yaml` now documents the PQC wave
+- **API spec**: `docs/openapi.yaml` now documents the PQC wave
   execute and approve routes, and `scripts/validate-openapi.sh` also checks
   that every path the UI calls is documented.
 - **Toolchain**: Go 1.26.9 and `golang.org/x/net` v0.60.0, picking up fixes
@@ -1094,16 +1095,15 @@ starting a v0.9.0 hub.** Several secure-by-default changes need configuration.
   created, instead of failing later (FB-02).
 - Docs no longer claim agentless SSH certificate discovery; only SSH install is
   live. The scanner exists but nothing calls it yet (AS-03).
-- ~40 defects found and fixed via the W19 UAT programme running real
+- ~40 defects found and fixed via the real-client UAT programme running real
   clients and CAs against every enrollment protocol: ACME (certbot),
   EST/SCEP/CMP interoperability, CRL/OCSP correctness, PKCS#11 HSM paths,
   Kubernetes/cert-manager push and discovery, service-mesh issuance, and
-  agent hub-CA trust. See [`docs/UAT_PLAN.md`](docs/UAT_PLAN.md) for the
-  scenario-by-scenario evidence and [`docs/STATUS.md`](docs/STATUS.md)
-  (2026-09-10/11 entries) for the day-by-day record.
+  agent hub-CA trust. Each scenario was recorded with its evidence
+  during the programme.
 - WSTEP renewals signed with Windows' two-signer request are now recognised
-  and audited as renewals (W20-11); template edit in the UI no longer drops
-  fields on PUT (W20-17).
+  and audited as renewals; template edit in the UI no longer drops
+  fields on PUT.
 - **`include_chain` was ignored on CA-backed download**: even a leaf issued by
   an intermediate came back as the bare leaf. It now returns the leaf plus the
   issuing intermediates, root excluded.
@@ -1249,8 +1249,8 @@ starting a v0.9.0 hub.** Several secure-by-default changes need configuration.
 - **The CA key-consistency check failing is fatal at startup** unless
   `KRYPTKEEPER_ALLOW_MISSING_CA_KEYS=true` (note 70).
 - **Unauthenticated `POST /api/v1/spiffe/workload-svid` now caps its body**
-  at 16 KiB and answers 413 (RC1-B-03).
-- **Template name policy now covers the subject CN** (RC1-C-01). With
+  at 16 KiB and answers 413.
+- **Template name policy now covers the subject CN**. With
   `allowed_dns_suffixes` or `allowed_dns_names` set, a CN that is not one of the
   SANs must itself satisfy the DNS restriction, so a CN-only CSR can no longer
   bypass it under the default `cn_must_be_san=false`. A free-text CN such as
@@ -1273,13 +1273,13 @@ one deferred group. Report: [`docs/security/final-report.md`](docs/security/fina
 residual risk: [`docs/security/OWASP_TRACKER.md`](docs/security/OWASP_TRACKER.md).
 None of the issues below was ever in a public release.
 
-- **Write authorization gate** (W20-26): read-only and `mcp-agent`
+- **Write authorization gate**: read-only and `mcp-agent`
   principals could write through the API — create root CAs, templates and
   targets, and issue SSH certificates for any user. A central gate now
   refuses every `/api/v1` write (403 plus an `api.write` denied audit row)
   unless the principal holds a write-capable role or scope; `mcp-agent` may
   only POST pending actions.
-- **Route-level write permissions** (W20-27): a pki-operator could invite a
+- **Route-level write permissions**: a pki-operator could invite a
   user with the pki-admin role and create tenants (privilege escalation),
   and pki-operator, service-account and approver principals could create
   root CAs and upstream connectors. Every write route now requires its one
@@ -1435,7 +1435,7 @@ so "default" means the v0.9.0 default.
     grant.
 13. **Cloud key inventory needs `key.manage` or `report.read`** (viewers and
     pki-viewers have it).
-14. **Role changes from W20-27:** pki-operator can no longer write CAs,
+14. **Role changes in this release:** pki-operator can no longer write CAs,
     templates, targets, connectors, tenants or users; service-account and
     approver can no longer create CAs or connectors.
 15. **User-store errors fail closed for login sessions.** Expect 503 on
@@ -1749,7 +1749,7 @@ so "default" means the v0.9.0 default.
 - A handful of UAT scenarios remain blocked on hardware/accounts not
   available in this environment (Active Directory, F5/Citrix devices,
   cloud KMS accounts) — tracked as `blocked` in
-  [`docs/UAT_PLAN.md`](docs/UAT_PLAN.md), not shipped as `done`.
+  the UAT plan, not shipped as `done`.
 - Beta, experimental and not-in-v0.9 features are listed in the README under
   "Status of features in v0.9"; per-feature evidence is in
   [`docs/release/FEATURE_VALIDATION_v0.9.md`](docs/release/FEATURE_VALIDATION_v0.9.md).
@@ -1770,17 +1770,17 @@ deployments are unchanged until they opt in. Scope: `docs/v2.2_MULTI_TENANCY_SCO
 
 #### Added
 
-- **Tenant model** (W1): `tenants` + `ca_tenants` tables (migration `000019`),
+- **Tenant model**: `tenants` + `ca_tenants` tables (migration `000019`),
   super-admin tenant CRUD (`/api/v1/tenants`) and CA→tenant mapping. Principals
   carry a resolved `Tenant` and `SuperAdmin`; CA lists filter by tenant
   (deny-by-default on lookup failure).
-- **Issuance-surface scoping** (W2, migration `000020`): certificates and
+- **Issuance-surface scoping** (migration `000020`): certificates and
   approval requests inherit their issuing CA's tenant; templates use an explicit
   `template_tenants` mapping (unmapped = shared/default catalog); the AI proposal
   queue stamps the proposer's tenant on each row (so a failed lookup can never
   leak the queue, and cross-tenant approval is impossible — approve/reject hides
   other tenants' actions as 404).
-- **Management UI + view-as** (W3): a Tenants page (tenant CRUD + CA/template
+- **Management UI + view-as**: a Tenants page (tenant CRUD + CA/template
   assignment), a sidebar tenant switcher, and `GET /api/v1/tenants/context`.
   A super-admin can "view-as" a tenant (`X-Tenant` header) to see exactly what
   that tenant sees, while retaining full identity for administration.

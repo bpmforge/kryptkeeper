@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="/style.css?v=47f4cc99b1">
+<link rel="stylesheet" href="/style.css?v=4ace3829ee">
 <script src="/lightbox.js?v=13e3647da7" defer></script>
 </head>
 <body>
@@ -42,7 +42,7 @@
     <h1 style="margin-top:1rem">Run your own certificate authority, and stop finding out about expiry from an outage.</h1>
     <p class="lede">Kryptkeeper is a self-hosted CA and certificate lifecycle platform. It issues over ACME, EST, SCEP, CMP and Windows autoenrollment, finds the certificates you didn't know about, and renews and installs them without a person in the loop.</p>
     <div class="cta">
-      <a class="btn primary" href="https://github.com/bpmforge/kryptkeeper/releases/tag/v1.1.0">Download v1.1.0</a>
+      <a class="btn primary" href="https://github.com/bpmforge/kryptkeeper/releases/tag/v1.1.1">Download v1.1.1</a>
       <a class="btn" href="https://github.com/bpmforge/kryptkeeper">View on GitHub</a>
       <a class="btn" href="/features/">See it in action</a>
       <a class="btn" href="/try/">Try it in five minutes</a>
@@ -220,9 +220,9 @@ docker compose up -d</pre>
       <p>Checksums and images are signed keyless with Sigstore cosign, bound to the GitHub release workflow. There is no long-lived signing key to fetch or trust.</p>
       <div class="code">
         <button class="copy" type="button" data-copy="vf">Copy</button>
-<pre id="vf">cosign verify ghcr.io/bpmforge/kryptkeeper:1.1.0 \
+<pre id="vf">cosign verify ghcr.io/bpmforge/kryptkeeper:1.1.1 \
   --certificate-identity \
-  "https://github.com/bpmforge/kryptkeeper/.github/workflows/release.yml@refs/tags/v1.1.0" \
+  "https://github.com/bpmforge/kryptkeeper/.github/workflows/release.yml@refs/tags/v1.1.1" \
   --certificate-oidc-issuer \
   "https://token.actions.githubusercontent.com"</pre>
       </div>
@@ -239,11 +239,11 @@ docker compose up -d</pre>
   </div>
   <!-- proof:start -->
 <ul class="proof-stats" aria-label="Lab records by result">
-  <li><span class="pill pass">Pass</span> <b>14</b> records</li>
-  <li><span class="pill partial">Partial</span> <b>2</b> records</li>
-  <li><span class="pill fail">Fail</span> <b>0</b> records</li>
-  <li><span class="pill against">Stand-ins only</span> <b>3</b> records</li>
+  <li><span class="pill pass">Pass</span> <b>12</b> real</li>
+  <li><span class="pill partial">Partial</span> <b>2</b> real</li>
+  <li><span class="pill mock">Mock pass</span> <b>3</b> mocks only</li>
 </ul>
+<p class="proof-stats-text"><b>Real systems: 12 pass, 2 partial. Mocks only: 3.</b> 1 record includes failed checks.</p>
 <ul class="proof-headlines">
 <li><span class="pill partial">Partial</span> <span><a href="/proof/#regression-1-1">Release 1.1.0 lab regression sweep</a> <span class="muted">2026-10-26 · smoke 446/446 · 16 areas: 13 pass, 1 partial, 2 fail</span></span></li>
 <li><span class="pill pass">Pass</span> <span><a href="/proof/#release-1-0">Release 1.0.0 final lab pass</a> <span class="muted">2026-10-18 · smoke 445/445; 86 Go packages ok · 5 areas: 5 pass</span></span></li>

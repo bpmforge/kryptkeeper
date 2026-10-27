@@ -2,6 +2,11 @@
 
 Thank you for your interest in contributing.
 
+Development happens in a private repository. This public repository receives a
+signed snapshot at each release, so commit hashes in lab records point at the
+development history. An accepted pull request reaches this repository with
+the next snapshot.
+
 ## Getting started
 
 ```bash
@@ -14,7 +19,7 @@ npm --prefix ui run test   # frontend tests
 
 ## Development requirements
 
-- Go 1.26 (matches `go.mod`; its `toolchain` line pins the patch)
+- Go 1.27 (matches `go.mod`; its `toolchain` line pins the patch)
 - Node.js 24 (`ui/.nvmrc`) and npm for the frontend (`ui/`). Use npm, not pnpm.
 - `golangci-lint`, needed by `make lint` and `make gate`:
   `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest`
@@ -44,8 +49,7 @@ npm --prefix ui run test   # frontend tests
 
 `make hooks` installs a pre-push hook that runs `make gate` for pushes to `main`. If `make lint`
 reports that `golangci-lint` is missing, install it with the command under
-[Development requirements](#development-requirements). Runner setup for CI is in
-[`docs/ops/CI_RUNNER_SETUP.md`](docs/ops/CI_RUNNER_SETUP.md).
+[Development requirements](#development-requirements).
 
 ## Where things are
 
@@ -56,6 +60,11 @@ reports that `golangci-lint` is missing, install it with the command under
 - [`docs/openapi.yaml`](docs/openapi.yaml): the API contract, validated by `scripts/validate-openapi.sh`.
 
 ## Code conventions
+
+The rules in [`docs/design/SECURITY_PRINCIPLES.md`](docs/design/SECURITY_PRINCIPLES.md)
+are not negotiable: a change that breaks one is rejected regardless of what it
+adds.
+
 
 - Follow existing package layout: feature-sliced, not layered.
 - No new global state; inject dependencies via constructor arguments.

@@ -113,8 +113,8 @@ executed drill (below) rather than only pointing at DR_RUNBOOK's.
 
 ## EXECUTED DRILL (2026-07-28, real output — not fabricated)
 
-Run solo by the implementing agent for ticket S-01, no human at the
-keyboard for individual steps. Per `MASTER_PROMPT.md`/CLAUDE.md, this used a
+Run as an automated drill (ticket S-01), with no human at the
+keyboard for individual steps. Per [SECURITY_PRINCIPLES.md](../design/SECURITY_PRINCIPLES.md), this used a
 **disposable local environment with synthetic key material generated fresh
 for the drill** — real `pg_dump`/`psql`/Postgres and a real built
 `kryptkeeper` binary, but no production infrastructure and no production key

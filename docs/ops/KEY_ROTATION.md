@@ -51,7 +51,7 @@ on your own cadence rather than waiting for an incident.
 - Every call emits an audit event (`ca.rotate_key`, outcomes `success` /
   `denied` / `failure`) via `emitAuditEvent`/`emitAuditEventDetail` — the
   audit log is the append-only record of who rotated what and when (see
-  CLAUDE.md's audit-append-only law).
+  [SECURITY_PRINCIPLES.md](../design/SECURITY_PRINCIPLES.md), rule 5).
 
 > **Contract gap, not fixed here**: `/api/v1/cas/{id}/rotate-key` is live in
 > code (`internal/bootstrap/handlers_cas.go`) but is not yet documented in

@@ -1,8 +1,8 @@
 # Incident Response Runbook
 
 Ticket **S-01** (G-8, kin D-051/D-087/FR-P13/FR-P49). This runbook covers
-**CA-compromise response** — the scenario CLAUDE.md's non-negotiables treat
-as trust-core: "a CA signing key is compromised or suspected compromised."
+**CA-compromise response** — the scenario the project's
+[security principles](../design/SECURITY_PRINCIPLES.md) treat as trust-core: "a CA signing key is compromised or suspected compromised."
 It documents the **manual sequence of existing primitives** an operator
 executes today. There is not yet a single "declare compromise, do everything"
 API — the dedicated per-key ACL + auto-rotate + one-call compromise workflow
@@ -33,7 +33,7 @@ response:
   revoke (see step 3). Kryptkeeper enforces proposer≠approver at the API
   layer (`POST /api/v1/pending-actions/{id}/approve` returns `403` if the
   proposer tries to self-approve) — this is not a process nicety, it's
-  mechanically gated, matching CLAUDE.md's "Proposer ≠ approver" law.
+  mechanically gated, matching the "proposer is not approver" rule.
 
 ## Procedure
 
@@ -49,7 +49,7 @@ stop **Kryptkeeper itself** from signing anything else with the suspected
 key. It does **not** stop an attacker who exfiltrated the raw key material
 from forging certificates entirely outside this system — suspend is
 containment inside Kryptkeeper, not a fix for key material that has already
-left its boundary. If that has happened, this is also a `CLAUDE.md`
+left its boundary. If that has happened, this is also a
 "private key material never leaves its boundary" incident in its own right;
 handle the exfiltration path (rotate credentials to whatever exposed it,
 etc.) in parallel with this runbook, not after it.
@@ -125,7 +125,7 @@ Every step here emits an audit event — `action.propose` on the
 `certificate.revoke`/`certificate.bulk_revoke` for the actual revocations
 (`internal/bootstrap/handlers_pending_actions.go`,
 `internal/bootstrap/handlers_bulk.go`). This is the append-only record
-CLAUDE.md requires; it is what step 7's postmortem timeline is reconstructed
+the security principles require; it is what step 7's postmortem timeline is reconstructed
 from, not memory of what happened.
 
 ### 4. Decide: re-key in place, or retire this CA identity entirely
@@ -203,13 +203,13 @@ the still-compromised key.
   `GET /api/v1/audit?action=ca.rotate_key`,
   `?action=certificate.bulk_revoke`, `?action=action.approve`, and
   `/api/v1/reports/change-audit` for a broader view. The audit log is
-  append-only (CLAUDE.md) — this is the authoritative record, not chat logs
+  append-only (security principle 5) — this is the authoritative record, not chat logs
   or memory of who did what.
 - Confirm no certificate issued by the compromised key remains `active`:
   re-run step 2's query and expect `0`.
 - If key material genuinely left its boundary (a raw key file, an HSM
   export, credentials to either), that is a separate incident under
-  CLAUDE.md's "private key material never leaves its boundary" rule — file
+  the "private key material never leaves its boundary" rule — file
   it, don't fold it silently into this CA-compromise writeup.
 - Write up what happened, when, and the exact sequence executed, referencing
   the audit-log query results above rather than reconstructing from memory.

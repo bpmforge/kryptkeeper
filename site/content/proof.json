@@ -1,12 +1,13 @@
 {
   "_comment": "Source of truth for /proof/. Every entry comes from a record under docs/release/ (or docs/perf/); never add a pass the record does not show. Versions are written without a leading v so the stale-version check on the site does not trip. result: pass | partial | fail. against: real (real systems), mixed, stand-in (local stand-ins or emulators). See docs/site/README.md.",
+  "public_releases": { "1.0.0": "e0d82a4", "1.1.0": "6ca9f70", "1.1.1": "f5e8011" },
   "records": [
     {
       "id": "regression-1-1",
       "headline": true,
       "area": "Full lab regression",
       "title": "Release 1.1.0 lab regression sweep",
-      "environment": "Linux runner (Ubuntu 24.04 amd64, hypervisor VM, 8 cores) with podman 4.9.3, kind 0.30, OpenSSL 3.5.4 and cosign 3.1.3. Compose, SSE and HA legs on an Apple silicon Mac with podman 6.1.3.",
+      "environment": "Linux runner (Ubuntu 24.04 amd64, VM, 8 cores) with podman 4.9.3, kind 0.30, OpenSSL 3.5.4 and cosign 3.1.3. Compose, SSE and HA legs on an Apple silicon Mac with podman 6.1.3.",
       "what_ran": "The 1.0.0 tests/live harness sweep, repeated on the 1.1.0 tag, plus the smoke suite.",
       "result": "partial",
       "against": "mixed",
@@ -19,7 +20,7 @@
         "make lint, go test and the UI suites were not part of this pass.",
         "The storm profile misses its own zero-violation gate; the successor run on the key-usage branch had one acme failure and one pass."
       ],
-      "note": "Three harnesses did not pass. pqc-wave failed on the runner because Go 1.26 cannot complete a TLS handshake with an ML-DSA certificate; it passed on the Mac and the build moved to Go 1.27. inventory-sources failed from test rot (the Entrust fixture). The storm profile finalizes 2000 of 2000 in both legs with no duplicates but breaks its strict limit gate. No product regression was found.",
+      "note": "Three harnesses did not pass. pqc-wave failed on the runner because Go 1.26 cannot complete a TLS handshake with an ML-DSA certificate; it passed on the Mac and the build moved to Go 1.27. inventory-sources failed from test rot (the Entrust fixture). The storm profile finalizes 2000 of 2000 in both legs with no duplicates but breaks its strict limit gate. Two areas failed: inventory sources (test fixture out of date) and the renewal storm limit gate (8 and 18 rate-limit violations, 375 s against a 360 s goal). Neither was a regression from 1.0.0.",
       "evidence": [
         {
           "label": "Run header: the code under test",
@@ -53,8 +54,33 @@
       ]
     },
     {
-      "id": "release-signatures-1-1",
+      "id": "release-signatures-1-1-1",
       "hosted": true,
+      "area": "Release signatures",
+      "title": "Release 1.1.1 signature check",
+      "environment": "The maintainer's Apple silicon Mac on the public internet with cosign 3.1.3. The files came from the public GitHub release, into an empty directory. Nothing was built locally.",
+      "what_ran": "cosign verify-blob on checksums.txt with the signature and certificate from the release, pinned to this repository's release workflow and GitHub's Actions issuer, then a SHA-256 check of the macOS arm64 archive against checksums.txt.",
+      "result": "pass",
+      "against": "real",
+      "counts": "signature Verified OK; archive checksum OK",
+      "date": "2026-10-27",
+      "version": "1.1.1",
+      "not_proven": [
+        "The other archives, the deb and rpm packages, the SBOM files and the container image signatures were not checked in this run.",
+        "The release workflow's plugin catalogue job failed for lack of signing secrets; every other job, including its own signature check, passed.",
+        "The binary inside the archive was not unpacked or run."
+      ],
+      "evidence": [
+        {
+          "label": "Commands and output, as run",
+          "source": "docs/release/VERIFY_RELEASE_SIGNATURES_v1.1.1.md",
+          "text": "$ cosign verify-blob \\\n    --certificate-identity-regexp '^https://github\\.com/bpmforge/kryptkeeper/\\.github/workflows/release\\.yml@refs/tags/v' \\\n    --certificate-oidc-issuer https://token.actions.githubusercontent.com \\\n    --signature checksums.txt.sig \\\n    --certificate checksums.txt.pem \\\n    checksums.txt\nFlag --signature has been deprecated, please use --bundle to provide a signature\nFlag --certificate has been deprecated, please use --bundle with --trusted-root to provide the public certificate\nVerified OK\n$ shasum -a 256 -c checksums.txt --ignore-missing\nkryptkeeper_1.1.1_darwin_arm64.tar.gz: OK"
+        }
+      ],
+      "record": "docs/release/VERIFY_RELEASE_SIGNATURES_v1.1.1.md"
+    },
+    {
+      "id": "release-signatures-1-1",
       "area": "Release signatures",
       "title": "Release 1.1.0 signature check",
       "environment": "The maintainer's Apple silicon Mac on the public internet with cosign 3.1.3. The files came from the public GitHub release, into an empty directory. Nothing was built locally.",
@@ -113,7 +139,7 @@
       "headline": true,
       "area": "Full lab pass",
       "title": "Release 1.0.0 final lab pass",
-      "environment": "Linux runner (Ubuntu 24.04 amd64, podman 4.9, kind 0.30) on hypervisor. Windows domain corp.example.test: Server 2025 DC with an Enterprise CA, Windows 11 25H2 and Server 2022 members.",
+      "environment": "Linux runner (Ubuntu 24.04 amd64, podman 4.9, kind 0.30) in a VM. Windows test domain: Server 2025 DC with an Enterprise CA, Windows 11 25H2 and Server 2022 members.",
       "what_ran": "Lint, unit, UI and smoke gates on main, the tests/live harness sweep, and the Windows autoenrollment, WinRM, IIS and agent checks.",
       "result": "pass",
       "against": "mixed",
@@ -149,7 +175,7 @@
       "headline": true,
       "area": "Windows",
       "title": "Windows accepts the new key usages; Server 2025 member",
-      "environment": "Domain corp.example.test: Windows 11 25H2 (build 26200), Server 2022 (20348), and a new Server 2025 Standard member (26100). Server 2025 DC with an Enterprise CA. Hub built from main, run as a second process on a copy of the lab hub data.",
+      "environment": "Test Active Directory domain: Windows 11 25H2 (build 26200), Server 2022 (20348), and a new Server 2025 Standard member (26100). Server 2025 DC with an Enterprise CA. Hub built from main, run as a second process on a copy of the lab hub data.",
       "what_ran": "GPO autoenrollment of an RSA-3072 machine certificate on all three hosts, then ECDSA TLS, time-stamping and OCSP-signer certificates by CSR, checked with certutil, IIS and Schannel.",
       "result": "pass",
       "against": "real",
@@ -186,7 +212,7 @@
       "id": "windows-w39",
       "area": "Windows",
       "title": "Windows install modes: RDP, SQL Server, NLA discovery",
-      "environment": "Server 2022 and Windows 11 in domain corp.example.test. Hub on loopback with a fresh data directory and a local test CA. SQL Server 2025 Express installed on the Server 2022 host.",
+      "environment": "Server 2022 and Windows 11 in a test Active Directory domain. Hub on loopback with a fresh data directory and a local test CA. SQL Server 2025 Express installed on the Server 2022 host.",
       "what_ran": "Certificate install and rollback for RDP on both hosts and for SQL Server, hub discovery of an RDP listener that requires NLA, and a domain-account install over sealed NTLM. Each install was checked by an independent probe from a Mac.",
       "result": "pass",
       "against": "real",
@@ -343,7 +369,7 @@
     {
       "id": "ct-monitoring",
       "area": "Certificate Transparency",
-      "title": "CT monitoring against the public logs",
+      "title": "CT monitoring via crt.sh and Cert Spotter",
       "environment": "Maintainer's Apple silicon Mac on the public internet, no Cert Spotter key. Real crt.sh and Cert Spotter feeds for kryptkeeper.io.",
       "what_ran": "The real CT monitor with a real SQLite store and a recording notification channel, scanning for certificates this hub did not issue.",
       "result": "pass",
@@ -378,7 +404,7 @@
     {
       "id": "upstream-cas",
       "area": "Upstream CAs",
-      "title": "Issue and revoke through Vault PKI, EJBCA and AWS Private CA",
+      "title": "Issue and revoke through Vault PKI (live), EJBCA REST (live) and AWS Private CA (emulator)",
       "environment": "Apple silicon Mac, podman 6.1.3. HashiCorp Vault 1.18.5, EJBCA Community 9.3.7 and the moto 5.0.28 AWS emulator, with a tamper proxy in front of Vault.",
       "what_ran": "Issue by REST, ACME and EST, revoke through the hub, tampered upstream responses, and an upstream outage, against each CA.",
       "result": "pass",
@@ -500,7 +526,7 @@
     {
       "id": "plugins-dns",
       "area": "Plugins",
-      "title": "DNS-01 plugins: DigitalOcean, GoDaddy, NS1, Akamai Edge DNS",
+      "title": "DNS-01 plugins against local stand-ins",
       "environment": "Go test run in one process on SQLite, with the repo's own ACME server. Local TLS stand-ins shaped like each vendor's API.",
       "what_ran": "A full ACME order through the DigitalOcean plugin, with failure and tenant-isolation cases, and the shared DNS-01 conformance suite against all four plugins.",
       "result": "pass",
@@ -590,7 +616,7 @@
     "items": [
       { "item": "F5 BIG-IP and Citrix NetScaler certificate delivery", "why": "Proven against a mock appliance only.", "needs": "account" },
       { "item": "SCEP enrollment from F5 BIG-IP", "why": "Not run against a real appliance.", "needs": "account" },
-      { "item": "Intune SCEP enrollment", "why": "Proven against a stand-in for Entra and Intune; not run against a real tenant.", "needs": "account" },
+      { "item": "Intune SCEP enrollment", "why": "Run against a stand-in for Entra and Intune; not run against a real tenant.", "needs": "account" },
       { "item": "AWS KMS, Azure Key Vault and Google Cloud KMS as CA key stores", "why": "Proven against emulators; real permissions and HSM tiers are not proven.", "needs": "account" },
       { "item": "Disaster-recovery drill with CA keys in a cloud KMS", "why": "Passes with software and SoftHSM keys; the KMS half needs a cloud account.", "needs": "account" },
       { "item": "Delivery to AWS, Azure and Google Cloud certificate services", "why": "Proven for HashiCorp Vault; the cloud legs need accounts.", "needs": "account" },
@@ -606,7 +632,7 @@
       { "item": "DigiCert inventory sync and upstream renewal", "why": "Proven with fixtures; the sandbox run needs a contract.", "needs": "hardware" },
       { "item": "Target credentials from CyberArk and Delinea", "why": "Pass the conformance suite against mocks only.", "needs": "hardware" },
       { "item": "Service fingerprinting on Active Directory, F5, Citrix and other appliances", "why": "Tested against recorded fixtures only.", "needs": "hardware" },
-      { "item": "Issuance and revocation through Sectigo, GlobalSign, Entrust, DigiCert and Google CAS", "why": "Built against recorded API responses; Vault PKI and EJBCA are proven live.", "needs": "hardware" },
+      { "item": "Issuance and revocation through Sectigo, GlobalSign, Entrust, DigiCert and Google CAS", "why": "Built against recorded API responses; Vault PKI and EJBCA REST have run live.", "needs": "hardware" },
       { "item": "Reference deployments", "why": "These come from real customers, not from us.", "needs": "later" }
     ]
   }

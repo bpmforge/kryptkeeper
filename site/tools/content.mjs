@@ -217,6 +217,7 @@ export function validateProof(proof, root) {
   const str = (v) => typeof v === "string" && v.trim() !== "";
   const leak = (where, v) => { if (typeof v === "string" && PRIVATE_IPV4.test(v)) errors.push(`proof ${where}: contains a private IPv4 address`); };
   if (!Array.isArray(proof?.records) || !proof.records.length) return ["proof.json: records must be a non-empty list"];
+  for (const [v, sha] of Object.entries(proof.public_releases ?? {})) if (!/^\d+\.\d+\.\d+$/.test(v) || !/^[0-9a-f]{7,40}$/.test(sha)) errors.push(`proof public_releases: "${v}" must map a version like 1.1.0 to a commit hash`);
   const ids = new Set();
   for (const r of proof.records) {
     const who = `proof ${r?.id ?? "?"}`;

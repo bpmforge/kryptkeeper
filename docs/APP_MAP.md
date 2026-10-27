@@ -22,7 +22,7 @@ npm --prefix ui run build     # DEV false, so MSW never starts
 # then serve ui/dist with /api proxied to the backend
 ```
 
-See [UI_REVIEW_2026-07-31.md](UI_REVIEW_2026-07-31.md) for the full setup.
+See the 2026-07-31 UI review for the full setup.
 
 ## Shape
 

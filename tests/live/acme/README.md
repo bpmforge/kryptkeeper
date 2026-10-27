@@ -26,7 +26,7 @@ exit.
 Client versions verified against the actual pulled images at the time of
 writing: **certbot 5.8.0**, **lego 5.4.1**. Every CLI flag in `run.sh` was
 checked against `--help` output from these images, not written from memory
-(CLAUDE.md "Verify before writing") — several flags the ticket suggested
+(the project's verify-before-writing rule) — several flags the ticket suggested
 (certbot's `--no-eab-if-not-required`, `--register-unsafely-without-email`,
 `--no-random-sleep-on-renew`; lego's top-level `renew`/`revoke` commands and
 `--http.port`) do not exist in these versions and had to be replaced; see

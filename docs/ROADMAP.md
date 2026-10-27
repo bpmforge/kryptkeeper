@@ -131,6 +131,7 @@ Last updated: 2026-10-26.
 | macOS notarization | Without it, Gatekeeper may quarantine a downloaded agent binary until you allow it. | 1.1 | macOS agent guide, W37 |
 | Terraform provider in a public registry | Today the provider is installed from the release; a registry entry makes `terraform init` just work. | 1.1 | S-04, W37 |
 | Ansible collection published on Galaxy | The `kryptkeeper.pki` collection is built in 1.1.0; publishing it on Galaxy needs a Galaxy namespace. | Needs an account | W37 |
+| Code and config comments cite docs/design/SECURITY_PRINCIPLES.md | About 25 Go, YAML and shell comments still name the private contributor rules file (`CLAUDE.md`) as the source of a rule; the public docs already point at the security principles page. | 1.2 | public cleanup 2026-10-27 |
 | Five-minute trial: one command brings up a hub with demo data | Evaluators should reach a working dashboard before they read a guide. | 1.1 | W37 |
 
 ## Website and walkthroughs

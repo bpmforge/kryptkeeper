@@ -6,13 +6,13 @@ Verdicts are copied from each record; none is upgraded here. All dates 2026-10-1
 
 | Record | Overall verdict |
 |---|---|
-| [SSH install (W27-08)](docs/release/LIVE_RESULTS_SSH_INSTALL_v0.15.md) | PASS |
-| [Rollout groups (W27-16)](tests/live/rollout/last-run.json) | PASS |
-| [Push modes / autopilot (W27-06)](docs/release/LIVE_RESULTS_PUSH_MODES_v0.15.md) | PARTIAL |
-| [Upstream renewal (W27-10)](docs/release/LIVE_RESULTS_UPSTREAM_RENEW_v0.15.md) | PARTIAL |
-| [ACME dns-01 providers (W27-26)](docs/release/LIVE_RESULTS_ACME_DNS_PROVIDERS_v0.15.md) | PARTIAL (local legs PASS; cloud and staging legs PENDING-RUN) |
-| [Delivery plugins, cloud (W27-32)](docs/release/LIVE_RESULTS_DELIVERY_CLOUD_v0.15.md) | PARTIAL (Vault PASS; every other leg PENDING-RUN) |
-| [Renewal storm (W27-34)](tests/live/storm/results/2026-10-16T181220Z.json) | PARTIAL (strict zero-violation check fails; follow-up W27-39) |
+| [SSH install (W27-08)](LIVE_RESULTS_SSH_INSTALL_v0.15.md) | PASS |
+| [Rollout groups (W27-16)](../../tests/live/rollout/last-run.json) | PASS |
+| [Push modes / autopilot (W27-06)](LIVE_RESULTS_PUSH_MODES_v0.15.md) | PARTIAL |
+| [Upstream renewal (W27-10)](LIVE_RESULTS_UPSTREAM_RENEW_v0.15.md) | PARTIAL |
+| [ACME dns-01 providers (W27-26)](LIVE_RESULTS_ACME_DNS_PROVIDERS_v0.15.md) | PARTIAL (local legs PASS; cloud and staging legs PENDING-RUN) |
+| [Delivery plugins, cloud (W27-32)](LIVE_RESULTS_DELIVERY_CLOUD_v0.15.md) | PARTIAL (Vault PASS; every other leg PENDING-RUN) |
+| Renewal storm (W27-34): `tests/live/storm/results/2026-10-16T181220Z.json` (not kept in the repository) | PARTIAL (strict zero-violation check fails; follow-up W27-39) |
 
 ## Per-leg verdicts
 

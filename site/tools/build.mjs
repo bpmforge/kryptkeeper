@@ -348,10 +348,29 @@ const HOSTED = new Set(proof.records.filter((r) => r.hosted).map((r) => r.record
 const hostedPath = (p) => `proof/records/${path.basename(p)}`;
 const recordUrl = (p) => (HOSTED.has(p) ? `/${hostedPath(p)}` : `https://github.com/${release.repo}/blob/v${release.version}/${p}`);
 const resultPill = (r) => `<span class="pill ${r}">${RESULT_LABEL[r]}</span>`;
+// A pass against local stand-ins is a "Mock pass": its own neutral pill, never counted as a real pass.
+const recordPill = (r) => (r.against === "stand-in" && r.result === "pass" ? '<span class="pill mock">Mock pass</span>' : resultPill(r.result));
+// Public tag and commit for each version that has a public release (proof.json "public_releases").
+const publicBuild = (version) => {
+  const m = /^(\d+\.\d+\.\d+)\b/.exec(version);
+  const sha = m && proof.public_releases?.[m[1]];
+  return sha ? `public v${m[1]} ${sha}` : "";
+};
 const tally = (list) => Object.fromEntries(PROOF_RESULTS.map((r) => [r, list.filter((x) => x.result === r).length]));
 const tallyText = (t) => PROOF_RESULTS.filter((r) => t[r]).map((r) => `${t[r]} ${r}`).join(", ");
-const recordCounts = tally(proof.records);
-const standIns = proof.records.filter((r) => r.against === "stand-in").length;
+const realCounts = tally(proof.records.filter((r) => r.against !== "stand-in"));
+const mockPasses = proof.records.filter((r) => r.against === "stand-in" && r.result === "pass").length;
+const withFailedChecks = proof.records.filter((r) => r.result === "fail" || r.rows?.some((x) => x.result === "fail")).length;
+const realSummary = [`${realCounts.pass} pass`, `${realCounts.partial} partial`, ...(realCounts.fail ? [`${realCounts.fail} fail`] : [])].join(", ");
+const statsText = `Real systems: ${realSummary}. Mocks only: ${mockPasses}.`;
+const failedChecksText = withFailedChecks ? `${plural(withFailedChecks, "record includes", "records include")} failed checks.` : "";
+const statsList = (label) => `<ul class="proof-stats" aria-label="${label}">
+  <li>${resultPill("pass")} <b>${realCounts.pass}</b> real</li>
+  <li>${resultPill("partial")} <b>${realCounts.partial}</b> real</li>${realCounts.fail ? `
+  <li>${resultPill("fail")} <b>${realCounts.fail}</b> real</li>` : ""}
+  <li><span class="pill mock">Mock pass</span> <b>${mockPasses}</b> mocks only</li>
+</ul>
+<p class="proof-stats-text"><b>${esc(statsText)}</b>${failedChecksText ? ` ${esc(failedChecksText)}` : ""}</p>`;
 const gapsBy = (needs) => proof.gaps.items.filter((g) => g.needs === needs);
 
 const TERM_INLINE_LINES = 10;
@@ -368,13 +387,13 @@ function shotFigure(sh) {
 }
 
 function proofRecord(r) {
-  const meta = [r.area, r.date, r.version, r.counts].filter(Boolean).map(esc).join(" · ");
+  const meta = [r.area, r.date, r.version, publicBuild(r.version), r.counts].filter(Boolean).map(esc).join(" · ");
   const rows = r.rows?.length
     ? `<details class="proof-rows"><summary>${r.rows.length} areas in this record: ${esc(tallyText(tally(r.rows)))}</summary><ul>${r.rows.map((x) => `<li>${resultPill(x.result)} <span>${esc(x.name)}${x.note ? ` <span class="muted">${esc(x.note)}</span>` : ""}</span></li>`).join("")}</ul></details>`
     : "";
   const np = r.not_proven.length ? `<div class="proof-np"><h4>Not proven</h4><ul>${r.not_proven.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : "";
   return `<li class="proof" id="${esc(r.id)}">
-  <div class="proof-head"><h3>${esc(r.title)}</h3><span class="pills">${resultPill(r.result)}<span class="pill against">${AGAINST_LABEL[r.against]}</span></span></div>
+  <div class="proof-head"><h3>${esc(r.title)}</h3><span class="pills">${recordPill(r)}<span class="pill against">${AGAINST_LABEL[r.against]}</span></span></div>
   <p class="proof-meta">${meta}</p>
   <dl class="proof-dl"><dt>Environment</dt><dd>${esc(r.environment)}</dd><dt>What ran</dt><dd>${esc(r.what_ran)}</dd>${r.note ? `<dt>Note</dt><dd>${esc(r.note)}</dd>` : ""}</dl>
   <div class="proof-evidence"><h4>Output from the record, verbatim</h4>${r.evidence.map(evidencePanel).join("")}</div>
@@ -395,13 +414,8 @@ function proofPage() {
   <span class="label">Lab records</span>
   <h1>Tested environments and proof</h1>
   <p class="lede">For each area: where it ran, what ran, how it ended, and a link to the record. The gaps are listed too.</p>
-  <p class="intro">Every entry comes from a record kept in the repository. A pass means the test exited cleanly on the named build. "Stand-ins" means the other side was a local copy or emulator, not the real service. Nothing here is carried over from an older release.</p>
-  <ul class="proof-stats" aria-label="Results at a glance">
-    <li>${resultPill("pass")} <b>${recordCounts.pass}</b> records</li>
-    <li>${resultPill("partial")} <b>${recordCounts.partial}</b> records</li>
-    <li>${resultPill("fail")} <b>${recordCounts.fail}</b> records</li>
-    <li><span class="pill against">Stand-ins only</span> <b>${standIns}</b> records</li>
-  </ul>
+  <p class="intro">Commit hashes on this page are from the development repository. Where a version has a public release, the public tag and commit are shown beside it. Every entry comes from a record kept in the repository. A pass means the test exited cleanly on the named build. "Stand-ins" means the other side was a local copy or emulator, not the real service. Each record names the build it ran on. Some are from earlier releases and say so.</p>
+  ${statsList("Results at a glance")}
   <nav class="band-jump" aria-label="Jump to a section"><a href="#records">Lab records</a><a href="#gaps">Not proven yet</a></nav>
 </header>
 <section id="records" aria-labelledby="records-h">
@@ -422,14 +436,9 @@ ${gaps}
 function homeProof() {
   const head = proof.records.filter((r) => r.headline).map((r) => {
     const rowsTally = r.rows?.length ? ` · ${r.rows.length} areas: ${tallyText(tally(r.rows))}` : "";
-    return `<li>${resultPill(r.result)} <span><a href="/proof/#${esc(r.id)}">${esc(r.title)}</a>${r.against === "stand-in" ? ' <span class="pill against">Stand-ins only</span>' : ""} <span class="muted">${esc([r.date, r.counts].filter(Boolean).join(" · "))}${esc(rowsTally)}</span></span></li>`;
+    return `<li>${recordPill(r)} <span><a href="/proof/#${esc(r.id)}">${esc(r.title)}</a>${r.against === "stand-in" ? ' <span class="pill against">Stand-ins only</span>' : ""} <span class="muted">${esc([r.date, r.counts].filter(Boolean).join(" · "))}${esc(rowsTally)}</span></span></li>`;
   }).join("\n");
-  return `<ul class="proof-stats" aria-label="Lab records by result">
-  <li>${resultPill("pass")} <b>${recordCounts.pass}</b> records</li>
-  <li>${resultPill("partial")} <b>${recordCounts.partial}</b> records</li>
-  <li>${resultPill("fail")} <b>${recordCounts.fail}</b> records</li>
-  <li><span class="pill against">Stand-ins only</span> <b>${standIns}</b> records</li>
-</ul>
+  return `${statsList("Lab records by result")}
 <ul class="proof-headlines">
 ${head}
 </ul>
@@ -504,10 +513,40 @@ function listGenerated() {
 const errors = validate(content, ROOT, { shotsDir: opt("--shots"), publicRoot: opt("--public") });
 const stale = listGenerated().filter((f) => !out.has(f));
 for (const [rel, text] of out) {
-  if (!rel.endsWith(".html")) continue;
+  // The proof page quotes dated records about earlier releases on purpose
+  // (verbatim excerpts checked by validateProof), so older versions are expected there.
+  if (!rel.endsWith(".html") || rel.startsWith("proof/")) continue;
   const bad = [...new Set(findStaleVersions(text, release.version))];
   if (bad.length) errors.push(`site/${rel} mentions ${bad.join(", ")} but site/content/release.json says ${release.version}`);
 }
+// Everything under site/ is published as is, so it gets the same private-reference
+// guard the public-repo snapshot applies (publish-snapshot "Guard"): lab domain,
+// hypervisor, hostnames, local paths and private addresses. The pattern lives in
+// site/tools/private-ref.txt, which .publicignore keeps out of the public repo;
+// without it only the generic local-path and private-address checks run.
+// site/tools holds the patterns themselves and their tests, so it is skipped.
+const PRIVATE_REF_FILE = path.join(SITE, "tools", "private-ref.txt");
+const PRIVATE_REF = new RegExp(fs.existsSync(PRIVATE_REF_FILE)
+  ? fs.readFileSync(PRIVATE_REF_FILE, "utf8").trim()
+  : String.raw`192\.168\.\d|\b10\.\d+\.\d+\.\d+|\/Users\/|claude-\d+`, "i");
+const TEXT_EXT = /\.(html|css|js|json|md|txt|xml|svg)$/;
+function scanPublished(dir) {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    const rel = path.relative(SITE, p).split(path.sep).join("/");
+    if (e.isDirectory()) { if (rel !== "tools") scanPublished(p); continue; }
+    if (!TEXT_EXT.test(e.name)) continue;
+    const text = out.get(rel) ?? fs.readFileSync(p, "utf8");
+    const m = text.match(PRIVATE_REF);
+    if (m) errors.push(`site/${rel} contains a private lab or local reference ("${m[0]}")`);
+  }
+}
+scanPublished(SITE);
+for (const rel of out.keys()) if (!fs.existsSync(path.join(SITE, rel)) && TEXT_EXT.test(rel)) {
+  const m = out.get(rel).match(PRIVATE_REF);
+  if (m) errors.push(`site/${rel} contains a private lab or local reference ("${m[0]}")`);
+}
+
 if (args.includes("--check-release")) {
   const r = await releaseExists(release);
   if (!r.ok) errors.push(`release page ${r.url} returned ${r.status}: publish the release before deploying, or set release.json back`);

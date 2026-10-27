@@ -294,8 +294,8 @@ Must-Staple (the client refuses).
 
 ## 8. Verification record
 
-Date 2026-10-16 (UTC), repository commit `de19969b` (branch `kk/w23-g1`), run by
-the Claude agent for batch W23 group 1, with `podman` on macOS. Responder for
+Date 2026-10-16 (UTC), repository commit `de19969b` (branch `kk/w23-g1`), run as
+an automated lab run, with `podman` on macOS. Responder for
 the section 2 to 4 runs: a stand-in `openssl ocsp -index ... -rsigner ca.pem`
 (OpenSSL 3.6.5) on the host, throwaway ECDSA P-256 CA, 30-day leaf with an
 OCSP URL on `host.containers.internal`. Digests are the image digests `podman`

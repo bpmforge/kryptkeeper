@@ -256,7 +256,8 @@ lands in the compose-only `tls-trust` volume -- a dedicated, key-free volume
 shared read-only with the `dashboard` and referenced by the hub's own
 `/healthcheck` binary via `HEALTHCHECK_CA_FILE`. `appdata` (which also holds
 the keystore and `tls.key`) is never shared with another container --
-CLAUDE.md: private key material never leaves its boundary.
+private key material never leaves its boundary
+([security principle 2](design/SECURITY_PRINCIPLES.md)).
 
 - **Export the CA to curl/verify against the hub from the host:**
   `docker run --rm -v kryptkeeper_tls-trust:/trust:ro alpine cat /trust/ca.pem > ca.pem`,

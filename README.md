@@ -6,9 +6,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/bpmforge/kryptkeeper)](https://goreportcard.com/report/github.com/bpmforge/kryptkeeper)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-> Guard your cryptographic trust
-
-Kryptkeeper is a self-hosted certificate lifecycle hub for mid-market teams (roughly 500 to 5,000 people) that are replacing Active Directory Certificate Services (AD CS) or running beside it. ACME, EST, SCEP, CMP, Windows autoenrollment, Intune SCEP, an AD CS importer, certificate inventory and alerting are all free, on one Linux binary. It runs air-gapped. Apache 2.0.
+Kryptkeeper is a self-hosted certificate authority. Use it to replace Active Directory Certificate Services (AD CS) or to run beside it. It speaks ACME, EST, SCEP, CMP and Windows autoenrollment. It is one Go binary and works offline. Apache 2.0.
 
 **What you get:**
 - A certificate authority (root and issuing CAs, templates, revocation) with OCSP and CRL responders
@@ -18,7 +16,19 @@ Kryptkeeper is a self-hosted certificate lifecycle hub for mid-market teams (rou
 - Expiry alerts to email, webhooks, Slack, PagerDuty and more
 - The option to issue through the CA you already run (see [Use your existing CA](#use-your-existing-ca))
 
-Kryptkeeper also has a PQC migration copilot, an MCP server for AI-assisted operations, SPIFFE support and flag-gated multi-tenancy. They are described lower down.
+It also has a PQC migration copilot, an MCP server, SPIFFE support and flag-gated multi-tenancy. They are described lower down.
+
+## Project status
+
+I am the only maintainer (@bpmforge). I build Kryptkeeper with heavy use of Claude Code. I design the features, run every lab test listed in this repository and review what ships.
+
+There has been no external penetration test yet. The OpenSSF Scorecard score is 4.6 out of 10 as of October 2026.
+
+Among the public ACME CA and DNS presets, only Let's Encrypt staging and Cloudflare DNS-01 have run live.
+
+Development happens in a private repository. This public repository gets a signed snapshot per release, so lab records cite development commit hashes.
+
+---
 
 ## What's proven, and where
 
@@ -43,7 +53,7 @@ The proof pack (FIPS statement, control mapping, competitive matrix, draft pen-t
 
 ## Quick Start
 
-**Prerequisites:** Docker + Docker Compose, or Go 1.26+ for local development.
+**Prerequisites:** Docker + Docker Compose, or Go 1.27+ for local development.
 
 ```bash
 git clone https://github.com/bpmforge/kryptkeeper.git
@@ -170,58 +180,38 @@ certbot certonly \
 
 ## Configuration
 
-All configuration is via environment variables. See `env.example` for the full list.
-Note: `APP_BIND_ADDR` is a host only (default `127.0.0.1`) and `PORT` is the
-port (default `8080`) — they are joined to form the listen address.
+All configuration is via environment variables. See `env.example` for the full list and [docs/reference/ENVIRONMENT.md](docs/reference/ENVIRONMENT.md) for the variable table.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `APP_JWT_HS256_SECRET` | Yes (jwt mode) | HS256 secret for JWT auth; startup fails below 32 bytes (`openssl rand -hex 32`) |
-| `POSTGRES_PASSWORD` | Only with the Compose Postgres profile | PostgreSQL password |
-| `AUTH_MODE` | No | `bootstrap` (default), `jwt`, or `oidc` |
-| `APP_BOOTSTRAP_TOKEN` | **Yes** | Admin token — Compose refuses to start without it; it is not auto-generated. Use 32+ characters; `KRYPTKEEPER_DISABLE_BOOTSTRAP_TOKEN=true` turns it off |
-| `APP_AUTH_ROLE_CLAIM`, `APP_AUTH_ROLE_MAP_JSON` | No | Map a jwt/oidc token claim to a role; unmapped bearer tokens are read-only `viewer` (see `docs/ops/OIDC_JWKS_RUNBOOK.md` section 7) |
-| `APP_CERTS_SUMMARY_PROVIDER` | No | `file` (default) or `db` |
-| `APP_NOTIFICATION_PROVIDER` | No | `file` (code default when unset; dev stub), `db` (records deliveries but does **not** send; the renewal scheduler skips alerts and audits them as `skipped`) or `delivery` (Compose default; sends via SMTP, Slack, PagerDuty or webhook and persists alert rules) |
-| `KRYPTKEEPER_RENEWAL_RULE_SEND_CAP` | No | Most notification-rule alerts one renewal scan processes (default 500); the rest roll to the next scan |
-| `APP_USER_PROVIDER` | No | `db` (default) or `file`/`memory` — in-memory, lists nothing and does not persist; tests and offline dev only |
-| `KRYPTKEEPER_DB_MODE` | No | `sqlite` (default) or `postgres` |
-| `KRYPTKEEPER_DB_MAX_OPEN_CONNS` / `KRYPTKEEPER_DB_MAX_IDLE_CONNS` | No | PostgreSQL pool size per store (defaults `3` / `1`); see [deployment.md](docs/deployment.md) |
-| `KRYPTKEEPER_DB_DSN` / `DATABASE_URL` | If postgres | PostgreSQL connection string |
-| `KRYPTKEEPER_KEY_BACKEND` | No | `software` (default, PKCS#8), `pkcs11`, `cloudkms` (with `KRYPTKEEPER_KMS_PROVIDER=aws\|gcp\|azure`), `vault` — see [Key Storage](#key-storage) for what is tested |
-| `KRYPTKEEPER_KEYSTORE_PASSPHRASE` | **Yes** (software keystore) | Encrypts CA private keys at rest; required by Compose and must differ from `APP_BOOTSTRAP_TOKEN` |
-| `KRYPTKEEPER_ALLOW_MISSING_CA_KEYS` | No | Recovery only: start even though an active CA has no key in the keystore (default: the hub refuses to start) |
-| `KEYSTORE_SIGNER_TTL_MINUTES` | No | Idle eviction for decrypted CA signers (default 60) |
-| `SIEM_WEBHOOK_URL` | No | Push cert lifecycle events to a webhook |
-| `SIEM_SYSLOG_ADDR` | No | RFC 5424 syslog output (Splunk/QRadar) |
-| `APP_VERSION` | No | Version string shown in `/api/v1/meta` |
+Note: `APP_BIND_ADDR` is a host only (default `127.0.0.1`) and `PORT` is the
+port (default `8080`); they are joined to form the listen address.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                  Kryptkeeper                         │
-│                                                     │
-│  ┌──────────┐  ┌──────────┐  ┌───────────────────┐ │
-│  │ Dashboard│  │  REST    │  │  Protocol Servers  │ │
-│  │(React/TS)│  │  API     │  │ ACME OCSP CRL      │ │
-│  │  :3000   │  │  :8080   │  │ EST  SCEP XCEP     │ │
-│  └──────────┘  └──────────┘  └───────────────────┘ │
-│                     │                               │
-│  ┌──────────────────▼──────────────────────────┐   │
-│  │              CA Engine                       │   │
-│  │  Root CA → Issuing CA → Certificate          │   │
-│  │  Templates · Revocation · OCSP/CRL          │   │
-│  └──────────────────────────────────────────┬──┘   │
-│                                             │       │
-│  ┌──────────────────────────────────────────▼──┐   │
-│  │              Storage Layer                   │   │
-│  │  PostgreSQL · SQLite · PKCS#8 · PKCS#11     │   │
-│  │  AWS KMS · GCP KMS · Azure Key Vault        │   │
-│  └─────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────┐
+│  Kryptkeeper                                          │
+│                                                       │
+│  ┌──────────┐  ┌──────────┐  ┌───────────────────┐    │
+│  │ Dashboard│  │   REST   │  │  Protocol Servers │    │
+│  │(React/TS)│  │   API    │  │  ACME OCSP CRL    │    │
+│  │  :3000   │  │  :8080   │  │  EST SCEP XCEP    │    │
+│  └──────────┘  └────┬─────┘  └───────────────────┘    │
+│                     │                                 │
+│  ┌──────────────────▼──────────────────────────────┐  │
+│  │                    CA Engine                    │  │
+│  │  Root CA → Issuing CA → Certificate             │  │
+│  │  Templates · Revocation · OCSP/CRL              │  │
+│  └────────────────────┬────────────────────────────┘  │
+│                       │                               │
+│  ┌────────────────────▼────────────────────────────┐  │
+│  │                  Storage Layer                  │  │
+│  │  PostgreSQL · SQLite · PKCS#8 · PKCS#11         │  │
+│  │  AWS KMS · GCP KMS · Azure Key Vault            │  │
+│  │  (cloud KMS: emulator-tested)                   │  │
+│  └─────────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────────┘
 ```
 
 **Single binary deployment.** The CA core, API server, and all protocol endpoints run in one Go binary. The dashboard is a compiled React app served separately.
@@ -266,71 +256,7 @@ when `KRYPTKEEPER_TLS_DISABLE=true`)
 - OIDC token (RS256, when `AUTH_MODE=oidc`)
 - API key (`kk_<kid>_<secret>`, created via `POST /api/v1/api-keys`)
 
-**Core endpoints:**
-
-```
-GET    /meta                      — service health and version
-POST   /auth/login                — login with email + password
-POST   /auth/logout               — expire session cookie
-GET    /authz-check               — verify current token + get role
-
-GET    /cas                       — list CAs
-POST   /cas                       — create root or intermediate CA
-GET    /cas/{id}                  — get CA detail
-PATCH  /cas/{id}                  — update CA metadata
-POST   /cas/{id}/activate         — activate a suspended CA
-POST   /cas/{id}/suspend          — suspend a CA
-
-GET    /certificates              — list certificates (filter, paginate)
-POST   /certificates              — issue a certificate
-POST   /certificates/{fp}/renew   — renew a certificate
-POST   /certificates/{fp}/revoke  — revoke a certificate
-POST   /certificates/import       — import an external certificate
-
-GET    /templates                 — list certificate templates
-POST   /templates                 — create a template
-PUT    /templates/{id}            — update a template
-DELETE /templates/{id}            — delete a template
-
-GET    /discovery/endpoints       — list discovered endpoints
-POST   /discovery/scans           — queue a discovery scan
-GET    /discovery/scan-jobs       — list scan jobs
-
-GET    /notifications/summary     — notification health summary
-GET    /notifications/deliveries  — delivery queue
-GET    /notifications/rules       — list alert rules
-POST   /notifications/rules       — create an alert rule
-PUT    /notifications/rules/{id}  — update a rule
-DELETE /notifications/rules/{id}  — delete a rule
-
-GET    /users                     — list users
-POST   /users/invite              — invite a user
-PATCH  /users/{id}                — change role or status
-DELETE /users/{id}                — deactivate a user
-
-GET    /audit                     — audit log (filter, paginate)
-GET    /search                    — cross-inventory search
-
-PATCH  /certificates/{fp}/ownership — set owner email/team/service/labels
-POST   /certificates/bulk-revoke  — bulk revoke (≤500 certs)
-POST   /certificates/bulk-reissue — bulk re-issue (≤200 certs)
-
-GET    /approvals                 — pending approval requests
-POST   /approvals/{id}/approve    — approve a pending request
-POST   /approvals/{id}/reject     — reject a pending request
-
-POST   /keys/{id}/rotate          — rotate a CA key
-POST   /keys/{id}/export          — passphrase-wrapped key backup
-POST   /keys/import               — restore a key from backup
-
-GET    /reports/ca-health         — CA health report
-GET    /reports/expiry-timeline   — expiry calendar by CA/team/owner
-GET    /reports/revocation-activity — revocations in a window
-GET    /reports/issuance-velocity — certs/day by CA and requester
-GET    /reports/change-audit      — full lifecycle history per cert
-GET    /reports/compliance-evidence — SOC 2 / PCI DSS evidence pack
-GET    /reports/algorithm-sunset  — post-2030 non-compliant certs
-```
+**Core endpoints:** see [docs/reference/ENDPOINTS.md](docs/reference/ENDPOINTS.md); the full list is in the OpenAPI spec above.
 
 ---
 
@@ -389,7 +315,7 @@ npm run test        # vitest
 # (backend) go run ./cmd/kryptkeeper — see env.example for required vars
 ```
 
-**Environment:** Go 1.26+ (go.mod), Node 24 (`ui/.nvmrc`), PostgreSQL 16 or SQLite. Postgres support is backed by round-trip tests for every database-backed store (gated on `KRYPTKEEPER_TEST_POSTGRES_DSN`; CI runs them with `-p 1`).
+**Environment:** Go 1.27+ (go.mod), Node 24 (`ui/.nvmrc`), PostgreSQL 16 or SQLite. Postgres support is backed by round-trip tests for every database-backed store (gated on `KRYPTKEEPER_TEST_POSTGRES_DSN`; CI runs them with `-p 1`).
 
 ### Live-Postgres integration tests
 
@@ -445,9 +371,7 @@ helm install kryptkeeper charts/kryptkeeper \
 ```
 
 For production, create a Secret yourself and set `secrets.existingSecret`
-instead of passing values inline. The chart renders with `helm template`, but
-it installs and fails over on kind (see [What's proven](#whats-proven-and-where));
-it has not been run on a managed Kubernetes service. A signed copy is published at
+instead of passing values inline. The chart installs and fails over on kind. It has not been run on EKS, AKS or GKE. A signed copy is published at
 `oci://ghcr.io/bpmforge/charts/kryptkeeper`.
 
 ### Binary
@@ -480,20 +404,7 @@ Report security issues to the project maintainers privately before public disclo
 
 ## Roadmap
 
-Kryptkeeper's internal milestones v1.0 through v2.2 (tags `internal/v1.0.0` to
-`internal/v2.2.0`; never publicly released — v0.9.0 is the first public release)
-delivered the full CA engine and protocols, compliance
-reporting, renewal autopilot, audit-ready evidence packs, PQC migration
-copilot, AI-native MCP operations, SPIFFE/SVID, and flag-gated
-multi-tenancy), then pivoted to an estate-management direction — see
-[`docs/DECISIONS.md`](docs/DECISIONS.md) D-106 and
-[`docs/sdlc/phase-0-ideation/VISION_V5.md`](docs/sdlc/phase-0-ideation/VISION_V5.md)
-for the full strategy. For where that work stands today, see
-[`docs/ROADMAP.md`](docs/ROADMAP.md) for what is not done yet,
-[`docs/HARDENING_ROADMAP.md`](docs/HARDENING_ROADMAP.md) for the hardening wave plan and
-[`docs/NEXT_HORIZON.md`](docs/NEXT_HORIZON.md) for what comes after it.
-[`CHANGELOG.md`](CHANGELOG.md) is the log of what has
-actually shipped.
+What Kryptkeeper does not do yet is in [docs/ROADMAP.md](docs/ROADMAP.md). What shipped is in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 

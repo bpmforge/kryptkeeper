@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.21.x  | ✅ Yes (latest release) |
-| < 0.21  | ❌ No: upgrade to the latest 0.x release |
+| 1.1.x   | ✅ Yes (latest release) |
+| < 1.1   | ❌ No: upgrade to the latest 1.1.x release |
 
 Security fixes land in the latest minor release only. The supported row moves forward with each tagged release; the table is checked against the newest git tag by `scripts/check-security-txt.mjs`.
 
@@ -18,7 +18,7 @@ Report security vulnerabilities via one of these channels:
 1. **GitHub Private Security Advisory** (preferred):
    go to [Report a vulnerability](https://github.com/bpmforge/kryptkeeper/security/advisories/new)
    (Security → Report a vulnerability). GitHub keeps the report confidential
-   until a fix is released. This channel opens when the repository is public.
+   until a fix is released.
 
 2. **Email:** [security@kryptkeeper.io](mailto:security@kryptkeeper.io).
    We do not publish a PGP key. If your report needs encryption, ask for a
@@ -58,6 +58,10 @@ Reporters who follow this policy will be credited in the release notes unless th
 
 ### Known limitations (v0.9)
 
+This list is from the v0.9 release and is kept for history. Current open
+findings are in [docs/security/V1.1_SCAN_2026-10-27.md](docs/security/V1.1_SCAN_2026-10-27.md)
+and [docs/ROADMAP.md](docs/ROADMAP.md).
+
 Open LOW findings from the RC2 scan
 ([docs/security/rc2/02-findings.md](docs/security/rc2/02-findings.md)); none is
 a known bypass of authentication or separation of duties.
@@ -71,8 +75,7 @@ a known bypass of authentication or separation of duties.
 - RC2-N-06 `token:` egress stamps (external jwt/oidc bearers) are never re-verified; RC2-N-08 file-mode audit store is O(file) per read and single-node.
 - Multi-tenancy (v0.10): tenant isolation is enforced and covered by the tenant IDOR suite; the remaining limits (one hub-wide SSH CA key, SCIM users landing in the default tenant, instance-global settings being super-admin only) are listed in [docs/design/TENANCY_POSTURE.md](docs/design/TENANCY_POSTURE.md). The v0.9 experimental start-up gate is lifted; `KRYPTKEEPER_MULTI_TENANCY_GATE=enforce` restores it.
 
-Open findings from the RC5 delta review
-([docs/reviews/rc5/RC5_DELTA_REVIEW.md](docs/reviews/rc5/RC5_DELTA_REVIEW.md)); the
+Open findings from the RC5 delta review (an internal review); the
 review's other items (S-L8 validity sum, the fail-open key-consistency check, the
 README provider docs, the rule burst cap) were fixed before rc.7.
 

@@ -67,7 +67,7 @@ Notes:
   reached its final step with no failure; it does not state a case count.
 - Not run in this pass: `tests/live/acme-upstream` (needs a Cloudflare token and Let's Encrypt staging),
   the Windows lab (WinRM/IIS, WSTEP/XCEP), Kubernetes, service mesh, notifications, PKCS#11, Compose.
-  Their last recorded results are dated in [`docs/UAT_PLAN.md`](../UAT_PLAN.md).
+  Their last recorded results are dated in the UAT plan.
 
 ## Upgrade test
 
