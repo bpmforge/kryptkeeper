@@ -92,7 +92,8 @@ type TrustBundleStore interface {
 	SaveResult(ctx context.Context, r TrustBundleResult) error
 	Results(ctx context.Context, bundleID string) ([]TrustBundleResult, error)
 	// PendingForAgent returns the bundles that target agentID and have no
-	// applied result yet (a refused or failed one is offered again).
+	// applied result yet (a refused or failed one is offered again), oldest
+	// first, minus bundles wholly superseded by a newer one for the same certs.
 	PendingForAgent(ctx context.Context, agentID string) ([]TrustBundle, error)
 }
 
@@ -215,6 +216,13 @@ func (s *dbTrustBundleStore) PendingForAgent(ctx context.Context, agentID string
 	if err != nil {
 		return nil, err
 	}
+	// Walk newest -> oldest. A bundle is superseded for this agent when every
+	// one of its certs appears in a NEWER bundle targeting the agent (whatever
+	// that bundle's result): applying the older one afterwards would undo the
+	// newer intent (an old ADD re-adding a root a later REMOVE took out, or a
+	// failed old ADD retried after the REMOVE succeeded). The remaining pending
+	// bundles are returned OLDEST first so the latest intent is applied last.
+	newer := map[string]bool{}
 	var out []TrustBundle
 	for _, b := range all {
 		if !containsString(b.AgentIDs, agentID) {
@@ -226,9 +234,21 @@ func (s *dbTrustBundleStore) PendingForAgent(ctx context.Context, agentID string
 		if qerr != nil && !errors.Is(qerr, sql.ErrNoRows) {
 			return nil, qerr
 		}
-		if outcome != trustpush.OutcomeApplied {
+		superseded := len(b.Certs) > 0
+		for _, c := range b.Certs {
+			if !newer[c.SHA256] {
+				superseded = false
+			}
+		}
+		for _, c := range b.Certs {
+			newer[c.SHA256] = true
+		}
+		if outcome != trustpush.OutcomeApplied && !superseded {
 			out = append(out, b)
 		}
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
 	}
 	return out, nil
 }

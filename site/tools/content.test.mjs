@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadContent, renderCaption, plainCaption, stepImage, walkthroughImages, coverImage, frameRoute, thumbImage, pathThumb, darkCrop, DEFAULT_CROP, selectedSteps, stepCount, captionOf, captionProblem, validate } from "./content.mjs";
+import { loadContent, renderCaption, plainCaption, stepImage, walkthroughImages, coverImage, frameRoute, thumbImage, pathThumb, darkCrop, DEFAULT_CROP, selectedSteps, stepCount, captionOf, captionProblem, validate, validateProof } from "./content.mjs";
 
 function fixture({ unlisted = {}, steps = ["h1/w1"] } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "kk-site-"));
@@ -305,4 +305,99 @@ test("a hand-written page listed under pages must exist on disk", () => {
   fs.mkdirSync(path.join(root, "site/try"), { recursive: true });
   fs.writeFileSync(path.join(root, "site/try/index.html"), "<html></html>");
   assert.deepEqual(validate(loadContent(root), root), []);
+});
+
+// ---------- proof.json ----------
+const goodRecord = () => ({ id: "r1", area: "A", title: "T", environment: "E", what_ran: "W", result: "pass", against: "real", date: "2026-10-26", version: "1.1.0 (abc)", not_proven: ["x"], record: "README.md", rows: [{ name: "n", result: "fail", note: "" }], evidence: [{ label: "L", source: "docs/release/R.md", text: "PASS: step one\nALL PASS" }] });
+function proofFixture(mutate = () => {}) {
+  const root = fixture({ unlisted: { "U-02": "x" } });
+  const proof = { records: [goodRecord()], gaps: { source: "README.md", items: [{ item: "i", why: "w", needs: "account" }] } };
+  fs.mkdirSync(path.join(root, "docs/release"), { recursive: true });
+  fs.writeFileSync(path.join(root, "docs/release/R.md"), "# Record\r\nPASS: step one\r\nALL PASS\r\n");
+  mutate(proof);
+  fs.writeFileSync(path.join(root, "site/content/proof.json"), JSON.stringify(proof));
+  return root;
+}
+const proofErrors = (root) => validate(loadContent(root), root);
+
+test("a valid proof.json passes and loadContent returns null when there is none", () => {
+  assert.deepEqual(proofErrors(proofFixture()), []);
+  const root = fixture({ unlisted: { "U-02": "x" } });
+  assert.equal(loadContent(root).proof, null);
+  assert.deepEqual(validate(loadContent(root), root), []);
+});
+
+test("proof validation fails on a missing field, a bad result, a bad date and a bad row result", () => {
+  const root = proofFixture((p) => { delete p.records[0].environment; p.records[0].result = "great"; p.records[0].date = "26 Oct"; p.records[0].against = "all"; p.records[0].rows[0].result = "ok"; delete p.records[0].not_proven; });
+  const errors = proofErrors(root).join("\n");
+  assert.match(errors, /proof r1: missing environment/);
+  assert.match(errors, /result must be one of pass, partial, fail/);
+  assert.match(errors, /date must be YYYY-MM-DD/);
+  assert.match(errors, /against must be one of/);
+  assert.match(errors, /row 1 result must be one of/);
+  assert.match(errors, /not_proven must be a list/);
+});
+
+test("proof validation fails when a record path is missing from the repo, naming the entry", () => {
+  const root = proofFixture((p) => { p.records[0].record = "docs/release/GONE.md"; });
+  const errors = proofErrors(root);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /proof r1: record docs\/release\/GONE\.md does not exist in the repo/);
+});
+
+test("proof validation fails on a duplicate id, a private address and bad gaps", () => {
+  const root = proofFixture((p) => { p.records.push(goodRecord()); p.records[0].environment = "host 192.0.2.104"; p.gaps = { source: "docs/none.md", items: [{ item: "i", why: "w", needs: "maybe" }] }; });
+  const errors = proofErrors(root).join("\n");
+  assert.match(errors, /duplicate id/);
+  assert.match(errors, /private IPv4/);
+  assert.match(errors, /gaps: source docs\/none\.md does not exist/);
+  assert.match(errors, /needs must be one of account, hardware, later/);
+  assert.ok(validateProof({ records: [] }, "/").length > 0);
+});
+
+const evErrors = (text, extra = {}) => proofErrors(proofFixture((p) => { Object.assign(p.records[0].evidence[0], { text, ...extra }); })).join("\n");
+
+test("proof evidence must be verbatim in its source, ignoring line endings", () => {
+  assert.deepEqual(proofErrors(proofFixture()), []);
+  assert.match(evErrors("PASS: step one\nALL PASS and more"), /text is not verbatim in docs\/release\/R\.md/);
+  assert.match(evErrors("PASS: step one", { source: "docs/release/NOPE.md" }), /must be an existing file under docs/);
+  assert.match(evErrors("PASS: step one", { source: "README.md" }), /must be an existing file under docs/);
+});
+
+test("proof evidence fails on more than 25 lines and a missing evidence list", () => {
+  assert.match(proofErrors(proofFixture((p) => { delete p.records[0].evidence; })).join("\n"), /evidence must be a non-empty list/);
+  const root = proofFixture();
+  const long = Array.from({ length: 26 }, (_, i) => `l${i}`).join("\n");
+  fs.writeFileSync(path.join(root, "docs/release/R.md"), long);
+  const p = JSON.parse(fs.readFileSync(path.join(root, "site/content/proof.json"), "utf8"));
+  p.records[0].evidence[0].text = long;
+  fs.writeFileSync(path.join(root, "site/content/proof.json"), JSON.stringify(p));
+  assert.match(proofErrors(root).join("\n"), /more than 25 lines/);
+});
+
+test("proof evidence scrub rejects private addresses, lab hostnames and secrets, even when verbatim", () => {
+  const bad = ["host 192.0.2.104 ok", "dial 10.1.2.3", "gw 172.20.0.1", "lab-hub.corp.example.test", "ssh lab-runner", "on lab-ws22 now", "lab-dc01 up", "lab-ca01", "lab-win11 box", "-----BEGIN PRIVATE KEY-----", "api_token: abcdef123456789", "Authorization: Bearer abcdefghijklmnopqrstuvwxyz"];
+  for (const text of bad) {
+    const root = proofFixture((p) => { p.records[0].evidence[0].text = text; });
+    fs.writeFileSync(path.join(root, "docs/release/R.md"), `${text}\n`);
+    const errors = proofErrors(root).join("\n");
+    assert.match(errors, /evidence 1 text: contains a (private IPv4 address|lab hostname|token or secret pattern)/, text);
+  }
+  assert.match(evErrors("PASS: step one", { label: "from lab-hub" }), /evidence 1 label: contains a lab hostname/);
+});
+
+test("proof shots need an existing image, a date and a clean caption", () => {
+  const shot = { src: "screens/c.webp", width: 10, height: 10, date: "2026-10-27", caption: "A real screen." };
+  const run = (m) => proofErrors(proofFixture((p) => { p.records[0].shots = [{ ...shot, ...m }]; })).join("\n");
+  assert.equal(run({}), "");
+  assert.match(run({ src: "proof/shots/none.webp" }), /image site\/proof\/shots\/none\.webp does not exist/);
+  assert.match(run({ date: "today" }), /needs src, caption, date/);
+  assert.match(run({ caption: "taken on lab-win11" }), /caption: contains a lab hostname/);
+});
+
+test("the real site/content/proof.json is valid against the real repo", () => {
+  const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
+  const proof = loadContent(root).proof;
+  assert.deepEqual(validateProof(proof, root), []);
+  assert.ok(proof.records.length >= 14);
 });

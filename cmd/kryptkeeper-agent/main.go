@@ -113,6 +113,9 @@ func main() {
 func run(ctx context.Context) {
 	logging.Info(startupBanner())
 	hubURL := mustEnv("KRYPTKEEPER_HUB_URL")
+	if err := agentclient.ValidateHubURL(hubURL); err != nil {
+		logging.Fatalf("%v", err)
+	}
 
 	agentName := os.Getenv("KRYPTKEEPER_AGENT_NAME")
 	if agentName == "" {

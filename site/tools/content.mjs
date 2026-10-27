@@ -18,7 +18,10 @@ export function loadContent(root) {
   }
   const captionsFile = path.join(root, "site/content/captions.json");
   const captions = fs.existsSync(captionsFile) ? JSON.parse(fs.readFileSync(captionsFile, "utf8")) : {};
+  const proofFile = path.join(root, "site/content/proof.json");
+  const proof = fs.existsSync(proofFile) ? JSON.parse(fs.readFileSync(proofFile, "utf8")) : null;
   return {
+    proof,
     hubs: hubsFile.hubs ?? [],
     captions,
     bands: hubsFile.bands ?? [],
@@ -182,8 +185,89 @@ export function captionProblem(text) {
   return null;
 }
 
+// Lab hostnames, secrets and tokens must never reach the public proof page (evidence text, labels, captions).
+const LAB_HOST = /\b(?:corp\.lab|lab-hub|lab-runner|kk-ws[\w-]*|kk-dc[\w-]*|kk-ca[\w-]*|lab-win11)\b/i;
+const SECRET_PATTERNS = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
+  /\bAKIA[0-9A-Z]{16}\b/,
+  /\b(?:ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{20,}/,
+  /\bxox[abprs]-[A-Za-z0-9-]{10,}/,
+  /\beyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,}/,
+  /\bBearer\s+[A-Za-z0-9._~+\/=-]{20,}/i,
+  /\b[\w-]*(?:api[_-]?key|token|secret|passw(?:or)?d|passphrase)["']?\s*[:=]\s*["']?[A-Za-z0-9+\/_.-]{8,}/i,
+];
+/** Why proof evidence (text, label or caption) must not be published, or null when it is fine. */
+export function scrubProblem(text) {
+  if (typeof text !== "string") return null;
+  if (PRIVATE_IPV4.test(text)) return "contains a private IPv4 address";
+  if (LAB_HOST.test(text)) return "contains a lab hostname";
+  if (SECRET_PATTERNS.some((p) => p.test(text))) return "contains a token or secret pattern";
+  return null;
+}
+export const PROOF_EVIDENCE_MAX_LINES = 25;
+const normEol = (t) => t.replace(/\r\n?/g, "\n");
+
+export const PROOF_RESULTS = ["pass", "partial", "fail"];
+export const PROOF_AGAINST = ["real", "mixed", "stand-in"];
+export const GAP_NEEDS = ["account", "hardware", "later"];
+
+/** Problems in site/content/proof.json: missing fields, bad enums, a record that is not on disk, a private address in the copy. */
+export function validateProof(proof, root) {
+  const errors = [];
+  const str = (v) => typeof v === "string" && v.trim() !== "";
+  const leak = (where, v) => { if (typeof v === "string" && PRIVATE_IPV4.test(v)) errors.push(`proof ${where}: contains a private IPv4 address`); };
+  if (!Array.isArray(proof?.records) || !proof.records.length) return ["proof.json: records must be a non-empty list"];
+  const ids = new Set();
+  for (const r of proof.records) {
+    const who = `proof ${r?.id ?? "?"}`;
+    for (const f of ["id", "area", "title", "environment", "what_ran", "version", "record"]) if (!str(r[f])) errors.push(`${who}: missing ${f}`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(r.date ?? "")) errors.push(`${who}: date must be YYYY-MM-DD`);
+    if (!PROOF_RESULTS.includes(r.result)) errors.push(`${who}: result must be one of ${PROOF_RESULTS.join(", ")}`);
+    if (!PROOF_AGAINST.includes(r.against)) errors.push(`${who}: against must be one of ${PROOF_AGAINST.join(", ")}`);
+    if (!Array.isArray(r.not_proven) || !r.not_proven.every(str)) errors.push(`${who}: not_proven must be a list of strings`);
+    for (const f of ["counts", "note"]) if (r[f] !== undefined && typeof r[f] !== "string") errors.push(`${who}: ${f} must be a string`);
+    if (r.headline !== undefined && typeof r.headline !== "boolean") errors.push(`${who}: headline must be true or false`);
+    if (ids.has(r.id)) errors.push(`${who}: duplicate id`);
+    ids.add(r.id);
+    if (str(r.record) && !fs.existsSync(path.join(root, r.record))) errors.push(`${who}: record ${r.record} does not exist in the repo`);
+    for (const [i, row] of (r.rows ?? []).entries()) {
+      if (!str(row.name)) errors.push(`${who}: row ${i + 1} is missing name`);
+      if (!PROOF_RESULTS.includes(row.result)) errors.push(`${who}: row ${i + 1} result must be one of ${PROOF_RESULTS.join(", ")}`);
+      leak(`${r.id} row ${i + 1}`, row.name); leak(`${r.id} row ${i + 1}`, row.note);
+    }
+    if (!Array.isArray(r.evidence) || !r.evidence.length) errors.push(`${who}: evidence must be a non-empty list`);
+    for (const [i, e] of (Array.isArray(r.evidence) ? r.evidence : []).entries()) {
+      const ew = `${who}: evidence ${i + 1}`;
+      if (!str(e?.label) || !str(e?.source) || !str(e?.text)) { errors.push(`${ew} needs label, source and text`); continue; }
+      const file = path.join(root, e.source);
+      if (!e.source.startsWith("docs/") || e.source.includes("..") || !fs.existsSync(file)) { errors.push(`${ew}: source ${e.source} must be an existing file under docs/`); continue; }
+      const text = normEol(e.text);
+      if (text.split("\n").length > PROOF_EVIDENCE_MAX_LINES) errors.push(`${ew}: more than ${PROOF_EVIDENCE_MAX_LINES} lines`);
+      if (!normEol(fs.readFileSync(file, "utf8")).includes(text)) errors.push(`${ew}: text is not verbatim in ${e.source}`);
+      for (const [k, v] of [["text", e.text], ["label", e.label]]) { const p = scrubProblem(v); if (p) errors.push(`${ew} ${k}: ${p}`); }
+    }
+    for (const [i, sh] of (r.shots ?? []).entries()) {
+      const sw = `${who}: shot ${i + 1}`;
+      if (!str(sh?.src) || !str(sh?.caption) || !/^\d{4}-\d{2}-\d{2}$/.test(sh?.date ?? "") || !(sh?.width > 0) || !(sh?.height > 0)) { errors.push(`${sw} needs src, caption, date (YYYY-MM-DD), width and height`); continue; }
+      if (sh.src.includes("..") || !fs.existsSync(path.join(root, "site", sh.src))) errors.push(`${sw}: image site/${sh.src} does not exist`);
+      const p = scrubProblem(sh.caption); if (p) errors.push(`${sw} caption: ${p}`);
+    }
+    for (const f of ["environment", "what_ran", "counts", "note", "title"]) leak(`${r.id} ${f}`, r[f]);
+    for (const v of r.not_proven ?? []) leak(`${r.id} not_proven`, v);
+  }
+  const g = proof.gaps;
+  if (!g || !str(g.source) || !fs.existsSync(path.join(root, g.source))) errors.push(`proof gaps: source ${g?.source ?? "?"} does not exist in the repo`);
+  if (!Array.isArray(g?.items) || !g.items.length) errors.push("proof gaps: items must be a non-empty list");
+  for (const it of g?.items ?? []) {
+    if (!str(it.item) || !str(it.why)) errors.push(`proof gaps: "${it.item ?? "?"}" needs item and why`);
+    if (!GAP_NEEDS.includes(it.needs)) errors.push(`proof gaps: "${it.item ?? "?"}" needs must be one of ${GAP_NEEDS.join(", ")}`);
+  }
+  return errors;
+}
+
 export function validate(content, root, { shotsDir, publicRoot } = {}) {
   const errors = [];
+  if (content.proof) errors.push(...validateProof(content.proof, root));
   const referenced = new Set();
   const hubIds = new Set();
   const walkthroughKeys = new Set();

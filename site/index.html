@@ -13,7 +13,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="/style.css?v=a4a6ebd728">
+<link rel="stylesheet" href="/style.css?v=47f4cc99b1">
 <script src="/lightbox.js?v=13e3647da7" defer></script>
 </head>
 <body>
@@ -29,6 +29,7 @@
     <a href="/features/">Features</a>
     <a href="/paths/">Paths</a>
     <a href="/features/build-your-own/">Build your own</a>
+    <a href="/proof/">Proof</a>
     <a href="/#install">Install</a>
     <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
   </nav>
@@ -41,7 +42,7 @@
     <h1 style="margin-top:1rem">Run your own certificate authority, and stop finding out about expiry from an outage.</h1>
     <p class="lede">Kryptkeeper is a self-hosted CA and certificate lifecycle platform. It issues over ACME, EST, SCEP, CMP and Windows autoenrollment, finds the certificates you didn't know about, and renews and installs them without a person in the loop.</p>
     <div class="cta">
-      <a class="btn primary" href="https://github.com/bpmforge/kryptkeeper/releases/tag/v1.0.0">Download v1.0.0</a>
+      <a class="btn primary" href="https://github.com/bpmforge/kryptkeeper/releases/tag/v1.1.0">Download v1.1.0</a>
       <a class="btn" href="https://github.com/bpmforge/kryptkeeper">View on GitHub</a>
       <a class="btn" href="/features/">See it in action</a>
       <a class="btn" href="/try/">Try it in five minutes</a>
@@ -132,7 +133,7 @@
 <div class="more-hubs">
   <h3>Everything else</h3>
   <div class="more-cols">
-<div><span class="label">Set up</span><ul><li><a href="/features/getting-around/">Getting around</a></li><li><a href="/features/certificate-authorities/">Certificate authorities</a></li><li><a href="/features/templates-policy/">Templates and policy</a></li><li><a href="/features/keys-kms/">Keys and KMS</a></li></ul></div>
+<div><span class="label">Set up</span><ul><li><a href="/features/getting-around/">Getting around</a></li><li><a href="/features/certificate-authorities/">Certificate authorities</a></li><li><a href="/features/templates-policy/">Templates and policy</a></li><li><a href="/features/keys-kms/">Keys and KMS</a></li><li><a href="/features/whats-new-1-1/">What's new in 1.1</a></li></ul></div>
 <div><span class="label">Issue and renew</span><ul><li><a href="/features/linux-macos-hosts/">Linux and macOS hosts</a></li><li><a href="/features/issuing-certificates/">Issuing certificates</a></li><li><a href="/features/lifecycle/">Renewal and revocation</a></li></ul></div>
 <div><span class="label">Visibility</span><ul><li><a href="/features/alerts-notifications/">Alerts and notifications</a></li><li><a href="/features/compliance-risk/">Compliance, risk and post-quantum</a></li></ul></div>
 <div><span class="label">Govern and extend</span><ul><li><a href="/features/build-your-own/">Build your own integrations</a></li><li><a href="/features/access-tenancy/">Access and tenancy</a></li><li><a href="/features/machine-identity/">Machine and workload identity</a></li></ul></div>
@@ -151,10 +152,11 @@
   <!-- paths:start -->
 <ul class="path-list">
 <li><span class="label">PKI administrator</span><h3><a class="stretch" href="/paths/stand-up-pki/">Stand up your own PKI</a></h3><p>From an empty install to a root, an issuing CA, templates and the first certificate.</p><span class="steps-n">7 steps &rarr;</span></li>
-<li><span class="label">Windows and AD administrator</span><h3><a class="stretch" href="/paths/replace-adcs/">Replace ADCS for your Windows domain</a></h3><p>Keep Group Policy autoenrollment and move the CA behind it to Kryptkeeper.</p><span class="steps-n">6 steps &rarr;</span></li>
+<li><span class="label">Windows and AD administrator</span><h3><a class="stretch" href="/paths/replace-adcs/">Replace ADCS for your Windows domain</a></h3><p>Keep Group Policy autoenrollment and move the CA behind it to Kryptkeeper.</p><span class="steps-n">7 steps &rarr;</span></li>
 <li><span class="label">Platform and DevOps engineer</span><h3><a class="stretch" href="/paths/automate-renewal/">Automate renewal for servers and devices</a></h3><p>Get certificates renewing and installing themselves, and hear about it only when one can't.</p><span class="steps-n">8 steps &rarr;</span></li>
 <li><span class="label">Security lead</span><h3><a class="stretch" href="/paths/take-over-estate/">Take over an existing estate</a></h3><p>Find what you already have, give every certificate an owner, and bring it under renewal.</p><span class="steps-n">7 steps &rarr;</span></li>
-<li><span class="label">Security and audit</span><h3><a class="stretch" href="/paths/govern-prove/">Govern it and prove it</a></h3><p>Least privilege, a second person on sensitive changes, and evidence an auditor will accept.</p><span class="steps-n">7 steps &rarr;</span></li>
+<li><span class="label">Security and audit</span><h3><a class="stretch" href="/paths/govern-prove/">Govern it and prove it</a></h3><p>Least privilege, a second person on sensitive changes, and evidence an auditor will accept.</p><span class="steps-n">8 steps &rarr;</span></li>
+<li><span class="label">PKI administrator</span><h3><a class="stretch" href="/paths/keep-your-ca/">Keep the CA you already use</a></h3><p>Connect the CA you run today, put its root on your hosts, and plan the move to post-quantum.</p><span class="steps-n">4 steps &rarr;</span></li>
 <li><span class="label">Platform engineer</span><h3><a class="stretch" href="/paths/machine-identity/">Machine and workload identity</a></h3><p>Identities for workloads, SSH and code signing, approved before they exist.</p><span class="steps-n">4 steps &rarr;</span></li>
 <li><span class="label">Developer and integrator</span><h3><a class="stretch" href="/paths/extend/">Integrate with your own tools</a></h3><p>Write a plugin for a device we don't support, and send every event to the tools you already run.</p><span class="steps-n">4 steps &rarr;</span></li>
 </ul>
@@ -218,9 +220,9 @@ docker compose up -d</pre>
       <p>Checksums and images are signed keyless with Sigstore cosign, bound to the GitHub release workflow. There is no long-lived signing key to fetch or trust.</p>
       <div class="code">
         <button class="copy" type="button" data-copy="vf">Copy</button>
-<pre id="vf">cosign verify ghcr.io/bpmforge/kryptkeeper:1.0.0 \
+<pre id="vf">cosign verify ghcr.io/bpmforge/kryptkeeper:1.1.0 \
   --certificate-identity \
-  "https://github.com/bpmforge/kryptkeeper/.github/workflows/release.yml@refs/tags/v1.0.0" \
+  "https://github.com/bpmforge/kryptkeeper/.github/workflows/release.yml@refs/tags/v1.1.0" \
   --certificate-oidc-issuer \
   "https://token.actions.githubusercontent.com"</pre>
       </div>
@@ -231,45 +233,27 @@ docker compose up -d</pre>
 
 <section id="maturity">
   <div class="section-head">
-    <span class="label">v1.0.0 status</span>
+    <span class="label">Lab proof</span>
     <h2>What's proven, what isn't yet</h2>
-    <p class="muted">Each area is labelled by how it was tested on the 1.0.0 lab pass: proven means run end to end against real clients and servers, not only unit tests.</p>
+    <p class="muted">Every claim links to a lab record in the repository. A pass means a real run on a named build. Where the other side was a stand-in, the record says so.</p>
   </div>
-  <div class="maturity">
-    <div class="tier validated">
-      <h3>Proven in the lab</h3>
-      <ul>
-        <li>ACME, EST, SCEP, CMP, OCSP and CRL against real clients, plus renewal from Let's Encrypt (staging) over DNS-01</li>
-        <li>Windows Group Policy autoenrollment and renewal on Windows 11 and Server 2022</li>
-        <li>WinRM discovery, IIS install with rollback, and the Windows agent MSI</li>
-        <li>Unattended renewal and install on nginx, Apache, HAProxy and Tomcat, agent or agentless</li>
-        <li>Discovery with fingerprinting, privileged agentless Linux scans and inventory sync</li>
-        <li>CA hierarchy, offline root, key ceremony, escrow and PKCS#11 with dual control</li>
-        <li>Post-quantum ML-DSA certificates against OpenSSL 3.5, and code signing with cosign</li>
-        <li>SSO, SPIFFE, approvals, MCP, SIEM, ITSM and notifications</li>
-        <li>Kubernetes with cert-manager, Helm HA and air-gapped installs; SQLite and PostgreSQL</li>
-      </ul>
-    </div>
-    <div class="tier beta">
-      <h3>Proven against emulators or stand-ins</h3>
-      <ul>
-        <li>F5 BIG-IP and Citrix delivery (mock appliance)</li>
-        <li>AWS KMS, Azure Key Vault and Google Cloud KMS (emulators)</li>
-        <li>ServiceNow, Jira Cloud, Slack and PagerDuty (local stand-ins)</li>
-        <li>Delivery to AWS, Azure and Google Cloud certificate services (Vault leg proven)</li>
-      </ul>
-    </div>
-    <div class="tier exp">
-      <h3>Not yet</h3>
-      <ul>
-        <li>Install modes for SQL Server, Exchange and RDP</li>
-        <li>SCEP from vendor network appliances</li>
-        <li>Windows autoenrollment on Windows 10 and Server 2019</li>
-        <li>Multi-tenancy as a security boundary</li>
-      </ul>
-    </div>
-  </div>
-  <p class="muted" style="margin-top:1.5rem">Full detail is in the <a href="https://github.com/bpmforge/kryptkeeper/releases/tag/v1.0.0">v1.0.0 release notes</a> and the <a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/ROADMAP.md">roadmap</a>.</p>
+  <!-- proof:start -->
+<ul class="proof-stats" aria-label="Lab records by result">
+  <li><span class="pill pass">Pass</span> <b>14</b> records</li>
+  <li><span class="pill partial">Partial</span> <b>2</b> records</li>
+  <li><span class="pill fail">Fail</span> <b>0</b> records</li>
+  <li><span class="pill against">Stand-ins only</span> <b>3</b> records</li>
+</ul>
+<ul class="proof-headlines">
+<li><span class="pill partial">Partial</span> <span><a href="/proof/#regression-1-1">Release 1.1.0 lab regression sweep</a> <span class="muted">2026-10-26 · smoke 446/446 · 16 areas: 13 pass, 1 partial, 2 fail</span></span></li>
+<li><span class="pill pass">Pass</span> <span><a href="/proof/#release-1-0">Release 1.0.0 final lab pass</a> <span class="muted">2026-10-18 · smoke 445/445; 86 Go packages ok · 5 areas: 5 pass</span></span></li>
+<li><span class="pill pass">Pass</span> <span><a href="/proof/#windows-ku-ws2025">Windows accepts the new key usages; Server 2025 member</a> <span class="muted">2026-10-26 · 3 of 3 hosts autoenrolled (7 to 9 s)</span></span></li>
+<li><span class="pill pass">Pass</span> <span><a href="/proof/#trust-store-e2e">Trust store push, hub to agent</a> <span class="muted">2026-10-26 · 49/49 on Postgres, 49/49 on SQLite</span></span></li>
+<li><span class="pill pass">Pass</span> <span><a href="/proof/#pqc-apache-k8s">ML-DSA delivery to Apache, and Kubernetes Secret rollback</a> <span class="muted">2026-10-26</span></span></li>
+</ul>
+<p class="muted">Not proven yet: 11 items need an account, 8 need partner hardware or a vendor service, 1 comes later.</p>
+<p><a class="how-link" href="/proof/">All tested environments and proof &rarr;</a></p>
+  <!-- proof:end -->
 </section>
 </main>
 

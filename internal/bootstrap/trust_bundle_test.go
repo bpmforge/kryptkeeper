@@ -413,3 +413,70 @@ func TestTrustBundleExecutor_TenantAdminCannotApproveAFleetWidePush(t *testing.T
 		t.Fatalf("a platform super-admin may approve: %v", err)
 	}
 }
+
+func TestTrustBundle_PendingForAgentOrdersAndSupersedes(t *testing.T) {
+	h := newTrustHub(t)
+	ctx := context.Background()
+	agent, _ := h.registerAgent("web-1", AgentTypeLinux)
+	rootA, _ := trustCertPEM(t, "Root A", true, time.Now().Add(24*time.Hour))
+	rootB, _ := trustCertPEM(t, "Root B", true, time.Now().Add(24*time.Hour))
+	hexOf := func(c *x509.Certificate) string { s := sha256.Sum256(c.Raw); return hex.EncodeToString(s[:]) }
+	mk := func(name, action string, age time.Duration, roots ...*x509.Certificate) TrustBundle {
+		b := TrustBundle{Name: name, Action: action, AgentIDs: []string{agent}}
+		for _, r := range roots {
+			b.Certs = append(b.Certs, TrustBundleCert{SHA256: hexOf(r), Root: true})
+		}
+		out, err := h.store.Create(ctx, b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ts := time.Now().UTC().Add(-age).Format(time.RFC3339)
+		if _, err := h.store.db.ExecContext(ctx, `UPDATE trust_bundles SET created_at = ? WHERE id = ?`, ts, out.ID); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	names := func() []string {
+		got, err := h.store.PendingForAgent(ctx, agent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var n []string
+		for _, b := range got {
+			n = append(n, b.Name)
+		}
+		return n
+	}
+
+	// Never-applied ADD of A, then a newer REMOVE of A: the ADD is dropped.
+	mk("add-A", "add", 3*time.Hour, rootA)
+	mk("remove-A", "remove", 2*time.Hour, rootA)
+	if got := names(); strings.Join(got, ",") != "remove-A" {
+		t.Fatalf("stale add must not be offered after a newer remove: %v", got)
+	}
+
+	// Independent roots stay pending and are returned oldest first, so the
+	// latest intent is applied last.
+	mk("add-B", "add", 1*time.Hour, rootB)
+	if got := names(); strings.Join(got, ",") != "remove-A,add-B" {
+		t.Fatalf("want oldest first: %v", got)
+	}
+
+	// A failed old ADD retried after the newer REMOVE applied is still dropped.
+	list, _ := h.store.List(ctx, 10)
+	for _, b := range list {
+		if b.Name == "add-A" {
+			if err := h.store.SaveResult(ctx, TrustBundleResult{BundleID: b.ID, AgentID: agent, Outcome: trustpush.OutcomeFailed}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if b.Name == "remove-A" {
+			if err := h.store.SaveResult(ctx, TrustBundleResult{BundleID: b.ID, AgentID: agent, Outcome: trustpush.OutcomeApplied}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if got := names(); strings.Join(got, ",") != "add-B" {
+		t.Fatalf("failed old add re-offered after remove applied: %v", got)
+	}
+}

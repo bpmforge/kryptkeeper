@@ -7,12 +7,12 @@
 //
 // Request: GET {base_url}/AIMWebService/api/Accounts?AppID=&Safe=&Object=
 // (optionally Folder, UserName, Address). AppID plus at least one other query
-// key is required, "+", "&" and "%" are not supported in values, and the
-// provider authenticates the caller by client certificate or by the allowed
-// machine list of the AppID, both of which are the hub's TLS and network
-// identity, not the plugin's: the hub builds the client (and attaches the
-// client certificate when the source has one), the plugin only names the
-// account.
+// key is required, "+", "&" and "%" are not supported in values. The provider
+// authenticates this hub by the AppID and the AppID's allowed-machine list
+// only, which are the hub's network identity, not the plugin's: the hub builds
+// the client, the plugin only names the account. The hub does not attach a
+// client certificate for credential plugins, so per-source client certificates
+// are not yet supported and a CCP AppID that requires one cannot be used.
 // https://docs.cyberark.com/credential-providers/latest/en/content/ccp/calling-the-web-service-using-rest.htm
 // was unreachable to the build's fetch tool. What was verified: the query keys
 // (AppID plus Safe, Folder, Object, UserName, Address, Database, PolicyID) and

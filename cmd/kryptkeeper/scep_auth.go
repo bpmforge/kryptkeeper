@@ -116,6 +116,10 @@ func configureSCEPLabels(srv *scep.Server, coreDB *sql.DB, isPostgres bool, auth
 			})
 		})
 	}
+	if rev == nil {
+		// Fail-open window: without a revoker a certificate whose Intune success notification failed is withheld but stays valid (the audit row names its serial).
+		logging.Errorf("SCEP Intune labels are enabled without a revoker: a certificate signed but not released to Intune cannot be revoked automatically")
+	}
 	logging.Info("SCEP labels enabled (POST /api/v1/scep/labels, served at /scep/<label>)")
 	return bootstrap.WithExtraHandlers(func(mux *http.ServeMux) {
 		bootstrap.RegisterSCEPLabelHandlers(mux, auth, store, templates, creds, audit)

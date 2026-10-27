@@ -39,6 +39,19 @@ import (
 type upstreamTestCreds struct {
 	OutboundCredentialStore
 	payloads map[string]string
+	meta     map[string]OutboundCredentialMeta
+}
+
+// Get answers metadata for every known payload: api_token, tenant default,
+// unless meta overrides it.
+func (s *upstreamTestCreds) Get(_ context.Context, id string) (OutboundCredentialMeta, error) {
+	if m, ok := s.meta[id]; ok {
+		return m, nil
+	}
+	if _, ok := s.payloads[id]; !ok {
+		return OutboundCredentialMeta{}, errOutboundCredentialNotFound
+	}
+	return OutboundCredentialMeta{ID: id, CredentialType: CredentialTypeAPIToken, Tenant: DefaultTenant}, nil
 }
 
 func (s *upstreamTestCreds) Resolve(_ context.Context, id string) ([]byte, error) {

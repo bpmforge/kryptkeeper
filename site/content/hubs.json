@@ -38,6 +38,7 @@
         {"slug": "create-root", "title": "Create a root CA", "summary": "Create a self-signed root with the algorithm and lifetime you choose.", "specs": ["U-04"]},
         {"slug": "create-issuing-ca", "title": "Create an issuing CA under a root", "summary": "Create an intermediate CA that signs your day-to-day certificates.", "specs": ["U-05"]},
         {"slug": "import-root", "title": "Import an existing root", "summary": "Import a root you already trust as a trust anchor.", "specs": ["U-06"], "thumb": {"spec": "U-06", "n": 4}, "thumbSpec": "U-07"},
+        {"slug": "connect-existing-ca", "title": "Keep the CA you already use", "summary": "Connect HashiCorp Vault PKI as an issuer, test it, and propose it as an external CA for a second administrator to approve.", "specs": ["U-61"]},
         {"slug": "hierarchy", "title": "Inspect a CA and its hierarchy", "summary": "Read a CA's details and see the whole chain at a glance.", "specs": ["U-07"]},
         {"slug": "guarded-operations", "title": "Suspend, re-key or revoke a CA", "summary": "Change a CA's state through guarded actions that show what they affect.", "specs": ["U-08"], "steps": {"U-08": [1, 2, 3, 4, 6, 7, 8, 11, 12, 13, 14, 15, 17]}},
         {"slug": "key-ceremony", "title": "Run a root key ceremony (M-of-N)", "summary": "One person starts a ceremony and two approvers complete the quorum.", "specs": ["U-09", "U-09b", "U-09c"], "steps": {"U-09": [1, 2, 3, 8, 9]}, "thumbSpec": "U-09"}
@@ -68,7 +69,8 @@
         {"slug": "machine-user-templates", "title": "Create a certificate template", "summary": "Name the template, set its lifetime, key usage and algorithms, then create it.", "specs": ["U-10"], "steps": {"U-10": [1, 2, 3, 5, 6, 7, 10, 11]}},
         {"slug": "import-adcs-templates", "title": "Import templates from ADCS", "summary": "Bring your existing ADCS templates across instead of rebuilding them.", "specs": ["U-52"]},
         {"slug": "windows-agent", "title": "Enroll an agent on a server", "summary": "Name the agent, choose its host type, generate an enrollment token and find the install steps.", "specs": ["U-29"]},
-        {"slug": "scan-windows-stores", "title": "Scan for certificates in use", "summary": "Scan a host or range for the TLS certificates its services present, then read the results.", "specs": ["U-25"]}
+        {"slug": "scan-windows-stores", "title": "Scan for certificates in use", "summary": "Scan a host or range for the TLS certificates its services present, then read the results.", "specs": ["U-25"]},
+        {"slug": "sql-rdp-exchange-installs", "title": "Install onto SQL Server, Remote Desktop or Exchange", "summary": "Declare a Windows target and choose a WinRM install mode, with the credential stored here or fetched from a secret manager.", "specs": ["U-64"]}
       ]
     },
     {
@@ -184,7 +186,8 @@
         {"slug": "agent", "title": "Enroll a satellite agent", "summary": "Enroll an agent that installs certificates on its host.", "specs": ["U-29"]},
         {"slug": "agentless", "title": "Add an agentless target", "summary": "Start adding an SSH or WinRM target with nothing installed and see what the wizard needs before it can finish.", "specs": ["U-30"]},
         {"slug": "canary-rollout", "title": "Create a rollout group for a cluster", "summary": "Group a cluster's nodes, set a rollout window and save the group.", "specs": ["U-32"]},
-        {"slug": "failed-renewals", "title": "Watch the failed-renewal queue", "summary": "See every renewal that needs a person, in one place.", "specs": ["U-33"]}
+        {"slug": "failed-renewals", "title": "Watch the failed-renewal queue", "summary": "See every renewal that needs a person, in one place.", "specs": ["U-33"]},
+        {"slug": "trust-store-push", "title": "Push a CA to your hosts' trust stores", "summary": "Propose a CA bundle for chosen agents, have a second person approve it, and read the per-host result.", "specs": ["U-62"]}
       ]
     },
     {
@@ -286,8 +289,24 @@
       "docs": [{"title": "Issue a post-quantum certificate", "path": "docs/guides/pqc-certificate.md"}],
       "walkthroughs": [
         {"slug": "risk-reports", "title": "Read the risk and post-quantum reports", "summary": "See crypto posture, weak keys and post-quantum migration progress.", "specs": ["U-55"]},
+        {"slug": "pqc-migration-wave", "title": "Start a post-quantum migration wave", "summary": "Pick the certificates, an ML-DSA template and a target algorithm, then propose the wave for approval.", "specs": ["U-63"]},
         {"slug": "evidence", "title": "Produce compliance evidence", "summary": "Build an evidence pack or CBOM, or schedule it.", "specs": ["U-56"]},
         {"slug": "audit-trail", "title": "Investigate with the audit trail", "summary": "Follow who changed what, and when.", "specs": ["U-57"], "thumbSpec": "U-40"}
+      ]
+    },
+    {
+      "id": "whats-new-1-1",
+      "band": "setup",
+      "cover": {"spec": "U-62"},
+      "title": "What's new in 1.1",
+      "tagline": "Keep your CA, trust it everywhere, and get ahead of post-quantum.",
+      "intro": "Version 1.1 lets you issue through the CA you already run, push its roots to your hosts with a second person's approval, install onto SQL Server, Remote Desktop and Exchange over WinRM, and plan post-quantum waves with a target algorithm. These walkthroughs show each screen that exists in the console today; what 1.1 does not do yet is on the roadmap.",
+      "docs": [{"title": "1.1 release notes", "path": "docs/release/RELEASE_NOTES_v1.1.0.md"}, {"title": "Roadmap", "path": "docs/ROADMAP.md"}],
+      "walkthroughs": [
+        {"slug": "connect-existing-ca", "title": "Keep the CA you already use", "summary": "Connect HashiCorp Vault PKI as an issuer, test it, and propose it as an external CA for a second administrator to approve.", "specs": ["U-61"]},
+        {"slug": "trust-store-push", "title": "Push a CA to your hosts' trust stores", "summary": "Propose a CA bundle for chosen agents, have a second person approve it, and read the per-host result.", "specs": ["U-62"]},
+        {"slug": "sql-rdp-exchange-installs", "title": "Install onto SQL Server, Remote Desktop or Exchange", "summary": "Declare a Windows target and choose a WinRM install mode, with the credential stored here or fetched from a secret manager.", "specs": ["U-64"]},
+        {"slug": "pqc-migration-wave", "title": "Start a post-quantum migration wave", "summary": "Pick the certificates, an ML-DSA template and a target algorithm, then propose the wave for approval.", "specs": ["U-63"]}
       ]
     }
   ],
@@ -304,7 +323,7 @@
       "title": "Replace ADCS for your Windows domain",
       "role": "Windows and AD administrator",
       "intro": "Keep Group Policy autoenrollment and move the CA behind it to Kryptkeeper.",
-      "steps": ["certificate-authorities/import-root", "windows-active-directory/issuing-ca-for-the-domain", "windows-active-directory/import-adcs-templates", "windows-active-directory/machine-user-templates", "windows-active-directory/scan-windows-stores", "windows-active-directory/windows-agent"]
+      "steps": ["certificate-authorities/import-root", "windows-active-directory/issuing-ca-for-the-domain", "windows-active-directory/import-adcs-templates", "windows-active-directory/machine-user-templates", "windows-active-directory/scan-windows-stores", "windows-active-directory/windows-agent", "windows-active-directory/sql-rdp-exchange-installs"]
     },
     {
       "id": "automate-renewal",
@@ -325,7 +344,14 @@
       "title": "Govern it and prove it",
       "role": "Security and audit",
       "intro": "Least privilege, a second person on sensitive changes, and evidence an auditor will accept.",
-      "steps": ["access-tenancy/custom-role", "approvals-guardrails/approve-request", "approvals-guardrails/blast-radius", "access-tenancy/access-review", "compliance-risk/risk-reports", "compliance-risk/evidence", "compliance-risk/audit-trail"]
+      "steps": ["access-tenancy/custom-role", "approvals-guardrails/approve-request", "approvals-guardrails/blast-radius", "access-tenancy/access-review", "compliance-risk/risk-reports", "compliance-risk/pqc-migration-wave", "compliance-risk/evidence", "compliance-risk/audit-trail"]
+    },
+    {
+      "id": "keep-your-ca",
+      "title": "Keep the CA you already use",
+      "role": "PKI administrator",
+      "intro": "Connect the CA you run today, put its root on your hosts, and plan the move to post-quantum.",
+      "steps": ["certificate-authorities/connect-existing-ca", "automation-enrollment/trust-store-push", "windows-active-directory/sql-rdp-exchange-installs", "compliance-risk/pqc-migration-wave"]
     },
     {
       "id": "machine-identity",

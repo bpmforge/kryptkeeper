@@ -4,13 +4,13 @@
 import fs from "node:fs";
 import crypto from "node:crypto";
 import path from "node:path";
-import { loadContent, coverImage, frameRoute, thumbImage, pathThumb, orderedHubs, selectedSteps, stepCount as countSteps, captionOf, stepImage, validate, renderCaption, plainCaption, escapeHtml as esc } from "./content.mjs";
+import { PROOF_RESULTS, loadContent, coverImage, frameRoute, thumbImage, pathThumb, orderedHubs, selectedSteps, stepCount as countSteps, captionOf, stepImage, validate, renderCaption, plainCaption, escapeHtml as esc } from "./content.mjs";
 import { loadRelease, stampRelease, findStaleVersions, releaseExists } from "./release.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
 const SITE = path.join(ROOT, "site");
 const BASE = "https://kryptkeeper.io";
-const GENERATED_DIRS = ["features", "paths"];
+const GENERATED_DIRS = ["features", "paths", "proof"];
 
 const args = process.argv.slice(2);
 const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
@@ -21,6 +21,8 @@ const assetHash = (file) => crypto.createHash("sha256").update(fs.readFileSync(p
 const ASSET_TAGS = `<link rel="stylesheet" href="/style.css?v=${assetHash("style.css")}">\n<script src="/lightbox.js?v=${assetHash("lightbox.js")}" defer></script>`;
 
 const content = loadContent(ROOT);
+if (!content.proof) throw new Error("site/content/proof.json is missing");
+const release = loadRelease(ROOT);
 const { hubs, paths, repo, specs, bands, flagship, pages } = content;
 const hubById = new Map(hubs.map((h) => [h.id, h]));
 const wKey = (hub, w) => `${hub.id}/${w.slug}`;
@@ -66,6 +68,7 @@ const HEADER = `<header class="site">
     <a href="/features/">Features</a>
     <a href="/paths/">Paths</a>
     <a href="/features/build-your-own/">Build your own</a>
+    <a href="/proof/">Proof</a>
     <a href="/#install">Install</a>
     <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
   </nav>
@@ -334,6 +337,106 @@ ${items.join("\n")}
   return page({ title: p.title, description: p.intro, url: `/paths/${p.id}/`, body });
 }
 
+// ---------- proof ----------
+const { proof } = content;
+const RESULT_LABEL = { pass: "Pass", partial: "Partial", fail: "Fail" };
+const AGAINST_LABEL = { real: "Real systems", mixed: "Real systems and stand-ins", "stand-in": "Stand-ins only" };
+const NEEDS_LABEL = { account: "Needs an account", hardware: "Needs partner or hardware", later: "Later" };
+// A record written after the release tag is published on the site itself until
+// the next tag carries it, so its link never 404s (`"hosted": true` in proof.json).
+const HOSTED = new Set(proof.records.filter((r) => r.hosted).map((r) => r.record));
+const hostedPath = (p) => `proof/records/${path.basename(p)}`;
+const recordUrl = (p) => (HOSTED.has(p) ? `/${hostedPath(p)}` : `https://github.com/${release.repo}/blob/v${release.version}/${p}`);
+const resultPill = (r) => `<span class="pill ${r}">${RESULT_LABEL[r]}</span>`;
+const tally = (list) => Object.fromEntries(PROOF_RESULTS.map((r) => [r, list.filter((x) => x.result === r).length]));
+const tallyText = (t) => PROOF_RESULTS.filter((r) => t[r]).map((r) => `${t[r]} ${r}`).join(", ");
+const recordCounts = tally(proof.records);
+const standIns = proof.records.filter((r) => r.against === "stand-in").length;
+const gapsBy = (needs) => proof.gaps.items.filter((g) => g.needs === needs);
+
+const TERM_INLINE_LINES = 10;
+function evidencePanel(e) {
+  const n = e.text.split("\n").length;
+  const head = `<span class="term-label">${esc(e.label)}</span> <span class="muted">from <a href="${esc(recordUrl(e.source))}"><code>${esc(e.source)}</code></a></span>`;
+  const pre = `<pre tabindex="0"><code>${esc(e.text)}</code></pre>`;
+  return n > TERM_INLINE_LINES
+    ? `<details class="term"><summary>${head} <span class="muted">${n} lines</span></summary>${pre}</details>`
+    : `<div class="term"><p class="term-head">${head}</p>${pre}</div>`;
+}
+function shotFigure(sh) {
+  return `<figure class="proof-shot"><a class="shot-link" href="/${esc(sh.src)}"><img src="/${esc(sh.src)}" width="${sh.width}" height="${sh.height}" loading="lazy" decoding="async" alt="${esc(sh.caption)}"></a><figcaption>${esc(sh.caption)} <span class="muted">Captured ${esc(sh.date)}.</span></figcaption></figure>`;
+}
+
+function proofRecord(r) {
+  const meta = [r.area, r.date, r.version, r.counts].filter(Boolean).map(esc).join(" · ");
+  const rows = r.rows?.length
+    ? `<details class="proof-rows"><summary>${r.rows.length} areas in this record: ${esc(tallyText(tally(r.rows)))}</summary><ul>${r.rows.map((x) => `<li>${resultPill(x.result)} <span>${esc(x.name)}${x.note ? ` <span class="muted">${esc(x.note)}</span>` : ""}</span></li>`).join("")}</ul></details>`
+    : "";
+  const np = r.not_proven.length ? `<div class="proof-np"><h4>Not proven</h4><ul>${r.not_proven.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>` : "";
+  return `<li class="proof" id="${esc(r.id)}">
+  <div class="proof-head"><h3>${esc(r.title)}</h3><span class="pills">${resultPill(r.result)}<span class="pill against">${AGAINST_LABEL[r.against]}</span></span></div>
+  <p class="proof-meta">${meta}</p>
+  <dl class="proof-dl"><dt>Environment</dt><dd>${esc(r.environment)}</dd><dt>What ran</dt><dd>${esc(r.what_ran)}</dd>${r.note ? `<dt>Note</dt><dd>${esc(r.note)}</dd>` : ""}</dl>
+  <div class="proof-evidence"><h4>Output from the record, verbatim</h4>${r.evidence.map(evidencePanel).join("")}</div>
+  ${r.shots?.length ? `<div class="proof-shots"><h4>Screenshots</h4>${r.shots.map(shotFigure).join("")}</div>` : ""}
+  ${rows}
+  ${np}
+  <p class="proof-link"><a href="${esc(recordUrl(r.record))}">Record: <code>${esc(r.record)}</code></a></p>
+</li>`;
+}
+
+function proofPage() {
+  const gaps = Object.keys(NEEDS_LABEL).map((k) => {
+    const list = gapsBy(k);
+    return list.length ? `<div class="gap-group"><h3>${NEEDS_LABEL[k]} <span class="muted">(${list.length})</span></h3><ul class="gap-list">${list.map((g) => `<li><strong>${esc(g.item)}</strong><span class="muted">${esc(g.why)}</span></li>`).join("")}</ul></div>` : "";
+  }).join("\n");
+  const body = `${breadcrumb([["Proof", "/proof/"]])}
+<header class="page-head">
+  <span class="label">Lab records</span>
+  <h1>Tested environments and proof</h1>
+  <p class="lede">For each area: where it ran, what ran, how it ended, and a link to the record. The gaps are listed too.</p>
+  <p class="intro">Every entry comes from a record kept in the repository. A pass means the test exited cleanly on the named build. "Stand-ins" means the other side was a local copy or emulator, not the real service. Nothing here is carried over from an older release.</p>
+  <ul class="proof-stats" aria-label="Results at a glance">
+    <li>${resultPill("pass")} <b>${recordCounts.pass}</b> records</li>
+    <li>${resultPill("partial")} <b>${recordCounts.partial}</b> records</li>
+    <li>${resultPill("fail")} <b>${recordCounts.fail}</b> records</li>
+    <li><span class="pill against">Stand-ins only</span> <b>${standIns}</b> records</li>
+  </ul>
+  <nav class="band-jump" aria-label="Jump to a section"><a href="#records">Lab records</a><a href="#gaps">Not proven yet</a></nav>
+</header>
+<section id="records" aria-labelledby="records-h">
+  <h2 id="records-h">Lab records</h2>
+  <ol class="proof-list">
+${proof.records.map(proofRecord).join("\n")}
+  </ol>
+</section>
+<section id="gaps" aria-labelledby="gaps-h" class="gaps">
+  <h2 id="gaps-h">Not proven yet</h2>
+  <p class="muted">These features work against emulators, mock devices or stand-in services in our lab. Each is marked proven only after a run against the real system. The list comes from the <a href="${esc(recordUrl(proof.gaps.source))}">roadmap</a>.</p>
+${gaps}
+</section>`;
+  return page({ title: "Tested environments and proof", description: "Where Kryptkeeper was tested, what ran, how it ended, and what is not proven yet. Each entry links to its lab record.", url: "/proof/", body });
+}
+
+/** Compact home-page summary: counts by result, a few headline records, and the gap totals. */
+function homeProof() {
+  const head = proof.records.filter((r) => r.headline).map((r) => {
+    const rowsTally = r.rows?.length ? ` · ${r.rows.length} areas: ${tallyText(tally(r.rows))}` : "";
+    return `<li>${resultPill(r.result)} <span><a href="/proof/#${esc(r.id)}">${esc(r.title)}</a>${r.against === "stand-in" ? ' <span class="pill against">Stand-ins only</span>' : ""} <span class="muted">${esc([r.date, r.counts].filter(Boolean).join(" · "))}${esc(rowsTally)}</span></span></li>`;
+  }).join("\n");
+  return `<ul class="proof-stats" aria-label="Lab records by result">
+  <li>${resultPill("pass")} <b>${recordCounts.pass}</b> records</li>
+  <li>${resultPill("partial")} <b>${recordCounts.partial}</b> records</li>
+  <li>${resultPill("fail")} <b>${recordCounts.fail}</b> records</li>
+  <li><span class="pill against">Stand-ins only</span> <b>${standIns}</b> records</li>
+</ul>
+<ul class="proof-headlines">
+${head}
+</ul>
+<p class="muted">Not proven yet: ${gapsBy("account").length} items need an account, ${gapsBy("hardware").length} need partner hardware or a vendor service, ${gapsBy("later").length} comes later.</p>
+<p><a class="how-link" href="/proof/">All tested environments and proof &rarr;</a></p>`;
+}
+
 function sitemap(urls) {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.map((u) => `  <url><loc>${BASE}${u}</loc></url>`).join("\n")}\n</urlset>\n`;
 }
@@ -362,6 +465,9 @@ for (const pg of pages) {
   out.set(pg.file, html);
   urls.push(pg.url);
 }
+out.set("proof/index.html", proofPage());
+for (const p of HOSTED) out.set(hostedPath(p), fs.readFileSync(path.join(ROOT, p), "utf8"));
+urls.push("/proof/");
 out.set("sitemap.xml", sitemap(urls));
 
 function replaceRegion(html, name, inner) {
@@ -377,7 +483,7 @@ let indexHtml = fs.readFileSync(path.join(SITE, "index.html"), "utf8")
   .replace(/<link rel="stylesheet" href="\/style\.css[^"]*">/, ASSET_TAGS);
 indexHtml = replaceRegion(indexHtml, "hubs", homeHubs());
 indexHtml = replaceRegion(indexHtml, "paths", pathList(paths));
-const release = loadRelease(ROOT);
+indexHtml = replaceRegion(indexHtml, "proof", homeProof());
 out.set("index.html", stampRelease(indexHtml, release.version));
 
 // ---------- write or check ----------

@@ -8,6 +8,25 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-27
+
+Release notes: [docs/release/RELEASE_NOTES_v1.1.1.md](docs/release/RELEASE_NOTES_v1.1.1.md).
+
+### Security
+
+- Connectors check `credential_ref` against the caller's tenant and the connector type, so a stored credential can no longer be sent to a caller-chosen URL (C-02, D-330).
+- Ambient `gcp_cas` connectors only talk to Google's endpoint and ambient `aws_pca` connectors cannot set `endpoint_url`; under multi-tenancy only a super-admin creates them (C-01, C-03).
+- The root trust helper stages roots in a private 0700 directory with exclusive-create files and writes its state without following symlinks (B-01, B-04).
+- Plugins: per-version compiled cache, a second approver for an upgrade from a different signer, super-admin enable under multi-tenancy, and `http.do` redirects capped at 3 hops (A-02, A-03, A-05, A-06).
+- A newer trust bundle supersedes an older pending one (B-02).
+- The agent follows no redirects and requires an `https://` hub URL except on loopback (B-05).
+- The connector list scrubs upstream error text (C-11); a withheld Intune certificate with no revoker is logged and audited (C-07).
+
+### Fixed
+
+- The release workflow signs the Helm chart (cosign now logs in to GHCR), so the chart verifies and `latest` is promoted.
+- The Terraform provider builds with Go 1.27.3.
+
 ## [1.1.0] - 2026-10-27
 
 Release notes: [docs/release/RELEASE_NOTES_v1.1.0.md](docs/release/RELEASE_NOTES_v1.1.0.md).

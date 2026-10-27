@@ -95,7 +95,23 @@ type DeliveryPluginManager struct {
 
 	mu    sync.Mutex
 	rt    *delivery.Runtime
-	cache map[string]*delivery.Plugin // by sha256
+	cache map[pluginCacheKey]*delivery.Plugin
+}
+
+// pluginCacheKey identifies one loaded plugin. The module hash alone is not
+// enough: two plugin ids can pin the same bytes under different manifests and
+// grants, and each must run with its own.
+type pluginCacheKey struct{ id, version, sha string }
+
+// pluginTierRank orders trust tiers; an unknown tier ranks lowest.
+func pluginTierRank(tier string) int {
+	switch tier {
+	case PluginTierFirstParty:
+		return 3
+	case PluginTierVerified:
+		return 2
+	}
+	return 1
 }
 
 // NewDeliveryPluginManager returns nil when plugins are switched off or
@@ -105,7 +121,7 @@ func NewDeliveryPluginManager(db *sql.DB, postgres bool, actions PendingActionSt
 	if db == nil || !DeliveryPluginsEnabledFromEnv() {
 		return nil
 	}
-	return &DeliveryPluginManager{db: db, postgres: postgres, actions: actions, trust: trust, now: time.Now, cache: map[string]*delivery.Plugin{}}
+	return &DeliveryPluginManager{db: db, postgres: postgres, actions: actions, trust: trust, now: time.Now, cache: map[pluginCacheKey]*delivery.Plugin{}}
 }
 
 func (m *DeliveryPluginManager) q(query string) string {
@@ -326,9 +342,17 @@ func (m *DeliveryPluginManager) RequestEnable(ctx context.Context, id, version, 
 		return v, "", err
 	}
 	direct := v.CapabilityTier == abi.TierStandard
-	if !direct && p.EnabledVersion != "" {
-		if cur, err := m.version(ctx, id, p.EnabledVersion); err == nil && v.Manifest.Capabilities.Within(cur.Manifest.Capabilities) {
-			direct = true
+	if p.EnabledVersion != "" {
+		if cur, err := m.version(ctx, id, p.EnabledVersion); err == nil {
+			// A version with a lower trust tier than the running one (an unsigned
+			// upload under a first-party id) is a downgrade of approved code and
+			// needs a second person, whatever its capabilities.
+			downgrade := pluginTierRank(v.Tier) < pluginTierRank(cur.Tier)
+			if downgrade {
+				direct = false
+			} else if !direct && v.Manifest.Capabilities.Within(cur.Manifest.Capabilities) {
+				direct = true
+			}
 		}
 	}
 	if direct {
@@ -363,6 +387,10 @@ func (m *DeliveryPluginManager) RequestEnable(ctx context.Context, id, version, 
 func (m *DeliveryPluginManager) ExecuteEnable(ctx context.Context, action PendingAction, approver AuthPrincipal) (json.RawMessage, error) {
 	if !isAdminRole(approver.Role) {
 		return nil, errors.New("enabling a delivery plugin needs a pki-admin approver")
+	}
+	// Plugins are instance-wide (D-202); the queue only scopes by proposer tenant.
+	if !tenantBypass(approver) {
+		return nil, errors.New("instance-wide setting: platform super-admin required when multi-tenancy is on")
 	}
 	var p struct {
 		PluginID string `json:"plugin_id"`
@@ -468,7 +496,8 @@ func (m *DeliveryPluginManager) Enabled(ctx context.Context, id string) (*delive
 		return nil, v, err
 	}
 	m.mu.Lock()
-	cached := m.cache[v.SHA256]
+	key := pluginCacheKey{id: id, version: v.Version, sha: v.SHA256}
+	cached := m.cache[key]
 	m.mu.Unlock()
 	if cached != nil {
 		return cached, v, nil
@@ -488,7 +517,7 @@ func (m *DeliveryPluginManager) Enabled(ctx context.Context, id string) (*delive
 	}
 	warnIfDeprecated(v.Manifest.ID, v.Version)
 	m.mu.Lock()
-	m.cache[v.SHA256] = loaded
+	m.cache[key] = loaded
 	m.mu.Unlock()
 	return loaded, v, nil
 }

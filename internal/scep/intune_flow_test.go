@@ -207,6 +207,20 @@ func TestIntuneWithholdsAndRevokesWhenSuccessNotificationFails(t *testing.T) {
 	}
 }
 
+func TestIntuneNoRevokerStillAuditsSerialOfUnreleasedCert(t *testing.T) {
+	r := newLabelRig(t)
+	r.srv.WithWithdrawer(nil)
+	r.backend.successErr = &intune.UnavailableError{Stage: "success_notification", Detail: "down"}
+	rep, cert := r.post(t, "corp", csrFor(t, "a", "a.example"))
+	if rep.pkiStatus != pkiStatusFailure || cert != nil {
+		t.Fatalf("status %q: the certificate must not reach the device", rep.pkiStatus)
+	}
+	d := r.lastDetail()
+	if !strings.Contains(d, "serial") && !strings.Contains(d, "certificate ") || !strings.Contains(d, "stays valid") || !strings.Contains(d, "by hand") {
+		t.Fatalf("audit row does not make the unrevoked certificate recoverable: %v", d)
+	}
+}
+
 func TestIntuneGateDenialNeverReachesIntune(t *testing.T) {
 	r := newLabelRig(t)
 	r.gateErr = errors.New("denied")

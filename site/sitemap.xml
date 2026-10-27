@@ -11,6 +11,7 @@
   <url><loc>https://kryptkeeper.io/features/certificate-authorities/create-root/</loc></url>
   <url><loc>https://kryptkeeper.io/features/certificate-authorities/create-issuing-ca/</loc></url>
   <url><loc>https://kryptkeeper.io/features/certificate-authorities/import-root/</loc></url>
+  <url><loc>https://kryptkeeper.io/features/certificate-authorities/connect-existing-ca/</loc></url>
   <url><loc>https://kryptkeeper.io/features/certificate-authorities/hierarchy/</loc></url>
   <url><loc>https://kryptkeeper.io/features/certificate-authorities/guarded-operations/</loc></url>
   <url><loc>https://kryptkeeper.io/features/certificate-authorities/key-ceremony/</loc></url>
@@ -20,6 +21,7 @@
   <url><loc>https://kryptkeeper.io/features/windows-active-directory/import-adcs-templates/</loc></url>
   <url><loc>https://kryptkeeper.io/features/windows-active-directory/windows-agent/</loc></url>
   <url><loc>https://kryptkeeper.io/features/windows-active-directory/scan-windows-stores/</loc></url>
+  <url><loc>https://kryptkeeper.io/features/windows-active-directory/sql-rdp-exchange-installs/</loc></url>
   <url><loc>https://kryptkeeper.io/features/linux-macos-hosts/</loc></url>
   <url><loc>https://kryptkeeper.io/features/linux-macos-hosts/enroll-agent/</loc></url>
   <url><loc>https://kryptkeeper.io/features/linux-macos-hosts/agentless-ssh/</loc></url>
@@ -61,6 +63,7 @@
   <url><loc>https://kryptkeeper.io/features/automation-enrollment/agentless/</loc></url>
   <url><loc>https://kryptkeeper.io/features/automation-enrollment/canary-rollout/</loc></url>
   <url><loc>https://kryptkeeper.io/features/automation-enrollment/failed-renewals/</loc></url>
+  <url><loc>https://kryptkeeper.io/features/automation-enrollment/trust-store-push/</loc></url>
   <url><loc>https://kryptkeeper.io/features/alerts-notifications/</loc></url>
   <url><loc>https://kryptkeeper.io/features/alerts-notifications/channels/</loc></url>
   <url><loc>https://kryptkeeper.io/features/alerts-notifications/alert-rules/</loc></url>
@@ -85,15 +88,23 @@
   <url><loc>https://kryptkeeper.io/features/keys-kms/cloud-kms/</loc></url>
   <url><loc>https://kryptkeeper.io/features/compliance-risk/</loc></url>
   <url><loc>https://kryptkeeper.io/features/compliance-risk/risk-reports/</loc></url>
+  <url><loc>https://kryptkeeper.io/features/compliance-risk/pqc-migration-wave/</loc></url>
   <url><loc>https://kryptkeeper.io/features/compliance-risk/evidence/</loc></url>
   <url><loc>https://kryptkeeper.io/features/compliance-risk/audit-trail/</loc></url>
+  <url><loc>https://kryptkeeper.io/features/whats-new-1-1/</loc></url>
+  <url><loc>https://kryptkeeper.io/features/whats-new-1-1/connect-existing-ca/</loc></url>
+  <url><loc>https://kryptkeeper.io/features/whats-new-1-1/trust-store-push/</loc></url>
+  <url><loc>https://kryptkeeper.io/features/whats-new-1-1/sql-rdp-exchange-installs/</loc></url>
+  <url><loc>https://kryptkeeper.io/features/whats-new-1-1/pqc-migration-wave/</loc></url>
   <url><loc>https://kryptkeeper.io/paths/</loc></url>
   <url><loc>https://kryptkeeper.io/paths/stand-up-pki/</loc></url>
   <url><loc>https://kryptkeeper.io/paths/replace-adcs/</loc></url>
   <url><loc>https://kryptkeeper.io/paths/automate-renewal/</loc></url>
   <url><loc>https://kryptkeeper.io/paths/take-over-estate/</loc></url>
   <url><loc>https://kryptkeeper.io/paths/govern-prove/</loc></url>
+  <url><loc>https://kryptkeeper.io/paths/keep-your-ca/</loc></url>
   <url><loc>https://kryptkeeper.io/paths/machine-identity/</loc></url>
   <url><loc>https://kryptkeeper.io/paths/extend/</loc></url>
   <url><loc>https://kryptkeeper.io/try/</loc></url>
+  <url><loc>https://kryptkeeper.io/proof/</loc></url>
 </urlset>

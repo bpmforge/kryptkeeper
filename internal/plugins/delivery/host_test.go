@@ -6,6 +6,8 @@ package delivery
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -82,5 +84,62 @@ func TestExecNeedsGrants(t *testing.T) {
 	}
 	if len(ex.ran) != 1 {
 		t.Errorf("ran %v, want only the plain command", ex.ran)
+	}
+}
+
+type redirectTransport struct {
+	hops    int
+	seen    []http.Header
+	hosts   []string
+	forever bool
+}
+
+func (rt *redirectTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.hops++
+	rt.seen = append(rt.seen, r.Header.Clone())
+	rt.hosts = append(rt.hosts, r.URL.Host)
+	resp := &http.Response{StatusCode: 200, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}
+	if rt.forever || rt.hops == 1 {
+		resp.StatusCode = 302
+		next := "https://b.example/next"
+		if rt.forever {
+			next = "https://a.example/loop"
+		}
+		resp.Header.Set("Location", next)
+	}
+	return resp, nil
+}
+
+func redirectState(rt *redirectTransport) *callState {
+	return &callState{
+		env:     Env{HTTPClient: &http.Client{Transport: rt}},
+		granted: abi.Capabilities{Network: &abi.Network{Hosts: []string{"a.example", "b.example"}}},
+	}
+}
+
+func TestHTTPRedirectCrossHostDropsPluginHeaders(t *testing.T) {
+	rt := &redirectTransport{}
+	st := redirectState(rt)
+	_, err := st.httpDo(context.Background(), abi.HTTPRequest{URL: "https://a.example/start", Headers: map[string]string{"X-Api-Key": "s3cret"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rt.seen) != 2 || rt.seen[0].Get("X-Api-Key") == "" {
+		t.Fatalf("expected the first hop to carry the header, got %v", rt.seen)
+	}
+	if rt.hosts[1] != "b.example" || rt.seen[1].Get("X-Api-Key") != "" {
+		t.Fatalf("plugin header followed a cross-host redirect: host %s headers %v", rt.hosts[1], rt.seen[1])
+	}
+}
+
+func TestHTTPRedirectCapped(t *testing.T) {
+	rt := &redirectTransport{forever: true}
+	st := redirectState(rt)
+	_, err := st.httpDo(context.Background(), abi.HTTPRequest{URL: "https://a.example/start"})
+	if err == nil || !strings.Contains(err.Error(), "redirects") {
+		t.Fatalf("redirect loop not stopped: %v", err)
+	}
+	if rt.hops > maxRedirects+1 {
+		t.Fatalf("%d requests made, cap is %d redirects", rt.hops, maxRedirects)
 	}
 }

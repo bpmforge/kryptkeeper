@@ -1,6 +1,6 @@
 # Third-party licenses
 
-Generated: 2026-10-25 by `scripts/check-licenses.sh generate` (go-licenses v2.0.1, `go list -deps -m`, `ui/package-lock.json`).
+Generated: 2026-10-27 by `scripts/check-licenses.sh generate` (go-licenses v2.0.1, `go list -deps -m`, `ui/package-lock.json`).
 Do not edit by hand; regenerate on every dependency change. CI fails if this file lags the dependencies.
 Go scope is the shipped binaries (`./cmd/...`), transitive dependencies included. Policy: [docs/LICENSING_AND_SUPPORT.md](docs/LICENSING_AND_SUPPORT.md).
 
@@ -309,7 +309,7 @@ Go scope is the shipped binaries (`./cmd/...`), transitive dependencies included
 | balanced-match | 4.0.4 | MIT |
 | baseline-browser-mapping | 2.11.29 | Apache-2.0 |
 | bidi-js | 1.0.3 | MIT |
-| body-parser | 2.3.0 | MIT |
+| body-parser | 2.4.0 | MIT |
 | brace-expansion | 1.1.21 | MIT |
 | brace-expansion | 2.1.7 | MIT |
 | brace-expansion | 5.0.12 | MIT |
@@ -435,7 +435,7 @@ Go scope is the shipped binaries (`./cmd/...`), transitive dependencies included
 | fast-levenshtein | 2.0.6 | MIT |
 | fast-string-truncated-width | 3.0.3 | MIT |
 | fast-string-width | 3.0.2 | MIT |
-| fast-uri | 3.1.8 | BSD-3-Clause |
+| fast-uri | 3.1.9 | BSD-3-Clause |
 | fast-wrap-ansi | 0.2.0 | MIT |
 | fastq | 1.20.1 | ISC |
 | fdir | 6.5.0 | MIT |
@@ -841,6 +841,6 @@ Go scope is the shipped binaries (`./cmd/...`), transitive dependencies included
 | yocto-queue | 0.1.0 | MIT |
 | yocto-spinner | 1.1.0 | MIT |
 | yoctocolors | 2.1.2 | MIT |
-| zod | 4.3.6 | MIT |
+| zod | 4.6.7 | MIT |
 | zod-to-json-schema | 3.25.2 | ISC |
 | zod-validation-error | 4.0.2 | MIT |

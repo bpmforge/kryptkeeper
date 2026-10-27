@@ -538,3 +538,35 @@ func TestClient_PostInventoryHostShape(t *testing.T) {
 		t.Fatal("no key bytes ever ride in the push")
 	}
 }
+
+func TestValidateHubURL(t *testing.T) {
+	for _, ok := range []string{"https://hub.example.com:8443", "http://127.0.0.1:8080", "http://localhost:8080", "http://[::1]:8080", "http://127.5.5.5"} {
+		if err := agentclient.ValidateHubURL(ok); err != nil {
+			t.Errorf("%s should be accepted: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"http://hub.example.com", "http://10.0.0.5:8080", "ftp://hub", "hub.example.com", "", "http://localhost.evil.com"} {
+		if err := agentclient.ValidateHubURL(bad); err == nil {
+			t.Errorf("%q should be refused", bad)
+		}
+	}
+}
+
+func TestClientDoesNotFollowRedirectsWithToken(t *testing.T) {
+	var leaked bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Agent-Token") != "" {
+			leaked = true
+		}
+	}))
+	defer target.Close()
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/x", http.StatusTemporaryRedirect)
+	}))
+	defer hub.Close()
+	c := agentclient.New(hub.URL, "id", "secret-token", nil)
+	_, _ = c.GetTasks(context.Background())
+	if leaked {
+		t.Fatal("X-Agent-Token was forwarded to the redirect target")
+	}
+}

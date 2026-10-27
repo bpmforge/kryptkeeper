@@ -7,6 +7,7 @@ package trustpush
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -68,9 +69,32 @@ func (s *state) save(path string) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o644); err != nil { // #nosec G306 -- fingerprints and subjects of public certificates
+	dir := filepath.Dir(path)
+	// The state dir is owned by the unprivileged agent user but written by a
+	// root helper: refuse a symlinked dir, and write through an exclusive
+	// temp file so a planted link at a fixed name is never followed.
+	if fi, err := os.Lstat(dir); err != nil {
+		return err
+	} else if fi.Mode()&os.ModeSymlink != 0 || !fi.IsDir() {
+		return fmt.Errorf("trust state dir %s is not a plain directory", dir)
+	}
+	f, err := os.CreateTemp(dir, ".trust-state-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp := f.Name()
+	_, werr := f.Write(raw)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr == nil {
+		werr = os.Chmod(tmp, 0o644) // #nosec G302 -- fingerprints and subjects of public certificates
+	}
+	if werr == nil {
+		werr = os.Rename(tmp, path)
+	}
+	if werr != nil {
+		_ = os.Remove(tmp)
+	}
+	return werr
 }

@@ -1,0 +1,442 @@
+{
+  "task": "U-63",
+  "title": "Start a post-quantum migration wave with a target algorithm",
+  "sourceStory": "STORIES.md#u-63",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/"
+      },
+      "caption": "Open the app",
+      "slug": "app-home",
+      "capture": false
+    },
+    {
+      "action": "api",
+      "request": {
+        "method": "POST",
+        "path": "/templates",
+        "body": {
+          "name": "web-server-ml-dsa-90d",
+          "display_name": "Web Server, ML-DSA (90 day)",
+          "key_usage": [
+            "digitalSignature"
+          ],
+          "extended_key_usage": [
+            "serverAuth"
+          ],
+          "allowed_algorithms": [
+            "ML-DSA-65",
+            "ML-DSA-44"
+          ],
+          "validity_period": "90d",
+          "enrollee_type": "machine",
+          "active": true
+        }
+      },
+      "caption": "Setup: a template that allows ML-DSA",
+      "slug": "pqc-template",
+      "capture": false
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/reports/pqc-migration"
+      },
+      "caption": "Open /reports/pqc-migration",
+      "slug": "pqc-migration",
+      "expect": {
+        "role": "button",
+        "name": "Start migration wave"
+      },
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-63/03-pqc-migration.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Start migration wave"
+      },
+      "caption": "Click **Start migration wave**",
+      "slug": "start-wave",
+      "expect": {
+        "text": "Wave name"
+      },
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-63/04-start-wave.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Wave name"
+      },
+      "value": "internal-services-wave-1",
+      "caption": "Fill **Wave name** with \"internal-services-wave-1\"",
+      "slug": "wave-name",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-63/05-wave-name.png",
+        "annotated": "docs/guide/screenshots/U-63/05-wave-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 562,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Owner"
+      },
+      "value": "platform-team",
+      "caption": "Fill **Owner** with \"platform-team\"",
+      "slug": "wave-owner",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-63/06-wave-owner.png",
+        "annotated": "docs/guide/screenshots/U-63/06-wave-owner-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 636,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "select-certificates",
+      "expect": {
+        "text": "action-needed certificate"
+      },
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-63/07-select-certificates.png",
+        "annotated": "docs/guide/screenshots/U-63/07-select-certificates-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 337,
+          "y": 870,
+          "w": 60,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "role": "checkbox",
+        "name": "notifier.svc.acme.test"
+      },
+      "caption": "Check **notifier.svc.acme.test**",
+      "slug": "pick-notifier",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-63/08-pick-notifier.png",
+        "annotated": "docs/guide/screenshots/U-63/08-pick-notifier-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 712,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "role": "checkbox",
+        "name": "registry.acme.test"
+      },
+      "caption": "Check **registry.acme.test**",
+      "slug": "pick-registry",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-63/09-pick-registry.png",
+        "annotated": "docs/guide/screenshots/U-63/09-pick-registry-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 712,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "schedule-step",
+      "expect": {
+        "label": "Issuance template"
+      },
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-63/10-schedule-step.png",
+        "annotated": "docs/guide/screenshots/U-63/10-schedule-step-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 337,
+          "y": 754,
+          "w": 60,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Issuance template"
+      },
+      "value": "Web Server, ML-DSA (90 day)",
+      "caption": "Select \"Web Server, ML-DSA (90 day)\" in **Issuance template**",
+      "slug": "pick-pqc-template",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-63/11-pick-pqc-template.png",
+        "annotated": "docs/guide/screenshots/U-63/11-pick-pqc-template-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 598,
+          "w": 280,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Target algorithm"
+      },
+      "value": "ML-DSA-65",
+      "caption": "Select \"ML-DSA-65\" in **Target algorithm**",
+      "slug": "target-algorithm",
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-63/12-target-algorithm.png",
+        "annotated": "docs/guide/screenshots/U-63/12-target-algorithm-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 668,
+          "w": 194,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "review-step",
+      "expect": {
+        "role": "button",
+        "name": "Finish"
+      },
+      "n": 13,
+      "capture": {
+        "file": "docs/guide/screenshots/U-63/13-review-step.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Finish"
+      },
+      "caption": "Click **Finish**",
+      "slug": "wave-proposed",
+      "expect": {
+        "text": "different"
+      },
+      "n": 14,
+      "capture": {
+        "file": "docs/guide/screenshots/U-63/14-wave-proposed.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-27T12:16:05.271Z",
+    "base": "http://127.0.0.1:14310",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-63",
+    "steps": 14,
+    "shots": 12,
+    "annotated": 8,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/reports/pqc-migration"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-63/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

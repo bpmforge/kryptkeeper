@@ -270,11 +270,29 @@ func summarize(act Action, changed, total int) string {
 	return fmt.Sprintf("%s %d; %d already present", verb, changed, skipped)
 }
 
-// writeTemp places a certificate where a command line tool can read it.
+// writeTemp places a certificate where a command line tool can read it. The
+// helper runs as root, so the file goes into a fresh 0700 directory created by
+// MkdirTemp and is opened O_EXCL: a pre-planted symlink or file at a
+// predictable name in a world-writable temp dir is never followed or reused.
+// The caller removes filepath.Dir(returned path).
 func (a *Applier) writeTemp(c CA) (string, error) {
-	p := filepath.Join(a.tmp(), "kryptkeeper-trust-"+c.SHA256+".pem")
-	if err := os.WriteFile(p, c.PEM(), 0o600); err != nil {
+	dir, err := os.MkdirTemp(a.tmp(), "kryptkeeper-trust-*")
+	if err != nil {
 		return "", err
+	}
+	p := filepath.Join(dir, c.SHA256+".pem")
+	f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- inside private MkdirTemp dir
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return "", err
+	}
+	_, werr := f.Write(c.PEM())
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		_ = os.RemoveAll(dir)
+		return "", werr
 	}
 	return p, nil
 }
@@ -305,7 +323,7 @@ func (a *Applier) applyWindows(ctx context.Context, act Action, cas []CA, st *st
 				return failed("stage certificate: %v", err)
 			}
 			err = a.run(ctx, "certutil", "-addstore", "-f", store, p)
-			_ = os.Remove(p)
+			_ = os.RemoveAll(filepath.Dir(p)) // p lives in a private per-call dir
 			if err != nil {
 				return failed("%v", err)
 			}
@@ -360,7 +378,7 @@ func (a *Applier) applyDarwin(ctx context.Context, act Action, cas []CA, st *sta
 			} else {
 				err = a.run(ctx, "/usr/bin/security", "add-certificates", "-k", macSystemKeychain, p)
 			}
-			_ = os.Remove(p)
+			_ = os.RemoveAll(filepath.Dir(p)) // p lives in a private per-call dir
 			if err != nil {
 				return failed("%v", err)
 			}
@@ -376,7 +394,7 @@ func (a *Applier) applyDarwin(ctx context.Context, act Action, cas []CA, st *sta
 					return failed("stage certificate: %v", err)
 				}
 				err = a.run(ctx, "/usr/bin/security", "remove-trusted-cert", "-d", p)
-				_ = os.Remove(p)
+				_ = os.RemoveAll(filepath.Dir(p)) // p lives in a private per-call dir
 				if err != nil {
 					return failed("%v", err)
 				}

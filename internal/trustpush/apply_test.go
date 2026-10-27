@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,8 @@ type call struct {
 	stdin string
 	argv  string
 }
+
+var stagedDirRE = regexp.MustCompile(`kryptkeeper-trust-[0-9]+/`)
 
 type fakeRunner struct {
 	calls []call
@@ -52,7 +55,8 @@ func (f *fakeRunner) Run(_ context.Context, stdin []byte, name string, args ...s
 func (f *fakeRunner) argvs() []string {
 	var out []string
 	for _, c := range f.calls {
-		out = append(out, c.argv)
+		// writeTemp stages into a random private dir; normalise to the flat name.
+		out = append(out, stagedDirRE.ReplaceAllString(c.argv, "kryptkeeper-trust-"))
 	}
 	return out
 }
@@ -348,5 +352,73 @@ func TestHelperRevalidatesWhatItIsGiven(t *testing.T) {
 	res := a.ApplyLocal(context.Background(), Request{Action: ActionAdd, CertPEM: leafPEM})
 	if res.Outcome != OutcomeFailed || !strings.Contains(res.Detail, "not a CA") {
 		t.Fatalf("the root side must not trust the agent's validation: %+v", res)
+	}
+}
+
+func TestWriteTempIgnoresPlantedSymlinkAndCleansUp(t *testing.T) {
+	root, _, rootPEM := mkCert(t, "Root", true, nil, nil, time.Now().Add(time.Hour))
+	dir := t.TempDir()
+	victim := filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The old predictable names, pre-planted as symlinks.
+	for _, n := range []string{"kryptkeeper-trust-" + fp(root) + ".pem", "kryptkeeper-trust-" + fp(root)} {
+		if err := os.Symlink(victim, filepath.Join(dir, n)); err != nil {
+			t.Skip("symlinks unavailable:", err)
+		}
+	}
+	r := &fakeRunner{fail: map[string]error{"-store ": errors.New("not found")}}
+	a := &Applier{GOOS: "windows", StatePath: filepath.Join(dir, "s.json"), TempDir: dir, Runner: r}
+	if res := a.ApplyLocal(context.Background(), Request{Action: ActionAdd, CertPEM: rootPEM}); res.Outcome != OutcomeApplied {
+		t.Fatalf("%+v", res)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "keep" {
+		t.Fatal("planted symlink target was written through")
+	}
+	ents, _ := filepath.Glob(filepath.Join(dir, "kryptkeeper-trust-*"))
+	if len(ents) != 2 {
+		t.Fatalf("staging dir not cleaned up: %v", ents)
+	}
+	p, err := a.writeTemp(mustCA(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(filepath.Dir(p)); fi.Mode().Perm() != 0o700 {
+		t.Fatalf("staging dir mode %v", fi.Mode().Perm())
+	}
+	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
+		t.Fatalf("staged file mode %v", fi.Mode().Perm())
+	}
+}
+
+func TestStateSaveRefusesSymlinks(t *testing.T) {
+	base := t.TempDir()
+	victim := filepath.Join(base, "victim")
+	_ = os.WriteFile(victim, []byte("keep"), 0o600)
+
+	// symlink at the old fixed .tmp name is not followed
+	dir := filepath.Join(base, "state")
+	_ = os.MkdirAll(dir, 0o755)
+	path := filepath.Join(dir, "s.json")
+	if err := os.Symlink(victim, path+".tmp"); err != nil {
+		t.Skip("symlinks unavailable:", err)
+	}
+	st := &state{Certs: map[string]entry{"ab": {SHA1: "x"}}}
+	if err := st.save(path); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "keep" {
+		t.Fatal("symlinked .tmp was written through")
+	}
+	if _, err := loadState(path); err != nil {
+		t.Fatal(err)
+	}
+
+	// symlinked state dir is refused
+	link := filepath.Join(base, "link")
+	_ = os.Symlink(dir, link)
+	if err := st.save(filepath.Join(link, "s.json")); err == nil {
+		t.Fatal("expected refusal for symlinked state dir")
 	}
 }

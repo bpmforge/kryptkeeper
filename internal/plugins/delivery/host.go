@@ -30,6 +30,7 @@ const (
 	maxHTTPBody      = 1 << 20
 	maxHostInput     = 4 << 20
 	httpTimeout      = 30 * time.Second
+	maxRedirects     = 3
 	logLinesPerCall  = 200
 	defaultHTTPSPort = 443
 )
@@ -277,10 +278,19 @@ func (st *callState) httpDo(ctx context.Context, req abi.HTTPRequest) (*abi.HTTP
 	}
 	client := *base
 	client.Timeout = httpTimeout
-	client.CheckRedirect = func(r *http.Request, _ []*http.Request) error {
+	client.CheckRedirect = func(r *http.Request, via []*http.Request) error {
+		if len(via) >= maxRedirects {
+			return st.refuse("stopped after %d redirects", maxRedirects)
+		}
 		h, p, err := hostPort(r.URL)
 		if err != nil || r.URL.Scheme != "https" || !st.allowedHost(h, p) {
 			return st.refuse("redirect to %s is outside the grant", r.URL.Host)
+		}
+		// Headers the plugin set (often credentials) stay with the host it asked for.
+		if !strings.EqualFold(r.URL.Host, via[0].URL.Host) {
+			for k := range req.Headers {
+				r.Header.Del(k)
+			}
 		}
 		return nil
 	}

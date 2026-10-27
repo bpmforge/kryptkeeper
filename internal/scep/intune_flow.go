@@ -140,10 +140,13 @@ func (s *Server) enrollIntune(w http.ResponseWriter, r *http.Request, caObj *ca.
 	}
 	if nerr := s.intune.NotifySuccess(r.Context(), conn, txID, csr.Raw, issued.Certificate); nerr != nil {
 		detail := prefix + fmt.Sprintf("certificate %s withheld: success notification failed: %v", issued.Certificate.SerialNumber.Text(16), nerr)
+		serial := issued.Certificate.SerialNumber.Text(16)
 		if s.withdraw == nil {
-			detail += "; no revoker configured, the unreleased certificate stays valid"
+			detail += "; no revoker configured, the unreleased certificate stays valid and must be revoked by hand"
+			logging.Errorf("scep intune label %s: certificate serial=%s was withheld from the device but could not be revoked (no revoker configured); revoke it manually", l.Label, serial)
 		} else if werr := s.withdraw(r.Context(), issued.Certificate); werr != nil {
 			detail += "; revocation failed: " + werr.Error()
+			logging.Errorf("scep intune label %s: certificate serial=%s was withheld from the device but revocation failed; revoke it manually: %v", l.Label, serial, werr)
 		} else {
 			detail += "; revoked"
 		}

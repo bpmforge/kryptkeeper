@@ -70,6 +70,10 @@ Sign-in note: password login per `scripts/dev/local-review-env.sh` (the bootstra
 | U-58 | Forward security events and manage discovery sources (Settings) | PKI admin | CONFIG + EXTERNAL |
 | U-59 | Use the app on a phone-sized screen | Any user | - |
 | U-60 | See empty, error and not-found states | Any user | - |
+| U-61 | Connect an existing CA (Vault PKI) as an issuer | PKI admin | EXTERNAL |
+| U-62 | Push a CA bundle to host trust stores (second approver) | PKI admin | MULTI-USER |
+| U-63 | Start a post-quantum migration wave with a target algorithm | PKI admin | - |
+| U-64 | Install onto SQL Server, Remote Desktop or Exchange over WinRM | PKI admin | LAB |
 
 ### U-01: Sign in and find your way around
 
@@ -849,6 +853,63 @@ Sign-in note: password login per `scripts/dev/local-review-env.sh` (the bootstra
   5. `/tenants`, `/spiffe`, `/inventory/keys`, `/ct-findings` -> explanatory empty/disabled states
 - **Capture:** wrong password; 404; history not found; tenants off
 - **States exercised:** `S-notfound`, `S-login`, `S-tenants`, `S-spiffe`, `S-cloudkeys`, `S-ct`
+
+### U-61: Connect an existing CA (Vault PKI) as an issuer
+
+- **Persona / role:** PKI admin
+- **Preconditions:** A Vault PKI mount with a role, a Vault token (write-only), and Vault's TLS CA certificate. Captured against Vault 1.18 in dev-TLS mode.
+- **Flags:** EXTERNAL
+- **Steps:**
+  1. `/issuers` · button "Add issuer" -> dialog "Add issuer" (5 steps)
+  2. radio "HashiCorp Vault PKI" · "Next"
+  3. inputs "Issuer name", "Vault address", "Role", "Vault server CA certificate (PEM)" · "Next"
+  4. input "Vault token" (masked, write-only) · "Next"
+  5. "Save and test" -> badge "healthy" · "Next"
+  6. inputs "CA name", "Trust PEM" (the CA the issued certificates must chain to) · "Finish"
+  7. `/inbox` -> the new external CA is a pending action requested by the proposer; the Approve button is disabled for the proposer (dual control)
+- **Capture:** issuers list; add dialog; settings; credentials (token masked); healthy test; external CA step; pending approval
+- **Not captured:** redeeming the approved external CA and issuing through it. The Add issuer wizard only proposes the CA (`POST /cas/external` answers 202); the repeat call with `approved_action_id` has no UI yet.
+- **States exercised:** `S-issuers`, `S-issuers-dlg-add`, `S-inbox`
+
+### U-62: Push a CA bundle to host trust stores (second approver)
+
+- **Persona / role:** PKI admin (proposer); a second pki-admin approves
+- **Preconditions:** At least one registered agent. The agent applies the bundle only if the host opted in (`KRYPTKEEPER_TRUST_STORE_PUSH=true`); the capture host is offline, so the per-host row shows "waiting for the agent".
+- **Flags:** MULTI-USER
+- **Steps:**
+  1. `/agents` · Trust stores panel · inputs "Name", "CA certificates" (PEM, certificates only) · checkbox "Every Linux agent" · input "Why (shown to the approver)" · "Propose for approval"
+  2. A second administrator approves the `trust_bundle.push` pending action (hidden setup step in the capture)
+  3. `/agents` · the bundle row shows applied / not opted in / failed / waiting counts · click the row -> per-host table
+- **Capture:** trust stores panel; filled proposal; proposed toast; approved bundle; per-host status
+- **States exercised:** `S-agents`
+
+### U-63: Start a post-quantum migration wave with a target algorithm
+
+- **Persona / role:** PKI admin
+- **Preconditions:** A template that allows an ML-DSA algorithm (created by a hidden setup step)
+- **Flags:** none
+- **Steps:**
+  1. `/reports/pqc-migration` · button "Start migration wave" -> wizard
+  2. inputs "Wave name", "Owner" · "Next"
+  3. checkboxes for the certificates in the wave · "Next"
+  4. selects "Issuance template" and "Target algorithm" (ML-DSA-65) · "Next" -> review · "Finish"
+  5. Result: the wave is created and execution is proposed as a pending action a different administrator must approve
+- **Capture:** report; wizard plan, select, schedule steps; proposed result
+- **States exercised:** `S-pqc`
+
+### U-64: Install onto SQL Server, Remote Desktop or Exchange over WinRM
+
+- **Persona / role:** PKI admin
+- **Preconditions:** None to set up the target; installing needs a Windows host reachable over WinRM, which is not part of the capture.
+- **Flags:** LAB
+- **Steps:**
+  1. `/targets/setup` · radio "Agentless" · inputs "Target name", "Host" · radio "Windows" · "Next" (Discovery) · "Next" (Install)
+  2. select "Install mode" -> "Microsoft SQL Server (WinRM)" (siblings: "Remote Desktop listener (WinRM)", "Microsoft Exchange (WinRM)") · "Next"
+  3. select "Credential" -> "+ Create a new credential"; the options "Store it here" and "Fetch it from a secret manager" (Vault, OpenBao, CyberArk, Delinea)
+  4. inputs "WinRM endpoint", "Username (local administrator)", "Password" (masked), "Instance name" · "Create & use"
+  5. "Next" -> review · "Finish" -> "Target created"
+- **Capture:** each wizard step; credential form; target created
+- **States exercised:** `S-target-setup`
 
 ## 2. Element claim table
 

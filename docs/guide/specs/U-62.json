@@ -1,0 +1,289 @@
+{
+  "task": "U-62",
+  "title": "Push a CA bundle to host trust stores (second approver)",
+  "sourceStory": "STORIES.md#u-62",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/agents"
+      },
+      "caption": "Open /agents",
+      "slug": "agents-trust-stores",
+      "expect": {
+        "role": "button",
+        "name": "Propose for approval"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-62/01-agents-trust-stores.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Name",
+        "exact": true
+      },
+      "value": "Acme Vault PKI Root",
+      "caption": "Fill **Name** with \"Acme Vault PKI Root\"",
+      "slug": "bundle-name",
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-62/02-bundle-name.png",
+        "annotated": "docs/guide/screenshots/U-62/02-bundle-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 282,
+          "y": 813,
+          "w": 542,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "CA certificates"
+      },
+      "value": "-----BEGIN CERTIFICATE-----\nMIIDLTCCAhWgAwIBAgIUJ4PPGw2Mch5XIQsvsn/D1mgtDx8wDQYJKoZIhvcNAQEL\nBQAwHjEcMBoGA1UEAxMTQWNtZSBWYXVsdCBQS0kgUm9vdDAeFw0yNjEwMjcxMTU5\nNTZaFw0yNzEwMjcxMjAwMjZaMB4xHDAaBgNVBAMTE0FjbWUgVmF1bHQgUEtJIFJv\nb3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDBq5ltRuCElqsVNMYC\nmlzewfsSuZXjq4/3yfCo2NWACg++5za1rp/eeKBGAltDBfsjwjHI94gt2aIsSwZQ\nq+Tw6tM5e9TZSogKDBTYhzaHlusyNtX1KOvwsmMetytbnCQpelnYhskVGhVGrXe8\nj2Pvy2u8AYNfw6vEtuYloJk9FFNCE1I9JDS81JeZ6sYj94JwVHgqbTen/PMECfdR\nUbA6fKz4vCyStaFx4g8JogcVlRjycA1l+F6WMFZgCNRvEs+Lrf6qO1IkTog+u3ZZ\nmvl9GDNJOsr5s5FhYf2iufCtVLkpdXEoweiNxzDWalVSMJaRAo/6DQXJhXYMFlfY\nacs3AgMBAAGjYzBhMA4GA1UdDwEB/wQEAwIBBjAPBgNVHRMBAf8EBTADAQH/MB0G\nA1UdDgQWBBQ37+oBg22VP22U++EUnhoEP0xLLTAfBgNVHSMEGDAWgBQ37+oBg22V\nP22U++EUnhoEP0xLLTANBgkqhkiG9w0BAQsFAAOCAQEAli02CrR2tzOwIN0bJsWw\n22k93p/Tk/WEjwfgw22j4gxDeN6kmlavyUbNdjB6iKqv0bJHxAN0zVnWn/YpeeNG\nimq6qGr3xo0EKdGPtbhgERB4+Wv44XLdgPVUsLiDumOtpepvl26gEAaaudnDlzoM\nTbA8uw0hZF4OW3EDADJfxruAUZVcGv+yvAcLs/HdekccIQPmocECqtVMda5kQAVF\nmLG9oYZqTjXnyO2vvAizxfCQg/pRmJ7NIFAr0m8FUcQymEGEgKrh7FPi0Y0kuOKs\nfFh6e6hArc6C1cmVwuz59S5yaRJ8dubwyZdiMK6zZUM3aVMU5dlRzzHBs/MnGszS\nAA==\n-----END CERTIFICATE-----",
+      "caption": "Paste the CA certificate (certificates only, never keys)",
+      "slug": "bundle-pem",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-62/03-bundle-pem.png",
+        "annotated": "docs/guide/screenshots/U-62/03-bundle-pem-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 282,
+          "y": 788,
+          "w": 1096,
+          "h": 114
+        }
+      }
+    },
+    {
+      "action": "check",
+      "target": {
+        "role": "checkbox",
+        "name": "Every Linux agent"
+      },
+      "caption": "Check **Every Linux agent**",
+      "slug": "target-linux-agents",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-62/04-target-linux-agents.png",
+        "annotated": "docs/guide/screenshots/U-62/04-target-linux-agents-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 381,
+          "y": 443,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Why (shown to the approver)"
+      },
+      "value": "Issuing through Vault PKI: hosts must trust the Vault root before the first certificate lands",
+      "caption": "Fill **Why** for the approver",
+      "slug": "bundle-rationale",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-62/05-bundle-rationale.png",
+        "annotated": "docs/guide/screenshots/U-62/05-bundle-rationale-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 282,
+          "y": 534,
+          "w": 1096,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Propose for approval"
+      },
+      "caption": "Click **Propose for approval**",
+      "slug": "bundle-proposed",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-62/06-bundle-proposed.png",
+        "annotated": "docs/guide/screenshots/U-62/06-bundle-proposed-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 282,
+          "y": 584,
+          "w": 166,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "approveAs",
+      "as": "alice",
+      "match": "trust_bundle.push",
+      "caption": "A second administrator approves the bundle",
+      "slug": "second-approver",
+      "capture": false
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/agents"
+      },
+      "caption": "Open /agents again",
+      "slug": "bundle-approved",
+      "expect": {
+        "text": "Acme Vault PKI Root"
+      },
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-62/08-bundle-approved.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Acme Vault PKI Root"
+      },
+      "caption": "Click the bundle to see each host",
+      "slug": "per-host-status",
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-62/09-per-host-status.png",
+        "annotated": "docs/guide/screenshots/U-62/09-per-host-status-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 673,
+          "w": 1104,
+          "h": 44
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-27T12:15:48.091Z",
+    "base": "http://127.0.0.1:14310",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-62",
+    "steps": 9,
+    "shots": 8,
+    "annotated": 6,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/agents"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-62/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

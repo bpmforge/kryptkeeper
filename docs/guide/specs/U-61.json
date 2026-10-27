@@ -1,0 +1,545 @@
+{
+  "task": "U-61",
+  "title": "Connect an existing CA (Vault PKI) as an issuer",
+  "sourceStory": "STORIES.md#u-61",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/issuers"
+      },
+      "caption": "Open /issuers",
+      "slug": "issuers",
+      "expect": {
+        "role": "button",
+        "name": "Add issuer"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/01-issuers.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Add issuer"
+      },
+      "caption": "Click **Add issuer**",
+      "slug": "add-issuer",
+      "expect": {
+        "role": "radio",
+        "name": "HashiCorp Vault PKI"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/02-add-issuer.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "radio",
+        "name": "HashiCorp Vault PKI"
+      },
+      "caption": "Pick **HashiCorp Vault PKI**",
+      "slug": "pick-vault",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/03-pick-vault.png",
+        "annotated": "docs/guide/screenshots/U-61/03-pick-vault-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 306,
+          "y": 344,
+          "w": 13,
+          "h": 32
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "settings-step",
+      "expect": {
+        "label": "Issuer name"
+      },
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/04-settings-step.png",
+        "annotated": "docs/guide/screenshots/U-61/04-settings-step-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 365,
+          "y": 820,
+          "w": 60,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Issuer name"
+      },
+      "value": "Acme Vault PKI",
+      "caption": "Fill **Issuer name** with \"Acme Vault PKI\"",
+      "slug": "issuer-name",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/05-issuer-name.png",
+        "annotated": "docs/guide/screenshots/U-61/05-issuer-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 293,
+          "y": 232,
+          "w": 854,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Vault address"
+      },
+      "value": "https://localhost:18321",
+      "caption": "Fill **Vault address** with \"https://localhost:18321\"",
+      "slug": "vault-address",
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/06-vault-address.png",
+        "annotated": "docs/guide/screenshots/U-61/06-vault-address-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 293,
+          "y": 298,
+          "w": 854,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Role",
+        "exact": true
+      },
+      "value": "acme-web",
+      "caption": "Fill **Role** with \"acme-web\"",
+      "slug": "vault-role",
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/07-vault-role.png",
+        "annotated": "docs/guide/screenshots/U-61/07-vault-role-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 293,
+          "y": 496,
+          "w": 854,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Vault server CA certificate"
+      },
+      "value": "-----BEGIN CERTIFICATE-----\nMIIBszCCAVqgAwIBAgIUVjVbiOznt92dRqnjj3wCKtjv0FowCgYIKoZIzj0EAwIw\nFzEVMBMGA1UEAxMMVmF1bHQgRGV2IENBMB4XDTI2MTAyNzEyMTk1MloXDTM2MTAy\nNDEyMjA1MlowFzEVMBMGA1UEAxMMVmF1bHQgRGV2IENBMFkwEwYHKoZIzj0CAQYI\nKoZIzj0DAQcDQgAEpBy6alwDQ5ByJNVZvvvTbHq5pxHlE90dx/UNC2x/e3iEAJAd\nHJhCAqLt9Ob6YPuDZP18NqiZ2tOzCUiK328KoaOBgzCBgDAOBgNVHQ8BAf8EBAMC\nAgQwHQYDVR0lBBYwFAYIKwYBBQUHAwEGCCsGAQUFBwMCMA8GA1UdEwEB/wQFMAMB\nAf8wHQYDVR0OBBYEFMQD2PfewPvla84SeqD2PHSUB9b/MB8GA1UdIwQYMBaAFMQD\n2PfewPvla84SeqD2PHSUB9b/MAoGCCqGSM49BAMCA0cAMEQCIFgZZ9yPRspvEDnM\nM2OhDr9QvFUbLPiiK8fhbKbYP1MuAiA19V7gJWh9qivKzwfUDMdANUnjoEasvE5g\nn3Ct956cKg==\n-----END CERTIFICATE-----",
+      "caption": "Paste the Vault server CA certificate",
+      "slug": "vault-server-ca",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/08-vault-server-ca.png",
+        "annotated": "docs/guide/screenshots/U-61/08-vault-server-ca-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 293,
+          "y": 694,
+          "w": 854,
+          "h": 98
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "credentials-step",
+      "expect": {
+        "label": "Vault token"
+      },
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/09-credentials-step.png",
+        "annotated": "docs/guide/screenshots/U-61/09-credentials-step-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 365,
+          "y": 604,
+          "w": 60,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Vault token"
+      },
+      "value": "root",
+      "caption": "Fill **Vault token**",
+      "slug": "vault-token",
+      "redact": [
+        "input[type=password]"
+      ],
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/10-vault-token.png",
+        "annotated": "docs/guide/screenshots/U-61/10-vault-token-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 293,
+          "y": 542,
+          "w": 854,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "test-step",
+      "expect": {
+        "role": "button",
+        "name": "Save and test"
+      },
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/11-test-step.png",
+        "annotated": "docs/guide/screenshots/U-61/11-test-step-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 365,
+          "y": 563,
+          "w": 60,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Save and test"
+      },
+      "caption": "Click **Save and test**",
+      "slug": "connection-healthy",
+      "expect": {
+        "text": "healthy"
+      },
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/12-connection-healthy.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "external-ca-step",
+      "expect": {
+        "label": "CA name"
+      },
+      "n": 13,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/13-external-ca-step.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "CA name"
+      },
+      "value": "Acme Vault PKI CA",
+      "caption": "Fill **CA name** with \"Acme Vault PKI CA\"",
+      "slug": "external-ca-name",
+      "n": 14,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/14-external-ca-name.png",
+        "annotated": "docs/guide/screenshots/U-61/14-external-ca-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 293,
+          "y": 415,
+          "w": 854,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Trust PEM"
+      },
+      "value": "-----BEGIN CERTIFICATE-----\nMIIDLTCCAhWgAwIBAgIUFzCr493pHSUDyZF3hK2o4HNtGCQwDQYJKoZIhvcNAQEL\nBQAwHjEcMBoGA1UEAxMTQWNtZSBWYXVsdCBQS0kgUm9vdDAeFw0yNjEwMjcxMjIw\nMjNaFw0yNzEwMjcxMjIwNTNaMB4xHDAaBgNVBAMTE0FjbWUgVmF1bHQgUEtJIFJv\nb3QwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC8yEr0VYUQx5rqK4BZ\nt81RFbFpGiYlR/y+YpNH2yqBrUk9bxkD2YVrKFgyBRbRYwaq2qnWOWL/dkjUMrod\nWY9/Jo/KSjo10heztMDkjSJHMl8+vEygA4Ev+OrBJRYyiGvtmEykGdjN6KspZjY9\nNcSW5d9+R1sIjO+4X3QJ6Mm8gsZhRqaSodaMsHS/OJdrBwEKi/aCZGCUOg3q1fy0\nGAJZGX1ZZSGo0txi+v6u9ZJJtl5iVBSPymPDa1pqnXR8UV77GhxPo2z6ZEosC9Sb\nz320+t5FWJqgpWR99Rh6mm1hY/fnfY6mO+v8YKKe9Fr7jF43PEy0yYhdH/mAYqBi\nwsk7AgMBAAGjYzBhMA4GA1UdDwEB/wQEAwIBBjAPBgNVHRMBAf8EBTADAQH/MB0G\nA1UdDgQWBBTSWdg7CzHBOo7eGVvN70XhPrS+QjAfBgNVHSMEGDAWgBTSWdg7CzHB\nOo7eGVvN70XhPrS+QjANBgkqhkiG9w0BAQsFAAOCAQEAQ5AgMab7fgFqSg/iJNih\nC9hafhvlwZho40BQWiLKoIXV2e3MZcSGqHxBSUQWsc0ewBBdR7kHTSltjF6ZSNro\nopgYabwNU7ISqBzPZFaQ3qIY/bGqzFLt8WUcE3aXS9myMBdmGI0uYj8zPY6PBw77\nM5DgOWiQHKMgW7+gFCdWLkVcLbtsUxZhEyw+I9591MntVpOmR+mHapZ70JKwDtQX\nLoCivrhOUJFc9le+HLQSxmrMV9rrGmqbORrFZNQEgHGGWSwNGvTqCGDOn/+pvltW\no2tJJGnFpDQgp9CoFJpAkWzeSKI7gCivTXwc5/y9AaiPtgvH1lvNAAPouuuLfxGn\nCg==\n-----END CERTIFICATE-----",
+      "caption": "Paste the Vault root as the trust PEM",
+      "slug": "external-ca-trust",
+      "n": 15,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/15-external-ca-trust.png",
+        "annotated": "docs/guide/screenshots/U-61/15-external-ca-trust-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 293,
+          "y": 481,
+          "w": 854,
+          "h": 138
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Finish"
+      },
+      "caption": "Click **Finish**",
+      "slug": "finish",
+      "capture": false
+    },
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/inbox"
+      },
+      "caption": "Open /inbox",
+      "slug": "approvals-inbox",
+      "capture": false,
+      "expect": {
+        "text": "ca_import"
+      }
+    },
+    {
+      "action": "find",
+      "target": {
+        "text": "ca_import of key external"
+      },
+      "caption": "The new external CA waits here for a second administrator",
+      "slug": "ca-awaits-approval",
+      "expect": {
+        "text": "ca_import of key external"
+      },
+      "n": 18,
+      "capture": {
+        "file": "docs/guide/screenshots/U-61/18-ca-awaits-approval.png",
+        "annotated": "docs/guide/screenshots/U-61/18-ca-awaits-approval-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 282,
+          "y": 788,
+          "w": 654,
+          "h": 20
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-27T12:21:45.275Z",
+    "base": "http://127.0.0.1:14310",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-61",
+    "steps": 18,
+    "shots": 16,
+    "annotated": 12,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/inbox"
+  }
+}

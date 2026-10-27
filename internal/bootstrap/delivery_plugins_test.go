@@ -307,3 +307,130 @@ func TestDeliveryPluginAPIRefusals(t *testing.T) {
 		t.Errorf("plugins off: %d %s", off.Code, off.Body.String())
 	}
 }
+
+// otherIDManifest returns the example manifest re-identified as id.
+func otherIDManifest(t *testing.T, id, version string, mutate func(caps map[string]any)) json.RawMessage {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(manifestVariant(t, version, mutate), &m); err != nil {
+		t.Fatal(err)
+	}
+	m["id"] = id
+	raw, _ := json.Marshal(m)
+	return raw
+}
+
+func (h *pluginHarness) enable(t *testing.T, id, version string) *httptest.ResponseRecorder {
+	t.Helper()
+	return h.call(t, http.MethodPost, "/api/v1/delivery-plugins/"+id+"/versions/"+version+"/enable", "test-token", nil)
+}
+
+// A-02: two plugin ids pinning the same module bytes must each load with
+// their own manifest and grant, never share one cached instance.
+func TestDeliveryPluginCacheIsPerIDAndVersion(t *testing.T) {
+	h := newPluginHarness(t)
+	ctx := context.Background()
+	const idA, idB = "kryptkeeper.example-device", "kryptkeeper.example-other"
+	std := func(c map[string]any) { delete(c, "receive_private_key"); delete(c, "network") }
+	if rec := h.install(t, manifestVariant(t, "1.0.0", std)); rec.Code != http.StatusCreated {
+		t.Fatalf("install A: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := h.install(t, otherIDManifest(t, idB, "1.0.0", nil)); rec.Code != http.StatusCreated {
+		t.Fatalf("install B: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := h.enable(t, idA, "1.0.0"); rec.Code != http.StatusOK {
+		t.Fatalf("enable A: %d %s", rec.Code, rec.Body.String())
+	}
+	actionID := pendingActionID(t, h.enable(t, idB, "1.0.0"))
+	if rec := h.call(t, http.MethodPost, "/api/v1/pending-actions/"+actionID+"/approve", h.adminKey, nil); rec.Code != http.StatusOK {
+		t.Fatalf("approve B: %d %s", rec.Code, rec.Body.String())
+	}
+	pa, va, err := h.mgr.Enabled(ctx, idA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pb, vb, err := h.mgr.Enabled(ctx, idB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if va.SHA256 != vb.SHA256 {
+		t.Fatal("test needs both ids on the same module bytes")
+	}
+	if pa == pb {
+		t.Fatal("two plugin ids with the same wasm share one loaded plugin (and grant)")
+	}
+	if pa2, _, _ := h.mgr.Enabled(ctx, idA); pa2 != pa {
+		t.Fatal("the cache no longer reuses a loaded plugin for the same id and version")
+	}
+}
+
+func (h *pluginHarness) setTier(t *testing.T, id, version, tier string) {
+	t.Helper()
+	if _, err := h.mgr.db.Exec(`UPDATE delivery_plugin_versions SET tier = ? WHERE plugin_id = ? AND version = ?`, tier, id, version); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A-03: the within-capabilities shortcut is for versions at least as
+// trusted as the running one; a downgrade needs a second person.
+func TestDeliveryPluginTrustDowngradeNeedsApproval(t *testing.T) {
+	h := newPluginHarness(t)
+	ctx := context.Background()
+	const id = "kryptkeeper.example-device"
+	for _, v := range []string{"1.0.0", "1.0.1", "1.0.2"} {
+		if rec := h.install(t, manifestVariant(t, v, nil)); rec.Code != http.StatusCreated {
+			t.Fatalf("install %s: %d %s", v, rec.Code, rec.Body.String())
+		}
+	}
+	h.setTier(t, id, "1.0.0", PluginTierFirstParty)
+	actionID := pendingActionID(t, h.enable(t, id, "1.0.0"))
+	if rec := h.call(t, http.MethodPost, "/api/v1/pending-actions/"+actionID+"/approve", h.adminKey, nil); rec.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// community 1.0.1 with identical capabilities: pending, 1.0.0 keeps running.
+	pendingActionID(t, h.enable(t, id, "1.0.1"))
+	if _, v, _ := h.mgr.Enabled(ctx, id); v.Version != "1.0.0" {
+		t.Fatalf("a trust downgrade replaced the approved version: running %s", v.Version)
+	}
+
+	// Same tier, within capabilities: direct.
+	h.setTier(t, id, "1.0.2", PluginTierFirstParty)
+	if rec := h.enable(t, id, "1.0.2"); rec.Code != http.StatusOK {
+		t.Fatalf("same-tier upgrade: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, v, _ := h.mgr.Enabled(ctx, id); v.Version != "1.0.2" {
+		t.Fatalf("running %s, want 1.0.2", v.Version)
+	}
+}
+
+func TestDeliveryPluginStandardDowngradeNeedsApproval(t *testing.T) {
+	h := newPluginHarness(t)
+	const id = "kryptkeeper.example-device"
+	std := func(c map[string]any) { delete(c, "receive_private_key"); delete(c, "network") }
+	for _, v := range []string{"1.0.0", "1.0.1"} {
+		if rec := h.install(t, manifestVariant(t, v, std)); rec.Code != http.StatusCreated {
+			t.Fatalf("install %s: %d", v, rec.Code)
+		}
+	}
+	h.setTier(t, id, "1.0.0", PluginTierFirstParty)
+	if rec := h.enable(t, id, "1.0.0"); rec.Code != http.StatusOK {
+		t.Fatalf("enable first-party standard: %d %s", rec.Code, rec.Body.String())
+	}
+	pendingActionID(t, h.enable(t, id, "1.0.1"))
+}
+
+// A-05: plugins are instance-wide, so a tenant-scoped admin may not approve.
+func TestDeliveryPluginExecuteEnableNeedsInstanceAdminUnderMultiTenancy(t *testing.T) {
+	h := newPluginHarness(t)
+	t.Setenv("MULTI_TENANCY", "true")
+	action := PendingAction{ID: "a1", Params: json.RawMessage(`{}`)}
+	_, err := h.mgr.ExecuteEnable(context.Background(), action, AuthPrincipal{ID: "t-admin", Role: "pki-admin"})
+	if err == nil || !strings.Contains(err.Error(), "multi-tenancy") {
+		t.Fatalf("tenant admin: %v", err)
+	}
+	_, err = h.mgr.ExecuteEnable(context.Background(), action, AuthPrincipal{ID: "root", Role: "pki-admin", SuperAdmin: true})
+	if err == nil || strings.Contains(err.Error(), "multi-tenancy") {
+		t.Fatalf("super-admin should pass the tenancy guard, got %v", err)
+	}
+}

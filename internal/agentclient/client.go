@@ -12,7 +12,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -50,8 +52,36 @@ func New(hubURL, agentID, token string, rootCAs *x509.CertPool) *Client {
 		HTTPClient: &http.Client{
 			Timeout:   30 * time.Second,
 			Transport: hubTransport(rootCAs),
+			// Go copies custom headers (X-Agent-Token) onto redirects, even
+			// cross-host or https->http. The agent API never redirects, so
+			// refuse rather than leak the token.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}
+}
+
+// ValidateHubURL refuses a hub URL that is not https unless its host is
+// loopback (localhost, 127.0.0.0/8, ::1), so the agent token and enrolment
+// secret are never sent in clear text over a real network.
+func ValidateHubURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("KRYPTKEEPER_HUB_URL is not a valid absolute URL")
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return nil
+	case "http":
+		h := strings.ToLower(u.Hostname())
+		if h == "localhost" || strings.HasSuffix(h, ".localhost") {
+			return nil
+		}
+		if ip := net.ParseIP(h); ip != nil && ip.IsLoopback() {
+			return nil
+		}
+		return fmt.Errorf("KRYPTKEEPER_HUB_URL must use https:// (plain http is allowed only for loopback hosts)")
+	}
+	return fmt.Errorf("KRYPTKEEPER_HUB_URL scheme %q is not supported; use https://", u.Scheme)
 }
 
 // hubTransport returns an http.Transport pinned to TLS 1.2+ and, when

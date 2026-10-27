@@ -14,8 +14,10 @@ deciding where it goes on the site.
 | `docs/guide/STORIES.md`, `docs/guide/specs/U-*.json` | The user stories and the capture specs. Step captions on the site come from each spec step's `caption`. | Yes, through the guide workflow |
 | `docs/guide/screenshots/` | Gated screenshots from a capture run. Gitignored. | No, regenerate them |
 | `site/shots/<spec>/<nn>-<slug>.webp` | Screenshots converted for the site (the annotated version when a step has one). Committed. | No, run `images.mjs` |
-| `site/features/**`, `site/paths/**`, `site/sitemap.xml` | Generated pages. | No, run `build.mjs` |
-| `site/index.html` | Home page. The regions between `<!-- hubs:start/end -->` and `<!-- paths:start/end -->` are generated; the rest is hand-written. | Outside the markers only |
+| `site/content/proof.json` | Source of the `/proof/` page and the home page's proof summary: one entry per lab record in `docs/release/` (environment, what ran, result, counts, version, what is not proven, record path) plus the "Not proven yet" list from `docs/ROADMAP.md`. Only record what the record shows. Each entry also has `evidence` (excerpts that must appear verbatim in a file under `docs/`, at most 25 lines, checked by `--check`) and optional `shots` (images under `site/`, with a caption and capture date). Evidence, labels and captions fail the check if they hold a private IPv4 address, a lab hostname or a token pattern. | Yes |
+| `site/proof/shots/*.webp` | Public-evidence screenshots (crt.sh, the release page, a rendered terminal), cropped from 1440-wide captures. Check each for lab IPs and hostnames before committing. | No (captured once) |
+| `site/features/**`, `site/paths/**`, `site/proof/index.html`, `site/sitemap.xml` | Generated pages. | No, run `build.mjs` |
+| `site/index.html` | Home page. The regions between `<!-- hubs:start/end -->`, `<!-- paths:start/end -->` and `<!-- proof:start/end -->` are generated; the rest is hand-written. | Outside the markers only |
 | `site/style.css`, `site/lightbox.js`, `site/_headers`, `site/_redirects` | Hand-written. | Yes |
 | `site/tools/` | `content.mjs` (loading and validation), `build.mjs` (pages and `--check`), `images.mjs` (WebP conversion), `content.test.mjs`. | Yes |
 
@@ -81,7 +83,7 @@ about 35 KB per 1440-pixel screen; the whole site is about 16 MB of images.
 
 1. Make sure the public GitHub release exists (`github.com/bpmforge/kryptkeeper/releases/tag/vX.Y.Z`).
 2. Set `version` in `site/content/release.json`, update the hand-written "What's proven"
-   section in `site/index.html` from that release's lab record, then run `node site/tools/build.mjs`.
+   record links in `site/content/proof.json` (they point at the release tag, so the files must exist at that tag), then run `node site/tools/build.mjs`.
    The build stamps the version into every download link, image tag and label.
 3. `node site/tools/build.mjs --check --check-release` must pass before deploying. `--check`
    fails on any other `vX.Y.Z` anywhere on the site; `--check-release` fails if the release

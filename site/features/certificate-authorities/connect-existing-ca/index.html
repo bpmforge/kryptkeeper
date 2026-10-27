@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Keep the CA you already use · Certificate authorities · Kryptkeeper</title>
+<meta name="description" content="Connect HashiCorp Vault PKI as an issuer, test it, and propose it as an external CA for a second administrator to approve.">
+<meta property="og:title" content="Keep the CA you already use · Certificate authorities · Kryptkeeper">
+<meta property="og:description" content="Connect HashiCorp Vault PKI as an issuer, test it, and propose it as an external CA for a second administrator to approve.">
+<meta property="og:url" content="https://kryptkeeper.io/features/certificate-authorities/connect-existing-ca/">
+<meta property="og:type" content="website">
+<link rel="canonical" href="https://kryptkeeper.io/features/certificate-authorities/connect-existing-ca/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/style.css?v=47f4cc99b1">
+<script src="/lightbox.js?v=13e3647da7" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="wrap">
+
+<header class="site">
+  <a class="brand" href="/" aria-label="Kryptkeeper home">
+    <span class="tile" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="m9 12 2 2 4-4"/></svg></span>
+    <span class="word">Kryptkeeper</span>
+  </a>
+  <nav class="top" aria-label="Site">
+    <a href="/features/">Features</a>
+    <a href="/paths/">Paths</a>
+    <a href="/features/build-your-own/">Build your own</a>
+    <a href="/proof/">Proof</a>
+    <a href="/#install">Install</a>
+    <a href="https://github.com/bpmforge/kryptkeeper">GitHub</a>
+  </nav>
+</header>
+
+<main id="main" class="page">
+<div class="crumb-row"><nav class="crumbs" aria-label="Breadcrumb"><ol><li><a href="/features/">Features</a></li><li><a href="/features/certificate-authorities/">Certificate authorities</a></li><li aria-current="page">Keep the CA you already use</li></ol></nav></div>
+<header class="page-head">
+  <span class="label">Walkthrough · 18 steps</span>
+  <h1>Keep the CA you already use</h1>
+  <p class="lede">Connect HashiCorp Vault PKI as an issuer, test it, and propose it as an external CA for a second administrator to approve.</p>
+  <p class="as">As <span class="pill role">pki-admin</span></p>
+</header>
+<ol class="steps">
+  <li class="step"><div class="step-head"><span class="label">Step <b>1</b></span><p>Open /issuers</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/01-issuers.webp"><img src="/shots/U-61/01-issuers.webp" width="1440" height="900" alt="Open /issuers" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>2</b></span><p>Click <strong>Add issuer</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/02-add-issuer.webp"><img src="/shots/U-61/02-add-issuer.webp" width="1440" height="900" alt="Click Add issuer" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>3</b></span><p>Pick <strong>HashiCorp Vault PKI</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/03-pick-vault.webp"><img src="/shots/U-61/03-pick-vault.webp" width="1440" height="900" alt="Pick HashiCorp Vault PKI" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>4</b></span><p>Click <strong>Next</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/04-settings-step.webp"><img src="/shots/U-61/04-settings-step.webp" width="1440" height="900" alt="Click Next" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>5</b></span><p>Fill <strong>Issuer name</strong> with &quot;Acme Vault PKI&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/05-issuer-name.webp"><img src="/shots/U-61/05-issuer-name.webp" width="1440" height="900" alt="Fill Issuer name with &quot;Acme Vault PKI&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>6</b></span><p>Fill <strong>Vault address</strong> with &quot;https://localhost:18321&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/06-vault-address.webp"><img src="/shots/U-61/06-vault-address.webp" width="1440" height="900" alt="Fill Vault address with &quot;https://localhost:18321&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>7</b></span><p>Fill <strong>Role</strong> with &quot;acme-web&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/07-vault-role.webp"><img src="/shots/U-61/07-vault-role.webp" width="1440" height="900" alt="Fill Role with &quot;acme-web&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>8</b></span><p>Paste the Vault server CA certificate</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/08-vault-server-ca.webp"><img src="/shots/U-61/08-vault-server-ca.webp" width="1440" height="900" alt="Paste the Vault server CA certificate" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>9</b></span><p>Click <strong>Next</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/09-credentials-step.webp"><img src="/shots/U-61/09-credentials-step.webp" width="1440" height="900" alt="Click Next" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>10</b></span><p>Fill <strong>Vault token</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/10-vault-token.webp"><img src="/shots/U-61/10-vault-token.webp" width="1440" height="900" alt="Fill Vault token" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>11</b></span><p>Click <strong>Next</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/11-test-step.webp"><img src="/shots/U-61/11-test-step.webp" width="1440" height="900" alt="Click Next" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>12</b></span><p>Click <strong>Save and test</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/12-connection-healthy.webp"><img src="/shots/U-61/12-connection-healthy.webp" width="1440" height="900" alt="Click Save and test" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>13</b></span><p>Click <strong>Next</strong></p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/13-external-ca-step.webp"><img src="/shots/U-61/13-external-ca-step.webp" width="1440" height="900" alt="Click Next" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>14</b></span><p>Fill <strong>CA name</strong> with &quot;Acme Vault PKI CA&quot;</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/14-external-ca-name.webp"><img src="/shots/U-61/14-external-ca-name.webp" width="1440" height="900" alt="Fill CA name with &quot;Acme Vault PKI CA&quot;" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>15</b></span><p>Paste the Vault root as the trust PEM</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/15-external-ca-trust.webp"><img src="/shots/U-61/15-external-ca-trust.webp" width="1440" height="900" alt="Paste the Vault root as the trust PEM" loading="lazy" decoding="async"></a></figure></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>16</b></span><p>Click <strong>Finish</strong></p></div></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>17</b></span><p>Open /inbox</p></div></li>
+  <li class="step"><div class="step-head"><span class="label">Step <b>18</b></span><p>The new external CA waits here for a second administrator</p></div>
+    <figure class="shot-fig"><a class="shot-link" href="/shots/U-61/18-ca-awaits-approval.webp"><img src="/shots/U-61/18-ca-awaits-approval.webp" width="1440" height="900" alt="The new external CA waits here for a second administrator" loading="lazy" decoding="async"></a></figure></li>
+</ol>
+<aside class="path-box" aria-labelledby="in-paths"><h2 id="in-paths">Part of these paths</h2><ul><li>Step 1 of 4 in <a href="/paths/keep-your-ca/">Keep the CA you already use</a>. <a href="/features/automation-enrollment/trust-store-push/">Next: Push a CA to your hosts' trust stores →</a></li></ul></aside>
+<nav class="pager" aria-label="More in Certificate authorities"><a class="prev" href="/features/certificate-authorities/import-root/"><span class="label">Previous</span>Import an existing root</a><a class="next" href="/features/certificate-authorities/hierarchy/"><span class="label">Next</span>Inspect a CA and its hierarchy</a></nav>
+<aside class="path-box" aria-labelledby="hub-docs"><h2 id="hub-docs">Docs for Certificate authorities</h2><ul class="link-list"><li><a href="https://github.com/bpmforge/kryptkeeper/blob/main/docs/guides/getting-started.md">Getting started</a></li></ul></aside>
+
+</main>
+
+<footer class="site">
+  <div>
+    <p>Kryptkeeper · Apache License 2.0</p>
+    <p><a href="https://github.com/bpmforge/kryptkeeper">github.com/bpmforge/kryptkeeper</a></p>
+  </div>
+  <div class="contacts">
+    <span>Security reports: <span class="addr">security@kryptkeeper.io</span> or <a href="https://github.com/bpmforge/kryptkeeper/security/advisories/new">a private advisory</a></span>
+    <span>Everything else: <span class="addr">contact@kryptkeeper.io</span></span>
+  </div>
+</footer>
+
+</div>
+</body>
+</html>

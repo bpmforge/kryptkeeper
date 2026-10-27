@@ -65,6 +65,47 @@ func BuildConnectorRegistry(ctx context.Context, store ConnectorStore, provider 
 	return registry, nil
 }
 
+var errConnectorCredentialRef = errors.New("credential_ref does not name a credential you may use")
+
+// connectorCredentialTypes maps a connector type to the outbound credential
+// types it may bind. Only the cloud kinds have a clean mapping (their payload
+// is a cloud-IAM JSON blob); every other kind resolves api_token-shaped or
+// custom payloads under varying type names, so those get the tenant check only.
+var connectorCredentialTypes = map[string][]string{
+	"aws_pca": {CredentialTypeCloudIAM},
+	"gcp_cas": {CredentialTypeCloudIAM},
+}
+
+// connectorCredentialUsable reports whether the credential exists, is visible
+// to the principal's tenant and fits the connector kind. Failures are uniform.
+func connectorCredentialUsable(ctx context.Context, creds OutboundCredentialStore, pd AuthPrincipal, rec ConnectorRecord) bool {
+	meta, err := creds.Get(ctx, rec.CredentialRef)
+	if err != nil || !stampedTenantVisible(pd, meta.Tenant) {
+		return false
+	}
+	if allowed, ok := connectorCredentialTypes[rec.Type]; ok {
+		for _, t := range allowed {
+			if meta.CredentialType == t {
+				return true
+			}
+		}
+		return false
+	}
+	return true
+}
+
+// connectorUsesAmbientAuth is true for aws_pca/gcp_cas records with auth "ambient".
+func connectorUsesAmbientAuth(rec ConnectorRecord) bool {
+	if rec.Type != "aws_pca" && rec.Type != "gcp_cas" {
+		return false
+	}
+	var cfg upstreamConnectorConfig
+	if json.Unmarshal([]byte(rec.ConfigJSON), &cfg) != nil {
+		return false
+	}
+	return upstreamAmbient(rec.Type, cfg)
+}
+
 type connectorListEntry struct {
 	ConnectorRecord
 	Health connectors.Health `json:"health"`
@@ -112,6 +153,8 @@ func registerConnectorHandlers(mux *http.ServeMux, auth *Authenticator, store Co
 					probeCtx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 					entry.Health = c.Health(probeCtx)
 					cancel()
+					// C-11: same scrubbing as /connectors/{id}/test.
+					entry.Health.Detail = scrubUpstreamError(entry.Health.Detail)
 				} else {
 					entry.Health = connectors.Health{Status: "unknown", Detail: "connector type " + rec.Type + " has no runtime implementation"}
 				}
@@ -138,6 +181,26 @@ func registerConnectorHandlers(mux *http.ServeMux, auth *Authenticator, store Co
 				emitAuditEvent(r, auditProvider, pd.ID, "connector.create", "connector", "connectors", AuditOutcomeFailure)
 				writeBadRequestJSON(w, err.Error())
 				return
+			}
+			// C-03: ambient cloud identity is the hub's own IAM identity, a
+			// cross-tenant confused deputy under multi-tenancy.
+			if connectorUsesAmbientAuth(req) &&
+				denyNonSuperAdminGlobal(w, r, auditProvider, pd, "connector.create", "connector", "connectors") {
+				return
+			}
+			// C-02: existing connectors created before this check are not
+			// re-validated; only create is gated.
+			if req.CredentialRef != "" {
+				if creds == nil {
+					emitAuditEvent(r, auditProvider, pd.ID, "connector.create", "connector", "connectors", AuditOutcomeFailure)
+					writeServiceUnavailable(w, "credential store not configured")
+					return
+				}
+				if !connectorCredentialUsable(r.Context(), creds, pd, req) {
+					emitAuditEvent(r, auditProvider, pd.ID, "connector.create", "connector", "connectors", AuditOutcomeFailure)
+					writeBadRequestJSON(w, errConnectorCredentialRef.Error())
+					return
+				}
 			}
 			id, err := newConnectorID()
 			if err != nil {

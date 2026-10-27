@@ -1,0 +1,659 @@
+{
+  "task": "U-64",
+  "title": "Install onto SQL Server, Remote Desktop or Exchange over WinRM",
+  "sourceStory": "STORIES.md#u-64",
+  "persona": "ada.admin (pki-admin)",
+  "steps": [
+    {
+      "action": "goTo",
+      "target": {
+        "url": "/targets/setup"
+      },
+      "caption": "Open /targets/setup",
+      "slug": "target-setup",
+      "expect": {
+        "role": "radio",
+        "name": "Agentless"
+      },
+      "n": 1,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/01-target-setup.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "radio",
+        "name": "Agentless"
+      },
+      "caption": "Click **Agentless**",
+      "slug": "agentless-wizard",
+      "expect": {
+        "label": "Target name"
+      },
+      "n": 2,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/02-agentless-wizard.png",
+        "annotated": "docs/guide/screenshots/U-64/02-agentless-wizard-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 836,
+          "y": 137,
+          "w": 580,
+          "h": 94
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Target name"
+      },
+      "value": "sql-01",
+      "caption": "Fill **Target name** with \"sql-01\"",
+      "slug": "target-name",
+      "n": 3,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/03-target-name.png",
+        "annotated": "docs/guide/screenshots/U-64/03-target-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 418,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Host"
+      },
+      "value": "sql-01.acme.test",
+      "caption": "Fill **Host** with \"sql-01.acme.test\"",
+      "slug": "target-host",
+      "n": 4,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/04-target-host.png",
+        "annotated": "docs/guide/screenshots/U-64/04-target-host-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 488,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "radio",
+        "name": "Windows"
+      },
+      "caption": "Click **Windows**",
+      "slug": "target-os-windows",
+      "n": 5,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/05-target-os-windows.png",
+        "annotated": "docs/guide/screenshots/U-64/05-target-os-windows-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 276,
+          "y": 671,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "discovery-step",
+      "expect": {
+        "label": "Discovery mode"
+      },
+      "n": 6,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/06-discovery-step.png",
+        "annotated": "docs/guide/screenshots/U-64/06-discovery-step-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 337,
+          "y": 512,
+          "w": 60,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "install-step",
+      "expect": {
+        "label": "Install mode"
+      },
+      "n": 7,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/07-install-step.png",
+        "annotated": "docs/guide/screenshots/U-64/07-install-step-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 337,
+          "y": 512,
+          "w": 60,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Install mode"
+      },
+      "value": "Microsoft SQL Server (WinRM)",
+      "caption": "Select \"Microsoft SQL Server (WinRM)\" in **Install mode**",
+      "slug": "install-mode-sql-server",
+      "n": 8,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/08-install-mode-sql-server.png",
+        "annotated": "docs/guide/screenshots/U-64/08-install-mode-sql-server-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 450,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "credential-step",
+      "expect": {
+        "label": "Credential"
+      },
+      "n": 9,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/09-credential-step.png",
+        "annotated": "docs/guide/screenshots/U-64/09-credential-step-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 337,
+          "y": 680,
+          "w": 60,
+          "h": 44
+        }
+      }
+    },
+    {
+      "action": "select",
+      "target": {
+        "label": "Credential"
+      },
+      "value": "+ Create a new credential",
+      "caption": "Select \"+ Create a new credential\" in **Credential**",
+      "slug": "new-credential",
+      "n": 10,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/10-new-credential.png",
+        "annotated": "docs/guide/screenshots/U-64/10-new-credential-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 265,
+          "y": 450,
+          "w": 1130,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "radio",
+        "name": "Fetch it from a secret manager"
+      },
+      "caption": "Click **Fetch it from a secret manager**",
+      "slug": "secret-manager-option",
+      "n": 11,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/11-secret-manager-option.png",
+        "annotated": "docs/guide/screenshots/U-64/11-secret-manager-option-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 635,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "radio",
+        "name": "Store it here"
+      },
+      "caption": "Click **Store it here**",
+      "slug": "store-here-option",
+      "n": 12,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/12-store-here-option.png",
+        "annotated": "docs/guide/screenshots/U-64/12-store-here-option-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 611,
+          "w": 13,
+          "h": 13
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Name",
+        "exact": true
+      },
+      "value": "sql-01 WinRM login",
+      "caption": "Fill **Name** with \"sql-01 WinRM login\"",
+      "slug": "credential-name",
+      "n": 13,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/13-credential-name.png",
+        "annotated": "docs/guide/screenshots/U-64/13-credential-name-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 533,
+          "w": 1104,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "WinRM endpoint"
+      },
+      "value": "http://sql-01.acme.test:5985/wsman",
+      "caption": "Fill **WinRM endpoint** with \"http://sql-01.acme.test:5985/wsman\"",
+      "slug": "winrm-endpoint",
+      "n": 14,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/14-winrm-endpoint.png",
+        "annotated": "docs/guide/screenshots/U-64/14-winrm-endpoint-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 683,
+          "w": 1104,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Username (local administrator)"
+      },
+      "value": "ACME\\svc-pki",
+      "caption": "Fill **Username** with \"ACME\\svc-pki\"",
+      "slug": "winrm-username",
+      "n": 15,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/15-winrm-username.png",
+        "annotated": "docs/guide/screenshots/U-64/15-winrm-username-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 753,
+          "w": 1104,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Password",
+        "exact": true
+      },
+      "value": "lab-only-placeholder",
+      "caption": "Fill **Password**",
+      "slug": "winrm-password",
+      "redact": [
+        "input[type=password]"
+      ],
+      "n": 16,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/16-winrm-password.png",
+        "annotated": "docs/guide/screenshots/U-64/16-winrm-password-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 823,
+          "w": 1104,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "fill",
+      "target": {
+        "label": "Instance name"
+      },
+      "value": "SQLEXPRESS",
+      "caption": "Fill **Instance name** with \"SQLEXPRESS\"",
+      "slug": "sql-instance",
+      "n": 17,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/17-sql-instance.png",
+        "annotated": "docs/guide/screenshots/U-64/17-sql-instance-annotated.png",
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        },
+        "boundingBox": {
+          "x": 278,
+          "y": 872,
+          "w": 1104,
+          "h": 38
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Create & use"
+      },
+      "caption": "Click **Create & use**",
+      "slug": "credential-created",
+      "n": 18,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/18-credential-created.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Next"
+      },
+      "caption": "Click **Next**",
+      "slug": "review-step",
+      "expect": {
+        "role": "button",
+        "name": "Finish"
+      },
+      "n": 19,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/19-review-step.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    },
+    {
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Finish"
+      },
+      "caption": "Click **Finish**",
+      "slug": "target-saved",
+      "n": 20,
+      "capture": {
+        "file": "docs/guide/screenshots/U-64/20-target-saved.png",
+        "annotated": null,
+        "gates": {
+          "A": "PASS",
+          "B": "PASS",
+          "C": "PASS",
+          "attempts": 1
+        },
+        "viewport": {
+          "width": 1440,
+          "height": 900,
+          "deviceScaleFactor": 1
+        }
+      }
+    }
+  ],
+  "lastRun": {
+    "at": "2026-10-27T12:16:32.560Z",
+    "base": "http://127.0.0.1:14310",
+    "theme": "light",
+    "viewport": "1440x900",
+    "task": "U-64",
+    "steps": 20,
+    "shots": 20,
+    "annotated": 16,
+    "blocked": 0,
+    "retries": 0,
+    "errors": [],
+    "finalUrl": "/targets/setup"
+  },
+  "finals": {
+    "dark-1440": {
+      "file": "docs/guide/screenshots/U-64/final-dark-1440.png",
+      "annotated": null,
+      "gates": {
+        "A": "PASS",
+        "B": "PASS",
+        "C": "PASS",
+        "attempts": 1
+      },
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+      }
+    }
+  }
+}

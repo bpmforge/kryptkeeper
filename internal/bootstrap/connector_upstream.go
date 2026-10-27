@@ -123,6 +123,8 @@ type upstreamCredentialPayload struct {
 	Username           string `json:"username"`
 }
 
+const gcpCASDefaultBaseURL = "https://privateca.googleapis.com"
+
 func upstreamAmbient(connType string, cfg upstreamConnectorConfig) bool {
 	return (connType == "aws_pca" || connType == "gcp_cas") && cfg.Auth == "ambient"
 }
@@ -324,10 +326,20 @@ func validateUpstreamTypeConfig(connType string, cfg upstreamConnectorConfig) er
 		if cfg.EndpointURL != "" && !validUpstreamURL(cfg.EndpointURL) {
 			return upstreamConfigInvalid("endpoint_url")
 		}
+		// C-01: ambient auth signs with the hub's own IAM identity; a caller
+		// chosen endpoint would receive requests signed by it.
+		if cfg.Auth == "ambient" && cfg.EndpointURL != "" {
+			return errors.New("aws_pca ambient auth cannot set endpoint_url")
+		}
 		return required([2]string{"certificate_authority_arn", cfg.CertificateAuthorityARN}, [2]string{"region", cfg.Region})
 	case "gcp_cas":
 		if cfg.Auth != "" && cfg.Auth != "ambient" && cfg.Auth != "service_account" {
 			return upstreamConfigInvalid("auth")
+		}
+		// C-01: ambient auth sends the hub's metadata-server token as Bearer
+		// to base_url, so it may only point at the real Private CA API.
+		if cfg.Auth == "ambient" && cfg.BaseURL != "" && strings.TrimSuffix(cfg.BaseURL, "/") != gcpCASDefaultBaseURL {
+			return errors.New("gcp_cas ambient auth requires base_url to be empty or " + gcpCASDefaultBaseURL)
 		}
 		return required([2]string{"project", cfg.Project}, [2]string{"location", cfg.Location}, [2]string{"ca_pool", cfg.CAPool})
 	case "sectigo":
