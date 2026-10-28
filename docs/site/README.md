@@ -93,13 +93,29 @@ about 35 KB per 1440-pixel screen; the whole site is about 16 MB of images.
 
 - Preview: `python3 -m http.server 18532 --directory site`, then open `http://127.0.0.1:18532/`.
   Pages use root-relative links, so serve the `site/` folder as the web root.
-- Deploy: Cloudflare Pages project `kryptkeeper-site`, deployed by hand (no auto-deploy):
-  `CLOUDFLARE_API_TOKEN="$(cat ~/.config/kryptkeeper-site/cloudflare-token)" npx wrangler@4.144.0 pages deploy site --project-name kryptkeeper-site --branch main`
-  (plus `CLOUDFLARE_ACCOUNT_ID`). That file holds the kryptkeeper.io token; do not use
-  `~/.config/kryptkeeper-lab/cloudflare-token`, which is a different account. Never print or commit it. Run `--check --check-release` first. Deploy only from
-  `main` after the site PR has merged and the owner has said to publish; use
-  `--branch <name>` for a preview deploy.
-- `site/tools/` is in the deploy folder but holds no secrets; Pages serves it as plain files.
+- Deploy: `node site/tools/deploy.mjs` is the only supported way. Never run
+  `wrangler pages deploy site` by hand: the folder holds build tooling and inputs, and an
+  earlier hand deploy published `site/tools/build.mjs` with the lab-name pattern in it.
+  The script:
+  1. refuses uncommitted changes under `site/` (a preview may pass `--allow-dirty`);
+  2. runs `build.mjs --check --check-release` (`--check` only for a preview branch);
+  3. stages the payload from `site/tools/payload.mjs` into a temporary folder: every file
+     except `tools/`, `content/`, dotfiles other than `.well-known/`, underscore files below
+     the top level (scratch pages such as `shots/_sheet.html`) and editor leftovers;
+  4. scans every staged file, binaries included, with the pattern in
+     `site/tools/private-ref.txt` (lab names, private addresses, local paths), for private
+     keys and common tokens, and for the deploy token and account id themselves; any hit
+     stops the deploy;
+  5. uploads that folder to the Cloudflare Pages project `kryptkeeper-site`.
+- Options: `--dry-run` stages and scans without uploading; `--branch <name>` makes a
+  preview deploy (default `main`).
+- Credentials: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, or the files
+  `~/.config/kryptkeeper-site/cloudflare-token` and `~/.config/kryptkeeper-site/account-id`.
+  That token is for kryptkeeper.io only; never print or commit it. Deploy only from `main`
+  after the site PR has merged and the owner has said to publish.
+- `site/tools/private-ref.txt` is kept out of the public repository, so the deploy only
+  runs from the development repository. `build.mjs --check` runs the same payload scan,
+  and `node --test site/tools/payload.test.mjs` covers the payload rules.
 - The `_headers` CSP allows scripts and images from the site itself only. Keep new scripts
   as files under `site/` and images under `site/shots/`.
 

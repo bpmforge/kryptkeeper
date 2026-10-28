@@ -113,7 +113,7 @@ jobs:
           npm --prefix ui run lint
       - name: Website in sync with the guide (site/content/hubs.json, docs/site/README.md)
         run: |
-          node --test site/tools/content.test.mjs site/tools/release.test.mjs
+          node --test site/tools/content.test.mjs site/tools/release.test.mjs site/tools/payload.test.mjs
           node site/tools/build.mjs --check
       - name: Ensure PyYAML (validate-openapi.sh fails closed without a YAML parser)
         # GitHub's hosted image ships PyYAML; the self-hosted act image does not.

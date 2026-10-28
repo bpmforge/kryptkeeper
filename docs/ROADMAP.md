@@ -20,7 +20,7 @@ The `Ref` column is our internal ticket or decision number, so you can ask about
 name. This page is updated in the same change that defers anything new
 (see [ROADMAP_PROCESS.md](ROADMAP_PROCESS.md)).
 
-Last updated: 2026-10-26.
+Last updated: 2026-10-27.
 
 ## Windows and application installs
 
@@ -133,6 +133,7 @@ Last updated: 2026-10-26.
 | Ansible collection published on Galaxy | The `kryptkeeper.pki` collection is built in 1.1.0; publishing it on Galaxy needs a Galaxy namespace. | Needs an account | W37 |
 | Code and config comments cite docs/design/SECURITY_PRINCIPLES.md | About 25 Go, YAML and shell comments still name the private contributor rules file (`CLAUDE.md`) as the source of a rule; the public docs already point at the security principles page. | 1.2 | public cleanup 2026-10-27 |
 | Five-minute trial: one command brings up a hub with demo data | Evaluators should reach a working dashboard before they read a guide. | 1.1 | W37 |
+| Nightly fuzzing on a dedicated runner | The nightly fuzz workflow uses the same `ubuntu-latest` label as PR CI, so it lands on whichever shared Mac runner is free and competes with interactive dev work. It needs its own label and a dedicated (or cloud) runner. | 1.1 | M5 runner 2026-10-27 |
 
 ## Website and walkthroughs
 

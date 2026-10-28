@@ -12,14 +12,38 @@ set -euo pipefail
 # safe where t.Parallel is not.
 #
 # Usage: scripts/test/go-unit-sharded.sh [shards]   (default 4)
+#        scripts/test/go-unit-sharded.sh --shard I/N   (bootstrap shard I of N only)
+#        scripts/test/go-unit-sharded.sh --rest        (every package but bootstrap)
+# The first form runs all shards and the rest as parallel processes on one
+# machine. The --shard/--rest forms are for a CI job matrix: a 4-vCPU hosted
+# runner gives each of five local processes about one core, so under -race
+# bootstrap needs separate runners to finish in time (ci-main unit-race).
+# Every shard I in 1..N must run somewhere for full coverage; the split is the
+# same deterministic round-robin over the sorted test list in every mode.
 # Extra go test flags come from GO_TEST_FLAGS (default: -race -timeout 30m).
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-SHARDS="${1:-4}"
 FLAGS="${GO_TEST_FLAGS:--race -timeout 30m}"
 BOOT=./internal/bootstrap
+
+if [[ "${1:-}" == "--rest" ]]; then
+  # shellcheck disable=SC2046,SC2086
+  exec go test $FLAGS $(go list ./... | grep -v '/internal/bootstrap$')
+fi
+
+ONLY=""
+if [[ "${1:-}" == "--shard" ]]; then
+  if [[ ! "${2:-}" =~ ^([0-9]+)/([0-9]+)$ ]] || (( BASH_REMATCH[1] < 1 || BASH_REMATCH[1] > BASH_REMATCH[2] )); then
+    echo "usage: $0 --shard I/N with 1 <= I <= N" >&2
+    exit 2
+  fi
+  ONLY=$(( BASH_REMATCH[1] - 1 ))
+  SHARDS=${BASH_REMATCH[2]}
+else
+  SHARDS="${1:-4}"
+fi
 LOG_DIR="$(mktemp -d)"
 trap 'rm -rf "$LOG_DIR"' EXIT
 
@@ -30,6 +54,17 @@ total=$(wc -l < "$LOG_DIR/all.txt" | tr -d ' ')
 if [[ "$total" -eq 0 ]]; then
   echo "no tests listed in $BOOT" >&2
   exit 1
+fi
+
+if [[ -n "$ONLY" ]]; then
+  awk -v n="$SHARDS" -v i="$ONLY" '(NR - 1) % n == i' "$LOG_DIR/all.txt" > "$LOG_DIR/shard.txt"
+  count=$(wc -l < "$LOG_DIR/shard.txt" | tr -d ' ')
+  echo "bootstrap shard $((ONLY + 1))/$SHARDS: $count of $total tests"
+  (( count == 0 )) && exit 0
+  re="^($(paste -sd'|' "$LOG_DIR/shard.txt"))\$"
+  # shellcheck disable=SC2086
+  go test $FLAGS -count=1 -run "$re" "$BOOT"
+  exit $?
 fi
 
 # Spread the cores between the shards and the rest of the module.

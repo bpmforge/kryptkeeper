@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 import path from "node:path";
 import { PROOF_RESULTS, loadContent, coverImage, frameRoute, thumbImage, pathThumb, orderedHubs, selectedSteps, stepCount as countSteps, captionOf, stepImage, validate, renderCaption, plainCaption, escapeHtml as esc } from "./content.mjs";
 import { loadRelease, stampRelease, findStaleVersions, releaseExists } from "./release.mjs";
+import { payloadFiles, privateRef, scanPayload } from "./payload.mjs";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
 const SITE = path.join(ROOT, "site");
@@ -521,14 +522,10 @@ for (const [rel, text] of out) {
 }
 // Everything under site/ is published as is, so it gets the same private-reference
 // guard the public-repo snapshot applies (publish-snapshot "Guard"): lab domain,
-// hypervisor, hostnames, local paths and private addresses. The pattern lives in
-// site/tools/private-ref.txt, which .publicignore keeps out of the public repo;
-// without it only the generic local-path and private-address checks run.
-// site/tools holds the patterns themselves and their tests, so it is skipped.
-const PRIVATE_REF_FILE = path.join(SITE, "tools", "private-ref.txt");
-const PRIVATE_REF = new RegExp(fs.existsSync(PRIVATE_REF_FILE)
-  ? fs.readFileSync(PRIVATE_REF_FILE, "utf8").trim()
-  : String.raw`192\.168\.\d|\b10\.\d+\.\d+\.\d+|\/Users\/|claude-\d+`, "i");
+// hypervisor, hostnames, local paths and private addresses. The pattern comes from
+// payload.mjs (site/tools/private-ref.txt, left out of the public repo; generic
+// fallback without it). site/tools holds the patterns and their tests, so it is skipped.
+const PRIVATE_REF = privateRef(SITE);
 const TEXT_EXT = /\.(html|css|js|json|md|txt|xml|svg)$/;
 function scanPublished(dir) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -542,6 +539,9 @@ function scanPublished(dir) {
   }
 }
 scanPublished(SITE);
+// The deploy uploads exactly payloadFiles(), binaries included; scan that set for
+// private references and secrets too, so --check fails before deploy.mjs would.
+for (const p of scanPayload(SITE, payloadFiles(SITE), PRIVATE_REF)) errors.push(`site/${p}`);
 for (const rel of out.keys()) if (!fs.existsSync(path.join(SITE, rel)) && TEXT_EXT.test(rel)) {
   const m = out.get(rel).match(PRIVATE_REF);
   if (m) errors.push(`site/${rel} contains a private lab or local reference ("${m[0]}")`);
