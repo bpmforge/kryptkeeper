@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadContent, renderCaption, plainCaption, stepImage, walkthroughImages, coverImage, frameRoute, thumbImage, pathThumb, darkCrop, DEFAULT_CROP, selectedSteps, stepCount, captionOf, captionProblem, validate, validateProof } from "./content.mjs";
+import { loadContent, renderCaption, plainCaption, stepImage, walkthroughImages, coverImage, frameRoute, thumbImage, pathThumb, darkCrop, DEFAULT_CROP, selectedSteps, stepCount, captionOf, captionProblem, validate, validateProof, setLabHostPattern } from "./content.mjs";
+
+// A synthetic lab, so these tests never name real lab hosts and survive the public snapshot.
+setLabHostPattern(/\bexamplelab[\w.-]*/i);
 
 function fixture({ unlisted = {}, steps = ["h1/w1"] } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "kk-site-"));
@@ -197,7 +200,7 @@ test("captionProblem flags selector syntax, key material and private addresses b
   for (const bad of ["Click **xpath=//input**", "Click css=.btn", "a >> b", "Click //div[1]", "Click [@id=x]", "normalize-space()", "Click nth=2"]) assert.match(captionProblem(bad), /selector/, bad);
   assert.match(captionProblem('Fill with "-----BEGIN CERTIFICATE-----"'), /PEM/);
   assert.match(captionProblem(`Fill with ${"A".repeat(60)}`), /PEM/);
-  for (const bad of ["Fill with 10.1.2.3", "host 172.16.0.9", "host 172.31.255.1", "host 192.0.2.166:18099"]) assert.match(captionProblem(bad), /private/, bad);
+  for (const bad of ["Fill with 10.1.2.3", "host 172.16.0.9", "host 172.31.255.1", "host 192.168.77.166:18099"]) assert.match(captionProblem(bad), /private/, bad);
   for (const ok of ["Fill **ITSM URL** with \"https://acme.atlassian.net\"", "Fill with 172.32.0.1", "Fill with 8.8.8.8", `Fill ${"A".repeat(59)}`, "Click **Save** on the SMTP host row"]) assert.equal(captionProblem(ok), null, ok);
 });
 
@@ -217,7 +220,7 @@ test("validate fails on a bad caption, naming the spec, the step and captions.js
 test("validate catches a PEM blob and a private IPv4 address in a rendered caption", () => {
   const root = fixture({ unlisted: { "U-02": "x" } });
   const content = loadContent(root);
-  manySteps(content, (n) => (n === 2 ? 'Fill **CSR** with "-----BEGIN CERTIFICATE REQUEST-----\nMIIB"' : n === 4 ? 'Fill **Host** with "192.0.2.166"' : `Step ${n}`));
+  manySteps(content, (n) => (n === 2 ? 'Fill **CSR** with "-----BEGIN CERTIFICATE REQUEST-----\nMIIB"' : n === 4 ? 'Fill **Host** with "192.168.77.166"' : `Step ${n}`));
   const errors = validate(content, root);
   assert.equal(errors.length, 2);
   assert.ok(errors.some((e) => /U-01 step 2.*PEM/.test(e)));
@@ -346,7 +349,7 @@ test("proof validation fails when a record path is missing from the repo, naming
 });
 
 test("proof validation fails on a duplicate id, a private address and bad gaps", () => {
-  const root = proofFixture((p) => { p.records.push(goodRecord()); p.records[0].environment = "host 192.0.2.104"; p.gaps = { source: "docs/none.md", items: [{ item: "i", why: "w", needs: "maybe" }] }; });
+  const root = proofFixture((p) => { p.records.push(goodRecord()); p.records[0].environment = "host 192.168.77.104"; p.gaps = { source: "docs/none.md", items: [{ item: "i", why: "w", needs: "maybe" }] }; });
   const errors = proofErrors(root).join("\n");
   assert.match(errors, /duplicate id/);
   assert.match(errors, /private IPv4/);
@@ -376,14 +379,14 @@ test("proof evidence fails on more than 25 lines and a missing evidence list", (
 });
 
 test("proof evidence scrub rejects private addresses, lab hostnames and secrets, even when verbatim", () => {
-  const bad = ["host 192.0.2.104 ok", "dial 10.1.2.3", "gw 172.20.0.1", "lab-hub.corp.example.test", "ssh lab-runner", "on lab-ws22 now", "lab-dc01 up", "lab-ca01", "lab-win11 box", "-----BEGIN PRIVATE KEY-----", "api_token: abcdef123456789", "Authorization: Bearer abcdefghijklmnopqrstuvwxyz"];
+  const bad = ["host 192.168.77.104 ok", "dial 10.1.2.3", "gw 172.20.0.1", "examplelab-hub.examplelab.test", "ssh examplelab-runner", "on examplelab-ws22 now", "examplelab-dc01 up", "examplelab-ca01", "examplelab-win11 box", "-----BEGIN PRIVATE KEY-----", "api_token: abcdef123456789", "Authorization: Bearer abcdefghijklmnopqrstuvwxyz"];
   for (const text of bad) {
     const root = proofFixture((p) => { p.records[0].evidence[0].text = text; });
     fs.writeFileSync(path.join(root, "docs/release/R.md"), `${text}\n`);
     const errors = proofErrors(root).join("\n");
     assert.match(errors, /evidence 1 text: contains a (private IPv4 address|lab hostname|token or secret pattern)/, text);
   }
-  assert.match(evErrors("PASS: step one", { label: "from lab-hub" }), /evidence 1 label: contains a lab hostname/);
+  assert.match(evErrors("PASS: step one", { label: "from examplelab-hub" }), /evidence 1 label: contains a lab hostname/);
 });
 
 test("proof shots need an existing image, a date and a clean caption", () => {
@@ -392,7 +395,7 @@ test("proof shots need an existing image, a date and a clean caption", () => {
   assert.equal(run({}), "");
   assert.match(run({ src: "proof/shots/none.webp" }), /image site\/proof\/shots\/none\.webp does not exist/);
   assert.match(run({ date: "today" }), /needs src, caption, date/);
-  assert.match(run({ caption: "taken on lab-win11" }), /caption: contains a lab hostname/);
+  assert.match(run({ caption: "taken on examplelab-win11" }), /caption: contains a lab hostname/);
 });
 
 test("the real site/content/proof.json is valid against the real repo", () => {

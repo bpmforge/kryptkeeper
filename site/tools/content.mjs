@@ -2,6 +2,7 @@
 // Shared by build.mjs (pages) and images.mjs (screenshot conversion); node: builtins only.
 import fs from "node:fs";
 import path from "node:path";
+import { loadPrivateRef } from "./payload.mjs";
 
 const SPECS_DIR = "docs/guide/specs";
 
@@ -186,7 +187,13 @@ export function captionProblem(text) {
 }
 
 // Lab hostnames, secrets and tokens must never reach the public proof page (evidence text, labels, captions).
-const LAB_HOST = /\b(?:corp\.lab|lab-hub|lab-runner|kk-ws[\w-]*|kk-dc[\w-]*|kk-ca[\w-]*|lab-win11)\b/i;
+// The lab names come from site/tools/private-ref.txt, which the public snapshot leaves
+// out; there the check is off (the site is deployed from the development repo only).
+let LAB_HOST = loadPrivateRef(path.resolve(path.dirname(new URL(import.meta.url).pathname), ".."));
+/** Replaces the lab-host pattern; tests use a synthetic one so they never name the real lab. */
+export function setLabHostPattern(re) {
+  LAB_HOST = re;
+}
 const SECRET_PATTERNS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /\bAKIA[0-9A-Z]{16}\b/,
@@ -200,7 +207,7 @@ const SECRET_PATTERNS = [
 export function scrubProblem(text) {
   if (typeof text !== "string") return null;
   if (PRIVATE_IPV4.test(text)) return "contains a private IPv4 address";
-  if (LAB_HOST.test(text)) return "contains a lab hostname";
+  if (LAB_HOST?.test(text)) return "contains a lab hostname";
   if (SECRET_PATTERNS.some((p) => p.test(text))) return "contains a token or secret pattern";
   return null;
 }
