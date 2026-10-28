@@ -13,7 +13,9 @@
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# Empty unless BuildKit or --build-arg sets it; the build then targets the
+# builder's own architecture (a hard-coded default built arm64 binaries on x86_64).
+ARG TARGETARCH
 # W20-02: stamps this binary's version/commit/date vars.
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -23,7 +25,7 @@ WORKDIR /src
 COPY . /src
 
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+    CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" \
     go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
     -o /out/kryptkeeper-mcp ./cmd/kryptkeeper-mcp
 

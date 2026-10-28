@@ -17,7 +17,9 @@
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 ARG TARGETOS=linux
-ARG TARGETARCH=arm64
+# Empty unless BuildKit or --build-arg sets it; the build then targets the
+# builder's own architecture (a hard-coded default built arm64 binaries on x86_64).
+ARG TARGETARCH
 ARG GOFIPS140=v1.0.0
 ARG APP_BUILD_PATH=./cmd/kryptkeeper
 ARG HEALTHCHECK_URL=http://127.0.0.1:8080/healthz
@@ -43,14 +45,14 @@ if [ ! -e "/src/${APP_BUILD_PATH#./}" ]; then
   exit 1
 fi
 
-GOFIPS140="${GOFIPS140}" CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+GOFIPS140="${GOFIPS140}" CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" \
   go build -trimpath -ldflags='-s -w' -o /out/healthcheck ./cmd/healthcheck
 
-GOFIPS140="${GOFIPS140}" CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+GOFIPS140="${GOFIPS140}" CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" \
   go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
   -o /out/kryptkeeper "${APP_BUILD_PATH}"
 
-GOFIPS140="${GOFIPS140}" CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+GOFIPS140="${GOFIPS140}" CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" \
   go build -trimpath -ldflags='-s -w' -o /out/kryptkeeper-mcp ./cmd/kryptkeeper-mcp
 EOF
 

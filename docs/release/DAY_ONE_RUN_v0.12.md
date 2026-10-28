@@ -1,5 +1,8 @@
 # Day-one estate run — v0.12
 
+> Superseded: the timed run was done on 2026-10-28 and is recorded in
+> [`DAY_ONE_RUN_v1.1.md`](DAY_ONE_RUN_v1.1.md).
+
 Status: **PENDING-RUN**. The timed clean-VM run is a human/ops activity. Every measured field below is the literal `PENDING-RUN` until an operator replaces it. Section 6 was produced locally (no VM, no hub). Nothing here is an invented timing or count.
 
 ## 1. Header

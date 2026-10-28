@@ -1,140 +1,138 @@
 # Getting Started with Kryptkeeper
 
-This guide takes you from zero to issuing your first certificate in under 15 minutes
-using Docker Compose.
+This guide takes you from zero to issuing, verifying and revoking your first
+certificate with Docker Compose. On a fresh Ubuntu 24.04 VM with 4 vCPU, the
+first `docker compose up` built and started the hub in under 3 minutes
+([`DAY_ONE_RUN_v1.1.md`](../release/DAY_ONE_RUN_v1.1.md)).
 
 ## Prerequisites
 
-- Docker 24+ and Docker Compose v2
-- `curl` and `openssl` in your shell
+- Docker 24+ with Docker Compose v2 and BuildKit (on Ubuntu:
+  `apt install docker.io docker-compose-v2 docker-buildx`)
+- `curl`, `openssl` and `jq` in your shell
 
 ## 1. Start the Hub
 
 ```bash
 git clone https://github.com/bpmforge/kryptkeeper.git
 cd kryptkeeper
+cp env.example .env
+```
 
-# Generate a random bootstrap token for first-time setup
-export KK_TOKEN=$(openssl rand -hex 20)
-echo "Bootstrap token: $KK_TOKEN"
+Edit `.env` and set two values. Compose refuses to start without either, and
+they must differ:
 
+```bash
+APP_BOOTSTRAP_TOKEN=<openssl rand -hex 32>
+KRYPTKEEPER_KEYSTORE_PASSPHRASE=<openssl rand -hex 32>
+```
+
+Then start it:
+
+```bash
 docker compose up -d
 ```
 
-The Hub starts on port **8080** (HTTP) by default.
-Set `KRYPTKEEPER_ADDR=:443` and mount TLS certs for production.
+The first start builds the images from source and creates a default root CA
+(`KRYPTKEEPER_BOOTSTRAP_CREATE_ROOT=true` in `env.example`). The API listens on
+**https://localhost:8080** with a certificate from that root; the dashboard is
+on **http://localhost:3000**.
 
 ### Verify it's running
 
+Export the hub's CA certificate once and use it with every `curl`:
+
 ```bash
-curl -s http://localhost:8080/healthz
+docker run --rm -v kryptkeeper_tls-trust:/trust:ro alpine cat /trust/ca.pem > ca.pem
+curl --cacert ca.pem https://localhost:8080/healthz
 # → {"status":"ok"}
 ```
 
-## 2. Create a Root CA
+Set up your shell for the steps below, using the `APP_BOOTSTRAP_TOKEN` from
+`.env` as the bearer token:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/cas \
-  -H "Authorization: Bearer $KK_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "My Root CA",
-    "common_name": "My Organisation Root CA",
-    "algorithm": "ECDSA-P384",
-    "validity_days": 3650
-  }' | jq .
+export TOKEN=<your APP_BOOTSTRAP_TOKEN>
+API=https://localhost:8080/api/v1
+auth=(--cacert ca.pem -H "Authorization: Bearer $TOKEN")
 ```
 
-Note the `"id"` field — you will need it in the next step.
+## 2. Find (or create) a Root CA
 
 ```bash
-export CA_ID="<id from above>"
+# The default root CA created on first start
+CA_ID=$(curl -s "${auth[@]}" $API/cas | jq -r '.data[0].id')
+
+# Optional: create another root CA instead (subject_cn is the only required field)
+curl -s "${auth[@]}" -X POST $API/cas -H "Content-Type: application/json" \
+  -d '{"name": "My Root CA", "type": "root", "subject_cn": "My Root CA", "algorithm": "ECDSA-P256"}' | jq .
 ```
 
 ## 3. Create a Certificate Template
 
-```bash
-curl -s -X POST http://localhost:8080/api/v1/templates \
-  -H "Authorization: Bearer $KK_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "tls-server",
-    "display_name": "TLS Server Certificate",
-    "validity_period": "P90D",
-    "key_usage": ["digitalSignature", "keyEncipherment"],
-    "extended_key_usage": ["serverAuth"],
-    "allowed_algorithms": ["ECDSA-P256", "ECDSA-P384"],
-    "auto_enroll": false,
-    "active": true
-  }' | jq .
+A fresh install has no templates, and issuance requires one.
 
-export TEMPLATE_ID="<id from above>"
+```bash
+TEMPLATE_ID=$(curl -s "${auth[@]}" -X POST $API/templates -H "Content-Type: application/json" -d '{
+  "name": "tls-server",
+  "display_name": "TLS Server (90 days)",
+  "key_usage": ["digitalSignature"],
+  "extended_key_usage": ["serverAuth"],
+  "allowed_algorithms": ["ECDSA", "RSA"],
+  "validity_period": "P90D",
+  "active": true
+}' | jq -r '.data.id')
 ```
 
 ## 4. Issue a Certificate
 
-Generate a key and CSR:
+Issuance is CSR-in: you keep the private key, and Kryptkeeper only sees the CSR.
 
 ```bash
-openssl ecparam -genkey -name prime256v1 -noout -out server.key
-openssl req -new -key server.key \
-  -subj "/CN=myapp.example.com" \
-  -out server.csr
-```
+openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -keyout server.key -out server.csr -subj "/CN=app.example.com" \
+  -addext "subjectAltName=DNS:app.example.com"
 
-Issue the certificate:
+FINGERPRINT=$(jq -n --arg ca "$CA_ID" --arg tpl "$TEMPLATE_ID" --rawfile csr server.csr \
+  '{ca_id: $ca, template_id: $tpl, csr_pem: $csr}' |
+  curl -s "${auth[@]}" -X POST $API/certificates -H "Content-Type: application/json" -d @- |
+  jq -r '.data.fingerprint_sha256')
 
-```bash
-curl -s -X POST http://localhost:8080/api/v1/certificates \
-  -H "Authorization: Bearer $KK_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"ca_id\": \"$CA_ID\",
-    \"template_id\": \"$TEMPLATE_ID\",
-    \"csr_pem\": \"$(cat server.csr | awk '{printf "%s\\n", $0}')\"
-  }" | jq -r '.data.certificate_pem' > server.crt
-
-openssl x509 -in server.crt -noout -subject -dates
+curl -s "${auth[@]}" "$API/certificates/$FINGERPRINT/download?format=pem" -o leaf.pem
+curl -s "${auth[@]}" "$API/cas/$CA_ID/chain?format=pem" -o root.pem
+openssl verify -CAfile root.pem leaf.pem
+# → leaf.pem: OK
 ```
 
 ## 5. Revoke the Certificate
 
 ```bash
-FINGERPRINT=$(openssl x509 -in server.crt -noout -fingerprint -sha256 \
-  | sed 's/.*=//' | tr -d ':' | tr '[:upper:]' '[:lower:]')
-
-curl -s -X POST http://localhost:8080/api/v1/certificates/$FINGERPRINT/revoke \
-  -H "Authorization: Bearer $KK_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"reason": "superseded"}'
+curl -s "${auth[@]}" -X POST "$API/certificates/$FINGERPRINT/revoke" \
+  -H "Content-Type: application/json" -d '{"reason": "superseded"}' | jq .
 ```
 
 ## 6. Issue a Post-Quantum Certificate
 
-Kryptkeeper supports ML-DSA (FIPS 204) out of the box.
+Kryptkeeper issues ML-DSA (FIPS 204) certificates. Create a template that
+allows it, then follow
+[`pqc-certificate.md`](pqc-certificate.md) to issue one and check it with
+OpenSSL 3.5.
 
 ```bash
-# Create a PQC template
-curl -s -X POST http://localhost:8080/api/v1/templates \
-  -H "Authorization: Bearer $KK_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "pqc-client",
-    "display_name": "PQC Client Certificate",
-    "validity_period": "P90D",
-    "key_usage": ["digitalSignature"],
-    "extended_key_usage": ["clientAuth"],
-    "allowed_algorithms": ["ML-DSA-65"]
-  }' | jq -r '.data.id'
-
-# Issue via ACME (kryptkeeper-agent handles key gen and enrollment automatically)
-KRYPTKEEPER_HUB_URL=http://localhost:8080 \
-KRYPTKEEPER_AGENT_NAME=my-laptop \
-  kryptkeeper-agent
+curl -s "${auth[@]}" -X POST $API/templates -H "Content-Type: application/json" -d '{
+  "name": "pqc-client",
+  "display_name": "PQC Client Certificate",
+  "validity_period": "P90D",
+  "key_usage": ["digitalSignature"],
+  "extended_key_usage": ["clientAuth"],
+  "allowed_algorithms": ["ML-DSA-65"]
+}' | jq -r '.data.id'
 ```
 
 ## Next steps
 
+- [Day one: a complete estate picture](day-one-estate.md): import, scan and
+  sync what you already have, and get a risk-scored report.
 - [Connect to Microsoft Intune via BYOCA SCEP](intune-byoca.md)
 - [Deploy with Kubernetes and Helm](../deployment.md#kubernetes--helm-production)
 - [Use the Terraform provider](../../deploy/terraform/README.md)

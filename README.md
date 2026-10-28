@@ -6,21 +6,25 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/bpmforge/kryptkeeper)](https://goreportcard.com/report/github.com/bpmforge/kryptkeeper)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-Kryptkeeper is a self-hosted certificate authority. Use it to replace Active Directory Certificate Services (AD CS) or to run beside it. It speaks ACME, EST, SCEP, CMP and Windows autoenrollment. It is one Go binary and works offline. Apache 2.0.
+Kryptkeeper is a self-hosted certificate authority and certificate lifecycle manager. It can replace Active Directory Certificate Services (AD CS) or run beside it. It also manages certificates that other CAs issued: it finds them, assigns owners, renews them through their own CA or yours, and installs them on the servers that use them, with verify and rollback. It is one Go binary and works offline. Apache 2.0.
 
-**What you get:**
-- A certificate authority (root and issuing CAs, templates, revocation) with OCSP and CRL responders
+**As a CA:**
+- Root and issuing CAs, templates, revocation, and OCSP and CRL responders
 - Enrollment over ACME, EST, SCEP, CMP and MS-XCEP/MS-WSTEP (Windows autoenrollment), plus Intune SCEP
 - An AD CS importer and a cutover path, so you can run beside AD CS first and move over later
-- Inventory from network scans, CT log monitoring, agentless WinRM and agentless SSH discovery
-- Expiry alerts to email, webhooks, Slack, PagerDuty and more
-- The option to issue through the CA you already run (see [Use your existing CA](#use-your-existing-ca))
 
-It also has a PQC migration copilot, an MCP server, SPIFFE support and flag-gated multi-tenancy. They are described lower down.
+**As a lifecycle manager, for certificates from any CA:**
+- Inventory from network scans, CT log monitoring, agentless WinRM and SSH discovery, an AD CS sync, cloud certificate services and bulk import
+- Each certificate marked managed, externally managed or unmanaged, with an owner and a risk score
+- Renewal through the issuing CA (any ACME CA, SCEP, EST, Vault PKI, EJBCA and the commercial-CA connectors) or through a Kryptkeeper CA (see [Use your existing CA](#use-your-existing-ca))
+- Install, verify and rollback on IIS, nginx, Apache, HAProxy, Tomcat and Kubernetes Secrets, with approvals and an append-only audit log
+- Expiry alerts to email, webhooks, Slack, PagerDuty and more
+
+It also has a PQC migration copilot, an SSH certificate authority, an MCP server, SPIFFE support and flag-gated multi-tenancy. They are described lower down.
 
 ## Project status
 
-I am the only maintainer (@bpmforge). I build Kryptkeeper with heavy use of Claude Code. I design the features, run every lab test listed in this repository and review what ships.
+I am the only maintainer (@bpmforge). I have worked on PKI, key management and security architecture for more than 13 years: at a security vendor, an IT services firm and a cloud provider. I build Kryptkeeper with heavy use of Claude Code. I design the features, run every lab test listed in this repository and review what ships.
 
 There has been no external penetration test yet. The OpenSSF Scorecard score is 4.6 out of 10 as of October 2026.
 
@@ -36,6 +40,10 @@ Every line below points at a dated record in [`docs/release/`](docs/release/). I
 
 - **Protocols and CA:** ACME, EST, SCEP, CMP, OCSP and CRL ran against real clients in the 1.0.0 lab pass ([`LIVE_RESULTS_v1.0.0.md`](docs/release/LIVE_RESULTS_v1.0.0.md)). SCEP from F5 and Palo Alto appliances has not been run.
 - **Windows:** GPO autoenrollment, WSTEP renewal and IIS push passed on Windows 11 25H2 and Server 2022 ([`LIVE_RESULTS_v1.0.0.md`](docs/release/LIVE_RESULTS_v1.0.0.md), [`LIVE_RESULTS_v1_WINDOWS.md`](docs/release/LIVE_RESULTS_v1_WINDOWS.md)). A new Server 2025 member enrolled the same way, and all three accepted the 1.1 key-usage profile with chains validating ([`LIVE_RESULTS_WINDOWS_KU_WS2025_v1.1.md`](docs/release/LIVE_RESULTS_WINDOWS_KU_WS2025_v1.1.md)). Windows 10 and Server 2019 were not tested.
+- **AD CS cutover:** a rehearsal against a live AD CS on Windows Server 2025 passed all six steps of the [cutover playbook](docs/guides/replace-adcs.md): live inventory sync, template import, takeover of a domain-joined Windows 11 machine, re-sync and revert ([`ADCS_CUTOVER_REHEARSAL_v0.21.md`](docs/release/ADCS_CUTOVER_REHEARSAL_v0.21.md)).
+- **Install, verify and rollback:** agentless SSH installs passed 43 of 43 checks on nginx, Apache, HAProxy and Tomcat ([`LIVE_RESULTS_SSH_INSTALL_v0.15.md`](docs/release/LIVE_RESULTS_SSH_INSTALL_v0.15.md)), and IIS push, verify and rollback passed in the 1.0.0 lab pass ([`LIVE_RESULTS_v1.0.0.md`](docs/release/LIVE_RESULTS_v1.0.0.md)).
+- **Renewal at another CA:** SCEP and EST renewal ran against independent CA servers ([`LIVE_RESULTS_UPSTREAM_RENEW_v0.15.md`](docs/release/LIVE_RESULTS_UPSTREAM_RENEW_v0.15.md)); ACME renewal at Let's Encrypt staging with Cloudflare DNS-01, followed by SSH install and verify, passed in the 1.0.0 lab pass and again on 1.1.0 ([`LIVE_RESULTS_v1.0.0.md`](docs/release/LIVE_RESULTS_v1.0.0.md), [`LIVE_RESULTS_v1.1.0_REGRESSION.md`](docs/release/LIVE_RESULTS_v1.1.0_REGRESSION.md)).
+- **Day-one estate picture:** on a new Ubuntu VM, a bulk import, a network scan and an AD CS export from a real enterprise CA became one risk-scored estate of 29 certificates, with the estate report, dashboard and seeded counts in agreement. Following the docs as written took 19 minutes and hit five defects in the docs, the Dockerfile and the script; all five are fixed, and a rerun from an empty hub passed with no workarounds ([`DAY_ONE_RUN_v1.1.md`](docs/release/DAY_ONE_RUN_v1.1.md)).
 - **Discovery:** TLS, protocol and agentless SSH certificate discovery passed on real sshd and seeded endpoints ([`LIVE_RESULTS_v1.0.0.md`](docs/release/LIVE_RESULTS_v1.0.0.md), [`LIVE_INVENTORY_v1.md`](docs/release/LIVE_INVENTORY_v1.md)).
 - **Single sign-on:** OIDC, SAML and SCIM passed 39 of 39 checks against a real Keycloak 26 container ([`LIVE_RESULTS_KEYCLOAK_v0.21.md`](docs/release/LIVE_RESULTS_KEYCLOAK_v0.21.md)). We have not tested other identity providers.
 - **Key storage:** PKCS#11 on SoftHSM2, and Vault transit against a Vault dev server, passed ([`LIVE_RESULTS_v1.0.0.md`](docs/release/LIVE_RESULTS_v1.0.0.md)). AWS KMS, Azure Key Vault and GCP Cloud KMS passed against emulators only. No vendor HSM and no real cloud KMS account has been tried.

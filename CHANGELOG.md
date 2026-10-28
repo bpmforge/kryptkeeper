@@ -8,6 +8,12 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Fixed
+
+- Building the images from source on an x86_64 host produced an ARM binary that would not start (`exec format error`). The Dockerfiles no longer default `TARGETARCH`; a build without it targets the builder's own architecture. Released images were not affected.
+- `docs/guides/getting-started.md` matches the current Compose setup (`.env`, TLS by default) and API, and every step was run on a fresh VM.
+- `scripts/day-one-estate.sh` uses a valid scan type, waits for the scan and its certificates before reporting, takes `CACERT` for a TLS hub, and no longer fails on long reports. The day-one run is recorded in [docs/release/DAY_ONE_RUN_v1.1.md](docs/release/DAY_ONE_RUN_v1.1.md).
+
 ## [1.1.1] - 2026-10-27
 
 Release notes: [docs/release/RELEASE_NOTES_v1.1.1.md](docs/release/RELEASE_NOTES_v1.1.1.md).

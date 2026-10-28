@@ -5,7 +5,8 @@ before value. This guide gets a fresh Kryptkeeper install to a
 risk-scored, PQC-split estate report — covering certificates you
 issued, certificates other CAs issued, and certificates nobody was
 tracking — in one sitting. The companion script
-`scripts/day-one-estate.sh` runs the same path non-interactively.
+`scripts/day-one-estate.sh` runs the same path non-interactively. Against a Compose
+hub, pass `CACERT=ca.pem` (the hub serves TLS with its own root).
 
 ## Stage names and failure codes
 
@@ -57,9 +58,11 @@ spreadsheet's folder, or a CSV) and import it on the
 
 On the **Discovery** page start a scan of your server ranges.
 
-- API: `POST /api/v1/discovery/scans` with a CIDR or host:port
-  target; progress and results on the same page
-  (`GET /api/v1/discovery/scans`, endpoints list).
+- API: `POST /api/v1/discovery/scans` with `scan_type` (`fast`,
+  `targeted`, `full` or `deep`) and a CIDR or host `target`; follow the job
+  with `GET /api/v1/discovery/scan-jobs` and the results with
+  `GET /api/v1/discovery/endpoints`. The script starts a `full` scan and waits
+  for its job to finish (`SCAN_WAIT_SECONDS`, default 600) before it reports.
 - Failure modes: unreachable hosts land as per-endpoint errors on the
   scan result — visible, not fatal to the sweep; a huge CIDR is
   bounded by the scanner's concurrency and timeout settings.

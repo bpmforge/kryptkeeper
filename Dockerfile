@@ -21,7 +21,9 @@
 FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 ARG TARGETOS=linux
-ARG TARGETARCH=arm64
+# Empty unless BuildKit or --build-arg sets it; the build then targets the
+# builder's own architecture (a hard-coded default built arm64 binaries on x86_64).
+ARG TARGETARCH
 ARG BUILD_MODE=real
 ARG APP_BUILD_PATH=./cmd/kryptkeeper
 ARG HEALTHCHECK_URL=http://127.0.0.1:8080/healthz
@@ -59,17 +61,17 @@ if [ "${BUILD_MODE}" = "real" ]; then
   # tested package (HEALTHCHECK_CA_FILE support, needed once the hub's
   # default listener serves a self-issued TLS certificate) instead of an
   # inline plain-HTTP-only probe.
-  CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+  CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" \
     go build -trimpath -ldflags='-s -w' -o /out/healthcheck ./cmd/healthcheck
 
-  CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+  CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" \
     go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
     -o /out/kryptkeeper "${APP_BUILD_PATH}"
 
   # G-29: always ship the MCP server binary too, independent of
   # APP_BUILD_PATH -- this is a fixed source path, not the configurable
   # primary-binary one above.
-  CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+  CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" \
     go build -trimpath -ldflags='-s -w' -o /out/kryptkeeper-mcp ./cmd/kryptkeeper-mcp
 elif [ "${BUILD_MODE}" = "placeholder" ]; then
   # Placeholder mode has no module tree beyond this single file, so it gets
@@ -106,7 +108,7 @@ func main() {
 }
 EOGO
 
-  CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+  CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" \
     go build -trimpath -ldflags='-s -w' -o /out/healthcheck /tmp/generated/healthcheck.go
 
   # Placeholder path for release safety before app sources are wired.
@@ -137,7 +139,7 @@ func main() {
 }
 EOGO
 
-  CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH}" \
+  CGO_ENABLED=0 GOOS="${TARGETOS}" GOARCH="${TARGETARCH:-$(go env GOARCH)}" \
     go build -trimpath -ldflags='-s -w' -o /out/kryptkeeper /tmp/generated/placeholder.go
 
   # No real app sources are available in this mode (that is the whole

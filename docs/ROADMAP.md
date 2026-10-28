@@ -51,6 +51,7 @@ Last updated: 2026-10-27.
 | Merge the IP and hostname views of the same server | A server scanned by IP and by name shows up as two endpoints. | Later | post-0.9.3 planning |
 | Agent reports unreadable files and listening ports the same way agentless scans do | Today the agent silently skips files it cannot read, so a gap in coverage looks like nothing is there. Includes the live agent test for this report. | 1.1 | W34-09 |
 | Browser test for a target blocked by a root-owned install path | Proves end to end that the dashboard explains why such a target is blocked and clears once the credential is switched to helper mode. | 1.1 | W33-26 |
+| Mark a scan job completed only after its certificates are in the inventory | A job reports `completed` a few seconds before its certificates appear in the estate, so anything that reads the estate right after must wait. | 1.2 | DAY_ONE_RUN_v1.1 |
 
 ## Renewal, issuance and CA operations
 
@@ -134,6 +135,7 @@ Last updated: 2026-10-27.
 | Code and config comments cite docs/design/SECURITY_PRINCIPLES.md | About 25 Go, YAML and shell comments still name the private contributor rules file (`CLAUDE.md`) as the source of a rule; the public docs already point at the security principles page. | 1.2 | public cleanup 2026-10-27 |
 | Five-minute trial: one command brings up a hub with demo data | Evaluators should reach a working dashboard before they read a guide. | 1.1 | W37 |
 | Nightly fuzzing on a dedicated runner | The nightly fuzz workflow uses the same `ubuntu-latest` label as PR CI, so it lands on whichever shared Mac runner is free and competes with interactive dev work. It needs its own label and a dedicated (or cloud) runner. | 1.1 | M5 runner 2026-10-27 |
+| Stamp the version into images built with Docker Compose | Source builds report version `dev`, so a support question cannot tell which code a hub runs. | 1.2 | DAY_ONE_RUN_v1.1 |
 
 ## Website and walkthroughs
 

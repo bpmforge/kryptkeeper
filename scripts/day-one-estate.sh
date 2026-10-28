@@ -8,7 +8,13 @@
 #   [PEM_BUNDLE=./certs.pem] [SCAN_TARGET=10.0.0.0/24] \
 #   [ADCS_EXPORT_PATH=/exports/adcs] \
 #   [EXPECT_TOTAL=n EXPECT_MANAGED=n EXPECT_EXTERNAL=n EXPECT_UNMANAGED=n] \
+#   [CACERT=./ca.pem] [SCAN_WAIT_SECONDS=600] \
 #   bash scripts/day-one-estate.sh
+#
+# CACERT is the hub's TLS CA (Compose serves https with its own root; see
+# getting-started.md for exporting ca.pem). The scan stage waits, up to
+# SCAN_WAIT_SECONDS, for its scan job to finish and for every certificate it
+# mapped to reach the estate, so verify counts what it found.
 #
 # Stages and exit codes: hub=10 import=20 scan=30 sync=40 report=50 verify=60.
 # Any other failure exits 1 and names CURRENT_STAGE. Set
@@ -24,6 +30,7 @@ API="$BASE_URL/api/v1"
 : "${TOKEN:?set TOKEN to an API token with admin rights}"
 
 auth=(-H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
+if [ -n "${CACERT:-}" ]; then auth+=(--cacert "$CACERT"); fi
 CURRENT_STAGE=init
 
 say() { CURRENT_STAGE="$2"; printf '\n== Stage %s — %s: %s\n' "$1" "$2" "$3"; }
@@ -71,10 +78,40 @@ fi
 say 3 scan "network scan (${SCAN_TARGET:-skipped})"
 maybe_inject scan 30
 if [ -n "${SCAN_TARGET:-}" ]; then
-  curl -fsS "${auth[@]}" -X POST "$API/discovery/scans" \
-    -d "{\"scan_type\":\"network\",\"target\":\"$SCAN_TARGET\"}" || fail scan 30
-  echo
-  echo "   watch progress on the Discovery page"
+  job=$(curl -fsS "${auth[@]}" -X POST "$API/discovery/scans" \
+    -d "{\"scan_type\":\"full\",\"target\":\"$SCAN_TARGET\"}") || fail scan 30
+  job_id=$(printf '%s' "$job" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["scan_job"]["id"])') || fail scan 30
+  echo "   scan job $job_id started; waiting up to ${SCAN_WAIT_SECONDS:-600}s (progress on the Discovery page)"
+  deadline=$(( $(date +%s) + ${SCAN_WAIT_SECONDS:-600} ))
+  while :; do
+    status=$(curl -fsS "${auth[@]}" "$API/discovery/scan-jobs" | python3 -c '
+import json,sys
+jobs=json.load(sys.stdin)["data"]["scan_jobs"]
+print(next((j["status"] for j in jobs if j["id"]==sys.argv[1]), "missing"))' "$job_id") || fail scan 30
+    case "$status" in
+      completed) echo "   scan completed"; break ;;
+      queued|running) ;;
+      *) echo "   scan job ended as $status" >&2; fail scan 30 ;;
+    esac
+    [ "$(date +%s)" -lt "$deadline" ] || { echo "   scan still $status after ${SCAN_WAIT_SECONDS:-600}s" >&2; fail scan 30; }
+    sleep 5
+  done
+  # A completed job's certificates reach the inventory a few seconds later.
+  # Wait until every certificate discovery mapped is an estate row, so the
+  # reports below count them.
+  # A scan can also map a certificate the estate already holds under another
+  # origin (the hub's own, say), so a total that holds still for three reads
+  # also ends the wait.
+  last=-1; steady=0
+  while :; do
+    mapped=$(curl -fsS "${auth[@]}" "$API/discovery/summary" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["mapped_certificates"])') || fail scan 30
+    read -r found total < <(curl -fsS "${auth[@]}" "$API/reports/estate" | python3 -c 'import json,sys;d=json.load(sys.stdin)["data"];print(d["by_origin"]["discovered"], d["total"])') || fail scan 30
+    [ "$found" -ge "$mapped" ] && { echo "   $found discovered certificates in the estate"; break; }
+    if [ "$total" = "$last" ]; then steady=$((steady + 1)); else steady=0; last=$total; fi
+    [ "$steady" -ge 3 ] && { echo "   $found of $mapped mapped certificates are discovered rows; estate steady at $total"; break; }
+    [ "$(date +%s)" -lt "$deadline" ] || { echo "   only $found of $mapped discovered certificates reached the estate" >&2; fail scan 30; }
+    sleep 2
+  done
 else
   echo "   skipped (set SCAN_TARGET to a CIDR or host:port)"
 fi
@@ -93,7 +130,11 @@ fi
 
 say 6 report "the payoff"
 maybe_inject report 50
-curl -fsS "${auth[@]}" "$API/reports/pqc-migration" | head -c 400 || fail report 50
+# Saved first, then shown: piping curl into head would fail under pipefail
+# whenever the report is longer than the preview.
+pqc="kryptkeeper-pqc-$today.json"
+curl -fsS "${auth[@]}" "$API/reports/pqc-migration" -o "$pqc" || fail report 50
+head -c 400 "$pqc"
 echo
 csv="kryptkeeper-estate-$today.csv"
 pdf="kryptkeeper-estate-$today.pdf"
