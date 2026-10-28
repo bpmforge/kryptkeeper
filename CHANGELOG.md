@@ -8,6 +8,10 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-28
+
+Release notes: [docs/release/RELEASE_NOTES_v1.1.2.md](docs/release/RELEASE_NOTES_v1.1.2.md).
+
 ### Fixed
 
 - Building the images from source on an x86_64 host produced an ARM binary that would not start (`exec format error`). The Dockerfiles no longer default `TARGETARCH`; a build without it targets the builder's own architecture. Released images were not affected.
