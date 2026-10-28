@@ -109,30 +109,3 @@ export function ReportSkeleton({
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Keys page skeleton
-// ---------------------------------------------------------------------------
-export function KeysSkeleton() {
-  return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Skeleton className="w-10 h-10 rounded-xl bg-muted" />
-          <div className="space-y-2">
-            <Skeleton className="h-6 w-40 bg-muted" />
-            <Skeleton className="h-3 w-56 bg-muted" />
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <Skeleton className="h-9 w-24 rounded-xl bg-muted" />
-          <Skeleton className="h-9 w-32 rounded-xl bg-muted" />
-        </div>
-      </div>
-      <div className="rounded-2xl border border-border bg-[var(--surface-1)] p-5 space-y-4">
-        <Skeleton className="h-4 w-28 bg-muted" />
-        <TableRowsSkeleton rows={4} />
-      </div>
-    </div>
-  );
-}

@@ -480,9 +480,3 @@ func (b *balancer) pick() *replica {
 	}
 	return nil
 }
-
-func (b *balancer) transitions() []transition {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return append([]transition(nil), b.log...)
-}

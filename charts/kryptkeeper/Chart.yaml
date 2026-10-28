@@ -2,8 +2,8 @@ apiVersion: v2
 name: kryptkeeper
 description: Enterprise PKI & Crypto Trust Platform — CA engine, PQC issuance, cert lifecycle automation
 type: application
-version: 1.1.2
-appVersion: "1.1.2"
+version: 1.1.3
+appVersion: "1.1.3"
 keywords:
   - pki
   - certificates

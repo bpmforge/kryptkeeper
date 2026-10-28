@@ -951,7 +951,10 @@ export interface paths {
         delete: operations["deleteCA"];
         options?: never;
         head?: never;
-        /** Update mutable CA fields (display_name, crl_distribution_points, ocsp_service_url) */
+        /**
+         * Update mutable CA fields (display_name, crl_distribution_points, ocsp_service_url)
+         * @description The CRL and OCSP pointers are embedded in certificates issued after the change; already-issued certificates keep theirs. An external CA's pointers belong to its upstream and cannot be set (422).
+         */
         patch: operations["updateCA"];
         trace?: never;
     };
@@ -10522,7 +10525,17 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    display_name?: string;
+                    /** @description Absolute http, https or ldap URLs; duplicates are dropped. */
+                    crl_distribution_points?: string[];
+                    /** @description Absolute http or https URL; an empty string clears it. */
+                    ocsp_service_url?: string;
+                };
+            };
+        };
         responses: {
             /** @description Updated */
             200: {
@@ -10531,7 +10544,21 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Attempted to modify an immutable field */
+            /** @description Malformed body, unknown field, or an invalid name or URL */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Attempted to modify an immutable field, or to set CRL/OCSP pointers on an external CA */
             422: {
                 headers: {
                     [name: string]: unknown;

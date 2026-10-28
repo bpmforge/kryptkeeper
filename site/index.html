@@ -42,7 +42,7 @@
     <h1 style="margin-top:1rem">Run your own certificate authority, and stop finding out about expiry from an outage.</h1>
     <p class="lede">Kryptkeeper is a self-hosted CA and certificate lifecycle platform. It issues over ACME, EST, SCEP, CMP and Windows autoenrollment, finds the certificates you didn't know about, and renews and installs them without a person in the loop.</p>
     <div class="cta">
-      <a class="btn primary" href="https://github.com/bpmforge/kryptkeeper/releases/tag/v1.1.2">Download v1.1.2</a>
+      <a class="btn primary" href="https://github.com/bpmforge/kryptkeeper/releases/tag/v1.1.3">Download v1.1.3</a>
       <a class="btn" href="https://github.com/bpmforge/kryptkeeper">View on GitHub</a>
       <a class="btn" href="/features/">See it in action</a>
       <a class="btn" href="/try/">Try it in five minutes</a>
@@ -220,9 +220,9 @@ docker compose up -d</pre>
       <p>Checksums and images are signed keyless with Sigstore cosign, bound to the GitHub release workflow. There is no long-lived signing key to fetch or trust.</p>
       <div class="code">
         <button class="copy" type="button" data-copy="vf">Copy</button>
-<pre id="vf">cosign verify ghcr.io/bpmforge/kryptkeeper:1.1.2 \
+<pre id="vf">cosign verify ghcr.io/bpmforge/kryptkeeper:1.1.3 \
   --certificate-identity \
-  "https://github.com/bpmforge/kryptkeeper/.github/workflows/release.yml@refs/tags/v1.1.2" \
+  "https://github.com/bpmforge/kryptkeeper/.github/workflows/release.yml@refs/tags/v1.1.3" \
   --certificate-oidc-issuer \
   "https://token.actions.githubusercontent.com"</pre>
       </div>

@@ -38,18 +38,25 @@ npm --prefix ui run test   # frontend tests
 
 ## Before you push: `make gate`
 
-`make gate` is the same check the project runs before anything lands on `main`. It runs, in order:
+`make gate` runs the checks your change needs. It compares your branch with
+`origin/main` (`scripts/ci/changed-areas.sh`) and picks from:
 
-1. `go build ./...`
-2. `go test ./...`
-3. `make lint` (golangci-lint, plus `make plugins-check`, which vets the delivery plugins for `wasip1/wasm`)
-4. `bash scripts/validate-openapi.sh` (`docs/openapi.yaml` matches the routes)
-5. `bash tests/protocol/run.sh`
-6. `cd ui && npm run lint && npm test -- --run`
+1. `scripts/ci/check-slop.py`: clear-cut slop in the lines you add (always)
+2. `go build ./...`, `go test ./...`, `make lint` and `bash tests/protocol/run.sh` (Go changes)
+3. `bash scripts/validate-openapi.sh` (Go or `docs/openapi.yaml` changes)
+4. `cd ui && npm run lint && npm test -- --run` (UI or API contract changes)
+5. `node site/tools/build.mjs --check` and the site tool tests (docs or site changes)
 
-`make hooks` installs a pre-push hook that runs `make gate` for pushes to `main`. If `make lint`
-reports that `golangci-lint` is missing, install it with the command under
-[Development requirements](#development-requirements).
+A change to `.github/`, `scripts/`, the `Makefile` or build config runs everything, and
+`make gate-full` always does. ci-pr in CI uses the same areas, and ci-main runs the full
+suite on every merge to `main`.
+
+`make fix` rewrites safe formatting issues in the files you changed (`gofmt -s`,
+`eslint --fix`). `make hooks` installs a pre-commit hook that does the same for staged
+files and then runs the slop check, plus a pre-push hook that runs `make gate` for pushes
+to `main`. A line that trips the slop check on purpose can carry a
+`slop:allow <reason>` marker. If `make lint` reports that `golangci-lint` is missing,
+install it with the command under [Development requirements](#development-requirements).
 
 ## Where things are
 

@@ -60,7 +60,6 @@ type fakeVault struct {
 	failGet   map[int]bool   // GET data?version=N answers 500
 	seen      []string       // "METHOD path" log
 	other     map[string]any // content tamperNew serves
-	badToken  bool
 }
 
 func newFakeVault(t *testing.T) *fakeVault {

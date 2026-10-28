@@ -164,12 +164,17 @@ build build-agent build-agent-all: | $(OUT_DIR)
 ## Gate — the definition of green for a local run
 .PHONY: gate hooks
 gate:
-	go build ./...
-	go test ./...
-	$(MAKE) lint
-	bash scripts/validate-openapi.sh
-	bash tests/protocol/run.sh
-	cd ui && npm run lint && npm test -- --run
+	bash scripts/ci/gate.sh
+
+## Every gate step regardless of what changed
+.PHONY: gate-full
+gate-full:
+	GATE_FULL=1 bash scripts/ci/gate.sh
+
+## Auto-fix formatting in the files this branch changes (gofmt -s, eslint --fix)
+.PHONY: fix
+fix:
+	bash scripts/ci/autofix.sh
 
 ## Install the versioned git hooks (pre-push runs `make gate` for pushes to main)
 hooks:

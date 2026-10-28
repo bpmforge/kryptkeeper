@@ -7,6 +7,7 @@ package ca
 import (
 	"crypto/x509"
 	"database/sql"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -97,6 +98,15 @@ func caTypeFromDB(t string) string {
 	return t
 }
 
+// crlSelect reads crl_distribution_points back as JSON text on both engines
+// (NULL stays NULL), so scanCA has one decoding path.
+func (s *DBStore) crlSelect() string {
+	if s.isPostgres {
+		return "array_to_json(crl_distribution_points)::text"
+	}
+	return "crl_distribution_points"
+}
+
 func (s *DBStore) Save(ca *CA) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	dbType := caTypeForDB(ca.Type)
@@ -106,15 +116,36 @@ func (s *DBStore) Save(ca *CA) error {
 	csrPEM := sql.NullString{String: string(ca.CSRPEM), Valid: len(ca.CSRPEM) > 0}
 	connectorID := sql.NullString{String: ca.ConnectorID, Valid: ca.ConnectorID != ""}
 	trustPEM := sql.NullString{String: string(ca.ExternalTrustPEM), Valid: len(ca.ExternalTrustPEM) > 0}
+	displayName := ca.DisplayName
+	if displayName == "" {
+		displayName = ca.Name
+	}
+	ocspURL := sql.NullString{String: ca.OCSPServiceURL, Valid: ca.OCSPServiceURL != ""}
+	// Passed as JSON text and converted in SQL, so neither driver needs array
+	// binding (TEXT[] on Postgres, plain TEXT on sqlite).
+	crlJSON := sql.NullString{}
+	if len(ca.CRLDistributionPoints) > 0 {
+		b, err := json.Marshal(ca.CRLDistributionPoints)
+		if err != nil {
+			return fmt.Errorf("encode crl distribution points: %w", err)
+		}
+		crlJSON = sql.NullString{String: string(b), Valid: true}
+	}
 
 	var query string
 	if s.isPostgres {
 		query = `
 INSERT INTO certificate_authorities
     (id, name, display_name, type, key_storage_type, key_id, cert_pem, status,
-     parent_ca_id, created_at, updated_at, csr_pem, connector_id, external_trust_pem)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     parent_ca_id, created_at, updated_at, csr_pem, connector_id, external_trust_pem,
+     crl_distribution_points, ocsp_service_url)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+    (SELECT array_agg(x ORDER BY ord) FROM jsonb_array_elements_text($15::jsonb) WITH ORDINALITY AS t(x, ord)),
+    $16)
 ON CONFLICT (id) DO UPDATE SET
+    display_name = EXCLUDED.display_name,
+    crl_distribution_points = EXCLUDED.crl_distribution_points,
+    ocsp_service_url = EXCLUDED.ocsp_service_url,
     status       = EXCLUDED.status,
     cert_pem     = EXCLUDED.cert_pem,
     key_id       = EXCLUDED.key_id,
@@ -129,9 +160,13 @@ ON CONFLICT (id) DO UPDATE SET
 		query = `
 INSERT INTO certificate_authorities
     (id, name, display_name, type, key_storage_type, key_id, cert_pem, status,
-     parent_ca_id, created_at, updated_at, csr_pem, connector_id, external_trust_pem)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     parent_ca_id, created_at, updated_at, csr_pem, connector_id, external_trust_pem,
+     crl_distribution_points, ocsp_service_url)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id) DO UPDATE SET
+    display_name = excluded.display_name,
+    crl_distribution_points = excluded.crl_distribution_points,
+    ocsp_service_url = excluded.ocsp_service_url,
     status       = excluded.status,
     cert_pem     = excluded.cert_pem,
     key_id       = excluded.key_id,
@@ -149,15 +184,17 @@ ON CONFLICT (id) DO UPDATE SET
 		return fmt.Errorf("%w: %q", ErrUnknownKeyStorageType, ca.KeyStorageType)
 	}
 	_, err := s.db.Exec(query,
-		ca.ID, ca.Name, ca.Name, dbType, keyStorageType, keyID, certPEM,
+		ca.ID, ca.Name, displayName, dbType, keyStorageType, keyID, certPEM,
 		ca.Status, parentCAID, now, now, csrPEM, connectorID, trustPEM,
+		crlJSON, ocspURL,
 	)
 	return err
 }
 
 func (s *DBStore) Load(id string) (*CA, error) {
 	query := `
-SELECT id, name, type, key_storage_type, key_id, cert_pem, status, parent_ca_id, csr_pem, connector_id, external_trust_pem
+SELECT id, name, type, key_storage_type, key_id, cert_pem, status, parent_ca_id, csr_pem, connector_id, external_trust_pem,
+       display_name, ocsp_service_url, ` + s.crlSelect() + `
 FROM certificate_authorities
 WHERE id = ` + s.ph(1)
 
@@ -167,7 +204,8 @@ WHERE id = ` + s.ph(1)
 
 func (s *DBStore) List() ([]*CA, error) {
 	rows, err := s.db.Query(`
-SELECT id, name, type, key_storage_type, key_id, cert_pem, status, parent_ca_id, csr_pem, connector_id, external_trust_pem
+SELECT id, name, type, key_storage_type, key_id, cert_pem, status, parent_ca_id, csr_pem, connector_id, external_trust_pem,
+       display_name, ocsp_service_url, ` + s.crlSelect() + `
 FROM certificate_authorities
 ORDER BY created_at`)
 	if err != nil {
@@ -285,8 +323,9 @@ type scanner interface {
 func scanCA(row scanner) (*CA, error) {
 	var id, name, dbType, status string
 	var keyID, certPEMStr, parentCAID, keyStorageType, csrPEMStr, connectorID, trustPEM sql.NullString
+	var displayName, ocspURL, crlJSON sql.NullString
 
-	if err := row.Scan(&id, &name, &dbType, &keyStorageType, &keyID, &certPEMStr, &status, &parentCAID, &csrPEMStr, &connectorID, &trustPEM); err != nil {
+	if err := row.Scan(&id, &name, &dbType, &keyStorageType, &keyID, &certPEMStr, &status, &parentCAID, &csrPEMStr, &connectorID, &trustPEM, &displayName, &ocspURL, &crlJSON); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, ErrCANotFound
 		}
@@ -302,6 +341,13 @@ func scanCA(row scanner) (*CA, error) {
 		ParentCAID:     parentCAID.String,
 		KeyStorageType: keyStorageType.String,
 		ConnectorID:    connectorID.String,
+		DisplayName:    displayName.String,
+		OCSPServiceURL: ocspURL.String,
+	}
+	if crlJSON.Valid && crlJSON.String != "" {
+		if err := json.Unmarshal([]byte(crlJSON.String), &ca.CRLDistributionPoints); err != nil {
+			return nil, fmt.Errorf("decode crl distribution points for CA %s: %w", id, err)
+		}
 	}
 	if trustPEM.Valid && trustPEM.String != "" {
 		ca.ExternalTrustPEM = []byte(trustPEM.String)

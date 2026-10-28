@@ -1,7 +1,7 @@
 openapi: "3.1.0"
 info:
   title: Kryptkeeper API
-  version: "1.1.2"
+  version: "1.1.3"
   description: Enterprise PKI and Crypto Trust Platform REST API
   license:
     name: Apache-2.0
@@ -4347,17 +4347,45 @@ paths:
     patch:
       operationId: updateCA
       summary: Update mutable CA fields (display_name, crl_distribution_points, ocsp_service_url)
+      description: >-
+        The CRL and OCSP pointers are embedded in certificates issued after
+        the change; already-issued certificates keep theirs. An external CA's
+        pointers belong to its upstream and cannot be set (422).
       tags: [CAs]
       parameters:
         - name: id
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                display_name:
+                  type: string
+                  minLength: 1
+                  maxLength: 255
+                crl_distribution_points:
+                  type: array
+                  maxItems: 8
+                  description: Absolute http, https or ldap URLs; duplicates are dropped.
+                  items: { type: string }
+                ocsp_service_url:
+                  type: string
+                  description: Absolute http or https URL; an empty string clears it.
       responses:
         "200":
           description: Updated
+        "400":
+          description: Malformed body, unknown field, or an invalid name or URL
+        "404":
+          description: Not found
         "422":
-          description: Attempted to modify an immutable field
+          description: Attempted to modify an immutable field, or to set CRL/OCSP pointers on an external CA
     delete:
       operationId: deleteCA
       summary: Delete a CA (must be revoked/expired first), or remove an imported trust anchor (dual control)

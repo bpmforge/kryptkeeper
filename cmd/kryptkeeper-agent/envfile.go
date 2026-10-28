@@ -116,7 +116,7 @@ func scrubEnrollToken(path string) error {
 		return err
 	}
 	if err := os.Chmod(tmp, info.Mode().Perm()); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp) // best-effort cleanup; the Chmod error is the one returned
 		return err
 	}
 	return os.Rename(tmp, path)

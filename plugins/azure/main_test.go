@@ -64,12 +64,6 @@ func newCert(t *testing.T, cn string) (certPEM string, keyPEM string, ecKeyPEM s
 		string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: sec1}))
 }
 
-func fp(certPEM string) string {
-	b, _ := pem.Decode([]byte(certPEM))
-	s := sha256.Sum256(b.Bytes)
-	return hex.EncodeToString(s[:])
-}
-
 const gwJSON = `{"name":"gw1","etag":"W/\"abc\"","location":"westeurope","tags":{"env":"prod"},"properties":{"provisioningState":"Succeeded","sku":{"name":"WAF_v2","capacity":2},
 "gatewayIPConfigurations":[{"name":"ipc","properties":{"subnet":{"id":"/s"}}}],
 "sslCertificates":[{"name":"other","properties":{"data":"x"}},{"name":"web-cert","properties":{"keyVaultSecretId":"%s","publicCertData":"zzz"}}],

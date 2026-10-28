@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Pre-commit: auto-fix formatting in staged files, then refuse clear-cut slop in
+# the lines being added (scripts/ci/check-slop.py). Install: make hooks.
+# Bypass for an emergency with `git commit --no-verify`; CI runs the same check.
+set -euo pipefail
+root=$(git rev-parse --show-toplevel)
+bash "$root/scripts/ci/autofix.sh" --staged
+python3 "$root/scripts/ci/check-slop.py" --staged

@@ -39,6 +39,8 @@ CREATE TABLE certificate_authorities (
     parent_ca_id TEXT,
     connector_id TEXT,
     external_trust_pem TEXT,
+    crl_distribution_points TEXT,
+    ocsp_service_url TEXT,
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 )`)
@@ -198,6 +200,56 @@ func TestDBStoreSaveUpsert(t *testing.T) {
 	}
 	if loaded.Status != "suspended" {
 		t.Errorf("expected suspended after upsert, got %s", loaded.Status)
+	}
+}
+
+func TestDBStoreRoundTripsEditableMetadata(t *testing.T) {
+	d := newTestDB(t)
+	store := NewDBStore(d, false)
+
+	// Defaults: display_name falls back to name; CRL/OCSP read back empty, not an error.
+	if err := store.Save(&CA{ID: "m1", Name: "Meta", Type: "root", Status: "active"}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := store.Load("m1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.DisplayName != "Meta" || len(got.CRLDistributionPoints) != 0 || got.OCSPServiceURL != "" {
+		t.Fatalf("defaults wrong: %+v", got)
+	}
+
+	got.DisplayName = "Pretty"
+	got.CRLDistributionPoints = []string{"http://a/x.crl", "https://b/y.crl"}
+	got.OCSPServiceURL = "http://ocsp.example"
+	got.Name = "must-not-change"
+	if err := store.Save(got); err != nil {
+		t.Fatalf("Save upsert: %v", err)
+	}
+	var name string
+	if err := d.QueryRow(`SELECT name FROM certificate_authorities WHERE id = 'm1'`).Scan(&name); err != nil {
+		t.Fatal(err)
+	}
+	if name != "Meta" {
+		t.Fatalf("upsert rewrote the immutable name: %q", name)
+	}
+	list, err := store.List()
+	if err != nil || len(list) != 1 {
+		t.Fatalf("List: %v, %d", err, len(list))
+	}
+	if g := list[0]; g.DisplayName != "Pretty" || g.OCSPServiceURL != "http://ocsp.example" ||
+		len(g.CRLDistributionPoints) != 2 || g.CRLDistributionPoints[1] != "https://b/y.crl" {
+		t.Fatalf("round trip wrong: %+v", g)
+	}
+
+	// Clearing writes NULL, which must read back as empty.
+	got.CRLDistributionPoints, got.OCSPServiceURL = nil, ""
+	if err := store.Save(got); err != nil {
+		t.Fatal(err)
+	}
+	cleared, _ := store.Load("m1")
+	if len(cleared.CRLDistributionPoints) != 0 || cleared.OCSPServiceURL != "" {
+		t.Fatalf("clear failed: %+v", cleared)
 	}
 }
 

@@ -140,22 +140,6 @@ export function canManageUsers(role?: string, scopes?: string[]) {
   }
 }
 
-export function canManageDashboardActions(role?: string, scopes?: string[]) {
-  switch ((role ?? "").trim()) {
-    case "pki-admin":
-    case "pki-operator":
-    case "discovery-operator":
-    case "notification-operator":
-      return true;
-    default:
-      return (
-        hasScope(scopes, "*") ||
-        hasScope(scopes, "ops:write") ||
-        hasScope(scopes, "dashboard:write")
-      );
-  }
-}
-
 export function useAuthz() {
   return useQuery<AuthzResponse>({
     queryKey: ["authz-check"],

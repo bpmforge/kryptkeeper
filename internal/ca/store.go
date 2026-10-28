@@ -63,7 +63,7 @@ func NewMemStore() *MemStore {
 func (s *MemStore) Save(ca *CA) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	clone := *ca
+	clone := cloneCA(ca)
 	s.data[ca.ID] = &clone
 	return nil
 }
@@ -75,7 +75,7 @@ func (s *MemStore) Load(id string) (*CA, error) {
 	if !ok {
 		return nil, ErrCANotFound
 	}
-	clone := *ca
+	clone := cloneCA(ca)
 	return &clone, nil
 }
 
@@ -84,10 +84,18 @@ func (s *MemStore) List() ([]*CA, error) {
 	defer s.mu.RUnlock()
 	result := make([]*CA, 0, len(s.data))
 	for _, ca := range s.data {
-		clone := *ca
+		clone := cloneCA(ca)
 		result = append(result, &clone)
 	}
 	return result, nil
+}
+
+// cloneCA copies the struct and the slice it owns, so a caller mutating the
+// returned CA's CRL list cannot reach the stored one.
+func cloneCA(c *CA) CA {
+	clone := *c
+	clone.CRLDistributionPoints = append([]string(nil), c.CRLDistributionPoints...)
+	return clone
 }
 
 func (s *MemStore) UpdateStatus(id, status string) error {

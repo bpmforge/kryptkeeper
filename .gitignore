@@ -89,3 +89,6 @@ docs/guide/screenshots/
 # storm run output: only results/last-run.json is tracked
 tests/live/storm/results/*.json
 !tests/live/storm/results/last-run.json
+
+# Cloudflare wrangler's local cache, left by site/tools/deploy.mjs
+.wrangler/

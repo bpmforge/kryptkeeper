@@ -1214,6 +1214,43 @@ func (e *Engine) UpdateCAStatus(id, status string) error {
 	return nil
 }
 
+// ErrExternalRevocationPointers refuses CRL/OCSP overrides on an external CA:
+// its revocation data is its upstream's, and a pointer to the hub's own
+// endpoints would be embedded in certificates the hub does not sign (D-304).
+var ErrExternalRevocationPointers = errors.New("ca: an external CA's CRL and OCSP are its upstream's")
+
+// UpdateCAMetadata applies the operator-editable fields (nil = leave alone).
+// It edits a copy and swaps the cache entry only after the store accepted the
+// write, so a failed save leaves neither the cache nor concurrent readers of
+// the old *CA half-updated.
+func (e *Engine) UpdateCAMetadata(id string, displayName *string, crl *[]string, ocsp *string) (*CA, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	cur, ok := e.get(id)
+	if !ok {
+		return nil, ErrCANotFound
+	}
+	if cur.Type == CATypeExternal && (crl != nil || ocsp != nil) {
+		return nil, ErrExternalRevocationPointers
+	}
+	next := cloneCA(cur)
+	if displayName != nil {
+		next.DisplayName = *displayName
+	}
+	if crl != nil {
+		next.CRLDistributionPoints = append([]string(nil), *crl...)
+	}
+	if ocsp != nil {
+		next.OCSPServiceURL = *ocsp
+	}
+	if err := e.saveCA(&next); err != nil {
+		return nil, err
+	}
+	out := cloneCA(&next)
+	return &out, nil
+}
+
 // createCertDER dispatches certificate creation based on the CA's signing
 // algorithm AND the leaf's public-key type (G-69/W4-08: widened from
 // signer-algorithm-only, which routed any non-ML-DSA CA straight to stdlib

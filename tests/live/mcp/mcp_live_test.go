@@ -177,11 +177,10 @@ func newCSR(t *testing.T, cn string) string {
 // ---- seeded fixture (built once, shared by every test) ----
 
 type targets struct {
-	caID                                  string
-	revokeFP, renewFP, rotateFP           string
-	bulkCA                                string
-	bulkFPs                               []string
-	issueCSR, renewCSR, rotateCSR, rotCSR string
+	caID                        string
+	revokeFP, renewFP, rotateFP string
+	bulkCA                      string
+	bulkFPs                     []string
 }
 
 type fixture struct {

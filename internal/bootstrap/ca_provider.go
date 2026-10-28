@@ -94,8 +94,11 @@ var (
 	errCAImmutableField      = errors.New("ca immutable field")
 	errCAInvalidUpdateFields = errors.New("ca invalid update fields")
 	errCAUnprocessable       = errors.New("ca unprocessable")
-	errCACreateUnsupported   = errors.New("ca create not supported by this provider")
-	errCARotateUnsupported   = errors.New("ca key rotation not supported by this provider")
+	// errCAUpdateUnsupported marks an update the CA's kind cannot take (an
+	// external CA's CRL/OCSP pointers); the handler answers 422.
+	errCAUpdateUnsupported = errors.New("an external CA's CRL and OCSP are its upstream's")
+	errCACreateUnsupported = errors.New("ca create not supported by this provider")
+	errCARotateUnsupported = errors.New("ca key rotation not supported by this provider")
 	// errCARotationRolledBack marks a rotation that failed and was undone (W23-16).
 	errCARotationRolledBack = errors.New("ca key rotation failed and was rolled back")
 )

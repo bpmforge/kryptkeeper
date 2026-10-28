@@ -392,10 +392,3 @@ export function SectionLabel({ children }: { children: ReactNode }) {
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Divider
-// ---------------------------------------------------------------------------
-export function Divider() {
-  return <hr className="border-border" />;
-}

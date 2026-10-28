@@ -1,6 +1,6 @@
 # Third-party licenses
 
-Generated: 2026-10-27 by `scripts/check-licenses.sh generate` (go-licenses v2.0.1, `go list -deps -m`, `ui/package-lock.json`).
+Generated: 2026-10-28 by `scripts/check-licenses.sh generate` (go-licenses v2.0.1, `go list -deps -m`, `ui/package-lock.json`).
 Do not edit by hand; regenerate on every dependency change. CI fails if this file lags the dependencies.
 Go scope is the shipped binaries (`./cmd/...`), transitive dependencies included. Policy: [docs/LICENSING_AND_SUPPORT.md](docs/LICENSING_AND_SUPPORT.md).
 

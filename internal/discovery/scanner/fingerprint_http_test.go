@@ -28,14 +28,6 @@ const (
 	respHTTPAPI = "HTTP/1.1 404 Not Found\r\nServer: Microsoft-HTTPAPI/2.0\r\n\r\n"
 )
 
-func evidenceTechs(ev []Evidence) []string {
-	var out []string
-	for _, e := range ev {
-		out = append(out, e.Tech)
-	}
-	return out
-}
-
 func hasEvidence(ev []Evidence, tech, valueContains string) bool {
 	for _, e := range ev {
 		if e.Tech == tech && strings.Contains(e.Value, valueContains) {

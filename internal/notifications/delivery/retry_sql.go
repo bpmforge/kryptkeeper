@@ -18,11 +18,6 @@ const tsLayout = "2006-01-02T15:04:05Z"
 
 func fmtTS(t time.Time) string { return t.UTC().Format(tsLayout) }
 
-func parseTS(s string) time.Time {
-	t, _ := time.Parse(tsLayout, s)
-	return t
-}
-
 // SQLStore is the durable Store over notification_delivery_queue (migration
 // 000381), following the itsm.Store pattern: one *sql.DB plus a postgres flag.
 type SQLStore struct {

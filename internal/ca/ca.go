@@ -93,6 +93,14 @@ type CA struct {
 	// response must chain to. It is the operator's statement of which CA the
 	// upstream may sign with, so an upstream cannot silently switch issuers.
 	ExternalTrustPEM []byte
+	// DisplayName, CRLDistributionPoints and OCSPServiceURL are the operator-
+	// editable metadata (PATCH /cas/{id}). They live on the CA, not beside it,
+	// so the engine's cache and the store share one source of truth and a
+	// restart cannot lose an edit. Name stays immutable; an empty DisplayName
+	// reads as Name. Empty CRL/OCSP mean "use the hub's own endpoints".
+	DisplayName           string
+	CRLDistributionPoints []string
+	OCSPServiceURL        string
 }
 
 // IssuanceRequest contains the parameters for certificate issuance.

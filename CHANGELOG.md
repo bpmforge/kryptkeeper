@@ -8,6 +8,14 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [1.1.3] - 2026-10-28
+
+Release notes: [docs/release/RELEASE_NOTES_v1.1.3.md](docs/release/RELEASE_NOTES_v1.1.3.md).
+
+### Fixed
+
+- `PATCH /api/v1/cas/{id}` now saves `display_name`, `crl_distribution_points` and `ocsp_service_url`. Before, the hub returned success but only renamed the CA in memory (lost on restart) and ignored the CRL and OCSP fields, so certificates kept the hub's default revocation URLs. The URLs are validated, an external CA refuses them (its revocation is its upstream's), and the audit event records what changed. Certificates issued before an edit keep their old URLs.
+
 ## [1.1.2] - 2026-10-28
 
 Release notes: [docs/release/RELEASE_NOTES_v1.1.2.md](docs/release/RELEASE_NOTES_v1.1.2.md).

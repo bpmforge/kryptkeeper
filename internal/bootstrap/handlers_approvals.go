@@ -297,7 +297,8 @@ func handleApprove(
 		TemplateID: apr.TemplateID,
 		TeamID:     apr.TeamID,
 	}
-	// Temporarily bypass approval check by using a context marker.
+	// The approval being executed is the gate, so mark the context and
+	// IssueCertificate does not ask for a second approval.
 	issued, err := certProvider.IssueCertificate(
 		context.WithValue(r.Context(), approvalBypassKey{}, true), issueReq)
 	if err != nil {

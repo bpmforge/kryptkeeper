@@ -13,8 +13,70 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Which areas this PR touches (scripts/ci/changed-areas.sh). Each job below
+  # runs only for the areas it tests; a change to CI, scripts or build config
+  # sets `all`. ci-main still runs everything on every merge to main.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.areas.outputs.go }}
+      ui: ${{ steps.areas.outputs.ui }}
+      api: ${{ steps.areas.outputs.api }}
+      docker: ${{ steps.areas.outputs.docker }}
+      ansible: ${{ steps.areas.outputs.ansible }}
+      site: ${{ steps.areas.outputs.site }}
+      docs: ${{ steps.areas.outputs.docs }}
+      all: ${{ steps.areas.outputs.all }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - id: areas
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # No base (merge queue, manual run) means test everything.
+          if [ -z "$BASE_SHA" ]; then
+            printf '%s=true\n' go ui api docker ansible site docs ci all | tee -a "$GITHUB_OUTPUT"
+          else
+            bash scripts/ci/changed-areas.sh "$BASE_SHA" | tee -a "$GITHUB_OUTPUT"
+          fi
+
+  # Clear-cut slop in the lines this PR adds (scripts/ci/check-slop.py).
+  slop-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [changes]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "$BASE_SHA" ]; then python3 scripts/ci/check-slop.py "$BASE_SHA"; else echo "no PR base; skipped"; fi
+
+  # Docs and site: every relative link in what ships publicly resolves, nothing
+  # private leaks, and the site builds and passes its own tests.
+  docs-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [changes]
+    if: ${{ needs.changes.outputs.docs == 'true' || needs.changes.outputs.site == 'true' || needs.changes.outputs.all == 'true' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - run: |
+          set -euo pipefail
+          node site/tools/build.mjs --check
+          KK_SRC_REPO="$PWD" KK_SRC_COMMIT=HEAD bash scripts/release/publish-snapshot.sh "$RUNNER_TEMP/public-snapshot" | tail -5
+
   protocol-integration-harness:
     name: Protocol+Integration harness
+    needs: [changes]
+    if: ${{ needs.changes.outputs.go == 'true' || needs.changes.outputs.all == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -31,6 +93,8 @@ jobs:
 
   runtime-smoke-harness:
     name: Runtime smoke (test harness)
+    needs: [changes]
+    if: ${{ needs.changes.outputs.go == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.all == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -49,6 +113,8 @@ jobs:
 
   profile-lint:
     name: Certificate profile lint (pkilint + zlint)
+    needs: [changes]
+    if: ${{ needs.changes.outputs.go == 'true' || needs.changes.outputs.all == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -76,6 +142,8 @@ jobs:
             bash scripts/lint/profile-lint.sh
 
   lint-static:
+    needs: [changes]
+    if: ${{ needs.changes.outputs.go == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.all == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -123,10 +191,18 @@ jobs:
         run: bash scripts/validate-openapi.sh
 
   unit-backend:
+    needs: [changes]
+    if: ${{ needs.changes.outputs.go == 'true' || needs.changes.outputs.all == 'true' }}
     runs-on: ubuntu-latest
-    # 70: headroom for a runner shared with several builds at once;
-    # internal/bootstrap is sharded (scripts/test/go-unit-sharded.sh).
-    timeout-minutes: 70
+    # Six internal/bootstrap shards and the rest of the module, each its own
+    # job, so the two runners share the race suite (one runner took 23 min).
+    # Every shard 1..6 must be listed for full coverage.
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ["--shard 1/6", "--shard 2/6", "--shard 3/6", "--shard 4/6", "--shard 5/6", "--shard 6/6", "--rest"]
+    name: unit-backend (${{ matrix.part }})
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Setup Go
@@ -143,18 +219,19 @@ jobs:
           # 50m per shard: with two PR runs on the shared runner the bootstrap
           # shards took 27-30 min and one hit the 30m default mid-test
           # (the self-hosted forge run 9007, a docs-only PR); nothing was hung.
-          GO_TEST_FLAGS: -race -timeout 50m
+          GO_TEST_FLAGS: -race -timeout 40m
         run: |
           set -euo pipefail
-          # Same `go test ./... -race`, with internal/bootstrap (the ~23 min
-          # critical path) split over 4 parallel processes.
-          bash scripts/test/go-unit-sharded.sh 4
+          # Same `go test ./... -race`, one slice per matrix job.
+          bash scripts/test/go-unit-sharded.sh ${{ matrix.part }}
       - name: Skip marker
         if: ${{ hashFiles('go.mod') == '' }}
         run: echo "No Go module detected; skipping backend unit tests"
 
   fips-only:
     name: Go FIPS 140-3 (fips140=only)
+    needs: [changes]
+    if: ${{ needs.changes.outputs.go == 'true' || needs.changes.outputs.all == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -188,6 +265,8 @@ jobs:
         run: go test ./internal/bootstrap -run '^TestIssueRefusal_FIPSHybrid$' -count=1 -v
 
   unit-frontend:
+    needs: [changes]
+    if: ${{ needs.changes.outputs.ui == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.all == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -218,6 +297,8 @@ jobs:
   # The live-hub run (ansible/kryptkeeper/pki/tests/integration/run.sh) needs a
   # compose provider and the image builds, so it stays a manual/release check.
   ansible-collection:
+    needs: [changes]
+    if: ${{ needs.changes.outputs.ansible == 'true' || needs.changes.outputs.all == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -231,6 +312,8 @@ jobs:
           PATH="$RUNNER_TEMP/venv/bin:$PATH" bash ansible/kryptkeeper/pki/tests/run-checks.sh "$pyver"
 
   integration-core:
+    needs: [changes]
+    if: ${{ needs.changes.outputs.go == 'true' || needs.changes.outputs.all == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     services:
@@ -303,6 +386,7 @@ jobs:
         run: echo "No Go module detected; skipping integration tests"
 
   security-baseline:
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -318,7 +402,7 @@ jobs:
           # setup-go's cache re-downloaded ~2.7 GB over them on every job.
           cache: false
       - name: Go vulnerability check
-        if: ${{ hashFiles('go.mod') != '' }}
+        if: ${{ hashFiles('go.mod') != '' && (needs.changes.outputs.go == 'true' || needs.changes.outputs.all == 'true') }}
         run: |
           set -euo pipefail
           go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
@@ -335,6 +419,8 @@ jobs:
           echo "No high-signal secret patterns detected"
 
   e2e-smoke:
+    needs: [changes]
+    if: ${{ needs.changes.outputs.go == 'true' || needs.changes.outputs.ui == 'true' || needs.changes.outputs.api == 'true' || needs.changes.outputs.all == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -367,3 +453,22 @@ jobs:
       - name: Skip marker
         if: ${{ hashFiles('ui/package.json') == '' }}
         run: echo "No frontend package detected; skipping e2e smoke"
+
+  # The one check to gate merges on: every job this PR needed passed. Jobs
+  # skipped because their area did not change count as passed.
+  ci-pr-result:
+    name: ci-pr result
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: ${{ always() }}
+    needs: [changes, slop-check, docs-check, protocol-integration-harness, runtime-smoke-harness, profile-lint, lint-static, unit-backend, fips-only, unit-frontend, ansible-collection, integration-core, security-baseline, e2e-smoke]
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$RESULTS" | python3 -c '
+          import json, sys
+          bad = {k: v["result"] for k, v in json.load(sys.stdin).items() if v["result"] not in ("success", "skipped")}
+          print("failed or cancelled:", bad if bad else "none")
+          sys.exit(1 if bad else 0)'

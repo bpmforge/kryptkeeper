@@ -14,9 +14,12 @@ import (
 	"errors"
 	"fmt"
 	"kryptkeeper/internal/logging"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"kryptkeeper/internal/ca"
 	"kryptkeeper/internal/keystore"
@@ -183,16 +186,81 @@ func (p *engineCAProvider) GetCAChain(ctx context.Context, id string) ([]CAListI
 }
 
 func (p *engineCAProvider) UpdateCA(_ context.Context, id string, req CAUpdateRequest) (CAListItem, error) {
-	caObj, err := p.engine.GetCA(id)
+	updater, ok := p.engine.(interface {
+		UpdateCAMetadata(id string, displayName *string, crl *[]string, ocsp *string) (*ca.CA, error)
+	})
+	if !ok {
+		return CAListItem{}, errCACreateUnsupported
+	}
+	displayName, crl, ocsp, err := validateCAUpdate(req)
 	if err != nil {
+		return CAListItem{}, err
+	}
+	updated, err := updater.UpdateCAMetadata(id, displayName, crl, ocsp)
+	switch {
+	case err == nil:
+	case errors.Is(err, ca.ErrCANotFound):
 		return CAListItem{}, errCANotFound
+	case errors.Is(err, ca.ErrExternalRevocationPointers):
+		return CAListItem{}, errCAUpdateUnsupported
+	default:
+		return CAListItem{}, err
 	}
-	// Engine doesn't have a dedicated update method; surface display metadata via status no-op.
-	// The updatable fields (display_name, crl, ocsp) are stored in the CA record name for now.
+	return caToListItem(updated), nil
+}
+
+const (
+	caDisplayNameMax = 255
+	caCRLPointersMax = 8
+)
+
+// validateCAUpdate normalises a PATCH body. These URLs are embedded in every
+// certificate the CA issues afterwards, so a malformed one would break
+// revocation checking for relying parties; reject rather than store it.
+func validateCAUpdate(req CAUpdateRequest) (*string, *[]string, *string, error) {
+	var displayName, ocsp *string
+	var crl *[]string
 	if req.DisplayName != nil {
-		caObj.Name = *req.DisplayName
+		trimmed := strings.TrimSpace(*req.DisplayName)
+		if trimmed == "" || utf8.RuneCountInString(trimmed) > caDisplayNameMax {
+			return nil, nil, nil, errCAInvalidUpdateFields
+		}
+		displayName = &trimmed
 	}
-	return caToListItem(caObj), nil
+	if req.CRLDistributionPoints != nil {
+		if len(*req.CRLDistributionPoints) > caCRLPointersMax {
+			return nil, nil, nil, errCAInvalidUpdateFields
+		}
+		points := make([]string, 0, len(*req.CRLDistributionPoints))
+		seen := make(map[string]bool)
+		for _, raw := range *req.CRLDistributionPoints {
+			u := strings.TrimSpace(raw)
+			if !validRevocationURL(u, "http", "https", "ldap") {
+				return nil, nil, nil, errCAInvalidUpdateFields
+			}
+			if !seen[u] {
+				seen[u] = true
+				points = append(points, u)
+			}
+		}
+		crl = &points
+	}
+	if req.OCSPServiceURL != nil {
+		u := strings.TrimSpace(*req.OCSPServiceURL)
+		if u != "" && !validRevocationURL(u, "http", "https") {
+			return nil, nil, nil, errCAInvalidUpdateFields
+		}
+		ocsp = &u
+	}
+	return displayName, crl, ocsp, nil
+}
+
+func validRevocationURL(raw string, schemes ...string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.Hostname() == "" {
+		return false
+	}
+	return slices.Contains(schemes, strings.ToLower(u.Scheme))
 }
 
 // DeleteCA removes a revoked or expired CA. The engine has no inventory, so
@@ -580,6 +648,9 @@ func caToListItem(c *ca.CA) CAListItem {
 		CreatedAt:      c.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:      c.CreatedAt.UTC().Format(time.RFC3339),
 	}
+	if c.DisplayName != "" {
+		item.DisplayName = c.DisplayName
+	}
 	if c.ParentCAID != "" {
 		item.ParentCAID = &c.ParentCAID
 	}
@@ -588,6 +659,11 @@ func caToListItem(c *ca.CA) CAListItem {
 	if c.Type == ca.CATypeExternal {
 		item.ConnectorID = c.ConnectorID
 		item.KeyStorageType = ca.CATypeExternal
+	} else {
+		item.CRLDistributionPoints = slices.Clone(c.CRLDistributionPoints)
+		if c.OCSPServiceURL != "" {
+			item.OCSPServiceURL = &c.OCSPServiceURL
+		}
 	}
 	item.RevocationSigning = revsign.RevocationSigningClassical
 	if len(c.CertPEM) > 0 {

@@ -563,8 +563,18 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 					return
 				}
 
+				// Read before writing so the audit trail records what changed,
+				// not just that something did. A miss is left to UpdateCA to report.
+				before, _, _ := caProvider.GetCA(r.Context(), id)
 				updated, err := caProvider.UpdateCA(r.Context(), id, updateReq)
 				if err != nil {
+					if errors.Is(err, errCAUpdateUnsupported) {
+						emitAuditEvent(r, auditProvider, pd.ID, "ca.update", "ca", id, AuditOutcomeFailure)
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusUnprocessableEntity)
+						_, _ = w.Write([]byte(`{"error":"unprocessable_entity","message":"an external CA's CRL and OCSP are its upstream's"}`))
+						return
+					}
 					if err == errCANotFound {
 						emitAuditEvent(r, auditProvider, pd.ID, "ca.update", "ca", id, AuditOutcomeFailure)
 						writeNotFound(w, "ca not found")
@@ -589,7 +599,7 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 					writeServiceUnavailable(w, "ca unavailable")
 					return
 				}
-				emitAuditEvent(r, auditProvider, pd.ID, "ca.update", "ca", id, AuditOutcomeSuccess)
+				emitAuditEventDetail(r, auditProvider, pd.ID, "ca.update", "ca", id, AuditOutcomeSuccess, caUpdateSummary(before, updated))
 				updated = withCAEffectiveStatus(updated, time.Now().UTC())
 
 				resp := struct {
@@ -808,6 +818,31 @@ func registerCAHandlers(mux *http.ServeMux, auth *Authenticator, caProvider CAPr
 			logging.Warnf("failed to encode /api/v1/cas/{id} response: %v", err)
 		}
 	})
+}
+
+// caUpdateSummary lists only the editable fields that differ. None of them is
+// secret: they are public labels and revocation URLs.
+func caUpdateSummary(before, after CAListItem) string {
+	var parts []string
+	if before.DisplayName != after.DisplayName {
+		parts = append(parts, fmt.Sprintf("display_name: %q -> %q", before.DisplayName, after.DisplayName))
+	}
+	if oldCRL, newCRL := strings.Join(before.CRLDistributionPoints, ","), strings.Join(after.CRLDistributionPoints, ","); oldCRL != newCRL {
+		parts = append(parts, fmt.Sprintf("crl_distribution_points: %q -> %q", oldCRL, newCRL))
+	}
+	ocsp := func(p *string) string {
+		if p == nil {
+			return ""
+		}
+		return *p
+	}
+	if ocsp(before.OCSPServiceURL) != ocsp(after.OCSPServiceURL) {
+		parts = append(parts, fmt.Sprintf("ocsp_service_url: %q -> %q", ocsp(before.OCSPServiceURL), ocsp(after.OCSPServiceURL)))
+	}
+	if len(parts) == 0 {
+		return "no changes"
+	}
+	return strings.Join(parts, "; ")
 }
 
 func parseCAUpdateRequest(body io.Reader) (CAUpdateRequest, error) {

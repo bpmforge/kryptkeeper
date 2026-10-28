@@ -195,15 +195,6 @@ func anyCerts(results []scanner.DiscoveredEndpoint) bool {
 	return false
 }
 
-func anyServed(results []scanner.DiscoveredEndpoint) bool {
-	for _, ep := range results {
-		if len(ep.Certs) > 0 && ep.Certs[0].Served {
-			return true
-		}
-	}
-	return false
-}
-
 func markChainCAs(ep *scanner.DiscoveredEndpoint) {
 	if len(ep.Certs) == 0 || !ep.Certs[0].Served {
 		return

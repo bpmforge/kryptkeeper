@@ -1,6 +1,13 @@
 import "@testing-library/jest-dom";
 import { beforeEach, afterEach, vi } from "vitest";
 import * as React from "react";
+import { configure } from "@testing-library/react";
+
+// findBy*/waitFor give up after 1 s by default. On a CI runner busy with
+// parallel jobs a first render can take longer, and those timeouts failed
+// unrelated PRs (a different test each run). Only the wait grows; no
+// assertion changes.
+configure({ asyncUtilTimeout: 5000 });
 
 // Radix Dialog uses a portal + scroll lock that sets pointer-events:none on
 // document.body, blocking userEvent clicks in jsdom. Replace it with a simple

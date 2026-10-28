@@ -15,7 +15,7 @@ import (
 
 // W36-09: read-only inventory of a GlobalSign Atlas HVCA account. It reuses
 // the connector's ListCertificates (stats listing plus per-serial fetch) so
-// request shapes live in one place. Not yet registered in inventory_source.go.
+// request shapes live in one place.
 
 type globalSignSource struct {
 	conn *connectors.GlobalSignConnector
