@@ -71,7 +71,12 @@ jobs:
       - run: |
           set -euo pipefail
           node site/tools/build.mjs --check
-          KK_SRC_REPO="$PWD" KK_SRC_COMMIT=HEAD bash scripts/release/publish-snapshot.sh "$RUNNER_TEMP/public-snapshot" | tail -5
+          node --test site/tools/*.test.mjs
+          # The snapshot script stays in the development repository (.publicignore),
+          # so on the public repository this job checks the site only.
+          if [ -f scripts/release/publish-snapshot.sh ]; then
+            KK_SRC_REPO="$PWD" KK_SRC_COMMIT=HEAD bash scripts/release/publish-snapshot.sh "$RUNNER_TEMP/public-snapshot" | tail -5
+          fi
 
   protocol-integration-harness:
     name: Protocol+Integration harness
