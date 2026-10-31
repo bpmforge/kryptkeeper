@@ -8,6 +8,10 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-31
+
+Release notes: [docs/release/RELEASE_NOTES_v1.2.0.md](docs/release/RELEASE_NOTES_v1.2.0.md).
+
 ### Added
 
 - Templates can fix subject components: `subject_policy.fixed_rdns` (DC, O, OU, L, ST, C) are appended after the CN of every certificate issued under the template, whatever the request asked for. ACME clients such as win-acme, acme.sh and Posh-ACME can only send a CN, so this is how their certificates fit a CA with directoryName name constraints (for example `CN=webserver,DC=foo,DC=bar`). Editable on the Templates page. See [docs/ops/ACME_NAME_CONSTRAINTS.md](docs/ops/ACME_NAME_CONSTRAINTS.md).
@@ -21,6 +25,11 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 - An external CA whose issuing certificate carries directoryName name constraints no longer fails every issuance with "does not chain to this external CA's trusted certificates"; the constraints are checked instead.
 - Saving a template in the UI no longer clears its device-attestation grant.
+
+### Other changes
+
+- The public release workflow runs its tests as seven parallel jobs and the spec and SDK checks alongside them.
+- A connector test that timed out under heavy load has a realistic wait budget.
 
 ## [1.1.3] - 2026-10-28
 

@@ -51,7 +51,7 @@ Last updated: 2026-10-27.
 | Merge the IP and hostname views of the same server | A server scanned by IP and by name shows up as two endpoints. | Later | post-0.9.3 planning |
 | Agent reports unreadable files and listening ports the same way agentless scans do | Today the agent silently skips files it cannot read, so a gap in coverage looks like nothing is there. Includes the live agent test for this report. | 1.1 | W34-09 |
 | Browser test for a target blocked by a root-owned install path | Proves end to end that the dashboard explains why such a target is blocked and clears once the credential is switched to helper mode. | 1.1 | W33-26 |
-| Mark a scan job completed only after its certificates are in the inventory | A job reports `completed` a few seconds before its certificates appear in the estate, so anything that reads the estate right after must wait. | 1.2 | DAY_ONE_RUN_v1.1 |
+| Mark a scan job completed only after its certificates are in the inventory | A job reports `completed` a few seconds before its certificates appear in the estate, so anything that reads the estate right after must wait. | 1.3 | DAY_ONE_RUN_v1.1 |
 
 ## Renewal, issuance and CA operations
 
@@ -66,7 +66,6 @@ Last updated: 2026-10-27.
 | Show which delivery path each certificate uses | Makes it obvious whether a certificate is installed by the agent, over SSH, by a plugin or by hand. | 1.1 | W20-25 |
 | Revoke on Intune's request (wipe, retire) | Intune queues revocations for the certificates it asked for; the hub does not yet download them through the Intune revocation API and revoke, so a wiped device's certificate stays valid until it expires. | Later | W20-23, D-327 |
 | Tenant scoping for migration batches | Under multi-tenancy, migration batches are not yet limited to the tenant that created them. | 1.1 | W24-53 |
-| Fixed subject RDNs and template policy on EST and SCEP | Fixed subject components (D-332) apply on API issuance, renewal, WSTEP and ACME; EST and SCEP still issue a fixed profile with no template policy, so a DN-constrained CA refuses their CN-only requests. | Later | D-332 |
 | Name constraints on CAs the hub does not hold, and on directoryName SANs | The pre-signing check reads the issuing CA and the ancestors in the hub; a constraint only on an offline root that was never imported is still enforced by relying parties but not caught at issuance. directoryName SANs are not checked. | Later | D-332 |
 | Readable DC in inventory subjects | The inventory shows a subject's DC components as a dotted OID with a hex value (the Go library's form); the template and ACME error messages already print DC=. | Later | D-332 |
 | Bulk reissue from the certificate list | Bulk reissue cannot yet rebuild certificates that were issued from a client's own CSR; it needs a design decision on which certificates can be reissued without one. | Later | W33-33 |
@@ -110,18 +109,18 @@ Last updated: 2026-10-27.
 | Use a workload's SPIFFE identity to call the hub | Workload identity scopes are enforced in tests but nothing yet signs in to the hub with an SVID. | Later | D-150 |
 | Publish the plugin catalogue to the site automatically | The release workflow signs the catalogue and attaches it to the release, but copying it to kryptkeeper.io/plugins and deploying the site is still a manual step, and the workflow needs the plugin signing key added as repository secrets first. | 1.1 | W37-11, D-328 |
 | Catalogue upgrade prompts and plugin removal notices | The Catalogue tab marks an installed older version as upgradable, but it does not say when a catalogue plugin is withdrawn or revoked, and there is no keyless-signed catalogue option. | Later | D-328 |
-| Client certificates for CyberArk CCP and other credential sources | CCP trusts the calling machine by AppID and allowed-machine list, so under multi-tenancy one tenant's admin can name another tenant's AppID. A per-source client certificate (or a per-tenant AppID allow-list) closes it. | 1.2 | A-01, D-330 |
-| Per-credential use grants | Connectors and targets check that a credential belongs to the caller's tenant, but within one tenant anyone who can manage discovery can bind any of its credentials to an endpoint they choose. A use grant per credential (or binding limited to the credential's creator role) closes that. | 1.2 | C-02, D-330 |
+| Client certificates for CyberArk CCP and other credential sources | CCP trusts the calling machine by AppID and allowed-machine list, so under multi-tenancy one tenant's admin can name another tenant's AppID. A per-source client certificate (or a per-tenant AppID allow-list) closes it. | 1.3 | A-01, D-330 |
+| Per-credential use grants | Connectors and targets check that a credential belongs to the caller's tenant, but within one tenant anyone who can manage discovery can bind any of its credentials to an endpoint they choose. A use grant per credential (or binding limited to the credential's creator role) closes that. | 1.3 | C-02, D-330 |
 | Allow-list for plugin `elevated_exec` | The gate is a deny-list of escalation and inline-shell forms; an allow-list of approved programs per plugin would make it a real boundary rather than a speed bump. | Later | A-04 |
-| Credential-source and plugin-host reachability limits | Vault `base_url` and plugin credential URLs may name any private host and `/test` echoes the transport error; a per-tenant address allow-list and generic test errors stop it doubling as a port scanner. | 1.2 | A-07 |
-| Require signed plugins, and refuse rollbacks | A hub setting to refuse community (unsigned) plugins, a minimum version per plugin id, a freshness check on the catalogue, and redaction of fetched values in credentials-plugin errors. | 1.2 | A-08, A-09 |
-| Move PFX transfer off the WinRM command line | The encrypted PFX and its one-time password pass through PowerShell command lines and script text, which hosts with command-line or script-block logging record. A file-transfer channel (or WinRM file copy) with the password over stdin keeps them out of the logs. | 1.2 | B-03 |
-| Root-owned trust-push state directory | The trust helper now writes its state symlink-safely, but the directory is still owned by the agent user; moving it to a root-owned path removes the agent user's say over which roots get removed. | 1.2 | B-04 |
-| Windows install hardening | Import IIS and Exchange keys non-exportable, clean up machine-store keys when an early step fails, lock down the stage folder ACL, and report RollbackFailed for IIS and Exchange. | 1.2 | B-06, B-07, B-08, B-11 |
-| Template policy on Intune, SCEP, EST and ACME issuance | These paths check enroll roles but not the template's key, SAN and validity policy or `require_approval`; Intune also fixes validity at 365 days. | 1.2 | C-04 |
+| Credential-source and plugin-host reachability limits | Vault `base_url` and plugin credential URLs may name any private host and `/test` echoes the transport error; a per-tenant address allow-list and generic test errors stop it doubling as a port scanner. | 1.3 | A-07 |
+| Require signed plugins, and refuse rollbacks | A hub setting to refuse community (unsigned) plugins, a minimum version per plugin id, a freshness check on the catalogue, and redaction of fetched values in credentials-plugin errors. | 1.3 | A-08, A-09 |
+| Move PFX transfer off the WinRM command line | The encrypted PFX and its one-time password pass through PowerShell command lines and script text, which hosts with command-line or script-block logging record. A file-transfer channel (or WinRM file copy) with the password over stdin keeps them out of the logs. | 1.3 | B-03 |
+| Root-owned trust-push state directory | The trust helper now writes its state symlink-safely, but the directory is still owned by the agent user; moving it to a root-owned path removes the agent user's say over which roots get removed. | 1.3 | B-04 |
+| Windows install hardening | Import IIS and Exchange keys non-exportable, clean up machine-store keys when an early step fails, lock down the stage folder ACL, and report RollbackFailed for IIS and Exchange. | 1.3 | B-06, B-07, B-08, B-11 |
+| Template policy on Intune, SCEP and EST issuance | ACME applies its template's whole policy since 1.2.0 (D-332). These paths still check enroll roles only, not the template's key, SAN and validity policy, fixed subject RDNs or `require_approval`; Intune also fixes validity at 365 days. | 1.3 | C-04, D-332 |
 | Device attestation hardening | Per-tenant device identifiers, a required non-exportable TPM key (fixedTPM, sensitiveDataOrigin), and a hub-side record of consumed Intune transactions. | Later | C-05, C-06, C-12 |
-| External CA create and verify edge cases | Fail the create when the tenant mapping cannot be stored, and compare the upstream subject with the CSR when the request sets none. | 1.2 | C-08, C-09 |
-| Scorecard hygiene on the public repository | Add a dependency-update tool and a SAST job, scope release-workflow write tokens, and stop shipping the historical 10-09 SBOM where OSV reads it as live dependencies (the public Scorecard is 4.6). | 1.2 | v1.1 scan 2026-10-27 |
+| External CA create and verify edge cases | Fail the create when the tenant mapping cannot be stored, and compare the upstream subject with the CSR when the request sets none. | 1.3 | C-08, C-09 |
+| Scorecard hygiene on the public repository | Add a dependency-update tool and a SAST job, scope release-workflow write tokens, and stop shipping the historical 10-09 SBOM where OSV reads it as live dependencies (the public Scorecard is 4.6). | 1.3 | v1.1 scan 2026-10-27 |
 | Independent penetration test | Our own scans found no critical or high issues; an outside test is the next level of assurance. | Later | W33-29 |
 
 ## Packaging and distribution
@@ -135,10 +134,10 @@ Last updated: 2026-10-27.
 | macOS notarization | Without it, Gatekeeper may quarantine a downloaded agent binary until you allow it. | 1.1 | macOS agent guide, W37 |
 | Terraform provider in a public registry | Today the provider is installed from the release; a registry entry makes `terraform init` just work. | 1.1 | S-04, W37 |
 | Ansible collection published on Galaxy | The `kryptkeeper.pki` collection is built in 1.1.0; publishing it on Galaxy needs a Galaxy namespace. | Needs an account | W37 |
-| Code and config comments cite docs/design/SECURITY_PRINCIPLES.md | About 25 Go, YAML and shell comments still name the private contributor rules file (`CLAUDE.md`) as the source of a rule; the public docs already point at the security principles page. | 1.2 | public cleanup 2026-10-27 |
+| Code and config comments cite docs/design/SECURITY_PRINCIPLES.md | About 25 Go, YAML and shell comments still name the private contributor rules file (`CLAUDE.md`) as the source of a rule; the public docs already point at the security principles page. | 1.3 | public cleanup 2026-10-27 |
 | Five-minute trial: one command brings up a hub with demo data | Evaluators should reach a working dashboard before they read a guide. | 1.1 | W37 |
 | Nightly fuzzing on a dedicated runner | The nightly fuzz workflow uses the same `ubuntu-latest` label as PR CI, so it lands on whichever shared Mac runner is free and competes with interactive dev work. It needs its own label and a dedicated (or cloud) runner. | 1.1 | M5 runner 2026-10-27 |
-| Stamp the version into images built with Docker Compose | Source builds report version `dev`, so a support question cannot tell which code a hub runs. | 1.2 | DAY_ONE_RUN_v1.1 |
+| Stamp the version into images built with Docker Compose | Source builds report version `dev`, so a support question cannot tell which code a hub runs. | 1.3 | DAY_ONE_RUN_v1.1 |
 
 ## Website and walkthroughs
 
