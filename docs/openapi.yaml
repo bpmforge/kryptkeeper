@@ -824,6 +824,8 @@ components:
           $ref: "#/components/schemas/SSHPolicy"
         name_policy:
           $ref: "#/components/schemas/NamePolicy"
+        subject_policy:
+          $ref: "#/components/schemas/SubjectPolicy"
         enrollment_permissions:
           $ref: "#/components/schemas/EnrollmentPermissions"
         device_attestation:
@@ -880,7 +882,8 @@ components:
         Restricts the names certificates issued under a template may carry
         (SUP-A04-3). Enforced on the names about to be signed, on every
         issuance path that passes the template (API, renewal, bulk reissue,
-        WSTEP). A template without name_policy is unrestricted. When present,
+        WSTEP, ACME through KRYPTKEEPER_ACME_TEMPLATE or a provisioner's
+        template). A template without name_policy is unrestricted. When present,
         IP and URI SANs are refused unless allowed; DNS names are restricted
         only when allowed_dns_suffixes or allowed_dns_names is non-empty. Set
         on create or replace (PUT); omitting it on PUT clears it.
@@ -908,6 +911,43 @@ components:
           type: boolean
           default: false
           description: A non-empty subject CN must equal one of the SANs.
+
+    SubjectPolicy:
+      type: object
+      description: >-
+        Fixed subject components appended after the CN of every certificate
+        issued under the template, whatever the request carried (the EJBCA
+        "non-modifiable default" model). For ACME clients that can only send
+        a CN under a CA with directoryName name constraints: fixed_rdns
+        [DC=foo, DC=bar] turns a request for webserver into
+        CN=webserver,DC=foo,DC=bar. When fixed_rdns is non-empty the subject
+        is exactly the CN plus these RDNs; other requested subject attributes
+        are dropped. Applies on API issuance, renewal, WSTEP and ACME (through
+        KRYPTKEEPER_ACME_TEMPLATE or a provisioner's template); an external CA
+        must return that subject itself. Set on create or replace (PUT);
+        omitting it on PUT clears it.
+      properties:
+        fixed_rdns:
+          type: array
+          maxItems: 10
+          description: >-
+            In the order a DN is read, most specific first, right after the
+            CN. Encoded top of the tree first (DC=bar, DC=foo, CN=webserver),
+            so a directoryName constraint of DC=foo,DC=bar is a prefix of it.
+          items:
+            type: object
+            required: [type, value]
+            properties:
+              type:
+                type: string
+                enum: [DC, O, OU, L, ST, C]
+                description: CN is never fixed; it comes from the validated request.
+              value:
+                type: string
+                description: >-
+                  DC is one DNS label (letters, digits, hyphen; at most 63,
+                  encoded as IA5String); C is a two-letter upper-case country
+                  code; others at most 64 characters.
 
     SSHPolicy:
       type: object

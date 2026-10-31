@@ -204,12 +204,19 @@ func TestAWSPCAConfiguredAlgorithmSkipsDescribe(t *testing.T) {
 func TestAWSPCAPendingThenIssued(t *testing.T) {
 	f := newPCAFixture(t)
 	f.getInProgress = 2
-	c := f.connector(nil)
+	// The waiter's wall-clock budget is PollAttempts*PollInterval. The
+	// fixture default (50ms) covers three polls on an idle machine but not
+	// under heavy load, where SigV4 signing and the round trips alone can
+	// spend it; a 10s budget keeps the 10ms interval and stops the flake.
+	c := f.connector(func(cfg *AWSPCAConfig) { cfg.PollAttempts = 1000 })
 	if _, err := c.Issue(context.Background(), IssueRequest{CSRPEM: pcaCSR(t)}); err != nil {
 		t.Fatal(err)
 	}
-	if f.gets != 3 {
-		t.Fatalf("want 3 GetCertificate calls, got %d", f.gets)
+	f.mu.Lock()
+	gets := f.gets
+	f.mu.Unlock()
+	if gets != 3 {
+		t.Fatalf("want 3 GetCertificate calls, got %d", gets)
 	}
 }
 

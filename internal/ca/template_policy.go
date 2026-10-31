@@ -30,8 +30,9 @@ type TemplatePolicy struct {
 	MinKeySize        int           // 0 = no minimum
 	MaxValidity       time.Duration // 0 = no maximum
 	AllowedEKUs       []x509.ExtKeyUsage
-	Names             *NamePolicy // nil = names unrestricted (SUP-A04-3)
-	EnrollRoles       []string    // empty = any role may enroll (W23-42)
+	Names             *NamePolicy    // nil = names unrestricted (SUP-A04-3)
+	Subject           *SubjectPolicy // nil = subject as resolved by the caller
+	EnrollRoles       []string       // empty = any role may enroll (W23-42)
 }
 
 // ErrEnrollmentDenied is returned when the caller's role is not listed in a

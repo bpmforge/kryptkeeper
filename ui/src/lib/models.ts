@@ -310,6 +310,10 @@ export type NamePolicy = {
   cn_must_be_san?: boolean;
 };
 
+export type SubjectPolicy = {
+  fixed_rdns?: Array<{ type: string; value: string }>;
+};
+
 export type TemplateRecord = {
   id: string;
   name: string;
@@ -328,6 +332,8 @@ export type TemplateRecord = {
   enrollment_permissions?: { enroll: string[] };
   ssh_policy?: SSHPolicy;
   name_policy?: NamePolicy;
+  subject_policy?: SubjectPolicy;
+  device_attestation?: boolean;
   active: boolean;
   revision: number;
   issued_count: number;

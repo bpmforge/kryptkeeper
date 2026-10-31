@@ -367,6 +367,9 @@ func (s *Server) forProvisioner(p Provisioner) *Server {
 	v.baseURL = s.baseURL + "/acme/" + p.Name
 	v.caID = p.CAID
 	v.provisioner = &p
+	if p.TemplateID != "" {
+		v.templateID = p.TemplateID
+	}
 	if p.TemplateID != "" && s.provGate != nil {
 		if g := s.provGate(p.TemplateID); g != nil {
 			v.enrollGate = g

@@ -789,6 +789,7 @@ func main() {
 			acmeServer.WithIssuedRecorder(issuedRecorder)
 		}
 		acmeServer.WithEnrollmentGate(protocolEnrollmentGate("KRYPTKEEPER_ACME_TEMPLATE", "acme", templateProvider, auditProvider))
+		acmeServer.WithTemplatePolicy(strings.TrimSpace(os.Getenv("KRYPTKEEPER_ACME_TEMPLATE")), protocolTemplatePolicy(templateProvider))
 		acmeEABAPI := configureACMEAdmin(acmeServer, auth, coreDB, isPostgres, auditProvider, caEngine, templateProvider, baseURL)
 		acmeRL := newACMEProtocolLimiter(acmeStore, acmeServer.LookupEABKey, auditProvider) // W22-39: per-credential, 30/min/IP unauthenticated
 		protocolMux.Handle("/acme/", acmeRL.Middleware(acmeServer.Handler()))

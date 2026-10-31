@@ -73,6 +73,10 @@ type Server struct {
 	provisioners ProvisionerStore
 	provGate     func(templateID string) EnrollmentGate
 	provisioner  *Provisioner
+	// templateID names the template whose issuance policy finalize applies;
+	// a provisioner's own template replaces the default directory's.
+	templateID     string
+	templatePolicy TemplatePolicyFunc
 	// device is nil unless an operator configured attestation roots (W40-02).
 	device *deviceAttestation
 }
@@ -145,6 +149,22 @@ type EnrollmentGate func(ctx context.Context, actor string) error
 // for chaining.
 func (s *Server) WithEnrollmentGate(g EnrollmentGate) *Server {
 	s.enrollGate = g
+	return s
+}
+
+// TemplatePolicyFunc resolves a template's issuance policy (algorithms, key
+// size, validity, EKUs, names, fixed subject RDNs). Like EnrollmentGate it is
+// a function value so this package need not import internal/bootstrap. An
+// error, including an unknown template, blocks issuance (fail closed).
+type TemplatePolicyFunc func(ctx context.Context, templateID string) (*ca.TemplatePolicy, error)
+
+// WithTemplatePolicy makes finalize issue under templateID's policy (the
+// default directory's template; "" for none) and under each provisioner's
+// own template. Before this only the template's enrollment permissions were
+// checked and the rest of it was ignored for ACME.
+func (s *Server) WithTemplatePolicy(templateID string, resolve TemplatePolicyFunc) *Server {
+	s.templateID = templateID
+	s.templatePolicy = resolve
 	return s
 }
 
@@ -788,6 +808,26 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 	} else {
 		issueReq.Subject = &pkix.Name{CommonName: dnsNames[0]}
 	}
+	if s.templatePolicy != nil && s.templateID != "" {
+		pol, perr := s.templatePolicy(r.Context(), s.templateID)
+		if perr != nil || pol == nil {
+			logging.Warnf("acme finalize: template %s policy unavailable: %v", s.templateID, perr)
+			s.mu.Lock()
+			order.Status = "invalid"
+			s.store.SaveOrder(order)
+			s.mu.Unlock()
+			metrics.ACMEOrdersInvalid.Inc()
+			s.writeACMEError(w, http.StatusInternalServerError, "urn:ietf:params:acme:error:serverInternal", "certificate issuance failed")
+			return
+		}
+		issueReq.TemplateID = pol.ID
+		issueReq.Policy = pol
+		// A shorter template lifetime caps the ACME default rather than
+		// refusing every order, as WSTEP does.
+		if pol.MaxValidity > 0 && pol.MaxValidity < issueReq.Validity {
+			issueReq.Validity = pol.MaxValidity
+		}
+	}
 	issued, err := s.caEngine.IssueCertificate(issuerID, issueReq)
 	if err != nil {
 		logging.Warnf("acme finalize issuance failed: %v", err)
@@ -798,6 +838,12 @@ func (s *Server) handleFinalize(w http.ResponseWriter, r *http.Request) {
 		var pv *ca.PolicyViolationError
 		if errors.As(err, &pv) {
 			rejectCSR(pv.Error())
+			return
+		}
+		// A template or name-constraint refusal is equally the requester's
+		// to fix; its text names the rule and the offending value.
+		if errors.Is(err, ca.ErrPolicyViolation) {
+			rejectCSR(err.Error())
 			return
 		}
 		s.mu.Lock()

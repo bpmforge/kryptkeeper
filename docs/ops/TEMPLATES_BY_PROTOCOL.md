@@ -4,7 +4,7 @@
 |---|---|---|
 | REST API (`POST /api/v1/certificates`) | Yes: `template_id` | The template's policy: algorithms, minimum key size, maximum validity, EKUs (`bootstrap.TemplatePolicy`). |
 | WSTEP (Windows autoenrollment) | Yes: the CSR's certificate-template extension (Windows), or a template OID or name in `TokenType` | That template's policy, enforced by the CA engine. Its validity period is the issued validity; one year if it sets none. Advertised identically by XCEP. The template's enrollee type (machine or user, W20-17) must match the caller. |
-| ACME | No | Fixed profile: 90 days, server-auth, names validated by challenge. |
+| ACME | Yes, optional: `KRYPTKEEPER_ACME_TEMPLATE` for `/acme/directory`, or a provisioner's `template_id` | Without a template: 90 days, server-auth, names validated by challenge. With one: its enrollment roles and its policy (algorithms, minimum key size, EKUs, name policy, fixed subject RDNs); a shorter template validity caps the 90 days (D-332, `docs/ops/ACME_NAME_CONSTRAINTS.md`). |
 | EST | No | Fixed profile: one year, client-auth, identity bound by EST authentication (D-112). |
 | SCEP | No | Fixed profile: one year, client-auth. Names come from a one-time challenge minted through the API, never the CSR (W20-16, `docs/ops/SCEP.md`). |
 | CMP | Approval only | Fixed profile: one year, client-auth, shared-secret MAC. `KRYPTKEEPER_CMP_TEMPLATE` names a template whose `require_approval` makes ir/cr/kur answer `waiting` until approved (clients poll with `pollReq`). |

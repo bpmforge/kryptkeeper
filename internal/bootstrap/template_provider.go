@@ -79,6 +79,11 @@ type TemplateItem struct {
 	// template may carry; absent = unrestricted.
 	NamePolicy *ca.NamePolicy `json:"name_policy,omitempty"`
 
+	// SubjectPolicy fixes subject RDNs (e.g. DC=foo,DC=bar) appended after
+	// the CN of every certificate issued under this template; absent = the
+	// subject as requested.
+	SubjectPolicy *ca.SubjectPolicy `json:"subject_policy,omitempty"`
+
 	// EnrollmentPermissions restricts which roles may issue from this
 	// template (W23-42); absent = unrestricted.
 	EnrollmentPermissions *EnrollmentPermissions `json:"enrollment_permissions,omitempty"`
@@ -156,6 +161,8 @@ type TemplateUpsertRequest struct {
 	SSHPolicy *sshkeys.Policy `json:"ssh_policy,omitempty"`
 	// NamePolicy replaces the stored name policy (absent clears it).
 	NamePolicy *ca.NamePolicy `json:"name_policy,omitempty"`
+	// SubjectPolicy replaces the stored fixed subject RDNs (absent clears them).
+	SubjectPolicy *ca.SubjectPolicy `json:"subject_policy,omitempty"`
 	// EnrollmentPermissions replaces the stored enroll list (absent clears it).
 	EnrollmentPermissions *EnrollmentPermissions `json:"enrollment_permissions,omitempty"`
 	// DeviceAttestation allows ACME device-attest-01 issuance (W40-02); absent clears it.

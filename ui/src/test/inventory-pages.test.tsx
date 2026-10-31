@@ -1229,6 +1229,69 @@ describe("W8-10 empty-state CTAs", () => {
     );
   });
 
+  it("template editor loads, shows and re-sends fixed subject components and keeps device attestation", async () => {
+    vi.mocked(api.templates).mockResolvedValue({
+      data: {
+        items: [
+          {
+            id: "tpl-acme",
+            name: "acme-dc",
+            display_name: "ACME DC",
+            validity_period: "P90D",
+            key_usage: ["digitalSignature"],
+            extended_key_usage: ["serverAuth"],
+            allowed_algorithms: ["ECDSA"],
+            auto_enroll: false,
+            active: true,
+            device_attestation: true,
+            subject_policy: {
+              fixed_rdns: [
+                { type: "DC", value: "foo" },
+                { type: "DC", value: "bar" },
+              ],
+            },
+          },
+        ],
+      },
+      meta: { total: 1 },
+    } as unknown as never);
+    vi.mocked(api.updateTemplate).mockResolvedValue({
+      data: {},
+    } as unknown as never);
+
+    const user = userEvent.setup();
+    renderWithQuery(<Templates />);
+    await user.click((await screen.findAllByText("ACME DC"))[0]);
+    expect(
+      await screen.findByText("CN=<requested>,DC=foo,DC=bar"),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^edit$/i }));
+    const dialog = screen.getByRole("dialog");
+    const field = within(dialog).getByRole("textbox", {
+      name: /fixed subject components/i,
+    });
+    expect(field).toHaveValue("DC=foo,DC=bar");
+    await user.clear(field);
+    await user.type(field, "ou=Web, DC=foo,DC=bar");
+    await user.click(
+      within(dialog).getByRole("button", { name: /save changes/i }),
+    );
+    expect(api.updateTemplate).toHaveBeenCalledWith(
+      "tpl-acme",
+      expect.objectContaining({
+        device_attestation: true,
+        subject_policy: {
+          fixed_rdns: [
+            { type: "OU", value: "Web" },
+            { type: "DC", value: "foo" },
+            { type: "DC", value: "bar" },
+          ],
+        },
+      }),
+      undefined,
+    );
+  });
+
   it("template editor saves an SSH policy and loads an existing one (A01S-4)", async () => {
     vi.mocked(api.templates).mockResolvedValue({
       data: {

@@ -6542,6 +6542,7 @@ export interface components {
             approval_roles?: string[];
             ssh_policy?: components["schemas"]["SSHPolicy"];
             name_policy?: components["schemas"]["NamePolicy"];
+            subject_policy?: components["schemas"]["SubjectPolicy"];
             enrollment_permissions?: components["schemas"]["EnrollmentPermissions"];
             /** @description Explicitly allows ACME device-attest-01 issuance from this template (W40-02, D-317). Needs attestation roots configured on the hub and the device in the inventory (/acme/devices). Set on create or replace (PUT), not PATCH; a clone starts without it. */
             device_attestation?: boolean;
@@ -6562,7 +6563,7 @@ export interface components {
         EnrollmentPermissions: {
             enroll?: string[];
         };
-        /** @description Restricts the names certificates issued under a template may carry (SUP-A04-3). Enforced on the names about to be signed, on every issuance path that passes the template (API, renewal, bulk reissue, WSTEP). A template without name_policy is unrestricted. When present, IP and URI SANs are refused unless allowed; DNS names are restricted only when allowed_dns_suffixes or allowed_dns_names is non-empty. Set on create or replace (PUT); omitting it on PUT clears it. */
+        /** @description Restricts the names certificates issued under a template may carry (SUP-A04-3). Enforced on the names about to be signed, on every issuance path that passes the template (API, renewal, bulk reissue, WSTEP, ACME through KRYPTKEEPER_ACME_TEMPLATE or a provisioner's template). A template without name_policy is unrestricted. When present, IP and URI SANs are refused unless allowed; DNS names are restricted only when allowed_dns_suffixes or allowed_dns_names is non-empty. Set on create or replace (PUT); omitting it on PUT clears it. */
         NamePolicy: {
             /** @description ".x" matches any name below x (not x itself); "x" without a leading dot matches x and any subdomain. A wildcard SAN is judged as the shallowest name it can stand for. */
             allowed_dns_suffixes?: string[];
@@ -6579,6 +6580,19 @@ export interface components {
              * @default false
              */
             cn_must_be_san: boolean;
+        };
+        /** @description Fixed subject components appended after the CN of every certificate issued under the template, whatever the request carried (the EJBCA "non-modifiable default" model). For ACME clients that can only send a CN under a CA with directoryName name constraints: fixed_rdns [DC=foo, DC=bar] turns a request for webserver into CN=webserver,DC=foo,DC=bar. When fixed_rdns is non-empty the subject is exactly the CN plus these RDNs; other requested subject attributes are dropped. Applies on API issuance, renewal, WSTEP and ACME (through KRYPTKEEPER_ACME_TEMPLATE or a provisioner's template); an external CA must return that subject itself. Set on create or replace (PUT); omitting it on PUT clears it. */
+        SubjectPolicy: {
+            /** @description In the order a DN is read, most specific first, right after the CN. Encoded top of the tree first (DC=bar, DC=foo, CN=webserver), so a directoryName constraint of DC=foo,DC=bar is a prefix of it. */
+            fixed_rdns?: {
+                /**
+                 * @description CN is never fixed; it comes from the validated request.
+                 * @enum {string}
+                 */
+                type: "DC" | "O" | "OU" | "L" | "ST" | "C";
+                /** @description DC is one DNS label (letters, digits, hyphen; at most 63, encoded as IA5String); C is a two-letter upper-case country code; others at most 64 characters. */
+                value: string;
+            }[];
         };
         /** @description Makes a template usable for SSH certificate issuance (A01S-4 / FR-P70). POST /ssh/certificates signs only what a template's policy lists; a template without ssh_policy cannot sign SSH certificates. Set on create or replace (PUT); omitting it on PUT clears it. */
         SSHPolicy: {

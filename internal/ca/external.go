@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
@@ -280,8 +281,12 @@ func VerifyExternalIssuance(req IssuanceRequest, anchors []*x509.Certificate, bu
 	if len(leaf.EmailAddresses) > 0 {
 		return nil, reject("email addresses were not requested")
 	}
-	if req.Subject != nil && leaf.Subject.String() != req.Subject.String() {
-		return nil, reject("subject %q differs from the bound identity %q", leaf.Subject.String(), req.Subject.String())
+	if want := expectedExternalSubject(req); want != nil {
+		wantSeq := want.ToRDNSequence()
+		got, err := parseRDNSequence(leaf.RawSubject)
+		if err != nil || !sameRDNSequence(wantSeq, got) {
+			return nil, reject("subject %q differs from the bound identity %q", FormatRDNSequence(got), FormatRDNSequence(wantSeq))
+		}
 	}
 	if err := checkExtKeyUsage(req.ExtKeyUsage, leaf.ExtKeyUsage, len(leaf.UnknownExtKeyUsage) > 0); err != "" {
 		return nil, reject("%s", err)
@@ -298,19 +303,28 @@ func VerifyExternalIssuance(req IssuanceRequest, anchors []*x509.Certificate, bu
 		return nil, reject("certificate is already expired")
 	}
 
+	// crypto/x509 cannot evaluate directoryName name constraints, so a CA
+	// carrying them would fail every chain; withoutDirNameUnhandled lets
+	// verification through and chainSatisfiesDirNames applies them instead.
 	roots := x509.NewCertPool()
 	for _, a := range anchors {
-		roots.AddCert(a)
+		roots.AddCert(withoutDirNameUnhandled(a))
 	}
 	inter := x509.NewCertPool()
 	for _, c := range certs[1:] {
-		inter.AddCert(c)
+		inter.AddCert(withoutDirNameUnhandled(c))
 	}
-	chains, err := leaf.Verify(x509.VerifyOptions{
+	verified, err := leaf.Verify(x509.VerifyOptions{
 		Roots:         roots,
 		Intermediates: inter,
 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
 	})
+	var chains [][]*x509.Certificate
+	for _, ch := range verified {
+		if chainSatisfiesDirNames(ch) {
+			chains = append(chains, ch)
+		}
+	}
 	if err != nil || len(chains) == 0 {
 		return nil, reject("certificate does not chain to this external CA's trusted certificates")
 	}
@@ -329,6 +343,20 @@ func VerifyExternalIssuance(req IssuanceRequest, anchors []*x509.Certificate, bu
 		Fingerprint:  fp,
 		ChainPEM:     chainPEM.Bytes(),
 	}, nil
+}
+
+// expectedExternalSubject is the subject an upstream must return: the bound
+// identity, or the template's fixed RDNs after the CN. nil means the
+// upstream's subject is not checked (API issuance without fixed RDNs).
+func expectedExternalSubject(req IssuanceRequest) *pkix.Name {
+	cn := req.CSR.Subject.CommonName
+	if req.Subject != nil {
+		cn = req.Subject.CommonName
+	}
+	if s := subjectForPolicy(req.Policy, cn); s != nil {
+		return s
+	}
+	return req.Subject
 }
 
 func parseBundle(raw []byte) ([]*x509.Certificate, error) {

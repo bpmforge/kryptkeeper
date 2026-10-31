@@ -119,6 +119,7 @@ func (p *fileTemplateProvider) CreateTemplate(_ context.Context, req TemplateUps
 		EnrolleeType:          normalizeEnrolleeType(req.EnrolleeType),
 		SSHPolicy:             req.SSHPolicy,
 		NamePolicy:            req.NamePolicy,
+		SubjectPolicy:         req.SubjectPolicy,
 		EnrollmentPermissions: enrollPerms,
 		DeviceAttestation:     req.DeviceAttestation,
 		Revision:              1,
@@ -178,6 +179,7 @@ func (p *fileTemplateProvider) ReplaceTemplate(_ context.Context, id string, req
 		items[i].EnrolleeType = normalizeEnrolleeType(req.EnrolleeType)
 		items[i].SSHPolicy = req.SSHPolicy
 		items[i].NamePolicy = req.NamePolicy
+		items[i].SubjectPolicy = req.SubjectPolicy
 		items[i].EnrollmentPermissions = enrollPerms
 		items[i].DeviceAttestation = req.DeviceAttestation
 		items[i].Revision++
@@ -386,6 +388,9 @@ func validateTemplateUpsertRequest(req TemplateUpsertRequest) error {
 		}
 	}
 	if err := req.NamePolicy.Validate(); err != nil {
+		return fmt.Errorf("%w: %v", errTemplateInvalidCreate, err)
+	}
+	if err := req.SubjectPolicy.Validate(); err != nil {
 		return fmt.Errorf("%w: %v", errTemplateInvalidCreate, err)
 	}
 	return nil

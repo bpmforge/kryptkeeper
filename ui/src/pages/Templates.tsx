@@ -16,6 +16,7 @@ import { PageHeader } from "../components/PageHeader";
 import { extractList } from "../lib/models";
 import { formatDateTime } from "../components/ui";
 import { formatValidityPeriod } from "../lib/utils";
+import { subjectPolicyFromText, subjectPolicyText } from "../lib/subjectPolicy";
 import type {
   NamePolicy,
   SSHPolicy,
@@ -74,6 +75,7 @@ type TemplateForm = {
   nameAllowUri: boolean;
   nameUriPrefixes: string;
   nameCnMustBeSan: boolean;
+  fixedRdns: string;
 };
 
 const splitList = (v: string) =>
@@ -138,6 +140,7 @@ const emptyForm: TemplateForm = {
   nameAllowUri: false,
   nameUriPrefixes: "",
   nameCnMustBeSan: false,
+  fixedRdns: "",
 };
 
 function formToPayload(f: TemplateForm) {
@@ -168,6 +171,7 @@ function formToPayload(f: TemplateForm) {
     enrollment_permissions: { enroll: splitList(f.enrollRoles) },
     ssh_policy: sshPolicyFromForm(f),
     name_policy: namePolicyFromForm(f),
+    subject_policy: subjectPolicyFromText(f.fixedRdns),
   };
 }
 
@@ -238,12 +242,14 @@ export default function Templates() {
       if (!selected) throw new Error("No template selected");
       // PUT replaces the whole template: carry over what this form does not
       // edit, or saving would wipe the OID (dropping the template from
-      // Windows autoenrollment), minimum key size and renewal overlap.
+      // Windows autoenrollment), the device-attestation grant, minimum key
+      // size and renewal overlap.
       return api.updateTemplate(
         selected.id,
         {
           ...formToPayload(form),
           oid: selected.oid,
+          device_attestation: selected.device_attestation,
           min_key_size: selected.min_key_size,
           renewal_overlap: selected.renewal_overlap,
           approval_roles: form.requireApproval
@@ -340,6 +346,7 @@ export default function Templates() {
         ",",
       ),
       nameCnMustBeSan: selected.name_policy?.cn_must_be_san ?? false,
+      fixedRdns: subjectPolicyText(selected.subject_policy),
     });
     setDialog("edit");
     setStatusMessage(null);
@@ -479,7 +486,9 @@ export default function Templates() {
                 <div>
                   <div className="text-muted-foreground">EKU</div>
                   <div className="text-foreground">
-                    {(selected.extended_key_usage ?? []).map(ekuLabel).join(", ")}
+                    {(selected.extended_key_usage ?? [])
+                      .map(ekuLabel)
+                      .join(", ")}
                   </div>
                 </div>
                 <div>
@@ -508,6 +517,14 @@ export default function Templates() {
                     {selected.name_policy
                       ? "Names restricted"
                       : "None — any names"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-muted-foreground">Subject</div>
+                  <div className="text-foreground">
+                    {selected.subject_policy?.fixed_rdns?.length
+                      ? `CN=<requested>,${subjectPolicyText(selected.subject_policy)}`
+                      : "As requested"}
                   </div>
                 </div>
                 <div>
@@ -786,10 +803,10 @@ export default function Templates() {
               />
             </label>
             <p className="text-xs text-muted-foreground">
-              Leave empty to allow every role that may issue certificates.
-              The list also applies to Windows enrollment (XCEP/WSTEP): once it
-              is set, only protocol:wstep or protocol:wstep:&lt;host fqdn&gt;
-              lets Windows clients enroll.
+              Leave empty to allow every role that may issue certificates. The
+              list also applies to Windows enrollment (XCEP/WSTEP): once it is
+              set, only protocol:wstep or protocol:wstep:&lt;host fqdn&gt; lets
+              Windows clients enroll.
             </p>
             <div className="flex flex-wrap gap-1">
               {BUILT_IN_ROLES.map((role) => (
@@ -1054,6 +1071,30 @@ export default function Templates() {
                 ) : null}
               </>
             ) : null}
+          </fieldset>
+          <fieldset className="space-y-3 rounded-xl border border-border p-3">
+            <legend className="px-1 text-sm font-medium text-foreground">
+              Fixed subject components
+            </legend>
+            <label className="block space-y-1 text-sm text-foreground">
+              <span>
+                Appended after the CN on every certificate{" "}
+                <span className="text-muted-foreground">
+                  (comma-separated, as read after the CN; DC, O, OU, L, ST or C;
+                  replaces anything else the request asked for. Use it when the
+                  issuing CA has directoryName name constraints and clients such
+                  as ACME can only send a CN.)
+                </span>
+              </span>
+              <Input
+                aria-label="Fixed subject components"
+                value={form.fixedRdns}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, fixedRdns: e.target.value }))
+                }
+                placeholder="DC=example,DC=com"
+              />
+            </label>
           </fieldset>
         </form>
       </Dialog>

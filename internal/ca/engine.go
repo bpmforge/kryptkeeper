@@ -1102,9 +1102,17 @@ func (e *Engine) issueLeafCertificate(caID string, req IssuanceRequest, params l
 	if req.Subject != nil {
 		template.Subject = *req.Subject
 	}
+	// A template's fixed RDNs replace everything but the CN, whatever the
+	// request carried, so a requester cannot step outside them.
+	if s := subjectForPolicy(req.Policy, template.Subject.CommonName); s != nil {
+		template.Subject = *s
+	}
 	// SUP-A04-3: judge the names actually about to be signed, after the
 	// CSR/caller/Subject resolution above, for every CSR type.
 	if err := checkNamePolicy(req.Policy, template); err != nil {
+		return nil, err
+	}
+	if err := checkIssuerNameConstraints(e.issuerChainCertificates(ca), template); err != nil {
 		return nil, err
 	}
 	if len(req.PermanentIdentifiers) > 0 {
@@ -1145,6 +1153,27 @@ func (e *Engine) issueLeafCertificate(caID string, req IssuanceRequest, params l
 		SerialNumber: serialNumber,
 		Fingerprint:  fingerprint,
 	}, nil
+}
+
+// issuerChainCertificates returns issuer's certificate and those of the
+// ancestors this engine holds, issuer first. Constraints on an ancestor the
+// engine does not hold are still enforced by relying parties; they are just
+// not caught here.
+func (e *Engine) issuerChainCertificates(issuer *CA) []*x509.Certificate {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	certs := []*x509.Certificate{issuer.Certificate}
+	seen := map[string]bool{issuer.ID: true}
+	for parent := issuer.ParentCAID; parent != "" && !seen[parent]; {
+		seen[parent] = true
+		p, ok := e.get(parent)
+		if !ok {
+			break
+		}
+		certs = append(certs, p.Certificate)
+		parent = p.ParentCAID
+	}
+	return certs
 }
 
 func (e *Engine) GetCA(id string) (*CA, error) {

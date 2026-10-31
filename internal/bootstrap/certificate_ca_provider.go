@@ -793,8 +793,8 @@ func (p *caCertificateProvider) RenewCertificate(ctx context.Context, fingerprin
 		if found {
 			templateRevision = tpl.Revision
 		}
-		if found && tpl.NamePolicy != nil {
-			renewReq.Policy = &ca.TemplatePolicy{ID: tpl.ID, Names: tpl.NamePolicy}
+		if found && (tpl.NamePolicy != nil || tpl.SubjectPolicy.Active()) {
+			renewReq.Policy = &ca.TemplatePolicy{ID: tpl.ID, Names: tpl.NamePolicy, Subject: tpl.SubjectPolicy}
 		}
 		// The successor keeps the lifetime its template asks for, not a
 		// hard-coded default. Only the lifetime is carried over: the
@@ -1962,6 +1962,7 @@ func templateItemToPolicy(tpl TemplateItem) ca.TemplatePolicy {
 		AllowedAlgorithms: tpl.AllowedAlgorithms,
 		AllowedEKUs:       parseEKUPolicy(tpl.ExtendedKeyUsage),
 		Names:             tpl.NamePolicy,
+		Subject:           tpl.SubjectPolicy,
 		EnrollRoles:       tpl.EnrollRoles(),
 	}
 	minKeySize := tpl.MinKeySize

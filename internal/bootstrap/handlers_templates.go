@@ -698,6 +698,8 @@ func templateRequestErrorMessage(err error) string {
 		return msg[strings.Index(msg, "invalid ssh policy"):]
 	} else if i := strings.Index(msg, "name_policy:"); i >= 0 {
 		return msg[i:]
+	} else if i := strings.Index(msg, "subject_policy:"); i >= 0 {
+		return msg[i:]
 	}
 	return "invalid request body"
 }

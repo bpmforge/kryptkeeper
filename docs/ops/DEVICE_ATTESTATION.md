@@ -98,6 +98,9 @@ settable by PATCH and a clone does not inherit it). The governing template is
 the ACME provisioner's `template_id`, else `KRYPTKEEPER_ACME_TEMPLATE`. With no
 governing template, device attestation is not offered: the flag is explicit so
 no existing template changes behaviour. The template must be active.
+The rest of the template's policy applies too (D-332): device certificates are
+client-auth, so its `extended_key_usage` must allow `clientAuth` (or be empty),
+and fixed subject components, if any, follow the device identifier CN.
 
 A provisioner may list `device-attest-01` in `challenges`; an empty list offers
 every challenge the template allows. Only a hub CA can issue these

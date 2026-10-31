@@ -32,9 +32,16 @@ permissions:
   contents: read
 
 jobs:
+  # The Go suite in seven parallel jobs (six internal/bootstrap shards and the
+  # rest), as in ci-main: one runner took 15 of a 31-minute release. Every
+  # shard 1..6 must be listed; goreleaser needs all of them.
   test:
-    name: Tests
+    name: Tests (${{ matrix.part }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        part: ["--shard 1/6", "--shard 2/6", "--shard 3/6", "--shard 4/6", "--shard 5/6", "--shard 6/6", "--rest"]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
@@ -43,8 +50,10 @@ jobs:
           # false: the runner mounts persistent kk-gomod and kk-gobuild volumes there;
           # setup-go's cache re-downloaded ~2.7 GB over them on every job.
           cache: false
-      # internal/bootstrap alone runs past go test's 10m default on a hosted runner.
-      - run: go test -timeout 30m ./...
+      # Same flags as the old single job (no -race; ci-main covers that).
+      - env:
+          GO_TEST_FLAGS: -timeout 30m
+        run: bash scripts/test/go-unit-sharded.sh ${{ matrix.part }}
 
   # W32-03: a tag whose docs/openapi.yaml info.version differs from the tag
   # must not release. Release prep bumps info.version at every tag, so this
@@ -52,7 +61,6 @@ jobs:
   spec-version:
     name: Spec version matches tag
     runs-on: ubuntu-latest
-    needs: test
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -70,7 +78,6 @@ jobs:
   sdk-smoke:
     name: SDK contract smoke
     runs-on: ubuntu-latest
-    needs: test
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 

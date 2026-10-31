@@ -8,6 +8,20 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+### Added
+
+- Templates can fix subject components: `subject_policy.fixed_rdns` (DC, O, OU, L, ST, C) are appended after the CN of every certificate issued under the template, whatever the request asked for. ACME clients such as win-acme, acme.sh and Posh-ACME can only send a CN, so this is how their certificates fit a CA with directoryName name constraints (for example `CN=webserver,DC=foo,DC=bar`). Editable on the Templates page. See [docs/ops/ACME_NAME_CONSTRAINTS.md](docs/ops/ACME_NAME_CONSTRAINTS.md).
+- Before signing, the CA refuses a certificate that its issuing CA's name constraints (DNS, IP, email, URI, directoryName) would make invalid, with a message naming the constraint, instead of issuing a certificate that fails at the relying party.
+
+### Changed
+
+- ACME now issues under its template's whole policy, not only its enrollment roles: when `KRYPTKEEPER_ACME_TEMPLATE` or a provisioner names a template, its allowed algorithms, minimum key size, EKUs, name policy and fixed subject RDNs apply, and a validity shorter than 90 days shortens ACME certificates. A request that breaks the template gets an ACME `badCSR` naming the rule. Check templates bound to ACME before upgrading: one whose EKUs leave out `serverAuth` (or `clientAuth` for device attestation), or whose name policy does not cover your ACME hosts, will now refuse orders.
+
+### Fixed
+
+- An external CA whose issuing certificate carries directoryName name constraints no longer fails every issuance with "does not chain to this external CA's trusted certificates"; the constraints are checked instead.
+- Saving a template in the UI no longer clears its device-attestation grant.
+
 ## [1.1.3] - 2026-10-28
 
 Release notes: [docs/release/RELEASE_NOTES_v1.1.3.md](docs/release/RELEASE_NOTES_v1.1.3.md).
