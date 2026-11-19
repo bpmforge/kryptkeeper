@@ -47,12 +47,12 @@ func Sudoers(user string, mode Mode, serverType string, paths []string) (string,
 	switch mode {
 	case ModeHelper:
 		fmt.Fprintf(&b, "# One rule: the account may run only the hash-pinned helper as root.\n")
-		fmt.Fprintf(&b, "Defaults:%s !requiretty\n", user)
+		writeRequireTTYNote(&b, user)
 		fmt.Fprintf(&b, "%s ALL=(root) NOPASSWD: %s\n", user, DefaultHelperPath)
 	case ModePassword:
 		fmt.Fprintf(&b, "# The account must already be allowed to use sudo (for example the sudo or wheel group).\n")
-		fmt.Fprintf(&b, "# The password arrives on stdin, which sudo cannot read without a tty unless requiretty is off.\n")
-		fmt.Fprintf(&b, "Defaults:%s !requiretty\n", user)
+		fmt.Fprintf(&b, "# The password arrives on stdin, which sudo cannot read without a tty if requiretty is on.\n")
+		writeRequireTTYNote(&b, user)
 	case ModeNoPasswd:
 		if err := writeRawAllowlist(&b, user, serverType, paths); err != nil {
 			return "", err
@@ -61,6 +61,16 @@ func Sudoers(user string, mode Mode, serverType string, paths []string) (string,
 		return "", fmt.Errorf("privexec: no sudoers for mode %q", mode)
 	}
 	return b.String(), nil
+}
+
+// writeRequireTTYNote leaves the requiretty override as a comment: sudo-rs (the
+// default sudo on Ubuntu 26.04) has no requiretty setting and its visudo rejects
+// the whole file over the line, while classic sudo only needs it where the host
+// turns requiretty on. Preflight detects that case and prints the same line.
+func writeRequireTTYNote(b *strings.Builder, user string) {
+	b.WriteString("# If this host sets requiretty (some older RHEL/CentOS), also add the next line uncommented.\n")
+	b.WriteString("# Leave it out on sudo-rs, which has no requiretty and whose visudo rejects it.\n")
+	fmt.Fprintf(b, "# Defaults:%s !requiretty\n", user)
 }
 
 func writeRawAllowlist(b *strings.Builder, user, serverType string, paths []string) error {
@@ -84,7 +94,7 @@ func writeRawAllowlist(b *strings.Builder, user, serverType string, paths []stri
 	b.WriteString("# WARNING: cat/find/install on globbed paths is effectively root read/write of the\n")
 	b.WriteString("# filesystem for anyone holding this account's SSH key ('*' in an argument also matches '/').\n")
 	b.WriteString("# Prefer helper mode unless policy forbids installing the helper.\n")
-	fmt.Fprintf(b, "Defaults:%s !requiretty\n", user)
+	writeRequireTTYNote(b, user)
 	join := func(tmpl string) string {
 		out := make([]string, 0, len(dirs)*2)
 		for _, d := range dirs {

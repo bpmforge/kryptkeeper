@@ -3,7 +3,9 @@
 # WARNING: cat/find/install on globbed paths is effectively root read/write of the
 # filesystem for anyone holding this account's SSH key ('*' in an argument also matches '/').
 # Prefer helper mode unless policy forbids installing the helper.
-Defaults:kryptkeeper-agent !requiretty
+# If this host sets requiretty (some older RHEL/CentOS), also add the next line uncommented.
+# Leave it out on sudo-rs, which has no requiretty and whose visudo rejects it.
+# Defaults:kryptkeeper-agent !requiretty
 Cmnd_Alias KK_LIST    = /usr/bin/find /etc/nginx/ssl *, /usr/bin/find /etc/apache2/ssl *
 Cmnd_Alias KK_STAT    = /usr/bin/stat -c * /etc/nginx/ssl/*, /usr/bin/stat -c * /etc/apache2/ssl/*
 Cmnd_Alias KK_READ    = /usr/bin/cat /etc/nginx/ssl/*, /usr/bin/cat /etc/apache2/ssl/*

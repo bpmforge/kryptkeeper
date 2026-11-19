@@ -29,7 +29,7 @@ func golden(t *testing.T, name, got string) {
 	}
 }
 
-func visudoCheck(t *testing.T, text string) {
+func visudoCheck(t *testing.T, text string, wantSudoRsReject bool) {
 	t.Helper()
 	bin, err := exec.LookPath("visudo")
 	if err != nil {
@@ -39,9 +39,23 @@ func visudoCheck(t *testing.T, text string) {
 	if err := os.WriteFile(f, []byte(text), 0o440); err != nil {
 		t.Fatal(err)
 	}
-	if out, err := exec.Command(bin, "-c", "-f", f).CombinedOutput(); err != nil {
+	out, err := exec.Command(bin, "-c", "-f", f).CombinedOutput()
+	if wantSudoRsReject && isSudoRs(bin) {
+		// sudo-rs refuses wildcards in command arguments, so raw-allowlist
+		// mode needs classic sudo; the guide sends sudo-rs hosts to helper mode.
+		if err == nil || !strings.Contains(string(out), "wildcards are not allowed") {
+			t.Fatalf("sudo-rs visudo: want the wildcard refusal, got %v\n%s", err, out)
+		}
+		return
+	}
+	if err != nil {
 		t.Fatalf("visudo rejected the drop-in: %v\n%s\n%s", err, out, text)
 	}
+}
+
+func isSudoRs(visudo string) bool {
+	out, _ := exec.Command(visudo, "--version").CombinedOutput()
+	return strings.Contains(string(out), "visudo-rs")
 }
 
 func TestSudoersGoldenAndVisudo(t *testing.T) {
@@ -62,17 +76,17 @@ func TestSudoersGoldenAndVisudo(t *testing.T) {
 			t.Fatalf("%s: %v", c.file, err)
 		}
 		golden(t, c.file, got)
-		visudoCheck(t, got)
+		visudoCheck(t, got, c.mode == ModeNoPasswd)
 	}
 }
 
 func TestSudoersShape(t *testing.T) {
 	h, _ := Sudoers("kkscan", ModeHelper, "", nil)
-	if strings.Count(h, "NOPASSWD:") != 1 || !strings.Contains(h, "Defaults:kkscan !requiretty") || !strings.Contains(h, DefaultHelperPath) {
+	if strings.Count(h, "NOPASSWD:") != 1 || !strings.Contains(h, "# Defaults:kkscan !requiretty") || !strings.Contains(h, DefaultHelperPath) {
 		t.Fatalf("helper drop-in: %s", h)
 	}
 	p, _ := Sudoers("kkscan", ModePassword, "", nil)
-	if strings.Contains(p, "NOPASSWD") || !strings.Contains(p, "!requiretty") {
+	if strings.Contains(p, "NOPASSWD") || !strings.Contains(p, "# Defaults:kkscan !requiretty") {
 		t.Fatalf("password drop-in: %s", p)
 	}
 	n, _ := Sudoers("kkscan", ModeNoPasswd, "haproxy", []string{"/etc/haproxy/certs/a.pem"})

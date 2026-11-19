@@ -42,8 +42,10 @@ Integrations page. Any mode stays selectable per credential.
 
 sudo is run without a terminal. Some distributions (older RHEL and derivatives)
 ship `Defaults requiretty`, and sudo then answers "sorry, you must have a tty to
-run sudo". The preflight detects that text and shows the line to add, which is
-already included in every drop-in below:
+run sudo". The preflight detects that text and shows the line to add. Every
+drop-in carries it commented out; uncomment it only on such hosts. sudo-rs
+(the default sudo on Ubuntu 26.04) has no `requiretty`, and its `visudo`
+rejects the whole file if the line is present:
 
 ```
 Defaults:kkscan !requiretty
@@ -61,7 +63,7 @@ sha256sum /usr/local/sbin/kryptkeeper-helper      # must match the hash shown in
 `/etc/sudoers.d/kryptkeeper-kkscan` (mode 0440, check with `visudo -cf`):
 
 ```
-Defaults:kkscan !requiretty
+# Defaults:kkscan !requiretty
 kkscan ALL=(root) NOPASSWD: /usr/local/sbin/kryptkeeper-helper
 ```
 
@@ -95,11 +97,13 @@ private keys through the helper or run other commands. Anyone who can write
 
 ## Mode: raw sudo allowlist (`nopasswd`)
 
-For sites that will not install a helper. The drop-in lists the commands by
-path. Example for an nginx host whose certificates live in `/etc/nginx/ssl`:
+For sites that will not install a helper. It needs classic sudo: sudo-rs
+refuses wildcards in command arguments, so on a sudo-rs host (Ubuntu 26.04's
+default) use helper mode. The drop-in lists the commands by path. Example for
+an nginx host whose certificates live in `/etc/nginx/ssl`:
 
 ```
-Defaults:kkscan !requiretty
+# Defaults:kkscan !requiretty
 Cmnd_Alias KK_LIST    = /usr/bin/find /etc/nginx/ssl *
 Cmnd_Alias KK_STAT    = /usr/bin/stat -c * /etc/nginx/ssl/*
 Cmnd_Alias KK_READ    = /usr/bin/cat /etc/nginx/ssl/*

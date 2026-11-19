@@ -20,6 +20,7 @@ Release notes: [docs/release/RELEASE_NOTES_v1.2.1.md](docs/release/RELEASE_NOTES
 
 - AWS ACM inventory lists certificates of every key type; it returned only RSA-1024 and RSA-2048, so ECDSA and RSA-3072/4096 certificates were missing.
 - AWS and GCP KMS ML-DSA, ML-KEM and SLH-DSA key specs (`ML_DSA_65`, `PQ_SIGN_ML_DSA_65`) are scored `quantum_safe` instead of `unknown`.
+- Generated sudoers drop-ins carry `Defaults:<user> !requiretty` commented out: sudo-rs, Ubuntu 26.04's default sudo, has no `requiretty` and its `visudo` rejected the whole file. Raw-allowlist (`nopasswd`) mode needs classic sudo, because sudo-rs refuses wildcards in command arguments; the guide sends sudo-rs hosts to helper mode.
 
 ### Other changes
 

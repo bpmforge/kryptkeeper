@@ -19,6 +19,10 @@ in the database changes.
 - **ML-DSA keys in AWS and GCP KMS were scored `pqc_readiness: unknown`.** AWS reports
   `ML_DSA_65` and GCP `PQ_SIGN_ML_DSA_65`. The scorer now matches those spellings for ML-DSA,
   ML-KEM and SLH-DSA and scores them `quantum_safe`.
+- **Sudoers drop-ins were invalid on sudo-rs.** sudo-rs, the default sudo on Ubuntu 26.04, has
+  no `requiretty` setting, and its `visudo` rejected every generated drop-in because of the
+  `Defaults:<user> !requiretty` line. The line is now a comment. Uncomment it only on hosts that
+  set `requiretty`; the preflight still detects that case and shows it.
 
 ## Tests
 
@@ -29,5 +33,8 @@ in the database changes.
 ## Upgrade notes
 
 - No migrations, no new settings.
+- **Raw-allowlist (`nopasswd`) privilege mode needs classic sudo.** sudo-rs refuses wildcards
+  in command arguments, so on a sudo-rs host use helper mode
+  ([guide](../guides/agentless-hardened-linux.md)). Existing drop-ins keep working on classic sudo.
 - After the upgrade, the next cloud inventory scan adds any ECDSA and RSA-3072/4096 ACM
   certificates that were missing before.

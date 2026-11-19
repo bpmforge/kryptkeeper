@@ -170,7 +170,10 @@ func trustStoreSudoers(user string) string {
 # kryptkeeper-<sha256>.crt in the distribution's anchor directory, or the System
 # keychain on macOS. The binary MUST be owned by root and not writable by %[1]s,
 # or this rule is a root shell.
-Defaults:%[1]s !requiretty
+#
+# If this host sets requiretty (some older RHEL/CentOS), also add the next line
+# uncommented. Leave it out on sudo-rs, whose visudo rejects it.
+# Defaults:%[1]s !requiretty
 Cmnd_Alias KK_TRUSTSTORE = %[2]s %[3]s
 %[1]s ALL=(root) NOPASSWD: KK_TRUSTSTORE
 `, user, trustpush.HelperPath, trustpush.HelperArg)
