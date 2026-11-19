@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # W24-18: live cloud-certificate inventory UAT. Real hub (db mode) against an
 # ACM emulator (moto by default; LocalStack via KK_CLOUD_EMULATOR_IMAGE and
-# KK_CLOUD_EMULATOR_PORT_INNER=4566), plus Azure/GCP bad-credential cases.
+# KK_CLOUD_EMULATOR_PORT_INNER=4566; AWS's own emulator with KK_AWS_EMULATOR=aws),
+# plus Azure/GCP bad-credential cases.
 # Cloud scan results live in scan_jobs.results_summary (not the certificates
 # table), so assertions read that row and GET /discovery/scan-jobs.
 set -u -o pipefail
@@ -18,7 +19,9 @@ BASE="http://127.0.0.1:${HUB_PORT}"
 TOKEN=uat-token
 # moto's ListCertificates omits SubjectAlternativeNameSummaries (real ACM and
 # LocalStack return them), so dns_names is only asserted off moto.
-case "$IMAGE" in *moto*) ASSERT_DNS_NAMES="${KK_ASSERT_DNS_NAMES:-0}" ;; *) ASSERT_DNS_NAMES="${KK_ASSERT_DNS_NAMES:-1}" ;; esac
+EMU="${KK_AWS_EMULATOR:-moto}"
+case "$EMU:$IMAGE" in aws:*) ASSERT_DNS_NAMES="${KK_ASSERT_DNS_NAMES:-1}" ;; *moto*) ASSERT_DNS_NAMES="${KK_ASSERT_DNS_NAMES:-0}" ;; *) ASSERT_DNS_NAMES="${KK_ASSERT_DNS_NAMES:-1}" ;; esac
+PAGE_CERTS="${KK_CLOUD_PAGINATION_CERTS:-1100}"
 WORK="$(mktemp -d /tmp/kk-uat-cloudinv.XXXXXX)"
 DATA="$WORK/data"
 HUB_PID=""
@@ -32,6 +35,7 @@ STEP() { echo; echo "== $* =="; }
 stop_hub() { [ -n "$HUB_PID" ] && kill "$HUB_PID" 2>/dev/null && wait "$HUB_PID" 2>/dev/null; HUB_PID=""; }
 cleanup() {
   stop_hub
+  [ "$EMU" = aws ] && kk_aws_emulator_stop
   "$CE" rm -f "$NAME" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
@@ -45,21 +49,37 @@ DIE() { FAIL "$*"; finish; }
 curlj() { curl -sS --max-time 20 -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' "$@"; }
 
 # ---- 1. emulator ---------------------------------------------------------
-STEP "start ACM emulator"
-"$CE" rm -f "$NAME" >/dev/null 2>&1 || true
-"$CE" image inspect "$IMAGE" >/dev/null 2>&1 || "$CE" pull "$IMAGE" >/dev/null || DIE "pull $IMAGE"
-"$CE" run -d --name "$NAME" -p "127.0.0.1:${PORT}:${INNER}" "$IMAGE" >/dev/null || DIE "start emulator"
-for _ in $(seq 1 60); do curl -s -o /dev/null "http://127.0.0.1:${PORT}/" && break; sleep 1; done
-curl -s -o /dev/null "http://127.0.0.1:${PORT}/" || DIE "emulator never answered on :${PORT}"
-PASS "emulator answering on :${PORT} ($IMAGE)"
+STEP "start ACM emulator ($EMU)"
+if [ "$EMU" = aws ]; then
+  # AWS's own emulator as a host process; the hub below inherits its
+  # point-the-SDK environment (SigV4 keys file, AWS_CA_BUNDLE).
+  . "$HERE/../lib/podman.sh"
+  . "$HERE/../lib/aws-emulator.sh"
+  kk_aws_emulator_start; rc=$?
+  [ "$rc" -eq 2 ] && exit 0
+  [ "$rc" -eq 0 ] || DIE "aws-emulator did not start"
+  # Leak check below looks for this run's access key id, not a placeholder.
+  LEAK_NEEDLE="$(awk -F' *= *' '$1=="aws_access_key_id"{print $2; exit}' "$AWS_SHARED_CREDENTIALS_FILE")"
+  export KK_LIVE_CLOUD_INVENTORY=1
+else
+  "$CE" rm -f "$NAME" >/dev/null 2>&1 || true
+  "$CE" image inspect "$IMAGE" >/dev/null 2>&1 || "$CE" pull "$IMAGE" >/dev/null || DIE "pull $IMAGE"
+  "$CE" run -d --name "$NAME" -p "127.0.0.1:${PORT}:${INNER}" "$IMAGE" >/dev/null || DIE "start emulator"
+  for _ in $(seq 1 60); do curl -s -o /dev/null "http://127.0.0.1:${PORT}/" && break; sleep 1; done
+  curl -s -o /dev/null "http://127.0.0.1:${PORT}/" || DIE "emulator never answered on :${PORT}"
+  PASS "emulator answering on :${PORT} ($IMAGE)"
+  export AWS_ENDPOINT_URL="http://127.0.0.1:${PORT}" AWS_REGION=us-east-1 \
+    AWS_ACCESS_KEY_ID=kk-uat AWS_SECRET_ACCESS_KEY=kk-uat KK_LIVE_CLOUD_INVENTORY=1
+  LEAK_NEEDLE=kk-uat
+fi
 [ "$ASSERT_DNS_NAMES" = "1" ] || SKIP "dns_names assertion: emulator omits SubjectAlternativeNameSummaries in ListCertificates (common_name asserted instead)"
-
-export AWS_ENDPOINT_URL="http://127.0.0.1:${PORT}" AWS_REGION=us-east-1 \
-  AWS_ACCESS_KEY_ID=kk-uat AWS_SECRET_ACCESS_KEY=kk-uat KK_LIVE_CLOUD_INVENTORY=1
 
 import_certs() { # region count prefix -> ARN lines
   (cd "$REPO_ROOT" && KK_IMPORT_COUNT="$2" KK_IMPORT_REGION="$1" KK_IMPORT_PREFIX="$3" \
-    go test ./tests/live/cloud-inventory -run TestImportCerts -count=1 -v 2>&1) | tee "$WORK/import-$1.log" | grep '^ARN=' | sed 's/^ARN=//'
+    go test ./tests/live/cloud-inventory -run TestImportCerts -count=1 -v -timeout 30m 2>&1) | tee "$WORK/import-$1.log" | grep '^ARN=' | sed 's/^ARN=//'
+}
+helper() { # go test helper NAME -> its stdout lines
+  (cd "$REPO_ROOT" && go test ./tests/live/cloud-inventory -run "^$1\$" -count=1 -v 2>&1) | tee "$WORK/$1.log"
 }
 
 # ---- 2. import K=5 certs ---------------------------------------------------
@@ -112,25 +132,27 @@ j=next((j for j in jobs if j.get('id')=='$JOB_ID'),{})
 print(j.get('$1',''))" 2>/dev/null
 }
 
+CAP=200 # cloudScanMaxItems in internal/bootstrap/cloud_discovery.go
 summary_row() { sqlite3 "$DATA/kryptkeeper.db" "SELECT results_summary FROM scan_jobs WHERE id='$JOB_ID'"; }
 
 check_summary() { # label want_count arns_file(optional)  (reads summary_row)
   summary_row >"$WORK/summary.json"
-  python3 - "$WORK/summary.json" "$2" "${3:-}" "$ASSERT_DNS_NAMES" <<'PY'
+  python3 - "$WORK/summary.json" "$2" "${3:-}" "$ASSERT_DNS_NAMES" "$CAP" <<'PY'
 import json, sys
-s = json.load(open(sys.argv[1])); want = int(sys.argv[2]); arns = sys.argv[3]; dns = sys.argv[4] == "1"
+s = json.load(open(sys.argv[1])); want = int(sys.argv[2]); arns = sys.argv[3]; dns = sys.argv[4] == "1"; cap = int(sys.argv[5])
 items = s.get("items") or []
 ids = [i["resource_id"] for i in items]
 errs = []
 if s.get("provider") != "cloud_acm": errs.append("summary provider=%r (scan type recorded)" % s.get("provider"))
 if s.get("certificates") != want: errs.append("certificates=%s want %d" % (s.get("certificates"), want))
 if len(ids) != len(set(ids)): errs.append("duplicate resource_id values")
-if len(ids) != want: errs.append("items=%d want %d" % (len(ids), want))
+if len(ids) != min(want, cap): errs.append("items=%d want %d" % (len(ids), min(want, cap)))
 for i in items:
     if i.get("provider") != "aws-acm": errs.append("item provider %r" % i.get("provider"))
     if not i.get("common_name"): errs.append("empty common_name for %s" % i["resource_id"])
     if dns and not i.get("dns_names"): errs.append("empty dns_names for %s" % i["resource_id"])
-    if not i.get("not_after") or i["not_after"].startswith("0001"): errs.append("empty not_after for %s" % i["resource_id"])
+    # A PENDING_VALIDATION certificate has no body yet, so no validity.
+    if i.get("status") == "ISSUED" and (not i.get("not_after") or i["not_after"].startswith("0001")): errs.append("empty not_after for %s" % i["resource_id"])
 if arns:
     want_ids = set(l.strip() for l in open(arns) if l.strip())
     if set(ids) != want_ids: errs.append("ARN set mismatch: extra=%s missing=%s" % (sorted(set(ids)-want_ids), sorted(want_ids-set(ids))))
@@ -154,6 +176,15 @@ out="$(check_summary x 5 "$WORK/arns-us.txt")" && PASS "rerun: still 5 certifica
 
 # ---- 6. multi-scope isolation ---------------------------------------------------
 STEP "multi-scope: second region, then one bad scope"
+if [ "$EMU" = aws ]; then
+SKIP "two-region merge: aws-emulator does not separate Regions (one Region per emulator), so this case stays on moto"
+start_hub '[{"provider":"aws-acm","profile":"","region":"us-east-1"},{"provider":"aws-acm","region":"ap-south-1","profile":"does-not-exist"}]'
+run_scan cloud_acm 30
+msg="$(job_field error)"
+[ "$JOB_STATUS" = "completed_with_errors" ] && PASS "bad scope: status completed_with_errors" || FAIL "bad scope: status=$JOB_STATUS (want completed_with_errors) error=$msg"
+echo "$msg" | grep -q 'aws-acm/does-not-exist/ap-south-1' && PASS "error_message names the failing scope" || FAIL "error_message lacks scope key: $msg"
+out="$(check_summary x 5 "$WORK/arns-us.txt")" && PASS "good scope's 5 certificates still listed" || FAIL "good scope lost: $out"
+else
 import_certs eu-west-1 2 acm-eu >"$WORK/arns-eu.txt"
 [ "$(wc -l <"$WORK/arns-eu.txt" | tr -d ' ')" = "2" ] && PASS "2 certificates imported into eu-west-1" || DIE "eu-west-1 import failed"
 cat "$WORK/arns-us.txt" "$WORK/arns-eu.txt" >"$WORK/arns-all.txt"
@@ -167,6 +198,50 @@ msg="$(job_field error)"
 [ "$JOB_STATUS" = "completed_with_errors" ] && PASS "bad scope: status completed_with_errors" || FAIL "bad scope: status=$JOB_STATUS (want completed_with_errors) error=$msg"
 echo "$msg" | grep -q 'aws-acm/does-not-exist/ap-south-1' && PASS "error_message names the failing scope" || FAIL "error_message lacks scope key: $msg"
 out="$(check_summary x 7 "$WORK/arns-all.txt")" && PASS "good scopes' 7 certificates still listed" || FAIL "good scopes lost: $out"
+fi
+
+# ---- 6b. pending certificate ---------------------------------------------------------
+STEP "pending: a requested (DNS-validated) certificate is listed as PENDING_VALIDATION"
+pend="$(helper TestRequestPending | grep '^ARN=' | sed 's/^ARN=//')"
+[ -n "$pend" ] && PASS "requested certificate $pend" || FAIL "RequestCertificate failed: $(tail -3 "$WORK/TestRequestPending.log")"
+if [ -n "$pend" ]; then
+  start_hub '[{"provider":"aws-acm","profile":"","region":"us-east-1"}]'
+  run_scan cloud_acm 30
+  [ "$JOB_STATUS" = "completed" ] && PASS "scan with a pending certificate completed" || FAIL "pending scan status=$JOB_STATUS error=$(job_field error)"
+  { cat "$WORK/arns-us.txt"; echo "$pend"; } >"$WORK/arns-pending.txt"
+  out="$(check_summary x 6 "$WORK/arns-pending.txt")" && PASS "results_summary: 6 certificates (5 imported + 1 pending)" || FAIL "pending summary: $out"
+  st="$(python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); print(next((i.get("status","") for i in s.get("items") or [] if i["resource_id"]==sys.argv[2]),"absent"))' "$WORK/summary.json" "$pend")"
+  case "$st" in
+    PENDING_VALIDATION) PASS "pending certificate listed with status PENDING_VALIDATION" ;;
+    *) FAIL "pending certificate status=$st (want PENDING_VALIDATION)" ;;
+  esac
+fi
+
+# ---- 6c. pagination --------------------------------------------------------------------
+STEP "pagination: $PAGE_CERTS more certificates (real ACM pages at up to 1000)"
+import_certs us-east-1 "$PAGE_CERTS" acm-page >"$WORK/arns-page.txt"
+got="$(wc -l <"$WORK/arns-page.txt" | tr -d ' ')"
+if [ "$got" != "$PAGE_CERTS" ]; then
+  if grep -q 'emulator holds at most' "$WORK/import-us-east-1.log"; then
+    SKIP "pagination over $PAGE_CERTS certificates: $(grep -o 'this emulator holds at most[^"]*' "$WORK/import-us-east-1.log" | head -1)"
+  else
+    FAIL "imported $got of $PAGE_CERTS certificates: $(grep -E 'Import|Error' "$WORK/import-us-east-1.log" | tail -2)"
+  fi
+else
+  PASS "$PAGE_CERTS certificates imported"
+  pages="$(helper TestCountPages | grep '^PAGES=' | head -1)"
+  echo "  ListCertificates as the hub calls it: $pages"
+  total=$((PAGE_CERTS + 5)); [ -n "$pend" ] && total=$((total + 1))
+  case "$pages" in
+    "PAGES=1 "*) SKIP "NextToken path: the emulator returned all certificates in one ListCertificates page ($pages); completeness still asserted" ;;
+    PAGES=*) PASS "ListCertificates spans several pages ($pages)" ;;
+    *) FAIL "page count helper failed: $(tail -3 "$WORK/TestCountPages.log")" ;;
+  esac
+  start_hub '[{"provider":"aws-acm","profile":"","region":"us-east-1"}]'
+  run_scan cloud_acm 300
+  [ "$JOB_STATUS" = "completed" ] && PASS "scan over $total certificates completed" || FAIL "pagination scan status=$JOB_STATUS error=$(job_field error)"
+  out="$(check_summary x "$total")" && PASS "results_summary.certificates=$total, $CAP persisted items, no duplicate resource_id" || FAIL "pagination summary: $out"
+fi
 
 # ---- 7. AWS bad endpoint -----------------------------------------------------------
 STEP "AWS unreachable endpoint -> failed job with readable message"
@@ -175,7 +250,7 @@ run_scan cloud_acm 90
 msg="$(job_field error)"
 [ "$JOB_STATUS" = "failed" ] && PASS "aws unreachable: job failed" || FAIL "aws unreachable: status=$JOB_STATUS"
 echo "$msg" | grep -Eq 'list certificates|connector init' && PASS "message readable: ${msg:0:160}" || FAIL "message not readable: $msg"
-echo "$msg" | grep -q 'kk-uat' && FAIL "message leaks credential value" || PASS "message carries no credential value"
+echo "$msg" | grep -qF "$LEAK_NEEDLE" && FAIL "message leaks credential value" || PASS "message carries no credential value"
 echo "$msg" | grep -Eq 'goroutine|\.go:[0-9]+' && FAIL "message looks like a stack trace" || PASS "message has no stack trace"
 
 # ---- 8. Azure ------------------------------------------------------------------------

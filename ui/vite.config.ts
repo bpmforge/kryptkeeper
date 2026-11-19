@@ -24,6 +24,9 @@ export default defineConfig({
     // Playwright specs live under e2e/ and are run by `npm run e2e`.
     exclude: [...configDefaults.exclude, "e2e/**"],
     css: true,
+    // The full suite saturates the shared Mac (load 30-45 on 12 cores), and
+    // render-heavy page tests then cross the 5 s default (pre-push gate, 2026-11-19).
+    testTimeout: 15000,
   },
   server: {
     proxy: {

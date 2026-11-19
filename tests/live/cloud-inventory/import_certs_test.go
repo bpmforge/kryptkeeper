@@ -26,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/acm"
+	acmtypes "github.com/aws/aws-sdk-go-v2/service/acm/types"
 )
 
 func TestImportCerts(t *testing.T) {
@@ -86,4 +87,58 @@ func TestImportCerts(t *testing.T) {
 		}
 		fmt.Printf("ARN=%s\n", aws.ToString(out.CertificateArn))
 	}
+}
+
+func liveACM(t *testing.T) *acm.Client {
+	t.Helper()
+	if os.Getenv("KK_LIVE_CLOUD_INVENTORY") != "1" {
+		t.Skip("set KK_LIVE_CLOUD_INVENTORY=1 (see run.sh) to drive an ACM emulator")
+	}
+	if os.Getenv("AWS_ENDPOINT_URL") == "" {
+		t.Fatal("AWS_ENDPOINT_URL must point at the emulator; refusing to fall through to real AWS")
+	}
+	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion("us-east-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return acm.NewFromConfig(cfg)
+}
+
+// TestRequestPending asks ACM for a DNS-validated certificate that can never
+// validate, so it stays PENDING_VALIDATION; prints "ARN=<arn>".
+func TestRequestPending(t *testing.T) {
+	c := liveACM(t)
+	name := "acm-uat-pending.kryptkeeper.uat.local"
+	out, err := c.RequestCertificate(context.Background(), &acm.RequestCertificateInput{
+		DomainName: aws.String(name), SubjectAlternativeNames: []string{name, "www." + name},
+		ValidationMethod: acmtypes.ValidationMethodDns,
+	})
+	if err != nil {
+		t.Fatalf("RequestCertificate: %v", err)
+	}
+	fmt.Printf("ARN=%s\n", aws.ToString(out.CertificateArn))
+}
+
+// TestCountPages prints "PAGES=<n> CERTS=<m>" for ListCertificates as the hub
+// calls it (no MaxItems, every key type), so run.sh can tell whether the
+// emulator made the hub follow NextToken.
+func TestCountPages(t *testing.T) {
+	c := liveACM(t)
+	pages, certs := 0, 0
+	var next *string
+	for {
+		out, err := c.ListCertificates(context.Background(), &acm.ListCertificatesInput{
+			NextToken: next, Includes: &acmtypes.Filters{KeyTypes: acmtypes.KeyAlgorithm("").Values()},
+		})
+		if err != nil {
+			t.Fatalf("ListCertificates: %v", err)
+		}
+		pages++
+		certs += len(out.CertificateSummaryList)
+		if out.NextToken == nil {
+			break
+		}
+		next = out.NextToken
+	}
+	fmt.Printf("PAGES=%d CERTS=%d\n", pages, certs)
 }

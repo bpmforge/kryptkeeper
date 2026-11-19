@@ -116,9 +116,11 @@ func CollectWithTimeout(ctx context.Context, perProvider time.Duration, sources 
 func scoreKeyPQC(algorithm string) string {
 	a := strings.ToUpper(algorithm)
 	switch {
-	case strings.Contains(a, "ML-DSA"), strings.Contains(a, "MLDSA"),
-		strings.Contains(a, "ML-KEM"), strings.Contains(a, "MLKEM"),
-		strings.Contains(a, "SLH-DSA"), strings.Contains(a, "DILITHIUM"),
+	// AWS KMS key specs (ML_DSA_65) and GCP KMS algorithms (PQ_SIGN_ML_DSA_65,
+	// PQ_SIGN_SLH_DSA_SHA2_128S) spell the families with underscores.
+	case strings.Contains(a, "ML-DSA"), strings.Contains(a, "MLDSA"), strings.Contains(a, "ML_DSA"),
+		strings.Contains(a, "ML-KEM"), strings.Contains(a, "MLKEM"), strings.Contains(a, "ML_KEM"),
+		strings.Contains(a, "SLH-DSA"), strings.Contains(a, "SLH_DSA"), strings.Contains(a, "DILITHIUM"),
 		strings.Contains(a, "KYBER"), strings.Contains(a, "FALCON"),
 		strings.Contains(a, "SPHINCS"):
 		return "quantum_safe"

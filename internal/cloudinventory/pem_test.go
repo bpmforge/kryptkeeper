@@ -50,9 +50,11 @@ type fakeACM struct {
 	pemByARN map[string]string
 	failGet  bool
 	gets     []string
+	includes *acmtypes.Filters
 }
 
-func (f *fakeACM) ListCertificates(context.Context, *acm.ListCertificatesInput, ...func(*acm.Options)) (*acm.ListCertificatesOutput, error) {
+func (f *fakeACM) ListCertificates(_ context.Context, in *acm.ListCertificatesInput, _ ...func(*acm.Options)) (*acm.ListCertificatesOutput, error) {
+	f.includes = in.Includes
 	return &acm.ListCertificatesOutput{CertificateSummaryList: []acmtypes.CertificateSummary{
 		{CertificateArn: aws.String("arn:aws:acm:us-east-1:111122223333:certificate/issued"), DomainName: aws.String("a.example.com"), Status: acmtypes.CertificateStatusIssued},
 		{CertificateArn: aws.String("arn:aws:acm:us-east-1:111122223333:certificate/pending"), DomainName: aws.String("b.example.com"), Status: acmtypes.CertificateStatusPendingValidation},
@@ -157,5 +159,30 @@ func TestGCPCarriesOutputOnlyPemCertificate(t *testing.T) {
 	}
 	if certs[0].CertificatePEM != want || certs[1].CertificatePEM != "" {
 		t.Fatalf("active carries the chain, provisioning does not: %q / %q", certs[0].CertificatePEM, certs[1].CertificatePEM)
+	}
+}
+
+// ACM's default filter hides every certificate that is not RSA_1024 or
+// RSA_2048, so the connector must ask for every key type.
+func TestACMListCertificatesAsksForEveryKeyType(t *testing.T) {
+	f := &fakeACM{}
+	c := &ACMConnector{client: f, region: "us-east-1"}
+	if _, err := c.ListCertificates(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.includes == nil {
+		t.Fatal("ListCertificates sent no Includes filter: ACM would return RSA_1024 and RSA_2048 certificates only")
+	}
+	got := map[acmtypes.KeyAlgorithm]bool{}
+	for _, k := range f.includes.KeyTypes {
+		got[k] = true
+	}
+	for _, want := range []acmtypes.KeyAlgorithm{
+		acmtypes.KeyAlgorithmRsa2048, acmtypes.KeyAlgorithmRsa3072, acmtypes.KeyAlgorithmRsa4096,
+		acmtypes.KeyAlgorithmEcPrime256v1, acmtypes.KeyAlgorithmEcSecp384r1, acmtypes.KeyAlgorithmEcSecp521r1,
+	} {
+		if !got[want] {
+			t.Errorf("Includes.KeyTypes lacks %s", want)
+		}
 	}
 }

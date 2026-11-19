@@ -32,8 +32,15 @@ func TestScoreKeyPQC(t *testing.T) {
 		"ML-DSA-65":         "quantum_safe",
 		"ML-KEM-768":        "quantum_safe",
 		"DILITHIUM3":        "quantum_safe",
-		"":                  "unknown",
-		"SOMETHING_NEW":     "unknown",
+		// AWS KMS KeySpec and GCP KMS algorithm spellings.
+		"ML_DSA_44":                 "quantum_safe",
+		"ML_DSA_65":                 "quantum_safe",
+		"ML_DSA_87":                 "quantum_safe",
+		"PQ_SIGN_ML_DSA_65":         "quantum_safe",
+		"PQ_SIGN_SLH_DSA_SHA2_128S": "quantum_safe",
+		"ML_KEM_768":                "quantum_safe",
+		"":                          "unknown",
+		"SOMETHING_NEW":             "unknown",
 	}
 	for alg, want := range cases {
 		if got := scoreKeyPQC(alg); got != want {

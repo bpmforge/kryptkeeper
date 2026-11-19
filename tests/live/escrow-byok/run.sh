@@ -10,6 +10,28 @@ set -u -o pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 CE="${CONTAINER_ENGINE:-podman}"
+
+# KK_AWS_EMULATOR=aws: the AWS leg runs against AWS's own emulator, which
+# implements GetParametersForImport, the RSA_AES_KEY_WRAP_SHA_256 import and
+# GetPublicKey, so the BYOK test must reach "PASS ... byte-identical"
+# (KK_BYOK_REQUIRE_FULL=1). No Lowkey Vault: the Azure leg only asserts the
+# product's in-process refusal. The moto drill record is not rewritten; the
+# results go in docs/release/LIVE_RESULTS_AWS_EMULATOR_v1.2.md.
+if [ "${KK_AWS_EMULATOR:-moto}" = "aws" ]; then
+  . "$HERE/../lib/podman.sh"
+  . "$HERE/../lib/aws-emulator.sh"
+  trap kk_aws_emulator_stop EXIT
+  kk_aws_emulator_start; rc=$?
+  [ "$rc" -eq 2 ] && exit 0
+  [ "$rc" -eq 0 ] || exit 1
+  export KK_LIVE_ESCROW_BYOK=1 KK_BYOK_REQUIRE_FULL=1 KK_EMULATOR_NAME=aws-emulator
+  cd "$REPO_ROOT" && go test ./tests/live/escrow-byok/ -count=1 -v 2>&1 | tee /tmp/kk-escrow-byok-awsemu.log
+  RC="${PIPESTATUS[0]}"
+  grep -q 'RESULT: PASS: ImportKeyMaterial accepted, key Enabled, KMS public key byte-identical' /tmp/kk-escrow-byok-awsemu.log \
+    || { echo "FAIL: BYOK import did not reach PASS (public key byte-identical)"; exit 1; }
+  if [ "$RC" -eq 0 ]; then echo "ALL CHECKS PASSED"; else echo "FAIL: see above"; exit 1; fi
+  exit 0
+fi
 MOTO="kk-drill-escrow-moto"; LOWKEY="kk-drill-escrow-lowkey"
 MPORT="${KK_MOTO_PORT:-5556}"; LPORT="${KK_LOWKEY_PORT:-8444}"
 MIMAGE="${KK_MOTO_IMAGE:-docker.io/motoserver/moto:latest}"
@@ -33,7 +55,7 @@ LDIGEST="$("$CE" image inspect "$LIMAGE" --format '{{.Id}}' 2>/dev/null | cut -c
 MVER="$("$CE" exec "$MOTO" python -c 'import moto;print(moto.__version__)' 2>/dev/null || echo unknown)"
 
 export AWS_ENDPOINT_URL="http://127.0.0.1:${MPORT}" AWS_REGION=us-east-1 \
-  AWS_ACCESS_KEY_ID=kk-drill AWS_SECRET_ACCESS_KEY=kk-drill KK_LIVE_ESCROW_BYOK=1
+  AWS_ACCESS_KEY_ID=kk-drill AWS_SECRET_ACCESS_KEY=kk-drill KK_LIVE_ESCROW_BYOK=1 KK_EMULATOR_NAME=moto
 cd "$REPO_ROOT" && go test ./tests/live/escrow-byok/ -count=1 -v 2>&1 | tee "$WORK/test.log"
 RC="${PIPESTATUS[0]}"
 # Server-side evidence of why the AWS leg is PARTIAL: moto's own log.

@@ -3,7 +3,8 @@
 #
 #   A  HashiCorp Vault PKI  (dev server with TLS; the hub needs HTTPS to send credentials)
 #   B  EJBCA Community      (see scenario_b; honest time box)
-#   C  AWS Private CA       (moto: only if the pulled moto implements acm-pca issue/revoke)
+#   C  AWS Private CA       (moto: only if the pulled moto implements acm-pca issue/revoke;
+#                            KK_AWS_EMULATOR=aws runs it against AWS's own emulator)
 #
 # Everything is driven through the hub API. The hub, the upstream CAs, a
 # tamper proxy and the ACME client run as containers on one private podman
@@ -35,6 +36,8 @@ PROXY_CTR="kk-upca-proxy-$RUN_ID"
 LEGO_CTR="kk-upca-lego-$RUN_ID"
 EJBCA_CTR="kk-upca-ejbca-$RUN_ID"
 MOTO_CTR="kk-upca-moto-$RUN_ID"
+AWSEMU_CTR="kk-upca-awsemu-$RUN_ID"
+NGINX_IMG="${KK_NGINX_IMAGE:-docker.io/library/nginx:1.27-alpine}"
 HUB_PORT=8080
 HOST_PORT="$(kk_free_port)"
 HUB="https://localhost:$HOST_PORT"
@@ -60,7 +63,8 @@ want() { case " $SCENARIOS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
 cleanup() {
   if [ "$FAILED" = 1 ]; then echo "--- hub log (last 30) ---"; podman logs "$HUB_CTR" 2>&1 | tail -30; fi
-  kk_rm "$LEGO_CTR" "$PROXY_CTR" "$VAULT_CTR" "$EJBCA_CTR" "$MOTO_CTR" "$HUB_CTR"
+  [ "${KK_AWS_EMULATOR:-moto}" = aws ] && kk_aws_emulator_stop
+  kk_rm "$LEGO_CTR" "$PROXY_CTR" "$VAULT_CTR" "$EJBCA_CTR" "$MOTO_CTR" "$AWSEMU_CTR" "$HUB_CTR"
   podman network rm "$NET" >/dev/null 2>&1
   rm -rf "$WORK"
 }
@@ -485,7 +489,7 @@ PY
   case "$arn" in arn:aws:acm-pca*) PASS "moto PCA root created: $arn" ;; *) FAIL "could not create the moto CA: $(tail -3 "$WORK/pca.err")"; return ;; esac
 
   STEP "C2 hub: aws_pca connector -> moto, external CA, issue, revoke"
-  c=$(hub POST /api/v1/credentials "$(python3 -c 'import json; print(json.dumps({"name":"upca-aws-static","credential_type":"api_token","payload":{"access_key_id":"testing","secret_access_key":"testing"}}))')")
+  c=$(hub POST /api/v1/credentials "$(python3 -c 'import json; print(json.dumps({"name":"upca-aws-static","credential_type":"cloud_iam","payload":{"access_key_id":"testing","secret_access_key":"testing"}}))')")
   [ "$c" = 201 ] || { FAIL "aws credential -> $c $(cat "$WORK/last.json")"; return; }
   local cred; cred="$(jget 'd["data"]["id"]' <"$WORK/last.json")"
   local cfg; cfg="$(python3 -c 'import json,sys; print(json.dumps({"certificate_authority_arn":sys.argv[1],"region":"us-east-1","endpoint_url":"https://%s:5000"%sys.argv[2],"auth":"static","signing_algorithm":"SHA256WITHRSA","validity_days":30}))' "$arn" "$MOTO_CTR")"
@@ -506,9 +510,175 @@ PY
   else FAIL "revoke -> $c $(cat "$WORK/last.json")"; fi
 }
 
+# =============================================================================
+# Scenario C against AWS's own emulator (KK_AWS_EMULATOR=aws)
+# =============================================================================
+# The hub's egress guard refuses loopback, and the emulator's certificate names
+# only localhost and 127.0.0.1, so the hub cannot dial it directly. An nginx
+# pass-through on the run network re-terminates TLS with the fixture CA the hub
+# already trusts and forwards, Host header unchanged (SigV4 covers it), to the
+# emulator running in nginx's own network namespace.
+pca_emu() { # pca_emu SCRIPT [ARGS...]: run a boto3 script against the emulator
+  local f="$1"; shift
+  podman run --rm --network "container:$AWSEMU_CTR" -v "$WORK:/w" \
+    -e AWS_SHARED_CREDENTIALS_FILE=/w/awsemu/.aws/emulator/9297/emulator_credentials \
+    -e AWS_CONFIG_FILE=/w/awsemu/.aws/emulator/9297/config -e AWS_DEFAULT_REGION=us-east-1 \
+    "$PY_IMG" sh -c 'pip install -q boto3 >/dev/null 2>&1; python "$@"' sh "/w/$f" "$@"
+}
+scenario_c_awsemu() {
+  STEP "C1 AWS's emulator behind a TLS pass-through on $NET"
+  . "$HERE/../lib/aws-emulator.sh"
+  mk_svc_cert "$AWSEMU_CTR"
+  mkdir -p "$WORK/awsemu"
+  cat >"$WORK/nginx.conf" <<NGX
+events {}
+http {
+  server {
+    listen 8443 ssl;
+    ssl_certificate /w/svc-$AWSEMU_CTR.pem;
+    ssl_certificate_key /w/svc-$AWSEMU_CTR.key;
+    client_max_body_size 16m;
+    location / {
+      proxy_pass https://127.0.0.1:9297;
+      proxy_http_version 1.1;
+      proxy_set_header Host \$http_host;
+      proxy_ssl_verify on;
+      proxy_ssl_trusted_certificate /w/awsemu/.aws/emulator/9297/ca.pem;
+      proxy_ssl_name localhost;
+      proxy_ssl_server_name on;
+    }
+  }
+}
+NGX
+  # nginx loads the emulator CA at start, so it waits for the emulator to write it.
+  podman run -d --name "$AWSEMU_CTR" --network "$NET" -v "$WORK:/w:ro" "$NGINX_IMG" \
+    sh -c 'while [ ! -s /w/awsemu/.aws/emulator/9297/ca.pem ]; do sleep 0.5; done; exec nginx -c /w/nginx.conf -g "daemon off;"' >/dev/null \
+    || { FAIL "nginx pass-through did not start"; return; }
+  local rc; kk_aws_emulator_netns "$AWSEMU_CTR" "$WORK/awsemu"; rc=$?
+  [ "$rc" -eq 2 ] && { SKIP "scenario C on aws-emulator: not installed"; return; }
+  [ "$rc" -eq 0 ] || { FAIL "aws-emulator did not start"; return; }
+  wait_name "$AWSEMU_CTR" || { FAIL "$AWSEMU_CTR does not resolve on $NET"; return; }
+
+  cat >"$WORK/pca_emu_setup.py" <<'PY'
+import boto3, sys
+ep, out = "https://127.0.0.1:9297", sys.argv[1]
+ca = "/w/awsemu/.aws/emulator/9297/ca.pem"
+s3 = boto3.client("s3", endpoint_url=ep, verify=ca)
+s3.create_bucket(Bucket="kk-upca-crl")
+c = boto3.client("acm-pca", endpoint_url=ep, verify=ca)
+arn = c.create_certificate_authority(
+    CertificateAuthorityConfiguration={"KeyAlgorithm": "EC_prime256v1", "SigningAlgorithm": "SHA256WITHECDSA",
+                                       "Subject": {"CommonName": "UAT AWS emulator PCA Root"}},
+    # S3 buckets refuse ACLs by default, so the CRL object must carry the owner ACL, as on AWS.
+    RevocationConfiguration={"CrlConfiguration": {"Enabled": True, "ExpirationInDays": 7, "S3BucketName": "kk-upca-crl",
+                                                  "S3ObjectAcl": "BUCKET_OWNER_FULL_CONTROL"}},
+    CertificateAuthorityType="ROOT")["CertificateAuthorityArn"]
+c.get_waiter("certificate_authority_csr_created").wait(CertificateAuthorityArn=arn)
+csr = c.get_certificate_authority_csr(CertificateAuthorityArn=arn)["Csr"]
+cert_arn = c.issue_certificate(CertificateAuthorityArn=arn, Csr=csr.encode(), SigningAlgorithm="SHA256WITHECDSA",
+    TemplateArn="arn:aws:acm-pca:::template/RootCACertificate/V1", Validity={"Value": 2, "Type": "YEARS"})["CertificateArn"]
+c.get_waiter("certificate_issued").wait(CertificateAuthorityArn=arn, CertificateArn=cert_arn)
+root = c.get_certificate(CertificateAuthorityArn=arn, CertificateArn=cert_arn)["Certificate"].strip() + "\n"
+c.import_certificate_authority_certificate(CertificateAuthorityArn=arn, Certificate=root.encode())
+open(out, "w").write(root)
+print(arn)
+PY
+  local arn; arn="$(pca_emu pca_emu_setup.py /w/awsemu-root.pem 2>"$WORK/pca.err" | tail -1)"
+  case "$arn" in arn:aws:acm-pca*) PASS "emulator PCA root (EC P-256, SHA256WITHECDSA, CRL to S3) created: $arn" ;; *) FAIL "could not create the emulator CA: $(tail -3 "$WORK/pca.err")"; return ;; esac
+
+  STEP "C1b known emulator bug: SHA384WITHECDSA on a P-256 CA"
+  mkcsr pca384.$DOMAIN
+  cat >"$WORK/pca_emu_issue.py" <<'PY'
+import boto3, sys
+arn, csr, alg, out = sys.argv[1:5]
+c = boto3.client("acm-pca", endpoint_url="https://127.0.0.1:9297", verify="/w/awsemu/.aws/emulator/9297/ca.pem")
+ca = c.issue_certificate(CertificateAuthorityArn=arn, Csr=open(csr, "rb").read(), SigningAlgorithm=alg,
+                         Validity={"Value": 30, "Type": "DAYS"})["CertificateArn"]
+c.get_waiter("certificate_issued").wait(CertificateAuthorityArn=arn, CertificateArn=ca)
+open(out, "w").write(c.get_certificate(CertificateAuthorityArn=arn, CertificateArn=ca)["Certificate"])
+PY
+  if pca_emu pca_emu_issue.py "$arn" "/w/pca384.$DOMAIN.csr" SHA384WITHECDSA /w/pca384.crt 2>"$WORK/pca384.err"; then
+    if openssl verify -CAfile "$WORK/awsemu-root.pem" "$WORK/pca384.crt" >/dev/null 2>&1; then
+      PASS "SHA384WITHECDSA leaf now verifies: the known emulator bug is fixed in this version"
+    else
+      SKIP "KNOWN EMULATOR BUG: SHA384WITHECDSA leaf from a P-256 CA does not verify ($(openssl x509 -in "$WORK/pca384.crt" -noout -text | grep -m1 'Signature Algorithm' | tr -s ' ')); the hub legs use SHA256WITHECDSA"
+    fi
+  else
+    SKIP "KNOWN EMULATOR BUG probe could not issue: $(tail -1 "$WORK/pca384.err")"
+  fi
+
+  STEP "C2 hub: aws_pca connector -> emulator, external CA, issue, revoke"
+  local cred_json; cred_json="$(python3 - "$WORK/awsemu/.aws/emulator/9297/emulator_credentials" <<'PY'
+import configparser, json, sys
+p = configparser.ConfigParser(); p.read(sys.argv[1]); d = p[p.sections()[0]]
+print(json.dumps({"name": "upca-aws-emulator", "credential_type": "cloud_iam",
+                  "payload": {"access_key_id": d["aws_access_key_id"], "secret_access_key": d["aws_secret_access_key"]}}))
+PY
+)"
+  c=$(hub POST /api/v1/credentials "$cred_json"); unset cred_json
+  [ "$c" = 201 ] || { FAIL "aws credential -> $c"; return; }
+  local cred; cred="$(jget 'd["data"]["id"]' <"$WORK/last.json")"
+  local days=29
+  local cfg; cfg="$(python3 -c 'import json,sys; print(json.dumps({"certificate_authority_arn":sys.argv[1],"region":"us-east-1","endpoint_url":"https://%s:8443"%sys.argv[2],"auth":"static","signing_algorithm":"SHA256WITHECDSA","validity_days":int(sys.argv[3])}))' "$arn" "$AWSEMU_CTR" "$days")"
+  local conn; conn="$(mk_connector "aws-pca-awsemu" aws_pca "$cred" "$cfg")" || { FAIL "aws_pca connector"; return; }
+  c=$(hub POST "/api/v1/connectors/$conn/test" '{}')
+  local tst; tst="$(jget 'd.get("status") or d.get("data",{}).get("status")' <"$WORK/last.json" 2>/dev/null)"
+  if [ "$c" = 200 ] && [ "$tst" = healthy ]; then PASS "connector test -> 200 status=healthy"; else FAIL "connector test -> $c $(cat "$WORK/last.json")"; podman logs "$AWSEMU_CTR" 2>&1 | tail -5; fi
+  local cca; cca="$(ext_ca "AWS PCA (aws-emulator)" "$conn" "$WORK/awsemu-root.pem")" && PASS "external CA $cca" || { FAIL "aws external CA"; return; }
+  mkcsr pca1.$DOMAIN
+  local t0; t0="$(date -u +%s)"
+  c=$(rest_issue "$cca" pca1.$DOMAIN)
+  case "$c" in
+    20*) PASS "REST issue -> $c"; check_cert "AWS PCA (aws-emulator)" "$WORK/pca1.$DOMAIN.crt" "UAT AWS emulator PCA Root" "$WORK/awsemu-root.pem" ;;
+    *) FAIL "REST issue -> $c $(cat "$WORK/last.json")"; return ;;
+  esac
+  local crt="$WORK/pca1.$DOMAIN.crt" na sig drift
+  sig="$(openssl x509 -in "$crt" -noout -text | grep -m1 'Signature Algorithm' | awk '{print $NF}')"
+  [ "$sig" = ecdsa-with-SHA256 ] && PASS "leaf signature algorithm $sig (requested SHA256WITHECDSA)" || FAIL "leaf signature algorithm $sig, requested SHA256WITHECDSA"
+  na="$(date -u -d "$(openssl x509 -in "$crt" -noout -enddate | cut -d= -f2)" +%s)"
+  drift=$(( na - t0 - days * 86400 ))
+  if [ "${drift#-}" -le 3600 ]; then PASS "leaf notAfter = issue time + $days days (drift ${drift}s; requested validity_days=$days)"; else FAIL "leaf notAfter drift ${drift}s from issue time + $days days"; fi
+  local serial; serial="$(colon_serial "$(serial_of "$crt")")"
+  local fp; fp="$(fp_of "$crt")"
+  c=$(hub POST "/api/v1/certificates/$fp/revoke" '{"reason_code":1}')
+  local scope; scope="$(jget 'd["data"].get("revocation_scope")' <"$WORK/last.json" 2>/dev/null)"
+  if [ "$c" = 200 ] && [ "$scope" = upstream ]; then PASS "revoke -> 200 revocation_scope=$scope"; else FAIL "revoke -> $c $(cat "$WORK/last.json")"; fi
+
+  STEP "C3 revocation in the emulator's own state (audit report and CRL)"
+  cat >"$WORK/pca_emu_revoked.py" <<'PY'
+import boto3, json, sys, time
+arn, serial = sys.argv[1], sys.argv[2].lower()
+ep, ca = "https://127.0.0.1:9297", "/w/awsemu/.aws/emulator/9297/ca.pem"
+c = boto3.client("acm-pca", endpoint_url=ep, verify=ca); s3 = boto3.client("s3", endpoint_url=ep, verify=ca)
+rid = c.create_certificate_authority_audit_report(CertificateAuthorityArn=arn, S3BucketName="kk-upca-crl",
+                                                  AuditReportResponseFormat="JSON")["AuditReportId"]
+for _ in range(30):
+    if c.describe_certificate_authority_audit_report(CertificateAuthorityArn=arn, AuditReportId=rid)["AuditReportStatus"] == "SUCCESS":
+        break
+    time.sleep(1)
+key = c.describe_certificate_authority_audit_report(CertificateAuthorityArn=arn, AuditReportId=rid)["S3Key"]
+rows = json.loads(s3.get_object(Bucket="kk-upca-crl", Key=key)["Body"].read())
+row = next((r for r in rows if r.get("serial", "").lower() == serial), None)
+print("AUDIT=%s" % (row.get("revocationReason") if row else "absent"))
+crl = s3.get_object(Bucket="kk-upca-crl", Key="crl/%s.crl" % arn.rsplit("/", 1)[1])["Body"].read()
+open("/w/awsemu.crl", "wb").write(crl)
+PY
+  local rv; rv="$(pca_emu pca_emu_revoked.py "$arn" "$serial" 2>"$WORK/revoked.err")"
+  case "$rv" in *AUDIT=KEY_COMPROMISE*) PASS "audit report lists serial $serial as KEY_COMPROMISE" ;; *) FAIL "audit report: ${rv:-$(tail -2 "$WORK/revoked.err")}" ;; esac
+  if [ -s "$WORK/awsemu.crl" ] && openssl crl -inform DER -in "$WORK/awsemu.crl" -CAfile "$WORK/awsemu-root.pem" -noout 2>&1 | grep -q 'verify OK'; then
+    local want; want="$(serial_of "$crt")"
+    openssl crl -inform DER -in "$WORK/awsemu.crl" -noout -text | grep -qi "Serial Number: $want" \
+      && PASS "CRL from S3 verifies against the root and lists serial $want" || FAIL "CRL verifies but does not list $want"
+  else
+    FAIL "CRL missing or does not verify: $(tail -2 "$WORK/revoked.err")"
+  fi
+}
+
 want A && scenario_a
 want B && scenario_b
-want C && scenario_c
+if want C; then
+  if [ "${KK_AWS_EMULATOR:-moto}" = aws ]; then scenario_c_awsemu; else scenario_c; fi
+fi
 
 echo
 [ "$FAILED" = 0 ] && echo "ALL STEPS PASSED" || echo "ONE OR MORE STEPS FAILED"

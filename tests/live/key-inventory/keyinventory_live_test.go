@@ -4,7 +4,7 @@
 
 // Package keyinventory_live_test drives the real unified key inventory
 // (internal/keyinventory) against an AWS KMS emulator (moto by default,
-// LocalStack opt-in), optionally a Lowkey Vault Azure emulator, and the SSH
+// AWS's own emulator with KK_AWS_EMULATOR=aws, LocalStack opt-in), optionally a Lowkey Vault Azure emulator, and the SSH
 // user-key source. Skipped unless KK_LIVE_KEYINV=1 (see run.sh).
 package keyinventory_live_test
 
@@ -14,10 +14,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +29,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
 	kmstypes "github.com/aws/aws-sdk-go-v2/service/kms/types"
+	"github.com/aws/smithy-go"
 
 	"kryptkeeper/internal/keyinventory"
 	"kryptkeeper/internal/sshkeys"
@@ -267,4 +272,143 @@ func TestLiveKeyInventory_HubEndpoint(t *testing.T) {
 
 func jsonDecode(resp *http.Response, v any) error {
 	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+// notImplemented reports an emulator's 501 NotImplemented answer, which is a
+// named skip, never a pass.
+func notImplemented(err error) bool {
+	var ae smithy.APIError
+	return errors.As(err, &ae) && ae.ErrorCode() == "NotImplemented"
+}
+
+// An ML-DSA KMS key must be listed as quantum_safe. AWS's emulator creates
+// ML_DSA_65 keys but answers GetPublicKey and Sign with 501; those are recorded
+// as named skips. moto cannot create the key at all, which skips the case.
+func TestLiveKeyInventory_MLDSAKeyListedQuantumSafe(t *testing.T) {
+	gate(t)
+	ctx := context.Background()
+	c := kmsClient(t)
+	out, err := c.CreateKey(ctx, &kms.CreateKeyInput{
+		KeySpec: kmstypes.KeySpecMlDsa65, KeyUsage: kmstypes.KeyUsageTypeSignVerify, Description: aws.String("kk-keyinv-uat-mldsa"),
+	})
+	if err != nil {
+		t.Skipf("emulator cannot create an ML_DSA_65 key: %v", err)
+	}
+	id := aws.ToString(out.KeyMetadata.KeyId)
+	t.Run("listed", func(t *testing.T) {
+		src, err := keyinventory.NewAWSKeySource(ctx, awsRegion)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inv := keyinventory.CollectWithTimeout(ctx, 30*time.Second, src)
+		k := findKey(inv.Keys, id)
+		if k == nil {
+			t.Fatalf("ML-DSA key %s missing from inventory (errors %v)", id, inv.Errors)
+		}
+		if k.Algorithm != "ML_DSA_65" || k.Usage != "SIGN_VERIFY" || k.PQCReadiness != "quantum_safe" {
+			t.Errorf("ML-DSA key wrong: algorithm=%q usage=%q pqc_readiness=%q, want ML_DSA_65 SIGN_VERIFY quantum_safe", k.Algorithm, k.Usage, k.PQCReadiness)
+		}
+	})
+	t.Run("get-public-key", func(t *testing.T) {
+		_, err := c.GetPublicKey(ctx, &kms.GetPublicKeyInput{KeyId: aws.String(id)})
+		if notImplemented(err) {
+			t.Skipf("KNOWN EMULATOR GAP: GetPublicKey on ML_DSA_65 returns 501: %v", err)
+		}
+		if err != nil {
+			t.Fatalf("GetPublicKey: %v", err)
+		}
+	})
+	t.Run("sign", func(t *testing.T) {
+		_, err := c.Sign(ctx, &kms.SignInput{
+			KeyId: aws.String(id), Message: []byte("kk keyinv mldsa"), MessageType: kmstypes.MessageTypeRaw,
+			SigningAlgorithm: kmstypes.SigningAlgorithmSpecMlDsaShake256,
+		})
+		if notImplemented(err) {
+			t.Skipf("KNOWN EMULATOR GAP: Sign with ML_DSA_SHAKE_256 returns 501: %v", err)
+		}
+		if err != nil {
+			t.Fatalf("Sign: %v", err)
+		}
+	})
+}
+
+// The AWS source must follow NextMarker across pages: real KMS returns 100
+// keys per ListKeys page by default, and so does AWS's emulator
+// (KK_KEYINV_REQUIRE_PAGES=1 makes a single page a failure). KK_KEYINV_PAGINATION_KEYS (default 1005)
+// keys are created (0 skips the case). Keep this test last in the file: once the emulator holds
+// this many keys, the short per-provider deadlines above no longer fit.
+func TestLiveKeyInventory_PaginationAcrossPages(t *testing.T) {
+	gate(t)
+	n := 1005
+	if v := os.Getenv("KK_KEYINV_PAGINATION_KEYS"); v != "" {
+		var err error
+		if n, err = strconv.Atoi(v); err != nil || n < 0 {
+			t.Fatal("KK_KEYINV_PAGINATION_KEYS must be a non-negative integer")
+		}
+	}
+	if n == 0 {
+		t.Skip("KK_KEYINV_PAGINATION_KEYS=0")
+	}
+	ctx := context.Background()
+	c := kmsClient(t)
+	ids := make([]string, n)
+	errs := make(chan error, n)
+	sem := make(chan struct{}, 16)
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			out, err := c.CreateKey(ctx, &kms.CreateKeyInput{KeySpec: kmstypes.KeySpecSymmetricDefault, Description: aws.String(fmt.Sprintf("kk-keyinv-uat-page-%d", i))})
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids[i] = aws.ToString(out.KeyMetadata.KeyId)
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	if err := <-errs; err != nil {
+		var ae smithy.APIError
+		if errors.As(err, &ae) && ae.ErrorCode() == "LimitExceededException" && strings.Contains(ae.ErrorMessage(), "emulator holds at most") {
+			t.Skipf("KNOWN EMULATOR LIMIT: %d keys do not fit: %s (run.sh lowers KK_KEYINV_PAGINATION_KEYS for this emulator)", n, ae.ErrorMessage())
+		}
+		t.Fatalf("CreateKey: %v", err)
+	}
+	first, err := c.ListKeys(ctx, &kms.ListKeysInput{})
+	if err != nil {
+		t.Fatalf("ListKeys: %v", err)
+	}
+	switch {
+	case first.Truncated && first.NextMarker != nil:
+		t.Logf("first ListKeys page: %d keys, truncated", len(first.Keys))
+	case os.Getenv("KK_KEYINV_REQUIRE_PAGES") == "1":
+		t.Fatalf("first ListKeys page holds %d keys and is not truncated; pagination is not exercised", len(first.Keys))
+	default:
+		// moto returns every key in one page, so the NextMarker loop is not
+		// exercised there; completeness over n keys is still asserted.
+		t.Logf("KNOWN EMULATOR LIMIT: one ListKeys page holds all %d keys; NextMarker path not exercised", len(first.Keys))
+	}
+	src, err := keyinventory.NewAWSKeySource(ctx, awsRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	inv := keyinventory.CollectWithTimeout(ctx, 10*time.Minute, src)
+	if len(inv.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", inv.Errors)
+	}
+	missing := 0
+	for _, id := range ids {
+		if findKey(inv.Keys, id) == nil {
+			missing++
+		}
+	}
+	if missing != 0 {
+		t.Fatalf("%d of %d created keys missing from the inventory (%d keys listed)", missing, n, len(inv.Keys))
+	}
+	t.Logf("inventory listed all %d created keys (%d total) in %s", n, len(inv.Keys), time.Since(start).Round(time.Millisecond))
 }

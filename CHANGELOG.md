@@ -8,6 +8,23 @@ Kryptkeeper adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-19
+
+Release notes: [docs/release/RELEASE_NOTES_v1.2.1.md](docs/release/RELEASE_NOTES_v1.2.1.md).
+
+### Security
+
+- Go toolchain 1.27.4 (GO-2026-6859, `net/http`).
+
+### Fixed
+
+- AWS ACM inventory lists certificates of every key type; it returned only RSA-1024 and RSA-2048, so ECDSA and RSA-3072/4096 certificates were missing.
+- AWS and GCP KMS ML-DSA, ML-KEM and SLH-DSA key specs (`ML_DSA_65`, `PQ_SIGN_ML_DSA_65`) are scored `quantum_safe` instead of `unknown`.
+
+### Other changes
+
+- Live KMS, BYOK, Private CA, ACM and key-inventory harnesses run against AWS's own emulator (`KK_AWS_EMULATOR=aws`).
+
 ## [1.2.0] - 2026-10-31
 
 Release notes: [docs/release/RELEASE_NOTES_v1.2.0.md](docs/release/RELEASE_NOTES_v1.2.0.md).

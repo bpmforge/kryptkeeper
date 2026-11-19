@@ -4,7 +4,8 @@
 
 // Package escrowbyok_test is the W23-20 executed drill: escrow -> recover
 // round trips for every key algorithm, and BYOK import of escrow-recovered
-// key material into an AWS KMS emulator (moto). The Azure leg asserts the
+// key material into an AWS KMS emulator (moto, or AWS's own emulator with
+// KK_AWS_EMULATOR=aws in run.sh). The Azure leg asserts the
 // product's explicit refusal (no Azure BYOK target exists; follow-up W23-20a).
 // Skipped unless KK_LIVE_ESCROW_BYOK=1. Passphrases are throwaway literals.
 package escrowbyok_test
@@ -237,6 +238,18 @@ func TestEscrowRecoverExistingID(t *testing.T) {
 	assertPubEqual(t, before, after)
 }
 
+// emulatorName labels log lines with the emulator run.sh started.
+func emulatorName() string {
+	if n := os.Getenv("KK_EMULATOR_NAME"); n != "" {
+		return n
+	}
+	return "the KMS emulator"
+}
+
+// requireFullImport is set by run.sh for an emulator that implements the whole
+// import sequence: a PARTIAL or a public-key mismatch is then a failure.
+func requireFullImport() bool { return os.Getenv("KK_BYOK_REQUIRE_FULL") == "1" }
+
 type memAudit struct {
 	mu  sync.Mutex
 	evs []keystore.BYOKEvent
@@ -273,7 +286,7 @@ func TestBYOKImportAWS(t *testing.T) {
 		t.Fatalf("RecoverEscrowedKeyMaterial: %v", err)
 	}
 
-	// Create the EXTERNAL-origin target key in moto.
+	// Create the EXTERNAL-origin target key in the emulator.
 	cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(os.Getenv("AWS_REGION")))
 	if err != nil {
 		t.Fatal(err)
@@ -300,7 +313,7 @@ func TestBYOKImportAWS(t *testing.T) {
 	for _, e := range audit.evs {
 		steps = append(steps, e.Step+"="+e.Outcome)
 	}
-	t.Logf("audit sequence reaching moto: %s", strings.Join(steps, ", "))
+	t.Logf("audit sequence reaching %s: %s", emulatorName(), strings.Join(steps, ", "))
 	for _, b := range material {
 		if b != 0 {
 			t.Fatal("recovered plaintext was not zeroized after ExportEscrowedKeyToKMS")
@@ -311,6 +324,9 @@ func TestBYOKImportAWS(t *testing.T) {
 		// got. moto 5.x does not implement GetParametersForImport at all
 		// (run.sh records its server-side NotImplementedError), so the only
 		// acceptable failure is that call, and ImportKeyMaterial is never sent.
+		if requireFullImport() {
+			t.Fatalf("ExportEscrowedKeyToKMS against %s: %v (sequence=%v); this emulator implements the whole import, so a PARTIAL is a failure", emulatorName(), err, steps)
+		}
 		t.Logf("RESULT: PARTIAL (emulator): ExportEscrowedKeyToKMS returned: %v", err)
 		if len(audit.evs) != 1 || audit.evs[0].Step != "byok.params" || audit.evs[0].Outcome != "failure" ||
 			!strings.Contains(err.Error(), "GetParametersForImport") {
@@ -329,6 +345,9 @@ func TestBYOKImportAWS(t *testing.T) {
 	// Prove the imported material is the escrowed key: KMS public key == original.
 	gp, err := api.GetPublicKey(ctx, &kms.GetPublicKeyInput{KeyId: aws.String(keyID)})
 	if err != nil {
+		if requireFullImport() {
+			t.Fatalf("GetPublicKey after import against %s: %v", emulatorName(), err)
+		}
 		t.Logf("GetPublicKey after import failed (emulator): %v", err)
 		t.Log("RESULT: import accepted (ImportKeyMaterial 200, key Enabled); public-key equality NOT verified")
 		return
@@ -340,6 +359,9 @@ func TestBYOKImportAWS(t *testing.T) {
 	if bytes.Equal(gp.PublicKey, want) {
 		t.Log("RESULT: PASS: ImportKeyMaterial accepted, key Enabled, KMS public key byte-identical to the escrowed key")
 	} else {
+		if requireFullImport() {
+			t.Fatalf("KMS GetPublicKey from %s differs from the escrowed key after import", emulatorName())
+		}
 		t.Log("RESULT: import accepted, key Enabled; KMS GetPublicKey differs from the escrowed key (emulator returns its own derived/placeholder key; equality NOT proven)")
 	}
 }

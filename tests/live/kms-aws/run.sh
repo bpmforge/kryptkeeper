@@ -8,6 +8,23 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../../.." && pwd)"
 . "$HERE/../lib/podman.sh"
 CE="${CONTAINER_ENGINE:-podman}"
+
+# KK_AWS_EMULATOR=aws: AWS's own emulator instead of moto. It signs the digest
+# as given (MessageType=DIGEST) and accepts ScheduleKeyDeletion by ARN, so
+# KK_KMS_EMULATOR_MOTO stays unset and the strict branches run.
+if [ "${KK_AWS_EMULATOR:-moto}" = "aws" ]; then
+  . "$HERE/../lib/aws-emulator.sh"
+  trap kk_aws_emulator_stop EXIT
+  kk_aws_emulator_start; rc=$?
+  [ "$rc" -eq 2 ] && exit 0
+  [ "$rc" -eq 0 ] || exit 1
+  unset KK_KMS_EMULATOR_MOTO
+  export KK_LIVE_KMS_AWS=1
+  cd "$REPO_ROOT" && go test ./tests/live/kms-aws/ -count=1 -v 2>&1 | tee /tmp/kk-kms-aws.log
+  if [ "${PIPESTATUS[0]}" -eq 0 ]; then echo "ALL CHECKS PASSED"; else echo "FAIL: see above"; exit 1; fi
+  exit 0
+fi
+
 NAME=kk-uat-moto
 PORT="${KK_MOTO_PORT:-$(kk_free_port)}"
 IMAGE="${KK_MOTO_IMAGE:-docker.io/motoserver/moto:latest}"

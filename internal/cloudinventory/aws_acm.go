@@ -74,6 +74,10 @@ func (c *ACMConnector) ListCertificates(ctx context.Context) ([]CloudCertificate
 	for {
 		out, err := c.client.ListCertificates(ctx, &acm.ListCertificatesInput{
 			NextToken: nextToken,
+			// Without a key-type filter ACM returns only RSA_1024 and RSA_2048
+			// certificates, so ECDSA and larger RSA ones would be invisible.
+			// https://docs.aws.amazon.com/acm/latest/APIReference/API_Filters.html
+			Includes: &acmtypes.Filters{KeyTypes: acmtypes.KeyAlgorithm("").Values()},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("aws acm: list certificates: %w", err)

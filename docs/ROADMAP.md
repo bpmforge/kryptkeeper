@@ -20,7 +20,7 @@ The `Ref` column is our internal ticket or decision number, so you can ask about
 name. This page is updated in the same change that defers anything new
 (see [ROADMAP_PROCESS.md](ROADMAP_PROCESS.md)).
 
-Last updated: 2026-10-27.
+Last updated: 2026-11-18.
 
 ## Windows and application installs
 
@@ -172,13 +172,15 @@ the proof needs, so you can see which ones are cheap to finish.
 | F5 BIG-IP and Citrix NetScaler certificate delivery | Proven against a mock appliance only. F5 offers a 30-day trial; NetScaler VPX Express is free. | Needs an account | W32-06, W19-11, W20-22 |
 | SCEP enrollment from F5 BIG-IP | Not yet run against a real appliance (Palo Alto is in the next table). | Needs an account | W26-12 |
 | Intune SCEP enrollment against a real Intune tenant | Proven against a stand-in for Entra, Graph and the Intune service that follows Microsoft's published client; the exact scope string, the notification field formats (thumbprint case, serial, hResult sign) and the Intune checks have not run against a real tenant. A trial tenant is enough. | Needs an account | W20-23, D-327 |
-| AWS KMS, Azure Key Vault and Google Cloud KMS as CA key stores | Proven against emulators; real cloud permissions and HSM tiers are not yet proven. | Needs an account | W19-12 |
+| AWS KMS, Azure Key Vault and Google Cloud KMS as CA key stores | Proven against emulators. AWS KMS signing (including digest signing and delete by ARN) and BYOK import of escrowed keys passed against AWS's own emulator as well as moto ([LIVE_RESULTS_AWS_EMULATOR_v1.2.md](release/LIVE_RESULTS_AWS_EMULATOR_v1.2.md)); real cloud permissions, key policies and HSM tiers are not yet proven, and ML-DSA signing in AWS KMS has not run anywhere (the emulator does not implement it yet). | Needs an account | W19-12, W23-20 |
 | Disaster-recovery drill with CA keys in a cloud KMS | The drill passes with software and SoftHSM keys; the KMS half needs a cloud account. | Needs an account | W25-09 |
-| Delivery to AWS, Azure and Google Cloud certificate services | Proven for HashiCorp Vault; the cloud legs need accounts. | Needs an account | cloud delivery live results |
+| Delivery to AWS, Azure and Google Cloud certificate services | Proven for HashiCorp Vault; the cloud legs need accounts. The AWS plugins cannot be pointed at an emulator yet (next row). | Needs an account | cloud delivery live results |
+| AWS Private CA issuance and revocation | Passed against AWS's own emulator (requested validity and SHA256WITHECDSA checked on the leaf; revocation confirmed in the emulator's audit report and CRL) and against moto, whose revoke is a no-op ([LIVE_RESULTS_AWS_EMULATOR_v1.2.md](release/LIVE_RESULTS_AWS_EMULATOR_v1.2.md)). A run against a real Private CA needs an AWS account. | Needs an account | W36-16 |
 | ServiceNow, Jira Cloud, Zendesk and Freshservice connectors | Proven against stand-in services. A run against real instances (Zendesk and Freshservice soft-delete behaviour, API-token auth, rate limits) needs those accounts. | Needs an account | W32-18, W38-09 |
 | Slack, PagerDuty and Microsoft Teams alerts | Proven against local receivers. PagerDuty is also built as a notify plugin, and Teams only as one (Workflows webhook); a run against a real Slack workspace, Teams flow and PagerDuty service needs those tenants. (Opsgenie is deprecated; see the Notifications section.) | Needs an account | W30-19, W38-02 |
 | DNS-01 challenges in Route 53, Azure DNS and Google Cloud DNS | Proven with local DNS and with Cloudflare against Let's Encrypt staging. | Needs an account | ACME DNS providers live results |
 | DNS-01 through the DigitalOcean, GoDaddy, NS1 and Akamai Edge DNS plugins | Proven against local stand-ins shaped like each vendor's API (Akamai's EdgeGrid signature is checked against the vendor's test vectors); a run against a real account at each vendor, and against a public CA, needs those accounts. | Needs an account | W38-08 |
+| A custom AWS endpoint for the AWS delivery plugins and the Route 53 DNS-01 connector | The AWS (ACM, ALB, CloudFront) and Secrets Manager plugins and the Route 53 connector only call the public `*.amazonaws.com` hosts, so they cannot use a VPC endpoint or be tested against AWS's emulator the way KMS, ACM inventory and Private CA now are. Needs an endpoint field (plus the manifest network grant) in each; see the results page for the exact files. | Later | [LIVE_RESULTS_AWS_EMULATOR_v1.2.md](release/LIVE_RESULTS_AWS_EMULATOR_v1.2.md) |
 | Terraform deployment into a real AWS account | The Terraform module validates; apply and destroy in a sandbox account are not yet run. | Needs an account | W25-16 |
 
 ### Needs partner or hardware
@@ -192,5 +194,5 @@ the proof needs, so you can see which ones are cheap to finish.
 | DigiCert inventory sync and upstream renewal | Proven with fixtures; the DigiCert sandbox run needs a sandbox contract. | Needs partner or hardware | inventory and upstream-renew live results |
 | Target credentials from CyberArk and Delinea | HashiCorp Vault and OpenBao are proven live; the CyberArk Central Credential Provider and Delinea Secret Server plugins pass the credentials conformance suite and an in-hub test against mocks only. A run needs a CCP with an AppID and a Secret Server with an application account. | Needs partner or hardware | W38-07 |
 | Service fingerprinting on Active Directory, F5 BIG-IP, Citrix ADC and other appliances | The fingerprint tells for these are tested against recorded fixtures only; real AD domain controllers, 389 Directory Server, F5, Citrix, Fortinet, Palo Alto, VMware, iDRAC/iLO and Exchange are needed to prove them. | Needs partner or hardware | fingerprint recall v0.22 |
-| Issuance and revocation through Sectigo, GlobalSign, Entrust, DigiCert and Google CAS, and revocation through AWS Private CA | Built and tested against recorded API responses (AWS Private CA issuance also ran against the moto emulator, whose revoke is a no-op); a run against each real service needs a commercial account or contract. Vault PKI and EJBCA are proven against real containers. | Needs partner or hardware | W36-07..W36-11, W36-16 |
+| Issuance and revocation through Sectigo, GlobalSign, Entrust, DigiCert and Google CAS | Built and tested against recorded API responses (AWS Private CA is in the "Needs an account" table); a run against each real service needs a commercial account or contract. Vault PKI and EJBCA are proven against real containers. | Needs partner or hardware | W36-07..W36-11, W36-16 |
 | Reference deployments | Named or anonymised customer deployments come from real customers, not from us. | Later | W33-28 |

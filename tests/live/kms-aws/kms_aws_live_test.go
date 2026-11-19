@@ -4,7 +4,7 @@
 
 // Package kmsaws_test drives the real CloudKMSStore AWS path (aws-sdk-go-v2)
 // against whatever KMS endpoint AWS_ENDPOINT_URL names. run.sh points it at a
-// moto server container, so the SDK, request signing, CreateKey/GetPublicKey/
+// moto server container (or AWS's own emulator with KK_AWS_EMULATOR=aws), so the SDK, request signing, CreateKey/GetPublicKey/
 // Sign wire formats and the Delete (ScheduleKeyDeletion) path are the real
 // code; only the service behind the socket is an emulator. Skipped unless
 // KK_LIVE_KMS_AWS=1.
@@ -34,7 +34,7 @@ func TestAWSKMSStoreAgainstEmulator(t *testing.T) {
 	}
 	digest := sha256.Sum256([]byte("kryptkeeper kms uat"))
 
-	for _, algo := range []keystore.Algorithm{keystore.ECDSAP256, keystore.ECDSAP384, keystore.RSA2048} {
+	for _, algo := range []keystore.Algorithm{keystore.ECDSAP256, keystore.ECDSAP384, keystore.RSA2048, keystore.RSA3072} {
 		t.Run(string(algo), func(t *testing.T) {
 			id := "uat-" + string(algo)
 			if _, err := store.GenerateKey(id, algo); err != nil {

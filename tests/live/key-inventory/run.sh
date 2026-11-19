@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # W24-34: live unified key-inventory case. Starts an AWS KMS emulator (moto by
-# default, KK_AWS_EMULATOR=localstack opt-in) and, with KK_KEYINV_AZURE=1, a
+# default; KK_AWS_EMULATOR=aws for AWS's own emulator, =localstack opt-in) and, with KK_KEYINV_AZURE=1, a
 # Lowkey Vault Azure emulator, then runs the gated Go tests. GCP has no free
 # KMS emulator and is skipped with a named reason. No cloud account, no cost.
 set -u -o pipefail
@@ -20,22 +20,38 @@ trap cleanup EXIT
 
 pull() { "$CE" image inspect "$1" >/dev/null 2>&1 || "$CE" pull "$1" >/dev/null || { echo "FAIL: pull $1"; exit 1; }; }
 
-if [ "${KK_AWS_EMULATOR:-moto}" = "localstack" ]; then
+if [ "${KK_AWS_EMULATOR:-moto}" = "aws" ]; then
+  # AWS's own emulator as a host process: SigV4 with its per-run keys, its CA
+  # through AWS_CA_BUNDLE (tests/live/lib/aws-emulator.sh).
+  . "$HERE/../lib/aws-emulator.sh"
+  trap 'kk_aws_emulator_stop; cleanup' EXIT
+  kk_aws_emulator_start; rc=$?
+  [ "$rc" -eq 2 ] && exit 0
+  [ "$rc" -eq 0 ] || exit 1
+  export KK_LIVE_KEYINV=1
+  # It holds at most 500 KMS keys, so the pagination case runs with 450 (still
+  # five 100-key ListKeys pages); 1,000+ keys stays a moto-only proof.
+  export KK_KEYINV_PAGINATION_KEYS="${KK_KEYINV_PAGINATION_KEYS:-450}"
+  export KK_KEYINV_REQUIRE_PAGES=1
+  echo "SKIP: 1,000+ key pagination on aws-emulator: it holds at most 500 KMS keys; the case runs with ${KK_KEYINV_PAGINATION_KEYS} keys"
+elif [ "${KK_AWS_EMULATOR:-moto}" = "localstack" ]; then
   IMAGE="${KK_AWS_IMAGE:-docker.io/localstack/localstack:3}"; INNER=4566; PORT="${KK_LOCALSTACK_PORT:-$(kk_free_port)}"
   READY="http://127.0.0.1:${PORT}/_localstack/health"; EXTRA=(-e SERVICES=kms)
 else
   IMAGE="${KK_AWS_IMAGE:-docker.io/motoserver/moto:latest}"; INNER=5000; PORT="${KK_MOTO_PORT:-$(kk_free_port)}"
   READY="http://127.0.0.1:${PORT}/moto-api/"; EXTRA=()
 fi
-pull "$IMAGE"
-"$CE" run -d --name "$AWS_NAME" -p "127.0.0.1:${PORT}:${INNER}" ${EXTRA[@]+"${EXTRA[@]}"} "$IMAGE" >/dev/null || { echo "FAIL: start AWS emulator"; exit 1; }
-for _ in $(seq 1 60); do curl -sf "$READY" >/dev/null && break; sleep 1; done
-curl -sf "$READY" >/dev/null || { echo "FAIL: AWS emulator never answered"; exit 1; }
-echo "PASS: AWS emulator (${KK_AWS_EMULATOR:-moto}) answering on :${PORT}"
+if [ "${KK_AWS_EMULATOR:-moto}" != "aws" ]; then
+  pull "$IMAGE"
+  "$CE" run -d --name "$AWS_NAME" -p "127.0.0.1:${PORT}:${INNER}" ${EXTRA[@]+"${EXTRA[@]}"} "$IMAGE" >/dev/null || { echo "FAIL: start AWS emulator"; exit 1; }
+  for _ in $(seq 1 60); do curl -sf "$READY" >/dev/null && break; sleep 1; done
+  curl -sf "$READY" >/dev/null || { echo "FAIL: AWS emulator never answered"; exit 1; }
+  echo "PASS: AWS emulator (${KK_AWS_EMULATOR:-moto}) answering on :${PORT}"
 
-# Throwaway placeholder credentials; the emulators do not validate them.
-export AWS_ENDPOINT_URL="http://127.0.0.1:${PORT}" AWS_REGION=us-east-1 \
-  AWS_ACCESS_KEY_ID=kk-uat AWS_SECRET_ACCESS_KEY=kk-uat KK_LIVE_KEYINV=1
+  # Throwaway placeholder credentials; the emulators do not validate them.
+  export AWS_ENDPOINT_URL="http://127.0.0.1:${PORT}" AWS_REGION=us-east-1 \
+    AWS_ACCESS_KEY_ID=kk-uat AWS_SECRET_ACCESS_KEY=kk-uat KK_LIVE_KEYINV=1
+fi
 
 if [ "${KK_KEYINV_AZURE:-0}" = "1" ]; then
   AZ_IMAGE="${KK_LOWKEY_IMAGE:-docker.io/nagyesta/lowkey-vault:7.3.112}"; VPORT="${KK_LOWKEY_PORT:-8443}"
@@ -51,5 +67,5 @@ fi
 
 cd "$REPO_ROOT" && go test ./tests/live/key-inventory/ -count=1 -v 2>&1 | tee "$WORK/test.log"
 rc=${PIPESTATUS[0]}
-echo "--- skips (named, never silent) ---"; grep -E '^\s+keyinventory_live_test.go:[0-9]+: (set|no |KK_)' "$WORK/test.log" | grep -v 'set KK_LIVE_KEYINV=1' || true
+echo "--- skips (named, never silent) ---"; grep -E '^\s+keyinventory_live_test.go:[0-9]+: (set|no |KK_|KNOWN|emulator cannot)' "$WORK/test.log" | grep -v 'set KK_LIVE_KEYINV=1' || true
 if [ "$rc" -eq 0 ]; then echo "ALL CHECKS PASSED"; else echo "FAIL: see above"; exit 1; fi
