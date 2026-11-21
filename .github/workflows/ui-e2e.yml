@@ -20,7 +20,7 @@ concurrency:
 jobs:
   ui-e2e:
     name: UI E2E (compose hub)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # Playwright 1.59.1 cannot install Chromium on ubuntu-latest (26.04)
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -123,7 +123,7 @@ jobs:
 
   ui-e2e-onboarding:
     name: UI E2E onboarding (first-run hub, zero CAs)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 # Playwright 1.59.1 cannot install Chromium on ubuntu-latest (26.04)
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
